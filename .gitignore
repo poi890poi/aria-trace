@@ -1,0 +1,33 @@
+.tools/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and credentials
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Downloaded datasets, generated results, and recordings
+data/
+artifacts/
+sessions/
+portal_maps/
+*.mp4
+*.mkv
+*.avi
+
+# Downloaded or vendored research dependencies
+third_party/
+
+# Local databases and editor state
+*.db
+*.sqlite3
+.vscode/
+.idea/

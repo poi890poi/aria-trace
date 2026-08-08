@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera Navigation Session Review</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #11151a; color: #e6edf3; }
+    header { padding: 12px 16px; border-bottom: 1px solid #30363d; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    button, select, input { background: #21262d; color: #e6edf3; border: 1px solid #484f58; border-radius: 5px; padding: 6px 9px; }
+    input[type=range] { flex: 1; min-width: 240px; }
+    main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr); height: calc(100vh - 62px); }
+    .viewer { display: grid; place-items: center; min-width: 0; background: #07090c; overflow: hidden; }
+    #frame { max-width: 100%; max-height: 100%; object-fit: contain; }
+    aside { border-left: 1px solid #30363d; padding: 12px; overflow: auto; }
+    h2 { font-size: 14px; margin: 10px 0 6px; color: #8b949e; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; margin: 0; }
+    .marker-controls { display: grid; gap: 6px; }
+    .marker-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
+    .annotation { padding: 7px 0; border-bottom: 1px solid #30363d; font-size: 12px; }
+    #status { color: #8b949e; font-variant-numeric: tabular-nums; }
+    @media (max-width: 850px) { main { grid-template-columns: 1fr; grid-template-rows: 60vh auto; } aside { border-left: 0; border-top: 1px solid #30363d; } }
+  </style>
+</head>
+<body>
+  <header>
+    <select id="stream"></select>
+    <button id="prev">◀</button>
+    <button id="play">Play</button>
+    <button id="next">▶</button>
+    <input id="slider" type="range" min="0" value="0">
+    <input id="index" type="number" min="0" value="0" style="width:80px">
+    <span id="status"></span>
+  </header>
+  <main>
+    <section class="viewer"><img id="frame" alt="Recorded frame"></section>
+    <aside>
+      <h2>Frame</h2><pre id="metadata"></pre>
+      <h2>Inputs within ±100 ms</h2><pre id="events"></pre>
+      <h2>Online raw-frame features</h2><pre id="features"></pre>
+      <h2>Add marker at selected frame</h2>
+      <div class="marker-controls">
+        <input id="portal" placeholder="Portal ID">
+        <input id="route" placeholder="Route ID">
+        <input id="note" placeholder="Optional note">
+        <div class="marker-buttons">
+          <button data-marker="teleport_start">Teleport start</button>
+          <button data-marker="world_ready">World ready</button>
+          <button data-marker="route_start">Route start</button>
+        </div>
+      </div>
+      <h2>Session markers</h2><div id="annotations"></div>
+      <h2>Session</h2><pre id="session"></pre>
+    </aside>
+  </main>
+  <script>
+    const ui = Object.fromEntries(['stream','prev','play','next','slider','index','status','frame','metadata','events','features','portal','route','note','annotations','session'].map(id => [id, document.getElementById(id)]));
+    let descriptor, current = 0, playing = false, timer;
+    const streamId = () => ui.stream.value;
+    const count = () => descriptor.frame_counts[streamId()] || 0;
+
+    async function show(index) {
+      current = Math.max(0, Math.min(count() - 1, Number(index) || 0));
+      ui.slider.value = current; ui.index.value = current;
+      const query = `stream=${encodeURIComponent(streamId())}&index=${current}`;
+      ui.frame.src = `/api/frame.jpg?${query}&nonce=${Date.now()}`;
+      const info = await fetch(`/api/frame-info?${query}`).then(r => r.json());
+      ui.metadata.textContent = JSON.stringify({frame: info.frame, annotations: info.annotations}, null, 2);
+      ui.events.textContent = info.nearby_inputs.length ? JSON.stringify(info.nearby_inputs, null, 2) : 'None';
+      ui.features.textContent = info.online_features.length ? JSON.stringify(info.online_features, null, 2) : 'None on this frame';
+      ui.status.textContent = `${current + 1} / ${count()}  ${(info.frame.session_time_ns / 1e9).toFixed(3)} s`;
+    }
+    function configureStream() { ui.slider.max = Math.max(0, count() - 1); ui.index.max = ui.slider.max; show(0); }
+    async function refreshAnnotations() {
+      const values = await fetch('/api/annotations').then(r => r.json());
+      ui.annotations.replaceChildren();
+      for (const value of values) {
+        const row = document.createElement('div'); row.className = 'annotation';
+        const label = document.createElement('span');
+        label.textContent = `${value.kind} | ${value.stream_id}:${value.frame_index} | portal=${value.portal_id || '-'} route=${value.route_id || '-'}`;
+        const remove = document.createElement('button'); remove.textContent = 'Delete'; remove.style.marginLeft = '6px';
+        remove.onclick = async () => { await fetch(`/api/annotations?id=${encodeURIComponent(value.annotation_id)}`, {method:'DELETE'}); await refreshAnnotations(); };
+        row.append(label, remove); ui.annotations.append(row);
+      }
+      if (!values.length) ui.annotations.textContent = 'None';
+    }
+    async function addMarker(kind) {
+      const response = await fetch('/api/annotations', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({kind, stream_id:streamId(), frame_index:current, portal_id:ui.portal.value, route_id:ui.route.value, note:ui.note.value})
+      });
+      if (!response.ok) { alert(await response.text()); return; }
+      await refreshAnnotations(); await show(current);
+    }
+    function togglePlay() {
+      playing = !playing; ui.play.textContent = playing ? 'Pause' : 'Play';
+      clearInterval(timer);
+      if (playing) timer = setInterval(() => current + 1 < count() ? show(current + 1) : togglePlay(), 33);
+    }
+    async function init() {
+      descriptor = await fetch('/api/session').then(r => r.json());
+      ui.portal.value = descriptor.context.portal_id || ''; ui.route.value = descriptor.context.route_id || '';
+      for (const id of descriptor.stream_order) ui.stream.add(new Option(id, id));
+      ui.session.textContent = JSON.stringify(descriptor, null, 2);
+      configureStream();
+      refreshAnnotations();
+    }
+    ui.prev.onclick = () => show(current - 1); ui.next.onclick = () => show(current + 1); ui.play.onclick = togglePlay;
+    ui.slider.oninput = e => show(e.target.value); ui.index.onchange = e => show(e.target.value); ui.stream.onchange = configureStream;
+    for (const button of document.querySelectorAll('[data-marker]')) button.onclick = () => addMarker(button.dataset.marker);
+    document.addEventListener('keydown', e => { if (e.key === 'ArrowLeft') show(current - 1); if (e.key === 'ArrowRight') show(current + 1); if (e.key === ' ') { e.preventDefault(); togglePlay(); } });
+    init();
+  </script>
+</body>
+</html>
