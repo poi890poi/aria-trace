@@ -19,7 +19,7 @@ session/
 
 `manifest.json` is versioned and records source configurations, completion status, counts, drops, and Android-to-PC clock mapping. JSONL files are line-buffered. Every record retains its original source timestamp when available and a PC monotonic session timestamp.
 
-`annotations.jsonl` stores append-only add/delete operations. Marker edits never rewrite earlier history. The MVP marker kinds are `teleport_start`, `world_ready`, `route_start`, and `note`; each is tied to an exact stream, frame index, session time, portal ID, and route ID.
+`annotations.jsonl` stores append-only add/delete operations. Marker edits never rewrite earlier history. Marker kinds are `teleport_start`, `world_ready`, `route_start`, `route_stage`, `route_complete`, `route_failed`, and `note`; each is tied to an exact stream, frame index, session time, portal ID, and route ID. A `route_stage` marker uses its note as the human-readable stage label.
 
 The default is H.264 (`libx264`, CRF 20) in Matroska. Exact time is in `frames.jsonl`, not the container playback rate. MJPEG AVI remains available with `--video-encoding mjpeg` as a large compatibility fallback. The encoder is isolated behind a video-sink interface so hardware encoding or another container can replace it later.
 

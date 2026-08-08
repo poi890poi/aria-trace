@@ -8,7 +8,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-MARKER_KINDS = ("teleport_start", "world_ready", "route_start", "note")
+MARKER_KINDS = (
+    "teleport_start",
+    "world_ready",
+    "route_start",
+    "route_stage",
+    "route_complete",
+    "route_failed",
+    "note",
+)
 
 
 class AnnotationStore:
