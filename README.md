@@ -13,7 +13,7 @@ Start the integrated PC acquisition flow from the repository root:
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/, choose any visible game window, select or omit a game profile, choose Raw Input for keyboard/mouse or XInput for a controller, define a fixed capture duration, and queue repeated uninterrupted takes. Return focus to the game and play naturally; recording starts and stops automatically without in-game recorder controls. Combat Master is one profile-data candidate, not a recorder dependency.
+Open http://127.0.0.1:8765/. The normal GUI asks only for the game window, control type, and route preset; route profiles provide the take count and duration, while technical overrides stay under **Advanced settings**. Queue each uninterrupted take, return focus to the game, and play naturally. Recording starts and stops automatically without in-game recorder controls. Combat Master is one profile-data candidate, not a recorder dependency.
 
 Start with:
 
@@ -22,9 +22,10 @@ Start with:
 - [PROJECT_STATUS.md](PROJECT_STATUS.md) — tested state, commands, results, limitations, and next work
 - [SRS.md](SRS.md) — brief requirements
 - [SDS.md](SDS.md) — brief architecture and replaceable interfaces
+- [RECORDER_GUIDE.md](RECORDER_GUIDE.md) — minimal GUI workflow for recording repeated routes
 - [poc/README.md](poc/README.md) — pose-estimation POC commands
 - [poc/RESULTS.md](poc/RESULTS.md) — measured results
 
-The synchronized recording and review workflow is documented in [acquisition/README.md](acquisition/README.md).
+The normal recorder workflow is documented in [RECORDER_GUIDE.md](RECORDER_GUIDE.md). Detailed session format, diagnostic CLI, inspection, and review information is in [acquisition/README.md](acquisition/README.md).
 
 Generated datasets, models, and plots are under ignored `data/` and `artifacts/` directories. Local tools and Python packages are under ignored `.tools/`.

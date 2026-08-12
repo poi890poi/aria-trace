@@ -47,14 +47,18 @@ For the PC-only MVP, use the local acquisition workbench:
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/. Choose a visible game window, an input source, an optional game/route profile, and a capture duration. Use Windows raw keyboard and mouse for keyboard/mouse play: it preserves make/break scan codes, relative camera deltas, button/wheel transitions, device handles, and per-event timing. Use XInput for controller play: it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Legacy keyboard/cursor polling remains available only for compatibility.
+Open http://127.0.0.1:8765/. The normal GUI asks only for the visible game window, control type, and route preset. A route preset supplies its setup instructions, take count, and duration. For an unprofiled game, choose **Custom route / any game** and enter a short route name. Technical IDs and overrides remain available under **Advanced settings**, but are not required. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
+
+Use Windows raw keyboard and mouse for keyboard/mouse play: it preserves make/break scan codes, relative camera deltas, button/wheel transitions, device handles, and per-event timing. Use XInput for controller play: it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Legacy keyboard/cursor polling remains available only for compatibility.
 
 Queue a take, return focus to the selected game, and perform the route naturally. The workbench pre-arms frame and input sources before you switch windows, starts the take clock on the first selected-game focus, and stops after the configured duration. This prevents the first keyboard or mouse event from falling into a source-startup gap. There are no recorder hotkeys, stage buttons, or completion gestures during gameplay. Losing game focus early invalidates the take instead of silently contaminating it.
 
 The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, confirm the full-take route boundaries or use the reviewer to correct them. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions. Compilation is blocked until route boundaries are confirmed.
 
 The workbench is an orchestrator, not another recorder. Game defaults live under profiles/games, route instructions live under profiles/routes, and replaceable Windows, UVC, and ADB sources feed the same AcquisitionRecorder and session schema.
-## Record
+## Standalone recorder (advanced)
+
+The workbench above is the normal recorder interface. Use this command-line interface for adapter diagnostics, scripted acquisition, and non-GUI sources.
 
 Record a short Windows PC-game route:
 
