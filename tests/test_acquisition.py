@@ -48,6 +48,36 @@ class DescribedSource:
         }
 
 
+class ContinuousFrameSource:
+    stream_id = "main"
+
+    def __init__(self):
+        self.running = False
+        self.index = 0
+
+    def start(self):
+        self.running = True
+
+    def read(self):
+        if not self.running:
+            return None
+        time.sleep(0.002)
+        now = time.perf_counter_ns()
+        self.index += 1
+        return FramePacket(
+            "main",
+            np.full((32, 32, 3), self.index % 255, dtype=np.uint8),
+            now,
+            now,
+        )
+
+    def stop(self):
+        self.running = False
+
+    def describe(self):
+        return {"type": "continuous-test", "stream_id": "main"}
+
+
 class FakeWindowsApi:
     def __init__(self):
         self.snapshots = [
@@ -85,6 +115,35 @@ class FakeWindowsApi:
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_recorder_signals_sources_ready_before_external_take_clock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            started = threading.Event()
+            external_stop = threading.Event()
+            recorder = AcquisitionRecorder(
+                Path(temporary) / "prearmed",
+                [ContinuousFrameSource()],
+                [],
+                video_encoding="mjpeg",
+            )
+            result = {}
+
+            def run():
+                result["manifest"] = recorder.run(
+                    external_stop=external_stop,
+                    started_event=started,
+                )
+
+            worker = threading.Thread(target=run)
+            worker.start()
+            self.assertTrue(started.wait(2))
+            external_stop.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["manifest"]["status"], "complete")
+            self.assertGreater(
+                result["manifest"]["frame_counts"].get("main", 0), 0
+            )
+
     def test_selects_one_window_and_rejects_ambiguous_titles(self):
         windows = [(1, "Game - Alpha"), (2, "Game - Beta")]
         self.assertEqual(select_window(windows, "Game - Alpha"), windows[0])

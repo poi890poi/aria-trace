@@ -14,7 +14,11 @@ from .sources import (
     SyntheticInputSource,
     VideoFileFrameSource,
 )
-from .windows import WindowsKeyboardMouseSource, WindowsWindowFrameSource
+from .windows import (
+    WindowsKeyboardMouseSource,
+    WindowsRawKeyboardMouseSource,
+    WindowsWindowFrameSource,
+)
 
 
 def parse_assignment(value: str, default_id: str):
@@ -39,9 +43,16 @@ def main() -> None:
     parser.add_argument("--window", help="Visible Windows game-window title or unique substring")
     parser.add_argument("--window-fps", type=float, default=30.0)
     parser.add_argument("--exact-window-title", action="store_true")
-    parser.add_argument(
-        "--pc-input", action="store_true",
-        help="Record keyboard/mouse state while the selected window is foreground",
+    pc_input = parser.add_mutually_exclusive_group()
+    pc_input.add_argument(
+        "--pc-raw-input",
+        action="store_true",
+        help="Record raw keyboard transitions and relative mouse input for the selected window",
+    )
+    pc_input.add_argument(
+        "--pc-input",
+        action="store_true",
+        help="Record legacy keyboard/cursor state (no raw relative mouse motion)",
     )
     parser.add_argument("--pc-input-rate", type=float, default=125.0)
     parser.add_argument("--camera-width", type=int)
@@ -54,7 +65,7 @@ def main() -> None:
     parser.add_argument("--getevent", action="store_true")
     parser.add_argument("--synthetic-input", action="store_true")
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--queue-size", type=int, default=256)
+    parser.add_argument("--queue-size", type=int, default=4096)
     parser.add_argument(
         "--video-encoding", choices=("h264", "mjpeg"), default="h264",
         help="H.264 is compact; MJPEG is a large compatibility fallback",
@@ -113,6 +124,15 @@ def main() -> None:
         parser.error("Specify at least one --window, --video, --camera, or --adb-screenshot source")
 
     input_sources = []
+    if args.pc_raw_input:
+        if not args.window:
+            parser.error("--pc-raw-input requires --window")
+        input_sources.append(
+            WindowsRawKeyboardMouseSource(
+                args.window,
+                exact_title=args.exact_window_title,
+            )
+        )
     if args.pc_input:
         if not args.window:
             parser.error("--pc-input requires --window")

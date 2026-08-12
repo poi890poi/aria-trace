@@ -82,6 +82,7 @@ Coordinates used by capture and control are normalized unless explicitly labeled
 ### Recorder
 
 - `GetEventRecorder` parses physical multi-touch slots when permitted by the device.
+- WindowsRawKeyboardMouseSource uses a message-only Raw Input receiver to preserve keyboard make/break transitions and true relative mouse motion without requiring recorder actions during gameplay.
 - `InjectedEventRecorder` records all events sent by a control backend.
 - A PC touch proxy is a fallback for demonstrations when physical input events cannot be read.
 - Device monotonic time is mapped to PC monotonic time while both original timestamps are retained.
@@ -90,7 +91,7 @@ Coordinates used by capture and control are normalized unless explicitly labeled
 - Online features are extracted before video encoding and retained as session evidence with source frame indices and extractor metadata.
 - Features generated later from compressed video are separately labeled as versioned, regenerable caches.
 - `AnnotationStore` records append-only frame markers. The reviewer supplies the MVP authoring UI; a future `WorldReadyDetector` may add the same marker type without changing consumers.
-- Full-take acquisition has no in-game authoring controls. Stable game focus starts capture, a configured duration ends it, focus loss invalidates it, and take boundaries are confirmed or corrected only after gameplay. Landmarks are visual observations, not demonstrator inputs.
+- Full-take acquisition has no in-game authoring controls. Frame and input sources pre-arm before the game receives focus, first game focus starts the take clock, a configured duration ends it, focus loss invalidates it, and take boundaries are confirmed or corrected only after gameplay. Landmarks are visual observations, not demonstrator inputs.
 - `PortalInitializationExtractor` selects the `world_ready` to `route_start` interval and preserves whether exported pixels came from raw lossless evidence or decoded compressed video.
 
 ### Demonstration compilation and alignment

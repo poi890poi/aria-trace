@@ -13,7 +13,7 @@ Start the integrated PC acquisition flow from the repository root:
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/, choose any visible game window, select or omit a game profile, define a fixed capture duration, and queue repeated uninterrupted takes. Return focus to the game and play naturally; recording starts and stops automatically without in-game recorder controls. Combat Master is one profile-data candidate, not a recorder dependency.
+Open http://127.0.0.1:8765/, choose any visible game window, select or omit a game profile, choose Raw Input for keyboard/mouse or XInput for a controller, define a fixed capture duration, and queue repeated uninterrupted takes. Return focus to the game and play naturally; recording starts and stops automatically without in-game recorder controls. Combat Master is one profile-data candidate, not a recorder dependency.
 
 Start with:
 

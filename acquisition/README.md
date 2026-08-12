@@ -47,9 +47,9 @@ For the PC-only MVP, use the local acquisition workbench:
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/. Choose a visible game window, an input source, an optional game/route profile, and a capture duration. XInput is the recommended PC input source because it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Keyboard/cursor polling is explicitly limited because it cannot preserve locked-camera relative mouse motion.
+Open http://127.0.0.1:8765/. Choose a visible game window, an input source, an optional game/route profile, and a capture duration. Use Windows raw keyboard and mouse for keyboard/mouse play: it preserves make/break scan codes, relative camera deltas, button/wheel transitions, device handles, and per-event timing. Use XInput for controller play: it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Legacy keyboard/cursor polling remains available only for compatibility.
 
-Queue a take, return focus to the selected game, and perform the route naturally. The workbench waits for stable game focus, starts the canonical recorder automatically, and stops after the configured duration. There are no recorder hotkeys, stage buttons, or completion gestures during gameplay. Losing game focus early invalidates the take instead of silently contaminating it.
+Queue a take, return focus to the selected game, and perform the route naturally. The workbench pre-arms frame and input sources before you switch windows, starts the take clock on the first selected-game focus, and stops after the configured duration. This prevents the first keyboard or mouse event from falling into a source-startup gap. There are no recorder hotkeys, stage buttons, or completion gestures during gameplay. Losing game focus early invalidates the take instead of silently contaminating it.
 
 The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, confirm the full-take route boundaries or use the reviewer to correct them. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions. Compilation is blocked until route boundaries are confirmed.
 
@@ -70,7 +70,7 @@ python -m acquisition.inspect_session sessions\pc_demo_001
 python -m acquisition.review sessions\pc_demo_001
 ```
 
-The selected game client must remain visible, unobstructed, foreground, and at a fixed size. Title matching rejects ambiguous substrings; use `--exact-window-title` when needed. The first PC input backend records keyboard state, mouse buttons, and absolute client cursor motion at state changes. It does not yet record raw relative mouse input used by locked-cursor FPS aiming, so begin with a keyboard-steered or ordinary-cursor route.
+The selected game client must remain visible, unobstructed, foreground, and at a fixed size. Title matching rejects ambiguous substrings; use --exact-window-title when needed. --pc-raw-input is the faithful keyboard/mouse path and records keyboard transitions plus raw relative mouse motion. --pc-input retains the earlier polled keyboard/absolute-cursor adapter as a compatibility fallback. Raw input can be bursty, so the recorder queue now defaults to 4,096 events and the workbench uses 8,192; input drops remain explicit in the manifest.
 
 Smoke-test with an existing video and synthetic gamepad state:
 

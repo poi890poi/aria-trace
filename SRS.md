@@ -35,6 +35,7 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - **REC-05:** Persist the feature observations actually used online from pre-encoding frames, tied to their exact frame index, extractor configuration, and calibration.
 - **REC-06:** Add and remove portal lifecycle markers without rewriting prior annotation history.
 - **REC-07:** Record an uninterrupted human take without requiring recorder controls, markers, or labels during gameplay; route boundaries, stages, and landmarks are derived or corrected afterward.
+- **REC-08:** For the PC keyboard/mouse POC, preserve raw keyboard transitions and relative mouse motion with per-event timestamps; absolute cursor polling is not sufficient evidence for locked-camera behavior.
 
 ### Demonstration model
 

@@ -66,15 +66,15 @@ The canonical acquisition recorder now has dependency-free Windows adapters behi
 
 A one-second real-desktop H.264 smoke captured 31 frames at 1920x1020 with zero drops, 34.03 ms median frame interval, two input-state observations, and a complete inspectable manifest. Deterministic tests cover ambiguous title rejection, frame metadata, foreground state, keyboard/button evidence, and machine-independent tool discovery.
 
-Limitations: GDI captures visible screen pixels, so the game window must remain unobstructed and at a fixed size. Keyboard/cursor polling still cannot capture raw relative mouse input. WindowsXInputSource is now the faithful PC MVP path: it records raw and normalized controller axes, triggers, buttons, packet changes, foreground state, and PC monotonic timestamps at up to 250 Hz.
+Limitations: GDI captures visible screen pixels, so the game window must remain unobstructed and at a fixed size. WindowsRawKeyboardMouseSource is now the faithful keyboard/mouse path: a message-only Raw Input receiver records keyboard make/break scan codes, extended-key flags, raw relative mouse deltas, button/wheel transitions, device handles, foreground state, and PC monotonic timestamps. WindowsXInputSource remains the faithful controller path. The earlier polled keyboard/absolute-cursor source is retained only as a compatibility fallback.
 
 ### Generic acquisition workbench
 
 The local Acquisition Workbench is the primary PC MVP entry point. It lists visible Windows windows, loads independent game and route profiles, and configures AcquisitionRecorder without importing game-specific code. A custom/unprofiled game remains a first-class choice.
 
-Acquisition is now zero-interruption. Queueing a take starts a background focus watcher; once the selected game has stable focus, recording starts automatically and runs for the configured duration. There are no gameplay hotkeys or stage/completion inputs. Early focus loss marks the take failed. Successful captures receive take_start and take_end evidence boundaries; route_start and route_complete are created only through explicit post-take confirmation. Compilation remains blocked until each take is confirmed.
+Acquisition is now zero-interruption. Queueing a take pre-arms frame and input sources while the workbench is still focused; the take clock starts on the first selected-game focus and runs for the configured duration. This removes the source-startup gap that could otherwise lose the first control. There are no gameplay hotkeys or stage/completion inputs. Early focus loss marks the take failed. Successful captures receive take_start and take_end evidence boundaries; route_start and route_complete are created only through explicit post-take confirmation. Compilation remains blocked until each take is confirmed.
 
-Landmarks are visual reference observations used by later alignment, not buttons or actions expected from the player. They are derived or corrected after recording. XInput is the recommended PC evidence source because it preserves analog locomotion speed, camera motion, triggers, buttons, and timing. Keyboard/cursor capture remains available but is labeled insufficient for locked-camera relative mouse behavior.
+Landmarks are visual reference observations used by later alignment, not buttons or actions expected from the player. They are derived or corrected after recording. Raw Input is the recommended keyboard/mouse evidence source because it preserves key timing and locked-camera relative mouse motion; XInput is recommended for controller play because it preserves analog locomotion speed, camera axes, triggers, buttons, and timing.
 
 Start with python -m acquisition.workbench and open http://127.0.0.1:8765/. Arbitrary-game tests use a fake Popular Game A profile to prove that the workflow contains no Combat Master coupling and no in-game recorder commands.
 ### Data acquisition suite
@@ -87,7 +87,7 @@ Measured on Genshin Seq-046 at 1436x996:
 
 - Three-second H.264 smoke: 91 frames, zero drops, 1.34 MiB video versus 12.54 MiB for the earlier MJPEG smoke (9.4x smaller).
 - Five-second H.264 plus online SIFT at 1 Hz: 152 frames, zero drops, five feature observations / 16,352 keypoints. Video was 2.91 MiB and the feature database 1.82 MiB. The short-sample projection was 3.34 GiB/hour total, including about 1.27 GiB/hour of SIFT evidence.
-- Full test suite: 30/30 passing, including H.264 frame-index decode, exact lossless keyframe recovery, raw-feature sampling, clock mapping, multistream recording, zero-interruption workbench HTTP endpoints, XInput behavior capture, post-take confirmation, arbitrary-game profile orchestration, replay compilation/alignment, and pose-fusion gates.
+- Full test suite: 34/34 passing, including H.264 frame-index decode, exact lossless keyframe recovery, raw-feature sampling, clock mapping, multistream recording, pre-armed zero-interruption workbench endpoints, Raw Input decoding/foreground filtering, XInput behavior capture, post-take confirmation, arbitrary-game profile orchestration, replay compilation/alignment, and pose-fusion gates.
 
 During the first feature smoke, shutdown triggered an OpenCV/FFmpeg decoder assertion because the main thread released a source while its capture thread was inside `read()`. Shutdown now signals the worker, waits for normal exit, and only force-stops a still-blocked source. The repeated smoke completed cleanly.
 

@@ -1,3 +1,4 @@
+import ctypes
 import json
 import tempfile
 import threading
@@ -20,8 +21,11 @@ from acquisition.workbench import (
 )
 from acquisition.windows import (
     WindowsKeyboardMouseSource,
+    WindowsRawKeyboardMouseSource,
     WindowsWindowFrameSource,
     WindowsXInputSource,
+    _RawInput,
+    decode_raw_input,
 )
 
 import numpy as np
@@ -60,6 +64,44 @@ class FakeXInputApi:
             "left_stick": [0.36, -0.15],
             "right_stick": [0.24, 0.12],
         }
+
+
+class FakeRawInputApi:
+    def __init__(self):
+        self.stopped = threading.Event()
+
+    def run(self, emit, ready_event):
+        ready_event.set()
+        emit(
+            {
+                "kind": "pc_raw_mouse",
+                "host_time_ns": 101,
+                "payload": {
+                    "movement_mode": "relative",
+                    "delta_x": 14,
+                    "delta_y": -7,
+                    "button_transitions": ["left_down"],
+                    "wheel_delta": 0,
+                    "horizontal_wheel_delta": 0,
+                },
+            }
+        )
+        emit(
+            {
+                "kind": "pc_raw_keyboard",
+                "host_time_ns": 102,
+                "payload": {
+                    "virtual_key": 87,
+                    "key_name": "W",
+                    "scan_code": 17,
+                    "pressed": True,
+                },
+            }
+        )
+        self.stopped.wait(1)
+
+    def stop(self):
+        self.stopped.set()
 
 
 class DescribedSource:
@@ -125,9 +167,11 @@ class WorkbenchTests(unittest.TestCase):
 
     def test_source_factory_exposes_faithful_gamepad_and_replaceable_frames(self):
         desktop = ArbitraryDesktop()
+        raw_api = FakeRawInputApi()
         factory = SourceFactory(
             desktop_api=desktop,
             xinput_api=FakeXInputApi(),
+            raw_input_api=raw_api,
         )
         frame = factory.frame(
             {
@@ -150,9 +194,18 @@ class WorkbenchTests(unittest.TestCase):
                 "exact_title": True,
             }
         )
+        raw_input = factory.input(
+            {
+                "adapter": "windows_raw_keyboard_mouse",
+                "window_title": "Popular Game A",
+                "exact_title": True,
+            }
+        )
         self.assertIsInstance(frame, WindowsWindowFrameSource)
         self.assertIsInstance(keyboard, WindowsKeyboardMouseSource)
         self.assertIsInstance(gamepad, WindowsXInputSource)
+        self.assertIsInstance(raw_input, WindowsRawKeyboardMouseSource)
+        self.assertIs(raw_input.raw_input_api, raw_api)
         self.assertIsNone(factory.input({"adapter": "none"}))
         self.assertEqual(
             {item["adapter"] for item in factory.descriptor()["frame_adapters"]},
@@ -164,6 +217,64 @@ class WorkbenchTests(unittest.TestCase):
             if item["adapter"] == "windows_xinput"
         )
         self.assertEqual(xinput["status"], "recommended_pc_mvp")
+
+    def test_raw_input_decoder_preserves_mouse_and_keyboard_details(self):
+        mouse = _RawInput()
+        mouse.header.dwType = 0
+        mouse.header.hDevice = 41
+        mouse.data.mouse.usFlags = 0
+        mouse.data.mouse.data.usButtonFlags = 0x0001 | 0x0400
+        mouse.data.mouse.data.usButtonData = ctypes.c_ushort(-120).value
+        mouse.data.mouse.lLastX = 23
+        mouse.data.mouse.lLastY = -11
+        mouse_record = decode_raw_input(mouse, 555)
+        self.assertEqual(mouse_record["kind"], "pc_raw_mouse")
+        self.assertEqual(mouse_record["host_time_ns"], 555)
+        self.assertEqual(mouse_record["payload"]["movement_mode"], "relative")
+        self.assertEqual(mouse_record["payload"]["delta_x"], 23)
+        self.assertEqual(mouse_record["payload"]["delta_y"], -11)
+        self.assertEqual(
+            mouse_record["payload"]["button_transitions"], ["left_down"]
+        )
+        self.assertEqual(mouse_record["payload"]["wheel_delta"], -120)
+
+        keyboard = _RawInput()
+        keyboard.header.dwType = 1
+        keyboard.header.hDevice = 42
+        keyboard.data.keyboard.MakeCode = 17
+        keyboard.data.keyboard.Flags = 0x0002
+        keyboard.data.keyboard.VKey = 87
+        keyboard.data.keyboard.Message = 0x0100
+        key_record = decode_raw_input(keyboard, 556)
+        self.assertEqual(key_record["kind"], "pc_raw_keyboard")
+        self.assertEqual(key_record["payload"]["key_name"], "W")
+        self.assertEqual(key_record["payload"]["scan_code"], 17)
+        self.assertTrue(key_record["payload"]["pressed"])
+        self.assertTrue(key_record["payload"]["extended_e0"])
+
+    def test_raw_input_source_emits_relative_mouse_and_keyboard_transitions(self):
+        events = []
+        source = WindowsRawKeyboardMouseSource(
+            "Popular Game A",
+            exact_title=True,
+            desktop_api=ArbitraryDesktop(),
+            raw_input_api=FakeRawInputApi(),
+        )
+        source.start(events.append)
+        deadline = time.time() + 1
+        while len(events) < 2 and time.time() < deadline:
+            time.sleep(0.005)
+        source.stop()
+        self.assertEqual(
+            [event.kind for event in events],
+            ["pc_raw_mouse", "pc_raw_keyboard"],
+        )
+        self.assertEqual(events[0].payload["delta_x"], 14)
+        self.assertEqual(events[0].payload["delta_y"], -7)
+        self.assertEqual(events[0].payload["button_transitions"], ["left_down"])
+        self.assertEqual(events[1].payload["scan_code"], 17)
+        self.assertTrue(events[1].payload["pressed"])
+        self.assertTrue(events[1].payload["foreground"])
 
     def test_xinput_source_emits_complete_controller_state(self):
         events = []
@@ -223,6 +334,44 @@ class WorkbenchTests(unittest.TestCase):
             },
         ]
         self.assertEqual(automatic_take_bounds(frames, inputs), (2, 3))
+
+    def test_automatic_take_bounds_ignore_idle_raw_mouse_packets(self):
+        frames = [
+            {"host_capture_time_ns": 100},
+            {"host_capture_time_ns": 200},
+            {"host_capture_time_ns": 300},
+        ]
+        inputs = [
+            {
+                "kind": "pc_raw_mouse",
+                "host_time_ns": 110,
+                "payload": {
+                    "foreground": True,
+                    "delta_x": 0,
+                    "delta_y": 0,
+                    "button_transitions": [],
+                    "wheel_delta": 0,
+                    "horizontal_wheel_delta": 0,
+                },
+            },
+            {
+                "kind": "pc_raw_mouse",
+                "host_time_ns": 260,
+                "payload": {
+                    "foreground": True,
+                    "delta_x": -5,
+                    "delta_y": 3,
+                    "button_transitions": [],
+                    "wheel_delta": 0,
+                    "horizontal_wheel_delta": 0,
+                },
+            },
+        ]
+        self.assertEqual(automatic_take_bounds(frames, inputs), (2, 2))
+        self.assertEqual(
+            automatic_take_bounds(frames, [], fallback_host_time_ns=260),
+            (2, 2),
+        )
 
     def test_workbench_arms_arbitrary_game_without_gameplay_hotkeys(self):
         with tempfile.TemporaryDirectory() as temporary:

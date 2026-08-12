@@ -24,6 +24,7 @@ from .sources import AdbGetEventSource, AdbScreenshotFrameSource, OpenCvCameraFr
 from .windows import (
     WindowsDesktopApi,
     WindowsKeyboardMouseSource,
+    WindowsRawKeyboardMouseSource,
     WindowsWindowFrameSource,
     WindowsXInputSource,
     select_window,
@@ -48,7 +49,11 @@ def nearest_frame_index(frames: List[dict], host_time_ns: int) -> int:
     )
 
 
-def automatic_take_bounds(frames: List[dict], inputs: List[dict]):
+def automatic_take_bounds(
+    frames: List[dict],
+    inputs: List[dict],
+    fallback_host_time_ns: Optional[int] = None,
+):
     """Find the first observed human control; retain the complete captured tail."""
     if not frames:
         raise ValueError("A take contains no frames")
@@ -78,11 +83,30 @@ def automatic_take_bounds(frames: List[dict], inputs: List[dict]):
                 or float(state.get("right_trigger", 0.0)) > 0.02
                 or any(abs(float(value)) > 0.08 for value in axes)
             )
-        elif kind not in ("pc_input_error", "pc_xinput_error"):
+        elif kind == "pc_raw_mouse":
+            active = bool(
+                int(payload.get("delta_x", 0))
+                or int(payload.get("delta_y", 0))
+                or payload.get("button_transitions")
+                or int(payload.get("wheel_delta", 0))
+                or int(payload.get("horizontal_wheel_delta", 0))
+            )
+        elif kind == "pc_raw_keyboard":
+            active = True
+        elif kind not in (
+            "pc_input_error",
+            "pc_xinput_error",
+            "pc_raw_input_error",
+        ):
             active = True
         if active:
             active_times.append(int(event["host_time_ns"]))
-    start_index = nearest_frame_index(frames, active_times[0]) if active_times else 0
+    if active_times:
+        start_index = nearest_frame_index(frames, active_times[0])
+    elif fallback_host_time_ns is not None:
+        start_index = nearest_frame_index(frames, fallback_host_time_ns)
+    else:
+        start_index = 0
     return start_index, len(frames) - 1
 
 
@@ -108,8 +132,14 @@ class SourceFactory:
             "fidelity": "buttons, triggers, locomotion, camera axes, and timing",
         },
         {
+            "adapter": "windows_raw_keyboard_mouse",
+            "label": "Windows raw keyboard and mouse",
+            "status": "recommended_pc_mvp",
+            "fidelity": "key transitions, scan codes, buttons, wheel, relative camera motion, and timing",
+        },
+        {
             "adapter": "windows_keyboard_mouse",
-            "label": "Windows keyboard and cursor state",
+            "label": "Windows keyboard and cursor state (legacy)",
             "status": "limited",
             "fidelity": "no raw relative mouse motion",
         },
@@ -127,9 +157,10 @@ class SourceFactory:
         },
     )
 
-    def __init__(self, desktop_api=None, xinput_api=None) -> None:
+    def __init__(self, desktop_api=None, xinput_api=None, raw_input_api=None) -> None:
         self.desktop_api = desktop_api
         self.xinput_api = xinput_api
+        self.raw_input_api = raw_input_api
 
     @staticmethod
     def _adb(config: dict) -> Path:
@@ -176,6 +207,13 @@ class SourceFactory:
                 desktop_api=self.desktop_api,
                 xinput_api=self.xinput_api,
             )
+        if adapter == "windows_raw_keyboard_mouse":
+            return WindowsRawKeyboardMouseSource(
+                config.get("window_title", ""),
+                exact_title=bool(config.get("exact_title", True)),
+                desktop_api=self.desktop_api,
+                raw_input_api=self.raw_input_api,
+            )
         if adapter == "windows_keyboard_mouse":
             return WindowsKeyboardMouseSource(
                 config.get("window_title", ""),
@@ -207,13 +245,18 @@ class AcquisitionWorkbench:
         profiles: Optional[ProfileCatalog] = None,
         desktop_api=None,
         xinput_api=None,
+        raw_input_api=None,
     ) -> None:
         self.session_root = Path(session_root)
         self.artifact_root = Path(artifact_root)
         self.session_root.mkdir(parents=True, exist_ok=True)
         self.profiles = profiles or ProfileCatalog()
         self.desktop_api = desktop_api
-        self.sources = SourceFactory(desktop_api=desktop_api, xinput_api=xinput_api)
+        self.sources = SourceFactory(
+            desktop_api=desktop_api,
+            xinput_api=xinput_api,
+            raw_input_api=raw_input_api,
+        )
         self._lock = threading.RLock()
         self._armed = None
         self._active = None
@@ -262,6 +305,7 @@ class AcquisitionWorkbench:
                 frame_config.update(window_title=window_title, exact_title=True)
                 if input_config.get("adapter") in (
                     "windows_xinput",
+                    "windows_raw_keyboard_mouse",
                     "windows_keyboard_mouse",
                 ):
                     input_config.update(window_title=window_title, exact_title=True)
@@ -395,7 +439,7 @@ class AcquisitionWorkbench:
                 "active_phase": self._active["phase"] if self._active else None,
                 "capture_policy": {
                     "in_game_controls": "none",
-                    "start": "automatic_after_selected_game_has_stable_focus",
+                    "start": "sources_prearmed_then_clock_starts_on_first_game_focus",
                     "end": "fixed_duration_or_focus_loss",
                     "route_bounds": "post_take_confirmation",
                     "stages": "derived_or_annotated_after_recording",
@@ -409,12 +453,15 @@ class AcquisitionWorkbench:
         if frame_config.get("adapter") != "windows_window":
             return True
         try:
+            desktop = self._desktop()
             window = select_window(
-                self._desktop().list_windows(),
+                desktop.list_windows(),
                 frame_config["window_title"],
                 exact=True,
             )
-            return bool(self._desktop().input_snapshot(window[0])["foreground"])
+            if hasattr(desktop, "is_foreground"):
+                return bool(desktop.is_foreground(window[0]))
+            return bool(desktop.input_snapshot(window[0])["foreground"])
         except (RuntimeError, ValueError):
             return False
 
@@ -446,30 +493,15 @@ class AcquisitionWorkbench:
                 "cancel": threading.Event(),
                 "stop": threading.Event(),
                 "focus_interrupted": False,
+                "focus_timeout": False,
+                "focus_acquired_host_time_ns": None,
             }
             self._active = active
             self._last_error = None
 
         def work() -> None:
+            guard = None
             try:
-                deadline = time.monotonic() + config["focus_wait_timeout_s"]
-                stable_since = None
-                while not active["cancel"].is_set():
-                    if self._selected_window_foreground(config["frame_source"]):
-                        if stable_since is None:
-                            stable_since = time.monotonic()
-                        if time.monotonic() - stable_since >= 0.5:
-                            break
-                    else:
-                        stable_since = None
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError(
-                            "Selected game did not receive stable focus before timeout"
-                        )
-                    active["cancel"].wait(0.05)
-                if active["cancel"].is_set():
-                    return
-
                 self._archive_existing(active["path"])
                 frame_source = self.sources.frame(config["frame_source"])
                 input_source = self.sources.input(config["input_source"])
@@ -477,6 +509,7 @@ class AcquisitionWorkbench:
                     active["path"],
                     [frame_source],
                     [input_source] if input_source is not None else [],
+                    queue_size=8192,
                     video_encoding="h264",
                     video_fps=float(config["frame_source"].get("fps", 30.0)),
                     session_context={
@@ -489,32 +522,53 @@ class AcquisitionWorkbench:
                         "input_adapter": config["input_source"].get(
                             "adapter", "none"
                         ),
-                        "capture_policy": "uninterrupted_fixed_duration_v1",
+                        "capture_policy": "prearmed_uninterrupted_take_v2",
                     },
                 )
-                with self._lock:
-                    if self._active is active:
-                        active["phase"] = "recording_uninterrupted_take"
-
-                duration_timer = threading.Timer(
-                    config["capture_duration_s"], active["stop"].set
-                )
-                duration_timer.daemon = True
-                duration_timer.start()
+                sources_started = threading.Event()
 
                 def guard_focus() -> None:
+                    while not sources_started.wait(0.02):
+                        if active["stop"].is_set():
+                            return
+                    focus_deadline = (
+                        time.monotonic() + config["focus_wait_timeout_s"]
+                    )
+                    end_time = None
                     lost_since = None
                     while not active["stop"].is_set():
-                        if self._selected_window_foreground(config["frame_source"]):
-                            lost_since = None
+                        now = time.monotonic()
+                        foreground = self._selected_window_foreground(
+                            config["frame_source"]
+                        )
+                        if end_time is None:
+                            if foreground:
+                                active["focus_acquired_host_time_ns"] = (
+                                    time.perf_counter_ns()
+                                )
+                                end_time = now + config["capture_duration_s"]
+                                with self._lock:
+                                    if self._active is active:
+                                        active["phase"] = (
+                                            "recording_uninterrupted_take"
+                                        )
+                            elif now >= focus_deadline:
+                                active["focus_timeout"] = True
+                                active["stop"].set()
+                                return
                         else:
-                            if lost_since is None:
-                                lost_since = time.monotonic()
-                            elif time.monotonic() - lost_since >= 0.75:
+                            if now >= end_time:
+                                active["stop"].set()
+                                return
+                            if foreground:
+                                lost_since = None
+                            elif lost_since is None:
+                                lost_since = now
+                            elif now - lost_since >= 0.75:
                                 active["focus_interrupted"] = True
                                 active["stop"].set()
                                 return
-                        active["stop"].wait(0.05)
+                        active["stop"].wait(0.02)
 
                 guard = threading.Thread(
                     target=guard_focus,
@@ -522,28 +576,43 @@ class AcquisitionWorkbench:
                     daemon=True,
                 )
                 guard.start()
-                try:
-                    recorder.run(external_stop=active["stop"])
-                finally:
-                    duration_timer.cancel()
-                    active["stop"].set()
-                    guard.join(timeout=1)
+                recorder.run(
+                    external_stop=active["stop"],
+                    started_event=sources_started,
+                )
 
-                failed = active["cancel"].is_set() or active["focus_interrupted"]
-                self._finalize_take(active["path"], config["route_id"], failed)
-                if failed:
+                failed = bool(
+                    active["cancel"].is_set()
+                    or active["focus_interrupted"]
+                    or active["focus_timeout"]
+                    or active["focus_acquired_host_time_ns"] is None
+                )
+                self._finalize_take(
+                    active["path"],
+                    config["route_id"],
+                    failed,
+                    active["focus_acquired_host_time_ns"],
+                )
+                if active["focus_timeout"]:
                     with self._lock:
                         self._last_error = (
-                            "Take stopped because game focus was lost; rerecord it"
+                            "Take never received game focus; rerecord it"
+                        )
+                elif failed:
+                    with self._lock:
+                        self._last_error = (
+                            "Take was canceled or game focus was lost; rerecord it"
                         )
             except Exception as exc:
                 with self._lock:
                     self._last_error = "{}: {}".format(type(exc).__name__, exc)
             finally:
+                active["stop"].set()
+                if guard is not None:
+                    guard.join(timeout=1)
                 with self._lock:
                     if self._active is active:
                         self._active = None
-
         active["thread"] = threading.Thread(
             target=work,
             name="acquisition-uninterrupted-take",
@@ -561,13 +630,22 @@ class AcquisitionWorkbench:
         return self.descriptor()
 
     @staticmethod
-    def _finalize_take(path: Path, route_id: str, failed: bool) -> None:
+    def _finalize_take(
+        path: Path,
+        route_id: str,
+        failed: bool,
+        focus_acquired_host_time_ns: Optional[int] = None,
+    ) -> None:
         reader = SessionReader(path)
         frames = reader.frames_by_stream.get("main", [])
-        start_index, end_index = automatic_take_bounds(frames, reader.inputs)
+        start_index, end_index = automatic_take_bounds(
+            frames,
+            reader.inputs,
+            fallback_host_time_ns=focus_acquired_host_time_ns,
+        )
         store = AnnotationStore(path)
         for kind, index, note in (
-            ("take_start", start_index, "automatic:first_observed_control"),
+            ("take_start", start_index, "automatic:first_observed_control_or_game_focus"),
             ("take_end", end_index, "automatic:capture_end"),
         ):
             frame = frames[index]

@@ -216,8 +216,11 @@ class WindowsDesktopApi:
             if screen_dc:
                 self.user32.ReleaseDC(None, screen_dc)
 
+    def is_foreground(self, hwnd: int) -> bool:
+        return int(self.user32.GetForegroundWindow() or 0) == int(hwnd)
+
     def input_snapshot(self, hwnd: int) -> dict:
-        foreground = int(self.user32.GetForegroundWindow() or 0) == int(hwnd)
+        foreground = self.is_foreground(hwnd)
         pressed = []
         buttons = []
         if foreground:
@@ -628,6 +631,541 @@ class WindowsXInputSource(InputSource):
                 "foreground_tagged": True,
                 "motion_axes": "raw_and_normalized_without_deadzone",
                 "behavior_fidelity": "buttons_triggers_locomotion_and_view_axes",
+            }
+        )
+        return result
+
+# Windows Raw Input structures are kept private; WindowsRawKeyboardMouseSource
+# exposes only game-neutral input packets.
+_WM_INPUT = 0x00FF
+_WM_QUIT = 0x0012
+_RID_INPUT = 0x10000003
+_RIM_TYPEMOUSE = 0
+_RIM_TYPEKEYBOARD = 1
+_RIDEV_REMOVE = 0x00000001
+_RIDEV_INPUTSINK = 0x00000100
+_MOUSE_MOVE_ABSOLUTE = 0x0001
+_RI_KEY_BREAK = 0x0001
+_RI_KEY_E0 = 0x0002
+_RI_KEY_E1 = 0x0004
+
+_RAW_MOUSE_BUTTONS = {
+    0x0001: "left_down",
+    0x0002: "left_up",
+    0x0004: "right_down",
+    0x0008: "right_up",
+    0x0010: "middle_down",
+    0x0020: "middle_up",
+    0x0040: "x1_down",
+    0x0080: "x1_up",
+    0x0100: "x2_down",
+    0x0200: "x2_up",
+}
+
+
+class _RawInputDevice(ctypes.Structure):
+    _fields_ = [
+        ("usUsagePage", wintypes.USHORT),
+        ("usUsage", wintypes.USHORT),
+        ("dwFlags", wintypes.DWORD),
+        ("hwndTarget", wintypes.HWND),
+    ]
+
+
+class _RawInputHeader(ctypes.Structure):
+    _fields_ = [
+        ("dwType", wintypes.DWORD),
+        ("dwSize", wintypes.DWORD),
+        ("hDevice", wintypes.HANDLE),
+        ("wParam", wintypes.WPARAM),
+    ]
+
+
+class _RawMouseButtonData(ctypes.Structure):
+    _fields_ = [
+        ("usButtonFlags", wintypes.USHORT),
+        ("usButtonData", wintypes.USHORT),
+    ]
+
+
+class _RawMouseButtons(ctypes.Union):
+    _fields_ = [
+        ("ulButtons", wintypes.ULONG),
+        ("data", _RawMouseButtonData),
+    ]
+
+
+class _RawMouse(ctypes.Structure):
+    _anonymous_ = ("buttons",)
+    _fields_ = [
+        ("usFlags", wintypes.USHORT),
+        ("buttons", _RawMouseButtons),
+        ("ulRawButtons", wintypes.ULONG),
+        ("lLastX", wintypes.LONG),
+        ("lLastY", wintypes.LONG),
+        ("ulExtraInformation", wintypes.ULONG),
+    ]
+
+
+class _RawKeyboard(ctypes.Structure):
+    _fields_ = [
+        ("MakeCode", wintypes.USHORT),
+        ("Flags", wintypes.USHORT),
+        ("Reserved", wintypes.USHORT),
+        ("VKey", wintypes.USHORT),
+        ("Message", wintypes.UINT),
+        ("ExtraInformation", wintypes.ULONG),
+    ]
+
+
+class _RawHid(ctypes.Structure):
+    _fields_ = [
+        ("dwSizeHid", wintypes.DWORD),
+        ("dwCount", wintypes.DWORD),
+        ("bRawData", wintypes.BYTE * 1),
+    ]
+
+
+class _RawInputData(ctypes.Union):
+    _fields_ = [
+        ("mouse", _RawMouse),
+        ("keyboard", _RawKeyboard),
+        ("hid", _RawHid),
+    ]
+
+
+class _RawInput(ctypes.Structure):
+    _fields_ = [("header", _RawInputHeader), ("data", _RawInputData)]
+
+
+_RAW_WNDPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_ssize_t,
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+)
+
+
+class _RawWindowClass(ctypes.Structure):
+    _fields_ = [
+        ("style", wintypes.UINT),
+        ("lpfnWndProc", _RAW_WNDPROC),
+        ("cbClsExtra", ctypes.c_int),
+        ("cbWndExtra", ctypes.c_int),
+        ("hInstance", wintypes.HINSTANCE),
+        ("hIcon", wintypes.HICON),
+        ("hCursor", wintypes.HANDLE),
+        ("hbrBackground", wintypes.HBRUSH),
+        ("lpszMenuName", wintypes.LPCWSTR),
+        ("lpszClassName", wintypes.LPCWSTR),
+    ]
+
+
+def decode_raw_input(raw: _RawInput, host_time_ns: int) -> Optional[dict]:
+    """Convert one Windows RAWINPUT record into durable neutral evidence."""
+    device_handle = int(raw.header.hDevice or 0)
+    if int(raw.header.dwType) == _RIM_TYPEMOUSE:
+        mouse = raw.data.mouse
+        button_flags = int(mouse.data.usButtonFlags)
+        button_data = int(mouse.data.usButtonData)
+        transitions = [
+            name
+            for flag, name in _RAW_MOUSE_BUTTONS.items()
+            if button_flags & flag
+        ]
+        wheel_delta = (
+            int(ctypes.c_short(button_data).value)
+            if button_flags & 0x0400
+            else 0
+        )
+        horizontal_wheel_delta = (
+            int(ctypes.c_short(button_data).value)
+            if button_flags & 0x0800
+            else 0
+        )
+        return {
+            "kind": "pc_raw_mouse",
+            "host_time_ns": int(host_time_ns),
+            "payload": {
+                "device_handle": device_handle,
+                "movement_mode": (
+                    "absolute"
+                    if int(mouse.usFlags) & _MOUSE_MOVE_ABSOLUTE
+                    else "relative"
+                ),
+                "delta_x": int(mouse.lLastX),
+                "delta_y": int(mouse.lLastY),
+                "button_transitions": transitions,
+                "wheel_delta": wheel_delta,
+                "horizontal_wheel_delta": horizontal_wheel_delta,
+                "raw_button_flags": button_flags,
+                "raw_button_data": button_data,
+                "raw_buttons": int(mouse.ulRawButtons),
+                "mouse_flags": int(mouse.usFlags),
+                "extra_information": int(mouse.ulExtraInformation),
+            },
+        }
+    if int(raw.header.dwType) == _RIM_TYPEKEYBOARD:
+        keyboard = raw.data.keyboard
+        flags = int(keyboard.Flags)
+        virtual_key = int(keyboard.VKey)
+        return {
+            "kind": "pc_raw_keyboard",
+            "host_time_ns": int(host_time_ns),
+            "payload": {
+                "device_handle": device_handle,
+                "virtual_key": virtual_key,
+                "key_name": key_name(virtual_key),
+                "scan_code": int(keyboard.MakeCode),
+                "pressed": not bool(flags & _RI_KEY_BREAK),
+                "extended_e0": bool(flags & _RI_KEY_E0),
+                "extended_e1": bool(flags & _RI_KEY_E1),
+                "raw_flags": flags,
+                "windows_message": int(keyboard.Message),
+                "extra_information": int(keyboard.ExtraInformation),
+            },
+        }
+    return None
+
+class WindowsRawInputApi:
+    """Own a message-only window and decode WM_INPUT on its thread."""
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise RuntimeError("Windows Raw Input is available only on Windows")
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._thread_id = None
+        self._wndproc = None
+        self._configure_signatures()
+
+    def _configure_signatures(self) -> None:
+        self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        self.kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
+        self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        self.user32.RegisterClassW.argtypes = [
+            ctypes.POINTER(_RawWindowClass)
+        ]
+        self.user32.RegisterClassW.restype = wintypes.ATOM
+        self.user32.UnregisterClassW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.HINSTANCE,
+        ]
+        self.user32.UnregisterClassW.restype = wintypes.BOOL
+        self.user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.HWND,
+            wintypes.HANDLE,
+            wintypes.HINSTANCE,
+            wintypes.LPVOID,
+        ]
+        self.user32.CreateWindowExW.restype = wintypes.HWND
+        self.user32.DestroyWindow.argtypes = [wintypes.HWND]
+        self.user32.DestroyWindow.restype = wintypes.BOOL
+        self.user32.DefWindowProcW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        self.user32.DefWindowProcW.restype = ctypes.c_ssize_t
+        self.user32.RegisterRawInputDevices.argtypes = [
+            ctypes.POINTER(_RawInputDevice),
+            wintypes.UINT,
+            wintypes.UINT,
+        ]
+        self.user32.RegisterRawInputDevices.restype = wintypes.BOOL
+        self.user32.GetRawInputData.argtypes = [
+            wintypes.HANDLE,
+            wintypes.UINT,
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.UINT),
+            wintypes.UINT,
+        ]
+        self.user32.GetRawInputData.restype = wintypes.UINT
+        self.user32.GetMessageW.argtypes = [
+            ctypes.POINTER(wintypes.MSG),
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.UINT,
+        ]
+        self.user32.GetMessageW.restype = ctypes.c_int
+        self.user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        self.user32.TranslateMessage.restype = wintypes.BOOL
+        self.user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        self.user32.DispatchMessageW.restype = ctypes.c_ssize_t
+        self.user32.PostThreadMessageW.argtypes = [
+            wintypes.DWORD,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        self.user32.PostThreadMessageW.restype = wintypes.BOOL
+
+    def _read(self, raw_handle: int, host_time_ns: int) -> Optional[dict]:
+        size = wintypes.UINT(0)
+        header_size = ctypes.sizeof(_RawInputHeader)
+        result = self.user32.GetRawInputData(
+            wintypes.HANDLE(raw_handle),
+            _RID_INPUT,
+            None,
+            ctypes.byref(size),
+            header_size,
+        )
+        if result == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        result = self.user32.GetRawInputData(
+            wintypes.HANDLE(raw_handle),
+            _RID_INPUT,
+            buffer,
+            ctypes.byref(size),
+            header_size,
+        )
+        if result == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if result != size.value:
+            raise RuntimeError(
+                "Windows returned {} of {} raw-input bytes".format(
+                    result, size.value
+                )
+            )
+        raw = ctypes.cast(buffer, ctypes.POINTER(_RawInput)).contents
+        return decode_raw_input(raw, host_time_ns)
+
+    def run(
+        self,
+        emit: Callable[[dict], None],
+        ready_event: threading.Event,
+    ) -> None:
+        self._thread_id = int(self.kernel32.GetCurrentThreadId())
+        instance = self.kernel32.GetModuleHandleW(None)
+        class_name = "AriaTraceRawInput_{}_{}".format(os.getpid(), id(self))
+
+        def window_proc(hwnd, message, wparam, lparam):
+            if message == _WM_INPUT:
+                try:
+                    record = self._read(int(lparam), time.perf_counter_ns())
+                    if record is not None:
+                        emit(record)
+                except Exception as exc:
+                    emit(
+                        {
+                            "kind": "pc_raw_input_error",
+                            "host_time_ns": time.perf_counter_ns(),
+                            "payload": {
+                                "error": "{}: {}".format(
+                                    type(exc).__name__, exc
+                                )
+                            },
+                        }
+                    )
+            return self.user32.DefWindowProcW(
+                hwnd, message, wparam, lparam
+            )
+
+        self._wndproc = _RAW_WNDPROC(window_proc)
+        window_class = _RawWindowClass()
+        window_class.lpfnWndProc = self._wndproc
+        window_class.hInstance = instance
+        window_class.lpszClassName = class_name
+        atom = self.user32.RegisterClassW(ctypes.byref(window_class))
+        if not atom:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        hwnd = None
+        registered = False
+        try:
+            hwnd = self.user32.CreateWindowExW(
+                0,
+                class_name,
+                class_name,
+                0,
+                0,
+                0,
+                0,
+                0,
+                wintypes.HWND(-3),
+                None,
+                instance,
+                None,
+            )
+            if not hwnd:
+                raise ctypes.WinError(ctypes.get_last_error())
+            devices = (_RawInputDevice * 2)(
+                _RawInputDevice(0x01, 0x02, _RIDEV_INPUTSINK, hwnd),
+                _RawInputDevice(0x01, 0x06, _RIDEV_INPUTSINK, hwnd),
+            )
+            if not self.user32.RegisterRawInputDevices(
+                devices, len(devices), ctypes.sizeof(_RawInputDevice)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            registered = True
+            ready_event.set()
+
+            message = wintypes.MSG()
+            while True:
+                result = self.user32.GetMessageW(
+                    ctypes.byref(message), None, 0, 0
+                )
+                if result == 0:
+                    break
+                if result == -1:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                self.user32.TranslateMessage(ctypes.byref(message))
+                self.user32.DispatchMessageW(ctypes.byref(message))
+        finally:
+            ready_event.set()
+            if registered:
+                removals = (_RawInputDevice * 2)(
+                    _RawInputDevice(0x01, 0x02, _RIDEV_REMOVE, None),
+                    _RawInputDevice(0x01, 0x06, _RIDEV_REMOVE, None),
+                )
+                self.user32.RegisterRawInputDevices(
+                    removals,
+                    len(removals),
+                    ctypes.sizeof(_RawInputDevice),
+                )
+            if hwnd:
+                self.user32.DestroyWindow(hwnd)
+            self.user32.UnregisterClassW(class_name, instance)
+            self._thread_id = None
+            self._wndproc = None
+
+    def stop(self) -> None:
+        thread_id = self._thread_id
+        if thread_id is not None:
+            self.user32.PostThreadMessageW(
+                thread_id, _WM_QUIT, 0, 0
+            )
+
+
+class WindowsRawKeyboardMouseSource(InputSource):
+    """Capture keyboard transitions and true relative mouse input."""
+
+    def __init__(
+        self,
+        window_title: str,
+        source_id: str = "pc-raw-input",
+        exact_title: bool = False,
+        desktop_api=None,
+        raw_input_api=None,
+    ) -> None:
+        self.window_title = window_title
+        self.source_id = source_id
+        self.exact_title = bool(exact_title)
+        self.desktop_api = desktop_api
+        self.raw_input_api = raw_input_api
+        self.hwnd = None
+        self.matched_title = None
+        self._thread = None
+        self._ready_event = threading.Event()
+        self._errors = []
+
+    def _is_foreground(self) -> bool:
+        if hasattr(self.desktop_api, "is_foreground"):
+            return bool(self.desktop_api.is_foreground(self.hwnd))
+        return bool(self.desktop_api.input_snapshot(self.hwnd)["foreground"])
+
+    def start(self, emit: Callable[[InputPacket], None]) -> None:
+        self.desktop_api = self.desktop_api or WindowsDesktopApi()
+        self.raw_input_api = self.raw_input_api or WindowsRawInputApi()
+        self.hwnd, self.matched_title = select_window(
+            self.desktop_api.list_windows(),
+            self.window_title,
+            self.exact_title,
+        )
+        self._ready_event.clear()
+        self._errors = []
+
+        def handle(record: dict) -> None:
+            if record["kind"] == "pc_raw_input_error":
+                emit(
+                    InputPacket(
+                        self.source_id,
+                        record["kind"],
+                        record["host_time_ns"],
+                        record["payload"],
+                    )
+                )
+                return
+            if not self._is_foreground():
+                return
+            payload = dict(record["payload"])
+            payload.update(
+                {
+                    "window_title": self.matched_title,
+                    "foreground": True,
+                }
+            )
+            emit(
+                InputPacket(
+                    self.source_id,
+                    record["kind"],
+                    record["host_time_ns"],
+                    payload,
+                )
+            )
+
+        def run() -> None:
+            try:
+                self.raw_input_api.run(handle, self._ready_event)
+            except Exception as exc:
+                self._errors.append(exc)
+                emit(
+                    InputPacket(
+                        self.source_id,
+                        "pc_raw_input_error",
+                        time.perf_counter_ns(),
+                        {"error": "{}: {}".format(type(exc).__name__, exc)},
+                    )
+                )
+                self._ready_event.set()
+
+        self._thread = threading.Thread(
+            target=run,
+            name="pc-raw-input-message-loop",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready_event.wait(2.0):
+            self.stop()
+            raise RuntimeError("Windows Raw Input did not initialize")
+        if self._errors:
+            error = self._errors[0]
+            self.stop()
+            raise RuntimeError(
+                "Windows Raw Input initialization failed: {}".format(error)
+            )
+
+    def stop(self) -> None:
+        if self.raw_input_api is not None:
+            self.raw_input_api.stop()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+
+    def describe(self) -> Dict[str, object]:
+        result = super().describe()
+        result.update(
+            {
+                "window_title_query": self.window_title,
+                "matched_window_title": self.matched_title,
+                "exact_title": self.exact_title,
+                "foreground_only": True,
+                "keyboard": "raw_make_break_scan_code_and_virtual_key",
+                "mouse_motion": "raw_relative_delta",
+                "mouse_buttons": "raw_button_transitions_and_wheel",
+                "timing": "pc_monotonic_per_raw_event",
+                "behavior_fidelity": "keyboard_and_locked_camera_mouse",
             }
         )
         return result

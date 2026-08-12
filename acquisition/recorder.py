@@ -16,7 +16,7 @@ class AcquisitionRecorder:
         output: Path,
         frame_sources: Iterable[object],
         input_sources: Iterable[object] = (),
-        queue_size: int = 256,
+        queue_size: int = 4096,
         video_encoding: str = "h264",
         video_fps: float = 30.0,
         video_crf: int = 20,
@@ -41,6 +41,7 @@ class AcquisitionRecorder:
         self,
         duration_s: Optional[float] = None,
         external_stop: Optional[threading.Event] = None,
+        started_event: Optional[threading.Event] = None,
     ) -> dict:
         if not self.frame_sources:
             raise ValueError("At least one frame source is required")
@@ -107,6 +108,8 @@ class AcquisitionRecorder:
                 workers.append(worker)
                 worker.start()
 
+            if started_event is not None:
+                started_event.set()
             start_ns = time.perf_counter_ns()
             while True:
                 if external_stop is not None and external_stop.is_set():
@@ -135,6 +138,8 @@ class AcquisitionRecorder:
             error_text = "{}: {}".format(type(exc).__name__, exc)
             raise
         finally:
+            if started_event is not None:
+                started_event.set()
             stop_event.set()
             for source in self.input_sources:
                 try:
