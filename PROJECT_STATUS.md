@@ -17,14 +17,14 @@ Keep fusion simple: a physics-based local predictor, explicit uncertainty, and i
 
 ## Environment
 
-- Codex workspace shell: `E:\workspace\camnav`
-- Project root: `E:\workspace\camnav\aria-trace`
+- Workspace: the current checkout (`Resolve-Path .`)
+- Project root: repository-relative commands assume the current directory
 - OS/shell: Windows / PowerShell
 - Python: 3.7.9
 - Local Python dependencies: `.tools`; set `$env:PYTHONPATH=(Resolve-Path .tools).Path`
 - GPU: NVIDIA GeForce GTX 1650, 4 GB, compute capability 7.5
-- CUDA COLMAP 4.1.1: `.tools\colmap-cuda\COLMAP.bat`
-- CPU COLMAP 4.1.1: `.tools\colmap\COLMAP.bat`
+- CUDA COLMAP 4.1.1: `.tools\colmap-cuda\bin\colmap.exe`
+- CPU COLMAP 4.1.1: `.tools\colmap\bin\colmap.exe`
 - COLMAP source used for diagnostics: `third_party\colmap-src`, tag 4.1.1
 
 Install Python dependencies in a fresh environment with:
@@ -60,6 +60,23 @@ The supplied Genshin orientation columns were rejected as ground truth: their qu
 
 ## Experiments completed
 
+### Canonical acquisition recorder: Windows adapters
+
+The canonical acquisition recorder now has dependency-free Windows adapters behind its existing source interfaces; the same recorder and session schema will accept the later Android/UVC sources. `WindowsWindowFrameSource` selects one visible window by an exact title or unambiguous substring and captures its client area through GDI. `WindowsKeyboardMouseSource` records foreground keyboard state, mouse buttons, and absolute client cursor changes on the common PC monotonic timeline. The standard recorder exposes these as `--window TITLE --pc-input`; sessions use the same video, JSONL, inspection, review, and annotation workflow as the mobile-oriented sources.
+
+A one-second real-desktop H.264 smoke captured 31 frames at 1920x1020 with zero drops, 34.03 ms median frame interval, two input-state observations, and a complete inspectable manifest. Deterministic tests cover ambiguous title rejection, frame metadata, foreground state, keyboard/button evidence, and machine-independent tool discovery.
+
+Limitations: GDI captures visible screen pixels, so the game window must remain unobstructed and at a fixed size. Keyboard/cursor polling still cannot capture raw relative mouse input. WindowsXInputSource is now the faithful PC MVP path: it records raw and normalized controller axes, triggers, buttons, packet changes, foreground state, and PC monotonic timestamps at up to 250 Hz.
+
+### Generic acquisition workbench
+
+The local Acquisition Workbench is the primary PC MVP entry point. It lists visible Windows windows, loads independent game and route profiles, and configures AcquisitionRecorder without importing game-specific code. A custom/unprofiled game remains a first-class choice.
+
+Acquisition is now zero-interruption. Queueing a take starts a background focus watcher; once the selected game has stable focus, recording starts automatically and runs for the configured duration. There are no gameplay hotkeys or stage/completion inputs. Early focus loss marks the take failed. Successful captures receive take_start and take_end evidence boundaries; route_start and route_complete are created only through explicit post-take confirmation. Compilation remains blocked until each take is confirmed.
+
+Landmarks are visual reference observations used by later alignment, not buttons or actions expected from the player. They are derived or corrected after recording. XInput is the recommended PC evidence source because it preserves analog locomotion speed, camera motion, triggers, buttons, and timing. Keyboard/cursor capture remains available but is labeled insufficient for locked-camera relative mouse behavior.
+
+Start with python -m acquisition.workbench and open http://127.0.0.1:8765/. Arbitrary-game tests use a fake Popular Game A profile to prove that the workflow contains no Combat Master coupling and no in-game recorder commands.
 ### Data acquisition suite
 
 `acquisition/` now records concurrent frame streams and raw Android or synthetic input events on a common PC monotonic timeline. It writes exact timing to JSONL sidecars, defaults to replaceable H.264/Matroska storage through FFmpeg, retains MJPEG as an explicit fallback, reports storage rates, and serves a local frame/input reviewer. `AdbGetEventSource` maps Android kernel timestamps using lowest-RTT `/proc/uptime` samples while retaining the original timestamp.
@@ -70,7 +87,7 @@ Measured on Genshin Seq-046 at 1436x996:
 
 - Three-second H.264 smoke: 91 frames, zero drops, 1.34 MiB video versus 12.54 MiB for the earlier MJPEG smoke (9.4x smaller).
 - Five-second H.264 plus online SIFT at 1 Hz: 152 frames, zero drops, five feature observations / 16,352 keypoints. Video was 2.91 MiB and the feature database 1.82 MiB. The short-sample projection was 3.34 GiB/hour total, including about 1.27 GiB/hour of SIFT evidence.
-- Test suite: 14/14 passing, including H.264 frame-index decode, exact lossless keyframe recovery, raw-feature sampling, clock mapping, multistream recording, and reviewer HTTP endpoints.
+- Full test suite: 30/30 passing, including H.264 frame-index decode, exact lossless keyframe recovery, raw-feature sampling, clock mapping, multistream recording, zero-interruption workbench HTTP endpoints, XInput behavior capture, post-take confirmation, arbitrary-game profile orchestration, replay compilation/alignment, and pose-fusion gates.
 
 During the first feature smoke, shutdown triggered an OpenCV/FFmpeg decoder assertion because the main thread released a source while its capture thread was inside `read()`. Shutdown now signals the worker, waits for normal exit, and only force-stops a still-blocked source. The repeated smoke completed cleanly.
 
@@ -181,7 +198,7 @@ python poc\prepare_relocalization_split.py `
   --map-stride 2
 
 New-Item -ItemType Directory artifacts\relocalization_seq046\map_sparse | Out-Null
-.\.tools\colmap-cuda\COLMAP.bat mapper `
+.\.tools\colmap-cuda\bin\colmap.exe mapper `
   --database_path artifacts\colmap_seq046\database_4k.db `
   --image_path data\gid\Seq-046\Frames-Sparse `
   --output_path artifacts\relocalization_seq046\map_sparse `
@@ -199,7 +216,7 @@ python poc\prepare_relocalization_database.py `
   --query-list artifacts\relocalization_seq046\query_images.txt
 
 New-Item -ItemType Directory artifacts\relocalization_seq046\registered_map_only_edges | Out-Null
-.\.tools\colmap-cuda\COLMAP.bat image_registrator `
+.\.tools\colmap-cuda\bin\colmap.exe image_registrator `
   --database_path artifacts\relocalization_seq046\map_query_only.db `
   --input_path artifacts\relocalization_seq046\map_sparse\0 `
   --output_path artifacts\relocalization_seq046\registered_map_only_edges `
@@ -208,7 +225,7 @@ New-Item -ItemType Directory artifacts\relocalization_seq046\registered_map_only
   --Mapper.num_threads 6
 
 New-Item -ItemType Directory artifacts\relocalization_seq046\registered_map_only_edges_text | Out-Null
-.\.tools\colmap-cuda\COLMAP.bat model_converter `
+.\.tools\colmap-cuda\bin\colmap.exe model_converter `
   --input_path artifacts\relocalization_seq046\registered_map_only_edges `
   --output_path artifacts\relocalization_seq046\registered_map_only_edges_text `
   --output_type TXT
@@ -258,7 +275,7 @@ The replay-time fusion and rejection gate is now implemented in `poc/pose_fusion
 
 This is a gate POC, not validated gameplay replay. Motion and coarse-prior observations are synthetic. Following the constitution, do not make fusion more complex until ordinary ground locomotion is characterized: camera-to-character coupling, joystick-to-motion response, camera drag response, acceleration/stopping, collision behavior, and human orient-run-correct-confirm behavior.
 
-The next integrated milestone is a two-session adaptive replay experiment:
+The next integrated milestone is a PC-only adaptive replay experiment using several demonstrations of one short, fixed-start route:
 
 1. record and annotate one human demonstration;
 2. compile observable route stages, reference views, action priors, and completion evidence;

@@ -6,6 +6,15 @@ The name joins Ariadne's guiding thread, an aria interpreted as a live performan
 
 This is not timed macro playback. Reliable route completion is the objective; localization is one supporting signal.
 
+The immediate POC uses a selectable game profile and replaceable PC capture/input adapters to exercise the same recorder, session format, replay compiler, and closed-loop interfaces intended for later Android/UVC operation.
+
+Start the integrated PC acquisition flow from the repository root:
+
+    $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
+    python -m acquisition.workbench
+
+Open http://127.0.0.1:8765/, choose any visible game window, select or omit a game profile, define a fixed capture duration, and queue repeated uninterrupted takes. Return focus to the game and play naturally; recording starts and stops automatically without in-game recorder controls. Combat Master is one profile-data candidate, not a recorder dependency.
+
 Start with:
 
 - [PROJECT_DEFINITION.md](PROJECT_DEFINITION.md) — concise scope and meaning of gameplay replay

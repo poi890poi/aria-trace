@@ -14,6 +14,7 @@ from .sources import (
     SyntheticInputSource,
     VideoFileFrameSource,
 )
+from .windows import WindowsKeyboardMouseSource, WindowsWindowFrameSource
 
 
 def parse_assignment(value: str, default_id: str):
@@ -23,11 +24,10 @@ def parse_assignment(value: str, default_id: str):
     return default_id, value
 
 
-def default_adb() -> Path:
+def default_adb():
+    """Resolve ADB from PATH; callers may still supply --adb explicitly."""
     located = shutil.which("adb")
-    if located:
-        return Path(located)
-    return Path(r"E:\Android\Sdk\platform-tools\adb.exe")
+    return Path(located) if located else None
 
 
 def main() -> None:
@@ -36,6 +36,14 @@ def main() -> None:
     parser.add_argument("--video", action="append", default=[], metavar="[ID=]PATH")
     parser.add_argument("--fast-video", action="store_true", help="Do not pace video-file sources")
     parser.add_argument("--camera", action="append", default=[], metavar="[ID=]INDEX")
+    parser.add_argument("--window", help="Visible Windows game-window title or unique substring")
+    parser.add_argument("--window-fps", type=float, default=30.0)
+    parser.add_argument("--exact-window-title", action="store_true")
+    parser.add_argument(
+        "--pc-input", action="store_true",
+        help="Record keyboard/mouse state while the selected window is foreground",
+    )
+    parser.add_argument("--pc-input-rate", type=float, default=125.0)
     parser.add_argument("--camera-width", type=int)
     parser.add_argument("--camera-height", type=int)
     parser.add_argument("--camera-fps", type=float)
@@ -72,12 +80,23 @@ def main() -> None:
     parser.add_argument("--portal-id", help="Known teleport portal for this session")
     parser.add_argument("--route-id", help="Planned route identifier for this session")
     args = parser.parse_args()
+    if (args.adb_screenshot or args.getevent) and args.adb is None:
+        parser.error("ADB is required; install it on PATH or pass --adb PATH")
 
     frame_sources = []
     for index, specification in enumerate(args.video):
         stream_id, path = parse_assignment(specification, "video{}".format(index))
         frame_sources.append(
             VideoFileFrameSource(Path(path), stream_id, realtime=not args.fast_video)
+        )
+    if args.window:
+        frame_sources.append(
+            WindowsWindowFrameSource(
+                args.window,
+                stream_id="main",
+                fps=args.window_fps,
+                exact_title=args.exact_window_title,
+            )
         )
     for index, specification in enumerate(args.camera):
         stream_id, device = parse_assignment(specification, "uvc{}".format(index))
@@ -91,9 +110,19 @@ def main() -> None:
             AdbScreenshotFrameSource(args.adb, args.serial, "adb", args.adb_fps)
         )
     if not frame_sources:
-        parser.error("Specify at least one --video, --camera, or --adb-screenshot source")
+        parser.error("Specify at least one --window, --video, --camera, or --adb-screenshot source")
 
     input_sources = []
+    if args.pc_input:
+        if not args.window:
+            parser.error("--pc-input requires --window")
+        input_sources.append(
+            WindowsKeyboardMouseSource(
+                args.window,
+                poll_hz=args.pc_input_rate,
+                exact_title=args.exact_window_title,
+            )
+        )
     if args.getevent:
         input_sources.append(AdbGetEventSource(args.adb, args.serial))
     if args.synthetic_input:

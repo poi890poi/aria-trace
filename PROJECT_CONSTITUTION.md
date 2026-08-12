@@ -12,6 +12,7 @@ Build a minimally intrusive system that follows a recorded human gameplay route 
 - Model character position, character heading, camera heading, camera pitch, speed, and locomotion mode separately. Camera pose is not character pose.
 - Treat game physics as measured behavior. Calibrate movement, turning, stopping, camera response, automatic camera motion, collision, and latency for each game profile.
 - Use the information humans use: landmarks and route stages for orientation, short-term motion for continuity, and direct visual feedback for steering through paths, obstacles, and openings.
+- A landmark is an observed visual reference, never an input the demonstrator must provide. Recording must not require markers, hotkeys, or other authoring actions during gameplay.
 - Do not require globally precise metric pose for every control decision. Metric pose supports route progress; local visual control handles immediate traversal.
 - Represent a route with coordinates where useful, but also with visible landmarks, corridors, decision points, expected transitions, and recovery observations.
 

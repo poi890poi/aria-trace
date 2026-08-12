@@ -1,0 +1,340 @@
+import json
+import tempfile
+import threading
+import time
+import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+from acquisition.models import FramePacket, InputPacket
+from acquisition.profiles import ProfileCatalog
+from acquisition.session import SessionWriter
+from acquisition.workbench import (
+    AcquisitionWorkbench,
+    SourceFactory,
+    automatic_take_bounds,
+    make_handler,
+    nearest_frame_index,
+    safe_id,
+)
+from acquisition.windows import (
+    WindowsKeyboardMouseSource,
+    WindowsWindowFrameSource,
+    WindowsXInputSource,
+)
+
+import numpy as np
+
+
+class ArbitraryDesktop:
+    def list_windows(self):
+        return [(17, "Popular Game A"), (18, "Another Game")]
+
+    def input_snapshot(self, hwnd):
+        return {
+            "foreground": hwnd == 17,
+            "keys": [],
+            "buttons": [],
+            "cursor_client": (0, 0),
+            "cursor_normalized": (0.0, 0.0),
+        }
+
+
+class FakeXInputApi:
+    def __init__(self):
+        self.packet = 0
+
+    def read_state(self, user_index):
+        self.packet += 1
+        return {
+            "packet_number": self.packet,
+            "buttons_mask": 0x1000,
+            "buttons": ["a"],
+            "left_trigger_raw": 0,
+            "right_trigger_raw": 128,
+            "left_trigger": 0.0,
+            "right_trigger": 128.0 / 255.0,
+            "left_stick_raw": [12000, -5000],
+            "right_stick_raw": [8000, 4000],
+            "left_stick": [0.36, -0.15],
+            "right_stick": [0.24, 0.12],
+        }
+
+
+class DescribedSource:
+    stream_id = "main"
+
+    def describe(self):
+        return {"type": "test", "stream_id": "main"}
+
+
+def write_catalog(root):
+    games = root / "games"
+    routes = root / "routes"
+    games.mkdir(parents=True)
+    routes.mkdir()
+    (games / "game_a.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "profile_id": "game-a",
+                "display_name": "Popular Game A",
+                "platform": "windows_pc",
+                "default_frame_source": {
+                    "adapter": "windows_window",
+                    "window_title": "Popular Game A",
+                    "fps": 30,
+                },
+                "default_input_source": {
+                    "adapter": "windows_xinput",
+                    "poll_hz": 250,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (routes / "route_a.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "route_profile_id": "route-a-profile",
+                "display_name": "Short route A",
+                "game_profile_id": "game-a",
+                "route_id": "short-route-a",
+                "target_runs": 3,
+                "capture_duration_s": 20,
+                "setup_steps": ["Stand at the same start point."],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class WorkbenchTests(unittest.TestCase):
+    def test_profile_catalog_keeps_game_and_route_data_separate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "profiles"
+            write_catalog(root)
+            catalog = ProfileCatalog(root)
+            self.assertEqual(catalog.game("game-a")["display_name"], "Popular Game A")
+            self.assertEqual(
+                catalog.route("route-a-profile")["game_profile_id"], "game-a"
+            )
+            self.assertNotIn("route_id", catalog.game("game-a"))
+
+    def test_source_factory_exposes_faithful_gamepad_and_replaceable_frames(self):
+        desktop = ArbitraryDesktop()
+        factory = SourceFactory(
+            desktop_api=desktop,
+            xinput_api=FakeXInputApi(),
+        )
+        frame = factory.frame(
+            {
+                "adapter": "windows_window",
+                "window_title": "Popular Game A",
+                "exact_title": True,
+            }
+        )
+        keyboard = factory.input(
+            {
+                "adapter": "windows_keyboard_mouse",
+                "window_title": "Popular Game A",
+                "exact_title": True,
+            }
+        )
+        gamepad = factory.input(
+            {
+                "adapter": "windows_xinput",
+                "window_title": "Popular Game A",
+                "exact_title": True,
+            }
+        )
+        self.assertIsInstance(frame, WindowsWindowFrameSource)
+        self.assertIsInstance(keyboard, WindowsKeyboardMouseSource)
+        self.assertIsInstance(gamepad, WindowsXInputSource)
+        self.assertIsNone(factory.input({"adapter": "none"}))
+        self.assertEqual(
+            {item["adapter"] for item in factory.descriptor()["frame_adapters"]},
+            {"windows_window", "uvc", "adb_screenshot"},
+        )
+        xinput = next(
+            item
+            for item in factory.descriptor()["input_adapters"]
+            if item["adapter"] == "windows_xinput"
+        )
+        self.assertEqual(xinput["status"], "recommended_pc_mvp")
+
+    def test_xinput_source_emits_complete_controller_state(self):
+        events = []
+        source = WindowsXInputSource(
+            "Popular Game A",
+            poll_hz=1000,
+            exact_title=True,
+            desktop_api=ArbitraryDesktop(),
+            xinput_api=FakeXInputApi(),
+        )
+        source.start(events.append)
+        deadline = time.time() + 1
+        while len(events) < 2 and time.time() < deadline:
+            time.sleep(0.005)
+        source.stop()
+        self.assertGreaterEqual(len(events), 2)
+        self.assertEqual(events[0].kind, "pc_xinput_state")
+        self.assertTrue(events[0].payload["foreground"])
+        self.assertEqual(events[0].payload["state"]["buttons"], ["a"])
+        self.assertEqual(events[0].payload["state"]["left_stick_raw"], [12000, -5000])
+
+    def test_automatic_take_bounds_use_first_control_without_in_game_marker(self):
+        frames = [
+            {"host_capture_time_ns": 100},
+            {"host_capture_time_ns": 200},
+            {"host_capture_time_ns": 300},
+            {"host_capture_time_ns": 400},
+        ]
+        inputs = [
+            {
+                "kind": "pc_xinput_state",
+                "host_time_ns": 120,
+                "payload": {
+                    "foreground": True,
+                    "state": {
+                        "buttons": [],
+                        "left_trigger": 0,
+                        "right_trigger": 0,
+                        "left_stick": [0, 0],
+                        "right_stick": [0, 0],
+                    },
+                },
+            },
+            {
+                "kind": "pc_xinput_state",
+                "host_time_ns": 270,
+                "payload": {
+                    "foreground": True,
+                    "state": {
+                        "buttons": [],
+                        "left_trigger": 0,
+                        "right_trigger": 0,
+                        "left_stick": [0.6, 0],
+                        "right_stick": [0, 0.2],
+                    },
+                },
+            },
+        ]
+        self.assertEqual(automatic_take_bounds(frames, inputs), (2, 3))
+
+    def test_workbench_arms_arbitrary_game_without_gameplay_hotkeys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(profile_root),
+                desktop_api=ArbitraryDesktop(),
+                xinput_api=FakeXInputApi(),
+            )
+            try:
+                descriptor = state.arm(
+                    {
+                        "game_profile_id": "game-a",
+                        "route_profile_id": "route-a-profile",
+                        "experiment_id": "arbitrary-game-poc",
+                        "window_title": "Popular Game A",
+                    }
+                )
+                self.assertEqual(
+                    descriptor["armed"]["frame_source"]["window_title"],
+                    "Popular Game A",
+                )
+                self.assertEqual(
+                    descriptor["armed"]["input_source"]["adapter"],
+                    "windows_xinput",
+                )
+                self.assertEqual(descriptor["armed"]["capture_duration_s"], 20)
+                self.assertEqual(
+                    descriptor["capture_policy"]["in_game_controls"], "none"
+                )
+
+                server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = "http://127.0.0.1:{}".format(server.server_address[1])
+                    html = urllib.request.urlopen(base + "/").read().decode("utf-8")
+                    api = json.loads(urllib.request.urlopen(base + "/api/state").read())
+                    self.assertIn("Capture an uninterrupted human take", html)
+                    self.assertIn("No in-game recorder commands", html)
+                    self.assertNotIn("F9", html)
+                    self.assertNotIn("Combat Master", html)
+                    self.assertEqual(api["armed"]["game_profile_id"], "game-a")
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+            finally:
+                state.close()
+
+    def test_post_take_confirmation_is_required_before_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(profile_root),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.arm(
+                    {
+                        "game_profile_id": "game-a",
+                        "route_profile_id": "route-a-profile",
+                        "experiment_id": "confirm-test",
+                        "window_title": "Popular Game A",
+                    }
+                )
+                path = state._run_path(1)
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                )
+                for index in range(3):
+                    timestamp = writer.origin_ns + index * 33_000_000
+                    writer.write_frame(
+                        FramePacket(
+                            "main",
+                            np.full((32, 32, 3), index, dtype=np.uint8),
+                            timestamp,
+                            timestamp,
+                        )
+                    )
+                writer.close()
+                state._finalize_take(path, "short-route-a", failed=False)
+                self.assertEqual(
+                    state._slot(1)["status"], "captured_needs_confirmation"
+                )
+                state.confirm_take(1)
+                self.assertEqual(state._slot(1)["status"], "ready")
+            finally:
+                state.close()
+
+    def test_helpers_reject_empty_ids_and_map_nearest_frame(self):
+        self.assertEqual(safe_id(" Route trial 01 "), "Route-trial-01")
+        with self.assertRaises(ValueError):
+            safe_id(" / ")
+        frames = [
+            {"host_capture_time_ns": 100},
+            {"host_capture_time_ns": 300},
+            {"host_capture_time_ns": 900},
+        ]
+        self.assertEqual(nearest_frame_index(frames, 260), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

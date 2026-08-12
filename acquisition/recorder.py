@@ -37,7 +37,11 @@ class AcquisitionRecorder:
         self.frame_processors = list(frame_processors)
         self.session_context = dict(session_context or {})
 
-    def run(self, duration_s: Optional[float] = None) -> dict:
+    def run(
+        self,
+        duration_s: Optional[float] = None,
+        external_stop: Optional[threading.Event] = None,
+    ) -> dict:
         if not self.frame_sources:
             raise ValueError("At least one frame source is required")
         event_queue = queue.Queue(maxsize=self.queue_size)
@@ -105,6 +109,8 @@ class AcquisitionRecorder:
 
             start_ns = time.perf_counter_ns()
             while True:
+                if external_stop is not None and external_stop.is_set():
+                    break
                 if duration_s is not None and (time.perf_counter_ns() - start_ns) / 1.0e9 >= duration_s:
                     break
                 if len(finished_streams) == len(self.frame_sources):

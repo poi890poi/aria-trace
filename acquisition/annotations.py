@@ -9,6 +9,8 @@ from typing import Dict, List, Optional
 
 
 MARKER_KINDS = (
+    "take_start",
+    "take_end",
     "teleport_start",
     "world_ready",
     "route_start",

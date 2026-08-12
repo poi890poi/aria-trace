@@ -90,6 +90,7 @@ Coordinates used by capture and control are normalized unless explicitly labeled
 - Online features are extracted before video encoding and retained as session evidence with source frame indices and extractor metadata.
 - Features generated later from compressed video are separately labeled as versioned, regenerable caches.
 - `AnnotationStore` records append-only frame markers. The reviewer supplies the MVP authoring UI; a future `WorldReadyDetector` may add the same marker type without changing consumers.
+- Full-take acquisition has no in-game authoring controls. Stable game focus starts capture, a configured duration ends it, focus loss invalidates it, and take boundaries are confirmed or corrected only after gameplay. Landmarks are visual observations, not demonstrator inputs.
 - `PortalInitializationExtractor` selects the `world_ready` to `route_start` interval and preserves whether exported pixels came from raw lossless evidence or decoded compressed video.
 
 ### Demonstration compilation and alignment

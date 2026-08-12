@@ -18,9 +18,7 @@ def find_ffmpeg(explicit: Optional[Path] = None) -> Path:
     located = shutil.which("ffmpeg")
     if located:
         return Path(located)
-    common = Path(r"C:\ffmpeg-master-latest-win64-gpl-shared\bin\ffmpeg.exe")
-    if common.is_file():
-        return common
+
     raise RuntimeError(
         "FFmpeg is required for H.264 recording. Install it, pass --ffmpeg, "
         "or explicitly select --video-encoding mjpeg."

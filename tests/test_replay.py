@@ -10,6 +10,7 @@ from acquisition.annotations import AnnotationStore
 from acquisition.models import FramePacket, InputPacket
 from acquisition.session import SessionReader, SessionWriter
 from replay.alignment import align_session
+from replay.incremental import IncrementalReplayAligner
 from replay.package import ReplayPackage, compile_replay_package
 
 
@@ -169,6 +170,53 @@ class ReplayTests(unittest.TestCase):
             self.assertFalse(records[distractor_index]["accepted"])
             self.assertGreater(summary["accepted_fraction"], 0.8)
 
+    def test_incremental_alignment_advances_without_lookahead(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            images = route_images(8)
+            reader = write_session(root / "demo", images)
+            annotate_route(root / "demo", reader, [(4, "turn")])
+            compile_replay_package(
+                root / "demo", root / "package", "main", "route-a", 10.0
+            )
+            package = ReplayPackage(root / "package")
+            aligner = IncrementalReplayAligner(
+                package, max_advance=2, distance_threshold=0.35
+            )
+
+            observed = [0, 1, 3, 5, 7]
+            results = [
+                aligner.observe_descriptor(package.descriptors[reference_index])
+                for reference_index in observed
+            ]
+
+            self.assertEqual(
+                [result["reference_index"] for result in results], observed
+            )
+            self.assertEqual(results[-1]["progress"], 1.0)
+            self.assertTrue(results[-1]["complete"])
+
+    def test_incremental_alignment_rejects_unknown_observation_without_moving(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            images = route_images(4)
+            reader = write_session(root / "demo", images)
+            annotate_route(root / "demo", reader, [])
+            compile_replay_package(
+                root / "demo", root / "package", "main", "route-a", 10.0
+            )
+            package = ReplayPackage(root / "package")
+            aligner = IncrementalReplayAligner(package, distance_threshold=0.35)
+
+            first = aligner.observe_descriptor(package.descriptors[0])
+            rejected = aligner.observe_descriptor(np.zeros_like(package.descriptors[0]))
+            recovered = aligner.observe_descriptor(package.descriptors[1])
+
+            self.assertTrue(first["accepted"])
+            self.assertFalse(rejected["accepted"])
+            self.assertEqual(rejected["reference_index"], first["reference_index"])
+            self.assertTrue(recovered["accepted"])
+            self.assertEqual(recovered["reference_index"], 1)
     def test_compiler_requires_observed_completion(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

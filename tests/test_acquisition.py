@@ -2,6 +2,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.request
 import json
 import sqlite3
@@ -12,6 +13,8 @@ import cv2
 import numpy as np
 
 from acquisition.models import FramePacket, InputPacket
+from acquisition.recorder import AcquisitionRecorder
+from acquisition.record import default_adb
 from acquisition.features import OnlineSiftRecorder
 from acquisition.annotations import AnnotationStore
 from acquisition.extract_portal_init import extract_initialization
@@ -19,6 +22,11 @@ from acquisition.review import ReviewState, make_handler
 from acquisition.session import SessionReader, SessionWriter
 from acquisition.sources import estimate_clock_offset, parse_getevent_line
 from acquisition.video import find_ffmpeg
+from acquisition.windows import (
+    WindowsKeyboardMouseSource,
+    WindowsWindowFrameSource,
+    select_window,
+)
 from poc.evaluate_portal_initialization import first_consistent_window
 
 
@@ -40,7 +48,87 @@ class DescribedSource:
         }
 
 
+class FakeWindowsApi:
+    def __init__(self):
+        self.snapshots = [
+            {
+                "foreground": False,
+                "keys": [],
+                "buttons": [],
+                "cursor_client": (5, 7),
+                "cursor_normalized": (0.05, 0.07),
+            },
+            {
+                "foreground": True,
+                "keys": [(87, "W")],
+                "buttons": ["left"],
+                "cursor_client": (20, 30),
+                "cursor_normalized": (0.2, 0.3),
+            },
+        ]
+        self.snapshot_index = 0
+
+    def list_windows(self):
+        return [(17, "AriaTrace Test Game")]
+
+    def capture_client(self, hwnd):
+        if hwnd != 17:
+            raise RuntimeError("unexpected window")
+        return np.full((48, 64, 3), 91, dtype=np.uint8), (100, 200, 64, 48)
+
+    def input_snapshot(self, hwnd):
+        if hwnd != 17:
+            raise RuntimeError("unexpected window")
+        index = min(self.snapshot_index, len(self.snapshots) - 1)
+        self.snapshot_index += 1
+        return self.snapshots[index]
+
+
 class AcquisitionTests(unittest.TestCase):
+    def test_selects_one_window_and_rejects_ambiguous_titles(self):
+        windows = [(1, "Game - Alpha"), (2, "Game - Beta")]
+        self.assertEqual(select_window(windows, "Game - Alpha"), windows[0])
+        with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+            select_window(windows, "Game")
+        with self.assertRaisesRegex(RuntimeError, "No visible window"):
+            select_window(windows, "Missing")
+
+    def test_windows_frame_and_input_sources_emit_session_packets(self):
+        api = FakeWindowsApi()
+        frames = WindowsWindowFrameSource(
+            "Test Game", fps=1000.0, api=api
+        )
+        frames.start()
+        try:
+            packet = frames.read()
+        finally:
+            frames.stop()
+        self.assertEqual(packet.stream_id, "main")
+        self.assertEqual(packet.image.shape, (48, 64, 3))
+        self.assertEqual(packet.metadata["client_screen_rect"], [100, 200, 64, 48])
+        self.assertEqual(frames.describe()["matched_window_title"], "AriaTrace Test Game")
+
+        events = []
+        inputs = WindowsKeyboardMouseSource(
+            "Test Game", poll_hz=1000.0, api=api
+        )
+        inputs.start(events.append)
+        deadline = time.time() + 1.0
+        while len(events) < 2 and time.time() < deadline:
+            time.sleep(0.005)
+        inputs.stop()
+        self.assertGreaterEqual(len(events), 2)
+        self.assertEqual(events[0].kind, "pc_input_state")
+        self.assertFalse(events[0].payload["foreground"])
+        self.assertEqual(events[1].payload["keys"][0]["name"], "W")
+        self.assertEqual(events[1].payload["mouse_buttons"], ["left"])
+
+    def test_tool_discovery_has_no_machine_specific_fallback(self):
+        with mock.patch("acquisition.record.shutil.which", return_value=None):
+            self.assertIsNone(default_adb())
+        with mock.patch("acquisition.video.shutil.which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "Install it, pass --ffmpeg"):
+                find_ffmpeg()
     def test_portal_confirmation_requires_consistent_consecutive_poses(self):
         rotation = np.eye(3)
         estimates = {

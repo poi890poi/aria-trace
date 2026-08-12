@@ -4,6 +4,8 @@ This package records synchronized gameplay observations and raw inputs, inspects
 
 Recorded controls are evidence of what the human did, not a schedule that the live system must repeat. Replay alignment and control adaptation are downstream responsibilities.
 
+`AcquisitionRecorder` and the session schema are the canonical recorder for both the PC POC and later Android/UVC operation. Windows window/input, Android/ADB, UVC, and future hardware integrations are replaceable sources feeding the same recorder; they are not separate recording products.
+
 ## Session format
 
 ```text
@@ -19,7 +21,7 @@ session/
 
 `manifest.json` is versioned and records source configurations, completion status, counts, drops, and Android-to-PC clock mapping. JSONL files are line-buffered. Every record retains its original source timestamp when available and a PC monotonic session timestamp.
 
-`annotations.jsonl` stores append-only add/delete operations. Marker edits never rewrite earlier history. Marker kinds are `teleport_start`, `world_ready`, `route_start`, `route_stage`, `route_complete`, `route_failed`, and `note`; each is tied to an exact stream, frame index, session time, portal ID, and route ID. A `route_stage` marker uses its note as the human-readable stage label.
+annotations.jsonl stores append-only add/delete operations. Marker edits never rewrite earlier history. Marker kinds include take_start, take_end, portal lifecycle, route boundary, route stage, route failure, and note records; each remains tied to an exact stream, frame index, session time, portal ID, and route ID.
 
 The default is H.264 (`libx264`, CRF 20) in Matroska. Exact time is in `frames.jsonl`, not the container playback rate. MJPEG AVI remains available with `--video-encoding mjpeg` as a large compatibility fallback. The encoder is isolated behind a video-sink interface so hardware encoding or another container can replace it later.
 
@@ -38,7 +40,37 @@ Lossless pixels are substantially larger. In the four-second portal smoke, five 
 
 Long-session chunking is not implemented yet. Record bounded sessions for now; a hard process termination may damage the active video container even though prior JSONL records remain readable. Five-minute crash-safe chunks are the next storage change before unattended collection.
 
+## Integrated PC workbench
+
+For the PC-only MVP, use the local acquisition workbench:
+
+    $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
+    python -m acquisition.workbench
+
+Open http://127.0.0.1:8765/. Choose a visible game window, an input source, an optional game/route profile, and a capture duration. XInput is the recommended PC input source because it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Keyboard/cursor polling is explicitly limited because it cannot preserve locked-camera relative mouse motion.
+
+Queue a take, return focus to the selected game, and perform the route naturally. The workbench waits for stable game focus, starts the canonical recorder automatically, and stops after the configured duration. There are no recorder hotkeys, stage buttons, or completion gestures during gameplay. Losing game focus early invalidates the take instead of silently contaminating it.
+
+The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, confirm the full-take route boundaries or use the reviewer to correct them. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions. Compilation is blocked until route boundaries are confirmed.
+
+The workbench is an orchestrator, not another recorder. Game defaults live under profiles/games, route instructions live under profiles/routes, and replaceable Windows, UVC, and ADB sources feed the same AcquisitionRecorder and session schema.
 ## Record
+
+Record a short Windows PC-game route:
+
+```powershell
+$env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
+python -m acquisition.record `
+  --output sessions\pc_demo_001 `
+  --window "Unique Game Window Title" `
+  --pc-input `
+  --route-id short-route-a `
+  --duration 20
+python -m acquisition.inspect_session sessions\pc_demo_001
+python -m acquisition.review sessions\pc_demo_001
+```
+
+The selected game client must remain visible, unobstructed, foreground, and at a fixed size. Title matching rejects ambiguous substrings; use `--exact-window-title` when needed. The first PC input backend records keyboard state, mouse buttons, and absolute client cursor motion at state changes. It does not yet record raw relative mouse input used by locked-cursor FPS aiming, so begin with a keyboard-steered or ordinary-cursor route.
 
 Smoke-test with an existing video and synthetic gamepad state:
 
@@ -65,8 +97,7 @@ python -m acquisition.record `
   --camera-width 1920 `
   --camera-height 1080 `
   --camera-fps 30 `
-  --getevent `
-  --adb E:\Android\Sdk\platform-tools\adb.exe
+  --getevent
 ```
 
 Use `--duration SECONDS` or press `Ctrl+C`. `--serial` selects one Android device. Multiple `--video` and `--camera` options create multiple frame streams. `--adb-screenshot` provides a slow development capture source; it is not a replacement for the future continuous internal-video source.
