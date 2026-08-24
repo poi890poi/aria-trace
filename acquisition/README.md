@@ -19,9 +19,11 @@ session/
   derived/                  # optional, reproducible caches
 ```
 
+Game-profiler evidence, full-map captures, mini-map calibration models, cruise models, and route descriptors are planned artifacts with explicit source-session/frame references. They do not replace this acquisition session. Exact artifact schemas and paths will be versioned when the first experiments establish what must be retained.
+
 `manifest.json` is versioned and records source configurations, completion status, counts, drops, and Android-to-PC clock mapping. JSONL files are line-buffered. Every record retains its original source timestamp when available and a PC monotonic session timestamp.
 
-annotations.jsonl stores append-only add/delete operations. Marker edits never rewrite earlier history. Marker kinds include take_start, take_end, portal lifecycle, route boundary, route stage, route failure, and note records; each remains tied to an exact stream, frame index, session time, portal ID, and route ID.
+annotations.jsonl stores append-only add/delete operations. Marker edits never rewrite earlier history. Marker kinds include take boundaries, generic evidence-capture boundaries/failure, portal lifecycle, route boundary/stage/failure, and note records; each remains tied to an exact stream, frame index, and session time, with portal or route IDs where applicable.
 
 The default is H.264 (`libx264`, CRF 20) in Matroska. Exact time is in `frames.jsonl`, not the container playback rate. MJPEG AVI remains available with `--video-encoding mjpeg` as a large compatibility fallback. The encoder is isolated behind a video-sink interface so hardware encoding or another container can replace it later.
 
@@ -40,6 +42,71 @@ Lossless pixels are substantially larger. In the four-second portal smoke, five 
 
 Long-session chunking is not implemented yet. Record bounded sessions for now; a hard process termination may damage the active video container even though prior JSONL records remain readable. Five-minute crash-safe chunks are the next storage change before unattended collection.
 
+## Planned game, map, and mini-map acquisition
+
+The Acquisition Workbench now exposes these as a five-stage Genshin POC wizard. It stores a human-editable control-profile draft and records each stage with a distinct capture kind, ID, workflow-stage ID, frames, raw controls, timing, and confirmation markers. It also maintains `artifacts/workbench/poc_evidence/<profile-id>/evidence_index.json`, a structured stage-progress inventory that links confirmed captures to their source sessions, marker state, timing/count summaries, drops, and profile-draft provenance. This first usable slice acquires and indexes organized evidence; the index does not assert semantic success, and automatic behavior inference, map-viewer traversal, full-map construction, mini-map calibration, and cruise estimators are not implemented yet.
+
+### Game profile session
+
+The existing files under `profiles/games` provide adapter defaults and coarse control summaries. The workbench profile editor now saves a reviewable draft under `artifacts/workbench/game_profiles/<profile-id>/draft.json` without rewriting the source profile. Later automatic profiling extends the same relationship with measured behavior; it does not introduce a separate configuration product.
+
+A semi-automatic profiling session runs controlled actions while recording inputs and game frames. It should infer or help a reviewer enter:
+
+- semantic controls such as movement, camera, jump, dash, interaction, and map/menu actions;
+- physical bindings such as WASD, mouse axes/buttons, Space, controller sticks/buttons, or touch regions;
+- activation details including press/release, single click, hold, toggle, chord, analog range, dead zone, duration, and compatible simultaneous actions;
+- movement, turning, acceleration/stopping, camera-character coupling, jump/dash timing, cooldown/recovery, collision response, and input-to-visible-response timing where measurable.
+
+Every inferred field retains its probe definition, source frames and input records, timing, intermediate measurements, confidence, and profiler version. Human edits are versioned and preserve the original measured value. The profile distinguishes measured, manually supplied, assumed, and unknown values. Route-specific setup remains in `profiles/routes`.
+
+### Full map-viewer acquisition
+
+Complete map texture should be acquired from the game's full map viewer, not reconstructed only from the smaller semi-transparent mini-map. The current wizard records a guided, manually navigated full-map evidence take. The next automation uses the confirmed viewer open/close, pan, zoom, region/layer switching, and related UI controls to navigate and capture every accessible area. Locked, undiscovered, occluded, or otherwise inaccessible areas are reported explicitly rather than silently counted as complete.
+
+Capture at a zoom/detail level whose effective map resolution exceeds the mini-map, with sufficient overlap or other registration evidence. The resulting versioned artifact retains original source frames, viewer/control state and timing, transforms, coverage/completeness information, quality diagnostics, and derived tiles or mosaics. Coverage gaps or poor registration should trigger an automated retry or an explicit request for human review.
+
+The full-map artifact, live mini-map observations, and reconstructed route geometry are separate coordinate spaces. Any scale, rotation, crop, projection, or alignment relationship among them is an explicit calibrated estimate with provenance and confidence. Do not assume UI icons, occlusions, or map revisions are identical between the viewer and mini-map.
+
+### Calibration take
+
+1. Generate continuous horizontal camera input in one direction.
+2. At the same time, generate the repeating vertical pattern `up -> down -> down -> up -> up -> down -> down -> ...`.
+3. Record the full game frames and generated inputs on the normal session timeline.
+4. Aggregate the frames under the working assumption that the mini-map does not rotate with camera orientation. Changing scene content should become less stable while the fixed mini-map remains identifiable.
+5. Evaluate temporal averages/stability maps, thresholding, edges, and a circle detector such as Hough circle detection to propose the mini-map position and boundary.
+
+The exact motion amplitudes, duration, aggregation, thresholds, and detector parameters are deliberately unset pending experimentation. A calibration run succeeds by producing a reusable, versioned artifact with source provenance, circle/mask data, method configuration, and quality—not by returning coordinates only.
+
+Its artifact set must be inspectable by both people and later scripts. At minimum it should retain:
+
+- an average, stability, or heatmap image;
+- the binary/threshold result;
+- the edge image;
+- the detected circle overlaid on an original or reference frame;
+- a machine-readable manifest linking those products to the source session, frames, controls, and calibration method/configuration.
+
+### Cruise take
+
+After calibration, record continuous movement with enough cadence and sufficiently small inter-frame motion that consecutive circular mini-map observations overlap. Preserve the entire game frame and input stream; mini-map crops, valid-circle masks, shift/facing measurements, and diagnostic outputs are derived records.
+
+The initial experiments will:
+
+- estimate `(dx, dy)` using Fourier/phase correlation within the valid circular map area and retain peak, overlap, and confidence/quality evidence;
+- observe the central character-facing cursor across multiple orientations, without assuming its shape or equating facing with camera direction or movement;
+- evaluate a polar transform about the mini-map center, with a reusable precomputed transform map where helpful, so rotation becomes translation and differently oriented observations can be normalized and combined;
+- measure movement-speed and rotation-rate distributions;
+- align observations by estimated map motion and measure temporal stability so stable map texture can be distinguished from icons, animations, floating elements, and temporary effects.
+
+These algorithms are proposals. The durable output is a cruise model and quality-bearing observations that support normalized mini-map extraction, relative XY shift estimation, and character-facing estimation through replaceable implementations.
+
+### Gameplay route take and descriptor
+
+The human records the route through the existing uninterrupted-take workflow. Compilation should avoid treating every nearly identical video frame as an independent permanent observation. It selects useful keyframes while retaining their original stream/frame indices, timestamps, input/control references, and measurements; groups nearby keyframes into experimentally sized local submaps; and records cumulative route progress alongside reconstructed spatial position.
+
+Raw relative measurements remain separate from reconstructed or corrected geometry. An individual bad shift or facing estimate can therefore retain its original value while being flagged, rejected, or replaced. Revisited locations may later add correction constraints, but the first recorder does not require loop closure or global optimization.
+
+The source session remains authoritative. Sparse map tiles, stitched local maps, a route-strip image, and trajectory plots are useful derived views, but no giant stitched map becomes the route record.
+
 ## Integrated PC workbench
 
 For the PC-only MVP, use the local acquisition workbench:
@@ -47,7 +114,9 @@ For the PC-only MVP, use the local acquisition workbench:
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/. The normal GUI asks only for the visible game window, control type, and route preset. A route preset supplies its setup instructions, take count, and duration. For an unprofiled game, choose **Custom route / any game** and enter a short route name. Technical IDs and overrides remain available under **Advanced settings**, but are not required. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
+Open http://127.0.0.1:8765/. Select a game profile, visible game window, and control type. Games with a `poc_workflow` expose guided evidence stages; ordinary route profiles remain available in the same screen. The selected stage or route supplies its instructions, capture count, and duration. For an unprofiled game, choose **Custom route / capture** and enter a short name. Technical IDs and overrides remain under **Advanced settings**. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
+
+On Windows, the normal command also starts a small isolated HUD process. It polls the lightweight `/api/hud` contract and shows waiting-for-focus, recording countdown, finalization, completion, and failure at the selected game window's upper-right. The window uses no-activate and click-through styles, and startup fails closed unless `WDA_EXCLUDEFROMCAPTURE` is successfully applied and read back. This is required because the current `win32_gdi_visible_client_v1` source copies visible desktop pixels. The HUD process is isolated so a desktop-UI failure cannot take down the recorder. Use `--no-hud` for diagnostics or when another status surface is intentionally used; exclusive fullscreen may suppress ordinary topmost overlays, so borderless/windowed fullscreen is preferred.
 
 Use Windows raw keyboard and mouse for keyboard/mouse play: it preserves make/break scan codes, relative camera deltas, button/wheel transitions, device handles, and per-event timing. Use XInput for controller play: it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Legacy keyboard/cursor polling remains available only for compatibility.
 
@@ -129,6 +198,10 @@ python -m acquisition.review sessions\gamepad_demo_001
 ```
 
 Open `http://127.0.0.1:8765/`. The local reviewer supports stream selection, scrubbing, stepping, playback, keyboard left/right navigation, inspection of raw inputs within 100 ms, and per-frame online-feature metadata. At a selected frame, enter the portal/route IDs and add `teleport_start`, `world_ready`, or `route_start`. Markers can be deleted; deletion is recorded as an append-only tombstone. It does not upload session data.
+
+The planned profiler/map/mini-map/route extension belongs in this reviewer rather than a disconnected UI. It should expose game-profile fields with their probe evidence, full-map source captures and coverage diagnostics, and synchronized gameplay views containing the full frame, mini-map crop and masks, shift/facing values and quality, trajectory and route progress, keyframe/submap membership, controls, and available diagnostics. Selecting a suspicious result should expose neighboring source frames.
+
+Review of an estimator result will be stored as a structured annotation attached to the affected observation or measurement, preserving the original output. The review states are `correct`, `suspicious`, and `wrong`, with an optional comment. This is not implemented by the current marker-only `AnnotationStore`; its schema/UI must be extended so a later diagnostic session can consume the annotation together with the source observations, frames, artifacts, and nearby measurements.
 
 ## Extract a portal initialization interval
 

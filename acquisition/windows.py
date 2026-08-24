@@ -1069,6 +1069,9 @@ class WindowsRawKeyboardMouseSource(InputSource):
         self._thread = None
         self._ready_event = threading.Event()
         self._errors = []
+        self._raw_packets_received = 0
+        self._raw_packets_accepted = 0
+        self._raw_packets_rejected_foreground = 0
 
     def _is_foreground(self) -> bool:
         if hasattr(self.desktop_api, "is_foreground"):
@@ -1085,8 +1088,12 @@ class WindowsRawKeyboardMouseSource(InputSource):
         )
         self._ready_event.clear()
         self._errors = []
+        self._raw_packets_received = 0
+        self._raw_packets_accepted = 0
+        self._raw_packets_rejected_foreground = 0
 
         def handle(record: dict) -> None:
+            self._raw_packets_received += 1
             if record["kind"] == "pc_raw_input_error":
                 emit(
                     InputPacket(
@@ -1098,7 +1105,9 @@ class WindowsRawKeyboardMouseSource(InputSource):
                 )
                 return
             if not self._is_foreground():
+                self._raw_packets_rejected_foreground += 1
                 return
+            self._raw_packets_accepted += 1
             payload = dict(record["payload"])
             payload.update(
                 {
@@ -1166,6 +1175,13 @@ class WindowsRawKeyboardMouseSource(InputSource):
                 "mouse_buttons": "raw_button_transitions_and_wheel",
                 "timing": "pc_monotonic_per_raw_event",
                 "behavior_fidelity": "keyboard_and_locked_camera_mouse",
+                "raw_input_diagnostics": {
+                    "packets_received": self._raw_packets_received,
+                    "packets_accepted": self._raw_packets_accepted,
+                    "packets_rejected_foreground": (
+                        self._raw_packets_rejected_foreground
+                    ),
+                },
             }
         )
         return result

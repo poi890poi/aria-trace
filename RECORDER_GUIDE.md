@@ -16,13 +16,34 @@ There are no required command-line parameters. The default output locations are 
 
 ## Configure a recording
 
-The normal screen asks for only three choices:
+### Genshin POC wizard
 
-1. **Game window** — the visible window containing gameplay.
-2. **How are you playing?** — choose **Windows Raw Keyboard + Mouse** for keyboard/mouse or **XInput Controller** for a controller.
-3. **Game / route preset** — choose a known route. Choose **Custom route / any game** and enter a short route name when no preset exists.
+For the first POC:
 
-The selected route preset supplies the setup instructions, number of takes, and duration. The green summary shows those values before recording. Open **Advanced settings** only when intentionally overriding them; experiment folders and internal route IDs are generated automatically.
+1. Select **Genshin Impact (PC POC)** as the game profile and select the visible Genshin window.
+2. Use **Windows Raw Keyboard + Mouse** unless intentionally profiling a controller.
+3. Open **Confirm/edit game controls**, verify the bindings used by the current account, add behavior or map-viewer notes, and save the draft.
+4. Select wizard stage 1, read its displayed instructions, and select **Arm recorder**.
+5. Select **Queue next capture** and switch to Genshin. The upper-right HUD first says **WAITING FOR GAME**, then shows `REC · mm:ss`. Perform the requested evidence capture until the timer ends.
+6. When the HUD says **CAPTURE COMPLETE**, return to the workbench and confirm the capture. If it says **CAPTURE FAILED**, return and rerecord it.
+7. Select **Change setup** and repeat for the full-map, mini-map calibration, cruise, and route stages.
+
+The first four stages preserve labeled evidence; they do not yet run automated game input, map stitching, mini-map calibration, or cruise estimators. The route stage retains the existing three-take compile/evaluate flow.
+
+The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays. `python -m acquisition.workbench --no-hud` disables it explicitly.
+
+Each stage card shows `confirmed / required` progress. Confirmation refreshes `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json`. This index is the handoff across stages: it identifies each source session and its capture kind/ID, markers, timestamps, frame/input counts, drops, and control-profile draft provenance. It is an evidence inventory, not a claim that the captured map or mini-map data has already been modeled successfully.
+
+When an input adapter is enabled, a capture with zero control events is rejected automatically and cannot remain **READY**. Raw Input receive, acceptance, and foreground-rejection counters are retained in the session manifest to diagnose an empty stream. Match the recorder's privilege level to the game or try the legacy adapter as a diagnostic fallback if Raw Input remains empty.
+
+The normal screen asks for four choices:
+
+1. **Game profile** — choose a profiled game or the custom/unprofiled option.
+2. **Game window** — the visible window containing gameplay.
+3. **How are you playing?** — choose **Windows Raw Keyboard + Mouse** for keyboard/mouse or **XInput Controller** for a controller.
+4. **Guided capture or route preset** — choose a workflow stage or known route. Choose **Custom route / capture** and enter a short name when no preset exists.
+
+The selected workflow stage or route preset supplies the instructions, number of captures, and duration. The green summary shows those values before recording. Open **Advanced settings** only when intentionally overriding them; experiment folders and internal capture IDs are generated automatically.
 
 Select **Arm recorder** when the summary is correct. Arming only prepares the take slots—it does not record gameplay yet.
 
@@ -30,10 +51,10 @@ Select **Arm recorder** when the summary is correct. Arming only prepares the ta
 
 1. Put the game at the same chosen starting state.
 2. In the workbench, select **Queue next take**.
-3. Switch to the selected game window. The sources are already running; the take clock starts when the game first gains focus.
+3. Switch to the selected game window. The HUD changes from **WAITING FOR GAME** to the recording countdown when the game first gains focus.
 4. Play the complete route naturally. Preserve the route, speed, camera movement, pauses, and all other behavior you intend the machine to learn.
-5. Do not switch windows or use recorder controls during gameplay. The take stops automatically after the displayed duration. Losing game focus early invalidates the take.
-6. Return to the workbench after the take and select **Confirm full take boundary** when the captured start and end represent the full route.
+5. Do not switch windows or use recorder controls during gameplay. The take stops automatically when the countdown ends. If you finish early, remain in the game until the HUD reports completion. Losing game focus early invalidates the take.
+6. Return to the workbench after **CAPTURE COMPLETE** and select **Confirm full take boundary** when the captured start and end represent the full route.
 7. Repeat until every take is ready, then select **Compile reference and evaluate**.
 
 Run 1 becomes the reference demonstration. Later takes are held out for evaluation. Visual landmarks and route boundaries are derived or corrected after gameplay; the player never performs extra marker actions during a take.

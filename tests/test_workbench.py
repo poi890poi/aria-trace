@@ -8,6 +8,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from acquisition.annotations import AnnotationStore
 from acquisition.models import FramePacket, InputPacket
 from acquisition.profiles import ProfileCatalog
 from acquisition.session import SessionWriter
@@ -132,6 +133,16 @@ def write_catalog(root):
                     "adapter": "windows_xinput",
                     "poll_hz": 250,
                 },
+                "poc_workflow": [
+                    {
+                        "stage_id": "full-map",
+                        "display_name": "Record full map",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "target_runs": 1,
+                        "capture_duration_s": 20,
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -154,6 +165,79 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_genshin_profile_exposes_guided_poc_workflow(self):
+        game = ProfileCatalog().game("genshin-impact-pc")
+        self.assertEqual(game["status"], "first_poc_game")
+        self.assertEqual(
+            game["default_input_source"]["adapter"],
+            "windows_raw_keyboard_mouse",
+        )
+        self.assertEqual(
+            [stage["capture_kind"] for stage in game["poc_workflow"]],
+            [
+                "game_profile",
+                "full_map",
+                "minimap_calibration",
+                "minimap_cruise",
+                "route",
+            ],
+        )
+        self.assertTrue(game["profile_editor"]["controls"])
+
+    def test_hud_reports_waiting_countdown_and_completion_without_disk_scan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(profile_root),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.arm(
+                    {
+                        "game_profile_id": "game-a",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "workflow_stage_id": "full-map",
+                        "experiment_id": "hud-test",
+                        "target_runs": 1,
+                        "capture_duration_s": 20,
+                        "window_title": "Popular Game A",
+                    }
+                )
+                self.assertFalse(state.hud_descriptor()["visible"])
+                state._active = {
+                    "run_index": 1,
+                    "phase": "waiting_for_game_focus",
+                    "recording_deadline_host_time_ns": None,
+                }
+                waiting = state.hud_descriptor()
+                self.assertEqual(waiting["state"], "waiting_for_game_focus")
+                self.assertIn("1/1", waiting["title"])
+                state._active.update(
+                    phase="recording_uninterrupted_take",
+                    recording_deadline_host_time_ns=time.perf_counter_ns()
+                    + 5_000_000_000,
+                )
+                recording = state.hud_descriptor()
+                self.assertEqual(recording["state"], "recording")
+                self.assertGreaterEqual(recording["remaining_s"], 4)
+                self.assertIn("REC", recording["status"])
+                state._active = None
+                state._hud_notice = {"state": "complete", "run_index": 1}
+                complete = state.hud_descriptor()
+                self.assertEqual(complete["status"], "CAPTURE COMPLETE")
+                state.set_hud_runtime(True, capture_exclusion=True)
+                self.assertTrue(
+                    state.descriptor()["hud_runtime"]["capture_exclusion"]
+                )
+            finally:
+                state._active = None
+                state.close()
+
     def test_profile_catalog_keeps_game_and_route_data_separate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "profiles"
@@ -275,6 +359,10 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(events[1].payload["scan_code"], 17)
         self.assertTrue(events[1].payload["pressed"])
         self.assertTrue(events[1].payload["foreground"])
+        diagnostics = source.describe()["raw_input_diagnostics"]
+        self.assertEqual(diagnostics["packets_received"], 2)
+        self.assertEqual(diagnostics["packets_accepted"], 2)
+        self.assertEqual(diagnostics["packets_rejected_foreground"], 0)
 
     def test_xinput_source_emits_complete_controller_state(self):
         events = []
@@ -414,14 +502,23 @@ class WorkbenchTests(unittest.TestCase):
                     base = "http://127.0.0.1:{}".format(server.server_address[1])
                     html = urllib.request.urlopen(base + "/").read().decode("utf-8")
                     api = json.loads(urllib.request.urlopen(base + "/api/state").read())
+                    hud_api = json.loads(
+                        urllib.request.urlopen(base + "/api/hud").read()
+                    )
                     self.assertIn("Capture an uninterrupted human take", html)
                     self.assertIn("No in-game recorder commands", html)
                     self.assertIn("Game / route preset", html)
+                    self.assertIn("POC workflow wizard", html)
+                    self.assertIn("Confirm/edit game controls", html)
                     self.assertIn("Advanced settings", html)
                     self.assertIn("Arm recorder", html)
+                    self.assertIn("In-game status HUD", html)
+                    self.assertIn("Stage captures complete", html)
+                    self.assertIn("No control inputs captured", html)
                     self.assertNotIn("F9", html)
                     self.assertNotIn("Combat Master", html)
                     self.assertEqual(api["armed"]["game_profile_id"], "game-a")
+                    self.assertFalse(hud_api["visible"])
                 finally:
                     server.shutdown()
                     server.server_close()
@@ -473,6 +570,243 @@ class WorkbenchTests(unittest.TestCase):
                 )
                 state.confirm_take(1)
                 self.assertEqual(state._slot(1)["status"], "ready")
+            finally:
+                state.close()
+
+    def test_empty_configured_input_stream_cannot_remain_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(profile_root),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.arm(
+                    {
+                        "game_profile_id": "game-a",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "workflow_stage_id": "full-map",
+                        "experiment_id": "empty-input-test",
+                        "target_runs": 1,
+                        "capture_duration_s": 20,
+                        "window_title": "Popular Game A",
+                        "input_source": {
+                            "adapter": "windows_raw_keyboard_mouse",
+                        },
+                    }
+                )
+                path = state._run_path(1)
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                    session_context={
+                        "game_profile_id": "game-a",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "workflow_stage_id": "full-map",
+                        "experiment_id": "empty-input-test",
+                        "run_index": 1,
+                        "input_adapter": "windows_raw_keyboard_mouse",
+                    },
+                )
+                for index in range(3):
+                    timestamp = writer.origin_ns + index * 33_000_000
+                    writer.write_frame(
+                        FramePacket(
+                            "main",
+                            np.full((32, 32, 3), index, dtype=np.uint8),
+                            timestamp,
+                            timestamp,
+                        )
+                    )
+                writer.close()
+                state._finalize_take(
+                    path,
+                    "game-a-full-map",
+                    failed=False,
+                    capture_kind="full_map",
+                    capture_id="game-a-full-map",
+                )
+                store = AnnotationStore(path)
+                store.add("capture_start", 0, "main", 0)
+                store.add("capture_complete", 66_000_000, "main", 2)
+
+                slot = state._slot(1)
+                self.assertEqual(slot["status"], "needs_rerecord")
+                self.assertFalse(slot["input_capture"]["healthy"])
+                self.assertEqual(slot["control_input_events"], 0)
+                with self.assertRaisesRegex(RuntimeError, "not waiting"):
+                    state.confirm_take(1)
+
+                evidence = state._refresh_poc_evidence_index("game-a")
+                self.assertEqual(evidence["stages"][0]["status"], "needs_capture")
+                indexed = evidence["stages"][0]["sessions"][0]
+                self.assertEqual(indexed["status"], "failed")
+                self.assertFalse(indexed["input_capture"]["healthy"])
+            finally:
+                state.close()
+
+    def test_generic_evidence_capture_uses_non_route_markers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(profile_root),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.arm(
+                    {
+                        "game_profile_id": "game-a",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "workflow_stage_id": "full-map",
+                        "experiment_id": "full-map-test",
+                        "target_runs": 1,
+                        "capture_duration_s": 20,
+                        "window_title": "Popular Game A",
+                    }
+                )
+                path = state._run_path(1)
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                    session_context={
+                        "game_profile_id": "game-a",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "workflow_stage_id": "full-map",
+                        "experiment_id": "full-map-test",
+                        "run_index": 1,
+                    },
+                )
+                for index in range(3):
+                    timestamp = writer.origin_ns + index * 33_000_000
+                    writer.write_frame(
+                        FramePacket(
+                            "main",
+                            np.full((32, 32, 3), index, dtype=np.uint8),
+                            timestamp,
+                            timestamp,
+                        )
+                    )
+                writer.close()
+                state._finalize_take(
+                    path,
+                    "game-a-full-map",
+                    failed=False,
+                    capture_kind="full_map",
+                    capture_id="game-a-full-map",
+                )
+                self.assertEqual(
+                    state._slot(1)["status"], "captured_needs_confirmation"
+                )
+                state.confirm_take(1)
+                self.assertEqual(state._slot(1)["status"], "ready")
+                annotations = AnnotationStore(path).list()
+                kinds = [item["kind"] for item in annotations]
+                self.assertIn("capture_start", kinds)
+                self.assertIn("capture_complete", kinds)
+                self.assertNotIn("route_start", kinds)
+                descriptor = state.descriptor()
+                self.assertEqual(descriptor["schema_version"], "1.2")
+                self.assertEqual(descriptor["compile_state"], "not_applicable")
+                evidence = descriptor["poc_evidence_indexes"]["game-a"]
+                self.assertEqual(evidence["stages"][0]["status"], "ready")
+                self.assertEqual(evidence["stages"][0]["ready_captures"], 1)
+                self.assertEqual(
+                    evidence["stages"][0]["sessions"][0]["capture_kind"],
+                    "full_map",
+                )
+                self.assertTrue(
+                    (
+                        root
+                        / "artifacts"
+                        / "poc_evidence"
+                        / "game-a"
+                        / "evidence_index.json"
+                    ).is_file()
+                )
+                with self.assertRaisesRegex(RuntimeError, "Only route captures"):
+                    state.compile_and_evaluate()
+            finally:
+                state.close()
+
+    def test_profile_draft_is_persisted_without_rewriting_source_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                descriptor = state.save_profile_draft(
+                    {
+                        "game_profile_id": "genshin-impact-pc",
+                        "controls": {
+                            "move_forward": {
+                                "binding": "W",
+                                "activation": "hold",
+                                "status": "human_confirmed",
+                            },
+                            "dash": {
+                                "binding": "Right Mouse",
+                                "activation": "single_click_or_hold",
+                                "status": "human_confirmed",
+                            },
+                        },
+                        "behavior_notes": "Dash requires later timing measurement.",
+                        "map_viewer_notes": "Confirm region switching during map capture.",
+                    }
+                )
+                draft = descriptor["game_profile_drafts"]["genshin-impact-pc"]
+                self.assertEqual(draft["controls"]["move_forward"]["binding"], "W")
+                self.assertEqual(draft["controls"]["dash"]["binding"], "Right Mouse")
+                self.assertTrue(
+                    (
+                        root
+                        / "artifacts"
+                        / "game_profiles"
+                        / "genshin-impact-pc"
+                        / "draft.json"
+                    ).is_file()
+                )
+                self.assertEqual(
+                    ProfileCatalog()
+                    .game("genshin-impact-pc")["control_profile"]["status"],
+                    "human_confirmation_required",
+                )
+                armed = state.arm(
+                    {
+                        "game_profile_id": "genshin-impact-pc",
+                        "capture_kind": "game_profile",
+                        "capture_id": "genshin-control-profile",
+                        "workflow_stage_id": "game-profile",
+                        "experiment_id": "genshin-profile-test",
+                        "target_runs": 1,
+                        "capture_duration_s": 20,
+                        "window_title": "Popular Game A",
+                    }
+                )["armed"]
+                self.assertEqual(armed["workflow_stage"]["stage_id"], "game-profile")
+                self.assertEqual(
+                    armed["game_profile_draft"]["controls"]["dash"]["binding"],
+                    "Right Mouse",
+                )
             finally:
                 state.close()
 

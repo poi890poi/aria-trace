@@ -29,6 +29,38 @@ def _write_json_atomic(path: Path, value: object) -> None:
     os.replace(str(temporary), str(path))
 
 
+INPUT_ERROR_KINDS = {
+    "pc_input_error",
+    "pc_xinput_error",
+    "pc_raw_input_error",
+}
+
+
+def input_capture_health(manifest: dict) -> dict:
+    """Summarize whether a configured workbench input stream has evidence."""
+    context = manifest.get("context") or {}
+    adapter = context.get("input_adapter")
+    required = bool(adapter and adapter != "none")
+    counts = manifest.get("input_counts") or {}
+    control_events = sum(
+        int(count)
+        for key, count in counts.items()
+        if str(key).rsplit(":", 1)[-1] not in INPUT_ERROR_KINDS
+    )
+    error_events = sum(
+        int(count)
+        for key, count in counts.items()
+        if str(key).rsplit(":", 1)[-1] in INPUT_ERROR_KINDS
+    )
+    return {
+        "adapter": adapter or "unknown",
+        "required": required,
+        "control_events": control_events,
+        "error_events": error_events,
+        "healthy": not required or control_events > 0,
+    }
+
+
 class SessionWriter:
     def __init__(
         self,

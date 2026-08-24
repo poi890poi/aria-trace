@@ -1,19 +1,16 @@
 # Project status and continuation guide
 
-Last updated: 2026-08-08 (Asia/Taipei)
+Last updated: 2026-08-24 (Asia/Taipei)
 
 ## Current decision
 
-The project is named **AriaTrace** and defined as vision-guided gameplay replay. Given a synchronized human demonstration, a live run aligns to its route stages and adapts the demonstrated controls to overcome cross-session variance. It is not fixed-time macro playback. See `PROJECT_DEFINITION.md` for the name, story, and purpose.
+AriaTrace remains vision-guided, closed-loop reproduction of a human-demonstrated gameplay route rather than fixed-time macro playback. The immediate milestone is now the observation and game-modeling foundation: build a semi-automatic, human-editable game profiler; automatically acquire the complete high-resolution map from the full in-game map viewer; calibrate the circular mini-map; model useful mini-map motion and character-facing signals from a cruise; and compile a human gameplay recording into an inspectable route descriptor.
 
-Follow `PROJECT_CONSTITUTION.md`: optimize repeatable demonstrated-route completion rather than pose estimation in isolation. Use two complementary pose signals behind replaceable interfaces:
+The route descriptor will select keyframes, group local evidence into short submaps, retain raw relative measurements separately from reconstructed geometry, and maintain a route centerline indexed by cumulative progress as well as spatial position. Every selected mini-map observation must remain traceable to the original full game frame, exact timing, controls, and diagnostics. One stitched map image is never authoritative.
 
-1. KLT angular flow for low-latency relative turning feedback.
-2. Feature-map relocalization for absolute drift correction.
+The completed KLT, feature-map relocalization, portal initialization, and fusion-gate POCs below remain valid experimental evidence. They are not the committed immediate replay/localization stack. Their main retained conclusions are that relative estimates drift, view coverage matters, pose solves can be catastrophically wrong, and independent quality/consistency evidence is necessary.
 
-Do not integrate relative yaw indefinitely. The tested absolute backend is an offline COLMAP/SIFT prototype, not the final real-time implementation. Monocular reconstruction has arbitrary scale, so metric position still needs a scale/map anchor.
-
-Keep fusion simple: a physics-based local predictor, explicit uncertainty, and independently gated absolute hypotheses. Do not merge camera heading and character heading in the eventual game state.
+Do not design the autonomous replay subsystem in detail yet. After real route recordings exist, use observed failures to choose among live route localization, mini-map/full-scene combination, route-relative state, closed-loop correction, latency/rate work, constrained traversal, and divergence recovery.
 
 ## Environment
 
@@ -74,7 +71,7 @@ The local Acquisition Workbench is the primary PC MVP entry point. It lists visi
 
 Acquisition is now zero-interruption. Queueing a take pre-arms frame and input sources while the workbench is still focused; the take clock starts on the first selected-game focus and runs for the configured duration. This removes the source-startup gap that could otherwise lose the first control. There are no gameplay hotkeys or stage/completion inputs. Early focus loss marks the take failed. Successful captures receive take_start and take_end evidence boundaries; route_start and route_complete are created only through explicit post-take confirmation. Compilation remains blocked until each take is confirmed.
 
-Landmarks are visual reference observations used by later alignment, not buttons or actions expected from the player. They are derived or corrected after recording. Raw Input is the recommended keyboard/mouse evidence source because it preserves key timing and locked-camera relative mouse motion; XInput is recommended for controller play because it preserves analog locomotion speed, camera axes, triggers, buttons, and timing.
+Landmarks are visual reference observations used by later alignment, not buttons or actions expected from the player. They are derived or corrected after recording. Raw Input is the recommended keyboard/mouse evidence source because it preserves key timing and locked-camera relative mouse motion; XInput is recommended for controller play because it preserves analog locomotion speed, camera axes, triggers, buttons, and timing. A configured input stream with zero control events is now rejected instead of being confirmable as ready, and final Raw Input receive/filter counters are stored in the manifest for diagnosis.
 
 Start with python -m acquisition.workbench and open http://127.0.0.1:8765/. Arbitrary-game tests use a fake Popular Game A profile to prove that the workflow contains no Combat Master coupling and no in-game recorder commands.
 ### Data acquisition suite
@@ -87,7 +84,7 @@ Measured on Genshin Seq-046 at 1436x996:
 
 - Three-second H.264 smoke: 91 frames, zero drops, 1.34 MiB video versus 12.54 MiB for the earlier MJPEG smoke (9.4x smaller).
 - Five-second H.264 plus online SIFT at 1 Hz: 152 frames, zero drops, five feature observations / 16,352 keypoints. Video was 2.91 MiB and the feature database 1.82 MiB. The short-sample projection was 3.34 GiB/hour total, including about 1.27 GiB/hour of SIFT evidence.
-- Full test suite: 34/34 passing, including H.264 frame-index decode, exact lossless keyframe recovery, raw-feature sampling, clock mapping, multistream recording, pre-armed zero-interruption workbench endpoints, Raw Input decoding/foreground filtering, XInput behavior capture, post-take confirmation, arbitrary-game profile orchestration, replay compilation/alignment, and pose-fusion gates.
+- Previous full-suite checkpoint: 34/34 passing, including H.264 frame-index decode, exact lossless keyframe recovery, raw-feature sampling, clock mapping, multistream recording, pre-armed zero-interruption workbench endpoints, Raw Input decoding/foreground filtering, XInput behavior capture, post-take confirmation, arbitrary-game profile orchestration, replay compilation/alignment, and pose-fusion gates. The later Genshin wizard, input-health gate, and capture-safe HUD changes have a focused 15/15 workbench result; a new full-suite count has not been claimed.
 
 During the first feature smoke, shutdown triggered an OpenCV/FFmpeg decoder assertion because the main thread released a source while its capture thread was inside `read()`. Shutdown now signals the worker, waits for normal exit, and only force-stops a still-blocked source. The repeated smoke completed cleanly.
 
@@ -261,28 +258,45 @@ Between these scripts, the executed COLMAP stages were `feature_extractor`, `exh
 
 The learned P005 upper bound additionally uses `prepare_tartanair_candidate_pairs.py --query-neighbors 10`, ALIKED N16ROT extraction, and `matches_importer --match_type pairs --FeatureMatching.type ALIKED_LIGHTGLUE`.
 
-## Current decision and next experiment
+## Prior pose-stack POC outcome
 
-The pose stack should now be:
+The implemented replay-time fusion and rejection gate in `poc/pose_fusion.py` and `poc/replay_pose_fusion.py` tested KLT-style relative prediction, a synthetic coarse route prior, retrieved feature-map/PnP hypotheses, and an independent consistency gate. Across 100 trials it accepted no false P003 or P005 pose while accepting 99.983% of valid P003 poses. A naive reset-to-every-PnP baseline produced multi-meter and near-opposite-heading failures. Machine-readable results are in `artifacts/fusion_replay/summary.json`; seed-zero frame logs are beside it.
 
-1. KLT relative yaw as the low-latency predictor.
-2. Coarse minimap/route prior for position and expected heading.
-3. Retrieved feature-map candidates with view-direction coverage.
-4. PnP as an absolute hypothesis.
-5. A consistency gate before fusing the hypothesis.
+This remains a gate POC, not validated gameplay replay. Its motion and coarse-prior observations are synthetic. KLT and feature/PnP may later become useful asynchronous signals, but the project no longer prescribes that combination before mini-map route recordings reveal actual needs.
 
-The replay-time fusion and rejection gate is now implemented in `poc/pose_fusion.py` and `poc/replay_pose_fusion.py`. Across 100 trials it accepted no false P003 or P005 pose, while accepting 99.983% of valid P003 poses. A naive reset-to-every-PnP baseline produced multi-meter and near-opposite-heading failures. Machine-readable results are in `artifacts/fusion_replay/summary.json`; seed-zero frame logs are beside it.
+## Implemented foundation and current gaps
 
-This is a gate POC, not validated gameplay replay. Motion and coarse-prior observations are synthetic. Following the constitution, do not make fusion more complex until ordinary ground locomotion is characterized: camera-to-character coupling, joystick-to-motion response, camera drag response, acceleration/stopping, collision behavior, and human orient-run-correct-confirm behavior.
+Genshin Impact PC is now the first POC game profile. The integrated workbench exposes its five evidence stages: editable control profiling, full-map viewer capture, mini-map calibration capture, mini-map cruise capture, and repeated route recording. Profile drafts are stored under workbench artifacts without rewriting source profiles. A versioned POC evidence index now tracks confirmed/required progress and links each stage to source sessions, marker state, timing/count summaries, drop counts, and the profile-draft snapshot. A Windows in-game HUD now reports waiting, recording countdown, finalizing, completion, and failure without stealing focus; it runs in an isolated process and fails closed unless Windows confirms capture exclusion. Non-route evidence uses distinct capture markers and is blocked from route compilation; the route stage retains the existing reference/held-out compile flow.
 
-The next integrated milestone is a PC-only adaptive replay experiment using several demonstrations of one short, fixed-start route:
+The canonical recorder preserves full-frame video, exact frame timing, raw PC or Android input evidence, source configuration, drop counts, and append-only markers. Existing `profiles/games` records capture/input defaults and coarse control summaries, while route-specific setup remains under `profiles/routes`. The current `ReplayPackage` compiler samples reference frames, descriptors, route stages, and action priors with links to source-frame indices.
 
-1. record and annotate one human demonstration;
-2. compile observable route stages, reference views, action priors, and completion evidence;
-3. align a later live run by observation and route progress rather than elapsed time;
-4. adapt control duration and direction from visual error;
-5. measure completion, deviation, alignment loss, recovery, intervention, and latency.
+The following milestone capabilities are not implemented yet:
 
-Minecraft may validate the pipeline only. Combat Master offline is the current FPS POC candidate; a representative offline third-person game remains to be selected. No result from a simple environment should be presented as validation for top-tier MMORPG or FPS navigation.
+- automatic inference and validation of detailed control/behavior fields from the recorded profiler probes;
+- automated map-viewer input, complete high-resolution coverage verification, registration, and full-map artifact construction;
+- automatic circular mini-map calibration or its structured/debug artifacts;
+- normalized masked mini-map extraction;
+- quality-bearing XY shift and character-facing estimators;
+- cruise movement/rotation statistics or stability modeling;
+- keyframe/local-submap route descriptor with raw measurement relationships and cumulative progress;
+- synchronized route diagnostics and result-level correct/suspicious/wrong review annotations.
 
-When physical hardware arrives, repeat using calibrated and rectified USB-camera frames. Keep KLT as the fast predictor and run absolute relocalization asynchronously as a correction source.
+The existing marker-only annotation model cannot yet attach review state to an estimator measurement. The current `ReplayPackage` also uses time-sampled reference frames and a monotonic progress index; it is a useful foundation, not yet the selected keyframe/local-submap descriptor described in `SDS.md`.
+
+## Next milestone: profiled map and route recorder
+
+Work proceeds in five evidence-producing stages:
+
+1. **Game profiler.** Extend the existing game profile through controlled input/observation probes and human editing. Record semantic actions, physical bindings, press/hold/toggle/analog semantics, compatible combinations, movement/camera response, jump/dash behavior, relevant timing, confidence, provenance, and unknowns. A profile may express, for example, WASD movement, mouse camera control, Space jump, and right-mouse dash while distinguishing single-click from hold behavior.
+2. **Full-map acquisition.** Use the profiled map-viewer controls to open and automatically traverse the full in-game map, capture overlapping views at greater effective detail than the mini-map, verify complete coverage, and produce source tiles, transforms, coverage/quality diagnostics, and derived map products. Do not assume the full-map and mini-map coordinate systems are identical.
+3. **Mini-map calibration.** Record continuous same-direction horizontal camera rotation plus the vertical zig-zag `up -> down -> down -> up -> up -> down -> down -> ...`. Aggregate frames under the proposal that a non-rotating mini-map remains stable, then evaluate threshold/edge processing and circle detection. Produce a reusable machine-readable calibration plus average/stability/heatmap, threshold, edge, and circle-overlay diagnostics.
+4. **Cruise model.** Record overlapping consecutive mini-map views. Evaluate masked Fourier/phase correlation for `(dx, dy)`, polar normalization for game-specific central cursor modeling, movement/rotation distributions, and motion-aligned temporal stability. Preserve confidence, overlap/peak evidence, timings, and intermediate products. These are proposals, not fixed algorithms.
+5. **Gameplay route descriptor.** Record a human route, select keyframes with source-frame references, group them into experimentally sized local submaps, retain raw relative measurements independently of replaceable geometry, and maintain both spatial position and cumulative progress `s`. Add derived route-strip/local-map/trajectory views and structured review annotations without making a stitched route image authoritative.
+
+Individual catastrophic measurements and gradual accumulated drift are separate evaluation categories. The first descriptor must allow measurements to be flagged or rejected without deleting original values. Local submaps bound immediate drift; revisit evidence may be retained for later correction, but no loop-closure or optimization method is required now.
+
+Timing evaluation begins with the recorder: observation age, estimator rate, processing and capture-to-estimate latency, stale evidence, and source provenance must remain visible. Future observation sources may run asynchronously.
+
+After this milestone, inspect real recordings and choose the next problem. Do not pre-commit a global optimizer, replay pose representation, controller, constrained-traversal policy, or recovery design. The development sequence is `record -> model -> inspect -> evaluate -> choose next problem -> improve`.
+
+Minecraft may validate plumbing only. Genshin Impact PC is the selected first third-person POC game; Combat Master remains an additional FPS profile-data candidate rather than the immediate milestone. No simple-environment result establishes target-game performance. Physical Android/UVC timing and capture validation also remain outstanding.

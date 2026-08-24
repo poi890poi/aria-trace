@@ -11,6 +11,9 @@ from typing import Dict, List, Optional
 MARKER_KINDS = (
     "take_start",
     "take_end",
+    "capture_start",
+    "capture_complete",
+    "capture_failed",
     "teleport_start",
     "world_ready",
     "route_start",

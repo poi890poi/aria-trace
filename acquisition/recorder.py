@@ -175,5 +175,11 @@ class AcquisitionRecorder:
                     writer.write_frame(value)
                 elif kind == "input":
                     writer.write_input(value)
+            # Input sources can only report final receive/filter counters after
+            # their worker threads stop. Keep those diagnostics in the durable
+            # manifest so an empty stream is explainable instead of mysterious.
+            writer.manifest["input_sources"] = [
+                source.describe() for source in self.input_sources
+            ]
             writer.close(status=status, error=error_text)
         return writer.manifest

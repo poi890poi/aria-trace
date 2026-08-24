@@ -47,3 +47,9 @@ The MVP uses one unrooted Android phone, PC-hosted logic, a known portal/start r
 ## Success
 
 Primary success is repeatable route completion. Supporting measures are route deviation, stage-alignment accuracy, recovery rate, intervention rate, completion time, false corrections, stale-control incidents, and capture-to-control latency. Pose accuracy is diagnostic, not the objective.
+
+## Development Direction
+
+The immediate development objective is narrower than autonomous replay: profile the selected game's controls and measured behavior, automatically acquire its complete map from the full in-game map viewer at greater effective resolution than the semi-transparent mini-map, obtain useful route observations from the mini-map, and compile a human cruise or route recording into a reusable route descriptor. That descriptor preserves mini-map motion and character-facing observations, selected keyframes, local spatial relationships, progress along the demonstrated route, and links back to synchronized full-scene frames and controls. It is evidence for later replay work, not a stitched route image or a recorded-control schedule.
+
+The eventual closed loop must contend with route-relative localization, movement and facing estimation, constrained traversal, update rate and end-to-end latency, accumulated drift, isolated catastrophic estimates, divergence, and recovery. These concerns explain why the project preserves uncertainty, timing, provenance, and raw observations, but they are not requirements for the mini-map recorder milestone. After real route descriptors can be recorded and inspected, the next problem will be chosen from observed failures rather than from a preselected autonomous-replay architecture.

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -17,9 +18,10 @@ from replay.alignment import align_session
 from replay.package import compile_replay_package
 
 from .annotations import AnnotationStore
+from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
-from .session import SessionReader
+from .session import SessionReader, input_capture_health
 from .sources import AdbGetEventSource, AdbScreenshotFrameSource, OpenCvCameraFrameSource
 from .windows import (
     WindowsDesktopApi,
@@ -111,6 +113,7 @@ def automatic_take_bounds(
 
 
 def _write_json_atomic(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
     os.replace(str(temporary), str(path))
@@ -238,6 +241,14 @@ class SourceFactory:
         }
 
 class AcquisitionWorkbench:
+    CAPTURE_KINDS = (
+        "route",
+        "game_profile",
+        "full_map",
+        "minimap_calibration",
+        "minimap_cruise",
+    )
+
     def __init__(
         self,
         session_root: Path,
@@ -263,6 +274,225 @@ class AcquisitionWorkbench:
         self._last_error = None
         self._compile_state = "not_ready"
         self._compile_result = None
+        self._hud_notice = None
+        self._hud_runtime = {
+            "enabled": False,
+            "capture_exclusion": False,
+            "error": None,
+        }
+        for game_profile_id, game in self.profiles.games.items():
+            if game.get("poc_workflow"):
+                self._refresh_poc_evidence_index(game_profile_id)
+
+    def set_hud_runtime(
+        self,
+        enabled: bool,
+        capture_exclusion: bool = False,
+        error: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            self._hud_runtime = {
+                "enabled": bool(enabled),
+                "capture_exclusion": bool(capture_exclusion),
+                "error": error or None,
+            }
+
+    def hud_descriptor(self) -> dict:
+        """Return a lightweight status contract for the in-game overlay."""
+        with self._lock:
+            armed = self._armed
+            active = self._active
+            notice = self._hud_notice
+            if armed is None:
+                return {"visible": False}
+            stage = armed.get("workflow_stage") or {}
+            stage_name = stage.get("display_name") or armed.get("capture_id")
+            run_index = active.get("run_index") if active else (
+                notice or {}
+            ).get("run_index")
+            title = "ARIATRACE"
+            if run_index:
+                title += " · {}/{}".format(run_index, armed["target_runs"])
+            title += " · {}".format(stage_name)
+            common = {
+                "visible": True,
+                "title": title.upper(),
+                "window_title": armed.get("frame_source", {}).get("window_title"),
+            }
+            if active is not None:
+                if active["phase"] == "waiting_for_game_focus":
+                    common.update(
+                        {
+                            "state": "waiting_for_game_focus",
+                            "status": "WAITING FOR GAME",
+                            "detail": "Focus Genshin to start; capture stops automatically.",
+                            "color": "#ffd166",
+                        }
+                    )
+                    return common
+                if active["phase"] == "finalizing_capture":
+                    common.update(
+                        {
+                            "state": "finalizing_capture",
+                            "status": "CAPTURE ENDED",
+                            "detail": "Finalizing files; wait for the completion signal.",
+                            "color": "#ffd166",
+                        }
+                    )
+                    return common
+                deadline = active.get("recording_deadline_host_time_ns")
+                remaining_s = (
+                    max(0, math.ceil((deadline - time.perf_counter_ns()) / 1.0e9))
+                    if deadline
+                    else 0
+                )
+                common.update(
+                    {
+                        "state": "recording",
+                        "remaining_s": remaining_s,
+                        "status": "REC · {:02d}:{:02d}".format(
+                            remaining_s // 60,
+                            remaining_s % 60,
+                        ),
+                        "detail": "Keep Genshin focused; stop is automatic.",
+                        "color": "#ff7b84",
+                    }
+                )
+                return common
+            if notice:
+                if notice.get("state") == "complete":
+                    common.update(
+                        {
+                            "state": "complete",
+                            "status": "CAPTURE COMPLETE",
+                            "detail": "Return to the workbench and confirm this capture.",
+                            "color": "#6ee7a1",
+                        }
+                    )
+                else:
+                    common.update(
+                        {
+                            "state": "failed",
+                            "status": "CAPTURE FAILED",
+                            "detail": notice.get("detail")
+                            or "Return to the workbench and rerecord.",
+                            "color": "#ff7b84",
+                        }
+                    )
+                return common
+            return {"visible": False}
+
+    def _profile_draft_path(self, game_profile_id: str) -> Path:
+        return (
+            self.artifact_root
+            / "game_profiles"
+            / safe_id(game_profile_id)
+            / "draft.json"
+        )
+
+    def _poc_evidence_path(self, game_profile_id: str) -> Path:
+        return (
+            self.artifact_root
+            / "poc_evidence"
+            / safe_id(game_profile_id)
+            / "evidence_index.json"
+        )
+
+    def _refresh_poc_evidence_index(self, game_profile_id: str) -> Optional[dict]:
+        game = self.profiles.game(game_profile_id)
+        if not game.get("poc_workflow"):
+            return None
+        draft_path = self._profile_draft_path(game_profile_id)
+        profile_draft = None
+        if draft_path.is_file():
+            try:
+                profile_draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                profile_draft = {
+                    "error": "{}: {}".format(type(exc).__name__, exc)
+                }
+        index = build_poc_evidence_index(
+            self.session_root,
+            game,
+            profile_draft=profile_draft,
+        )
+        _write_json_atomic(self._poc_evidence_path(game_profile_id), index)
+        return index
+
+    def _poc_evidence_indexes(self) -> dict:
+        values = {}
+        for game_profile_id, game in self.profiles.games.items():
+            if not game.get("poc_workflow"):
+                continue
+            path = self._poc_evidence_path(game_profile_id)
+            try:
+                values[game_profile_id] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                values[game_profile_id] = {
+                    "game_profile_id": game_profile_id,
+                    "error": "{}: {}".format(type(exc).__name__, exc),
+                }
+        return values
+
+    def _profile_drafts(self) -> dict:
+        values = {}
+        for game_profile_id in self.profiles.games:
+            path = self._profile_draft_path(game_profile_id)
+            if path.is_file():
+                try:
+                    values[game_profile_id] = json.loads(
+                        path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    values[game_profile_id] = {
+                        "error": "{}: {}".format(type(exc).__name__, exc)
+                    }
+        return values
+
+    def save_profile_draft(self, value: dict) -> dict:
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = value.get("game_profile_id")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            game = self.profiles.game(game_profile_id)
+            controls = value.get("controls") or {}
+            if not isinstance(controls, dict):
+                raise ValueError("Profile controls must be an object")
+            allowed_controls = {
+                str(item.get("id"))
+                for item in game.get("profile_editor", {}).get("controls", [])
+                if item.get("id")
+            }
+            if allowed_controls:
+                unknown = sorted(set(controls) - allowed_controls)
+                if unknown:
+                    raise ValueError(
+                        "Unknown control profile fields: {}".format(", ".join(unknown))
+                    )
+            cleaned = {}
+            for key, item in controls.items():
+                if not isinstance(item, dict):
+                    raise ValueError("Each control field must be an object")
+                cleaned[key] = {
+                    "binding": str(item.get("binding") or "").strip(),
+                    "activation": str(item.get("activation") or "unknown").strip(),
+                    "status": str(item.get("status") or "human_confirmed").strip(),
+                }
+            draft = {
+                "schema_version": "1.0",
+                "game_profile_id": game_profile_id,
+                "source_profile_file": game.get("source_file"),
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+                "controls": cleaned,
+                "behavior_notes": str(value.get("behavior_notes") or "").strip(),
+                "map_viewer_notes": str(value.get("map_viewer_notes") or "").strip(),
+            }
+            _write_json_atomic(self._profile_draft_path(game_profile_id), draft)
+            self._refresh_poc_evidence_index(game_profile_id)
+            self._last_error = None
+        return self.descriptor()
 
     def _desktop(self):
         if self.desktop_api is None:
@@ -310,10 +540,44 @@ class AcquisitionWorkbench:
                 ):
                     input_config.update(window_title=window_title, exact_title=True)
 
-            route_id = value.get("route_id") or (route or {}).get("route_id")
-            if not route_id:
+            capture_kind = str(value.get("capture_kind") or "route")
+            if capture_kind not in self.CAPTURE_KINDS:
+                raise ValueError("Unsupported capture kind: {}".format(capture_kind))
+            capture_id = value.get("capture_id") or value.get("route_id") or (
+                route or {}
+            ).get("route_id")
+            if not capture_id:
+                raise ValueError("A capture ID is required")
+            capture_id = safe_id(capture_id)
+            workflow_stage_id = value.get("workflow_stage_id") or None
+            workflow_stage = None
+            if workflow_stage_id:
+                if game is None:
+                    raise ValueError("A workflow stage requires a game profile")
+                workflow_stage = next(
+                    (
+                        dict(item)
+                        for item in game.get("poc_workflow", [])
+                        if item.get("stage_id") == workflow_stage_id
+                    ),
+                    None,
+                )
+                if workflow_stage is None:
+                    raise ValueError(
+                        "Unknown workflow stage for {}: {}".format(
+                            game["profile_id"], workflow_stage_id
+                        )
+                    )
+                if workflow_stage.get("capture_kind") != capture_kind:
+                    raise ValueError("Workflow stage and capture kind disagree")
+                if safe_id(workflow_stage.get("capture_id")) != capture_id:
+                    raise ValueError("Workflow stage and capture ID disagree")
+            route_id = (
+                value.get("route_id") or (route or {}).get("route_id") or capture_id
+            )
+            if capture_kind == "route" and not route_id:
                 raise ValueError("A route ID is required")
-            experiment_id = safe_id(value.get("experiment_id") or route_id)
+            experiment_id = safe_id(value.get("experiment_id") or capture_id)
             target_runs = int(value.get("target_runs") or (route or {}).get("target_runs", 3))
             capture_duration_s = float(
                 value.get("capture_duration_s")
@@ -332,6 +596,13 @@ class AcquisitionWorkbench:
                 "game_profile_id": game_id,
                 "route_profile_id": route_profile_id,
                 "route_id": route_id,
+                "capture_kind": capture_kind,
+                "capture_id": capture_id,
+                "workflow_stage_id": workflow_stage_id,
+                "workflow_stage": workflow_stage,
+                "game_profile_draft": self._profile_drafts().get(game_id),
+                "confirmation_label": value.get("confirmation_label")
+                or ("full route boundary" if capture_kind == "route" else "useful capture"),
                 "target_runs": target_runs,
                 "capture_duration_s": capture_duration_s,
                 "focus_wait_timeout_s": focus_wait_timeout_s,
@@ -342,6 +613,7 @@ class AcquisitionWorkbench:
             self._last_error = None
             self._compile_state = "not_ready"
             self._compile_result = None
+            self._hud_notice = None
         return self.descriptor()
 
     def disarm(self) -> dict:
@@ -349,6 +621,7 @@ class AcquisitionWorkbench:
             if self._active is not None:
                 raise RuntimeError("Cancel the active take before changing configuration")
             self._armed = None
+            self._hud_notice = None
         return self.descriptor()
 
     def _experiment_root(self) -> Path:
@@ -387,9 +660,16 @@ class AcquisitionWorkbench:
             reader = SessionReader(path)
             annotations = AnnotationStore(path).list()
             kinds = [item["kind"] for item in annotations]
-            if "route_failed" in kinds:
+            input_health = input_capture_health(reader.manifest)
+            if "route_failed" in kinds or "capture_failed" in kinds:
                 status = "needs_rerecord"
-            elif "route_start" in kinds and "route_complete" in kinds:
+            elif not input_health["healthy"]:
+                status = "needs_rerecord"
+            elif (
+                "route_start" in kinds and "route_complete" in kinds
+            ) or (
+                "capture_start" in kinds and "capture_complete" in kinds
+            ):
                 status = "ready"
             elif "take_start" in kinds and "take_end" in kinds:
                 status = "captured_needs_confirmation"
@@ -405,6 +685,8 @@ class AcquisitionWorkbench:
                     "main", 0
                 ),
                 "input_events": len(reader.inputs),
+                "control_input_events": input_health["control_events"],
+                "input_capture": input_health,
                 "markers": kinds,
             }
         except Exception as exc:
@@ -428,8 +710,11 @@ class AcquisitionWorkbench:
             runs = self._runs()
             all_ready = bool(runs) and all(run["status"] == "ready" for run in runs)
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "profiles": self.profiles.descriptor(),
+                "game_profile_drafts": self._profile_drafts(),
+                "poc_evidence_indexes": self._poc_evidence_indexes(),
+                "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
                 "visible_windows": self._windows(),
                 "armed": self._armed,
@@ -445,7 +730,13 @@ class AcquisitionWorkbench:
                     "stages": "derived_or_annotated_after_recording",
                 },
                 "last_error": self._last_error,
-                "compile_state": self._compile_state if all_ready else "not_ready",
+                "compile_state": (
+                    self._compile_state
+                    if all_ready and (self._armed or {}).get("capture_kind") == "route"
+                    else "not_applicable"
+                    if self._armed and self._armed.get("capture_kind") != "route"
+                    else "not_ready"
+                ),
                 "compile_result": self._compile_result,
             }
 
@@ -495,12 +786,19 @@ class AcquisitionWorkbench:
                 "focus_interrupted": False,
                 "focus_timeout": False,
                 "focus_acquired_host_time_ns": None,
+                "recording_deadline_host_time_ns": None,
             }
             self._active = active
+            self._hud_notice = None
             self._last_error = None
 
         def work() -> None:
             guard = None
+            hud_result = {
+                "state": "failed",
+                "run_index": run_index,
+                "detail": "Return to the workbench and rerecord.",
+            }
             try:
                 self._archive_existing(active["path"])
                 frame_source = self.sources.frame(config["frame_source"])
@@ -517,6 +815,11 @@ class AcquisitionWorkbench:
                         "game_profile_id": config["game_profile_id"],
                         "route_profile_id": config["route_profile_id"],
                         "route_id": config["route_id"],
+                        "capture_kind": config["capture_kind"],
+                        "capture_id": config["capture_id"],
+                        "workflow_stage_id": config.get("workflow_stage_id"),
+                        "workflow_stage": config.get("workflow_stage"),
+                        "game_profile_draft": config.get("game_profile_draft"),
                         "run_index": run_index,
                         "frame_adapter": config["frame_source"]["adapter"],
                         "input_adapter": config["input_source"].get(
@@ -543,12 +846,18 @@ class AcquisitionWorkbench:
                         )
                         if end_time is None:
                             if foreground:
-                                active["focus_acquired_host_time_ns"] = (
-                                    time.perf_counter_ns()
-                                )
+                                focus_acquired_host_time_ns = time.perf_counter_ns()
                                 end_time = now + config["capture_duration_s"]
                                 with self._lock:
                                     if self._active is active:
+                                        active["focus_acquired_host_time_ns"] = (
+                                            focus_acquired_host_time_ns
+                                        )
+                                        active[
+                                            "recording_deadline_host_time_ns"
+                                        ] = focus_acquired_host_time_ns + int(
+                                            config["capture_duration_s"] * 1.0e9
+                                        )
                                         active["phase"] = (
                                             "recording_uninterrupted_take"
                                         )
@@ -580,30 +889,58 @@ class AcquisitionWorkbench:
                     external_stop=active["stop"],
                     started_event=sources_started,
                 )
+                with self._lock:
+                    if self._active is active:
+                        active["phase"] = "finalizing_capture"
 
+                input_health = input_capture_health(
+                    SessionReader(active["path"]).manifest
+                )
+                empty_input = not input_health["healthy"]
                 failed = bool(
                     active["cancel"].is_set()
                     or active["focus_interrupted"]
                     or active["focus_timeout"]
                     or active["focus_acquired_host_time_ns"] is None
+                    or empty_input
                 )
+                failure_note = None
+                if empty_input:
+                    failure_note = (
+                        "automatic:{}:no_control_input_events:{}".format(
+                            config["capture_id"], input_health["adapter"]
+                        )
+                    )
                 self._finalize_take(
                     active["path"],
                     config["route_id"],
                     failed,
                     active["focus_acquired_host_time_ns"],
+                    capture_kind=config["capture_kind"],
+                    capture_id=config["capture_id"],
+                    failure_note=failure_note,
                 )
                 if active["focus_timeout"]:
                     with self._lock:
                         self._last_error = (
                             "Take never received game focus; rerecord it"
                         )
+                elif empty_input:
+                    with self._lock:
+                        self._last_error = (
+                            "No control input events were recorded by {}. "
+                            "The capture was rejected; verify recorder/game "
+                            "privilege levels or try the legacy input adapter."
+                        ).format(input_health["adapter"])
                 elif failed:
                     with self._lock:
                         self._last_error = (
                             "Take was canceled or game focus was lost; rerecord it"
                         )
+                else:
+                    hud_result["state"] = "complete"
             except Exception as exc:
+                hud_result["detail"] = "{}: {}".format(type(exc).__name__, exc)
                 with self._lock:
                     self._last_error = "{}: {}".format(type(exc).__name__, exc)
             finally:
@@ -613,6 +950,20 @@ class AcquisitionWorkbench:
                 with self._lock:
                     if self._active is active:
                         self._active = None
+                    self._hud_notice = hud_result
+                try:
+                    if config.get("game_profile_id"):
+                        self._refresh_poc_evidence_index(
+                            config["game_profile_id"]
+                        )
+                except Exception as exc:
+                    with self._lock:
+                        if self._last_error is None:
+                            self._last_error = (
+                                "POC evidence index: {}: {}".format(
+                                    type(exc).__name__, exc
+                                )
+                            )
         active["thread"] = threading.Thread(
             target=work,
             name="acquisition-uninterrupted-take",
@@ -635,6 +986,9 @@ class AcquisitionWorkbench:
         route_id: str,
         failed: bool,
         focus_acquired_host_time_ns: Optional[int] = None,
+        capture_kind: str = "route",
+        capture_id: Optional[str] = None,
+        failure_note: Optional[str] = None,
     ) -> None:
         reader = SessionReader(path)
         frames = reader.frames_by_stream.get("main", [])
@@ -654,18 +1008,21 @@ class AcquisitionWorkbench:
                 frame["session_time_ns"],
                 "main",
                 frame["frame_index"],
-                route_id=route_id,
+                route_id=route_id if capture_kind == "route" else None,
                 note=note,
             )
         if failed:
             frame = frames[end_index]
             store.add(
-                "route_failed",
+                "route_failed" if capture_kind == "route" else "capture_failed",
                 frame["session_time_ns"],
                 "main",
                 frame["frame_index"],
-                route_id=route_id,
-                note="automatic:focus_lost_or_user_canceled",
+                route_id=route_id if capture_kind == "route" else None,
+                note=failure_note
+                or "automatic:{}:focus_lost_or_user_canceled".format(
+                    capture_id or capture_kind
+                ),
             )
 
     def confirm_take(self, run_index: int) -> dict:
@@ -684,21 +1041,36 @@ class AcquisitionWorkbench:
                 item for item in annotations if item["kind"] == "take_end"
             )
             store = AnnotationStore(path)
-            for kind, source in (
-                ("route_start", take_start),
-                ("route_complete", take_end),
-            ):
+            capture_kind = self._armed.get("capture_kind", "route")
+            marker_pair = (
+                (("route_start", take_start), ("route_complete", take_end))
+                if capture_kind == "route"
+                else (("capture_start", take_start), ("capture_complete", take_end))
+            )
+            for kind, source in marker_pair:
                 store.add(
                     kind,
                     source["session_time_ns"],
                     source["stream_id"],
                     source["frame_index"],
-                    route_id=self._armed["route_id"],
-                    note="post_take_confirmation:full_take_boundary",
+                    route_id=(
+                        self._armed["route_id"] if capture_kind == "route" else None
+                    ),
+                    note="post_take_confirmation:{}:{}".format(
+                        self._armed.get("capture_id"),
+                        self._armed.get("confirmation_label"),
+                    ),
                 )
+            if self._armed.get("game_profile_id"):
+                self._refresh_poc_evidence_index(
+                    self._armed["game_profile_id"]
+                )
+            self._hud_notice = None
         return self.descriptor()
     def compile_and_evaluate(self) -> dict:
         with self._lock:
+            if self._armed is None or self._armed.get("capture_kind") != "route":
+                raise RuntimeError("Only route captures can be compiled and evaluated")
             runs = self._runs()
             if len(runs) < 2 or not all(run["status"] == "ready" for run in runs):
                 raise RuntimeError(
@@ -813,6 +1185,8 @@ def make_handler(state: AcquisitionWorkbench):
                     )
                 elif path == "/api/state":
                     self._json(200, state.descriptor())
+                elif path == "/api/hud":
+                    self._json(200, state.hud_descriptor())
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
             except Exception as exc:
@@ -838,6 +1212,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.confirm_take(int(value["run_index"]))
                 elif path == "/api/compile":
                     result = state.compile_and_evaluate()
+                elif path == "/api/profile/draft":
+                    result = state.save_profile_draft(value)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
                     return
@@ -876,6 +1252,11 @@ def main() -> None:
     parser.add_argument("--profile-root", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--no-hud",
+        action="store_true",
+        help="disable the capture-safe always-on-top Windows status HUD",
+    )
     args = parser.parse_args()
     catalog = ProfileCatalog(args.profile_root) if args.profile_root else ProfileCatalog()
     state = AcquisitionWorkbench(
@@ -884,13 +1265,51 @@ def main() -> None:
         profiles=catalog,
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(state))
+    hud = None
+    hud_error = None
+    if os.name == "nt" and not args.no_hud:
+        try:
+            from .hud_process import WorkbenchHudProcess
+
+            hud_host = (
+                "127.0.0.1"
+                if args.host in ("0.0.0.0", "::", "")
+                else args.host
+            )
+            hud = WorkbenchHudProcess(
+                "http://{}:{}/api/hud".format(
+                    hud_host,
+                    server.server_address[1],
+                )
+            )
+            hud.start()
+            state.set_hud_runtime(
+                enabled=True,
+                capture_exclusion=True,
+            )
+        except Exception as exc:
+            hud_error = "{}: {}".format(type(exc).__name__, exc)
+            if hud is not None:
+                hud.stop()
+            hud = None
+            state.set_hud_runtime(
+                enabled=False,
+                capture_exclusion=False,
+                error=hud_error,
+            )
     print("AriaTrace Acquisition Workbench")
     print("Open http://{}:{}/".format(args.host, server.server_address[1]))
+    if hud is not None:
+        print("In-game HUD enabled (click-through and excluded from capture)")
+    elif hud_error:
+        print("In-game HUD unavailable: {}".format(hud_error))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if hud is not None:
+            hud.stop()
         server.server_close()
         state.close()
 

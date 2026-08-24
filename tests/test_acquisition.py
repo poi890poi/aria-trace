@@ -78,6 +78,27 @@ class ContinuousFrameSource:
         return {"type": "continuous-test", "stream_id": "main"}
 
 
+class DiagnosticInputSource:
+    source_id = "diagnostic-input"
+
+    def __init__(self):
+        self.finalized = False
+
+    def start(self, emit):
+        now = time.perf_counter_ns()
+        emit(InputPacket(self.source_id, "test_input", now, {"active": True}))
+
+    def stop(self):
+        self.finalized = True
+
+    def describe(self):
+        return {
+            "type": "diagnostic-test-input",
+            "source_id": self.source_id,
+            "finalized": self.finalized,
+        }
+
+
 class FakeWindowsApi:
     def __init__(self):
         self.snapshots = [
@@ -115,6 +136,21 @@ class FakeWindowsApi:
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_recorder_persists_final_input_source_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            input_source = DiagnosticInputSource()
+            manifest = AcquisitionRecorder(
+                Path(temporary) / "diagnostics",
+                [ContinuousFrameSource()],
+                [input_source],
+                video_encoding="mjpeg",
+            ).run(duration_s=0.02)
+            self.assertTrue(manifest["input_sources"][0]["finalized"])
+            self.assertEqual(
+                manifest["input_counts"]["diagnostic-input:test_input"],
+                1,
+            )
+
     def test_recorder_signals_sources_ready_before_external_take_clock(self):
         with tempfile.TemporaryDirectory() as temporary:
             started = threading.Event()

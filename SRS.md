@@ -16,6 +16,8 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - Navigation excludes combat.
 - The target domain includes first-person shooters and third-person MMORPG-style navigation. A simple sandbox may validate plumbing but not target-level performance.
 
+The current milestone is the observation and game-modeling side of this MVP: game profiling, automated full-map acquisition, mini-map calibration, cruise modeling, and a gameplay route recorder/descriptor. Adaptive route replay remains the product goal, but its detailed estimator and controller design is deferred until recordings expose the dominant errors.
+
 ## 3. Functional Requirements
 
 ### Capture and calibration
@@ -25,6 +27,25 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - **CAL-01:** Calibrate camera intrinsics and distortion using a standard ChArUco workflow.
 - **CAL-02:** Rectify the phone screen into canonical screen coordinates using a screen-plane homography.
 - **CAL-03:** Store calibration, optical settings, validation error, and camera format in a reusable profile.
+- **CAL-04:** Automatically estimate the mini-map's position and circular boundary and store the result, method/configuration provenance, confidence/quality, and inspectable diagnostic images as a reusable structured artifact.
+- **CAL-05:** The initial calibration experiment shall support a sustained same-direction horizontal camera rotation combined with a vertical zig-zag, then use temporal aggregation and circle detection to propose the mini-map boundary. This is an experimental procedure, not a fixed algorithm requirement.
+
+### Full-map acquisition
+
+- **MAP-01:** Automatically acquire complete coverage of all accessible map regions/layers from the game's full in-game map viewer rather than reconstruct the reference map solely from the semi-transparent mini-map; explicitly report inaccessible or undiscovered areas.
+- **MAP-02:** Acquire source views at an effective spatial/detail resolution greater than the mini-map and retain enough overlap or other registration evidence to combine them reliably.
+- **MAP-03:** Store a versioned map artifact containing source captures, capture/view state, transforms, coverage/completeness information, quality, and derived tiles or mosaic products.
+- **MAP-04:** Keep the acquired full map distinct from live mini-map observations and from reconstructed route geometry. Preserve any mapping among their coordinate systems as an explicit calibrated estimate.
+- **MAP-05:** Use a profiled map-viewer control procedure to automate opening, navigating, capturing, verifying coverage, and exiting the viewer. Game-specific UI details shall remain editable profile data.
+
+### Game profiling
+
+- **GPR-01:** Provide a semi-automatic game profiler that produces a versioned, human-editable game profile from controlled probes, recorded evidence, and reviewer corrections.
+- **GPR-02:** Represent semantic actions and their physical bindings, including movement, camera control, jump, dash, interaction, and game/map UI actions as applicable.
+- **GPR-03:** Represent activation semantics such as press, release, single click, hold, toggle, chord, duration, analog range, dead zone, and mutually compatible simultaneous actions where applicable.
+- **GPR-04:** Measure relevant behaviors such as movement and rotation response, acceleration/stopping, camera-character coupling, jump/dash behavior, cooldown or recovery timing, collision response, and end-to-end input response where observable.
+- **GPR-05:** Preserve the source frames, input events, probe definition, timing, inferred value, confidence, and human edit history behind each modeled behavior. A manual correction shall not erase the measured result.
+- **GPR-06:** Keep adapter/capture defaults, control specification, measured behavior, map-viewer procedure, and known limitations in one game-profile relationship without coupling route-specific instructions into the game profile.
 
 ### Demonstration recording
 
@@ -42,6 +63,21 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - **DEM-01:** Compile a recorded session into a versioned replay package containing synchronized observations, route stages, landmarks, interactions, action priors, and completion evidence.
 - **DEM-02:** Retain the original video, controls, timestamps, calibration, annotations, and feature evidence referenced by the replay package.
 - **DEM-03:** Permit manual correction of route stages and success/failure annotations without rewriting source evidence.
+- **DEM-04:** Extract a normalized circular mini-map observation from a source game frame while excluding pixels outside its valid map mask.
+- **DEM-05:** Estimate relative XY mini-map shift and character facing with quality/confidence and relevant intermediate measurements. Character facing shall not be assumed equal to camera facing or movement direction.
+- **DEM-06:** Build route descriptors from selected keyframes grouped into local submaps, retaining a route centerline with both reconstructed spatial position and cumulative progress along the demonstrated route.
+- **DEM-07:** Preserve raw relative measurements separately from reconstructed or corrected positions, including original values and validity/review state, so bad measurements can be rejected or replaced later.
+- **DEM-08:** Keep each selected observation traceable to its original full game frame, timestamp, input/control state, calibration, measurements, and diagnostic artifacts.
+- **DEM-09:** Treat stitched maps, route strips, sparse tiles, and trajectory plots as derived inspection products, never as the authoritative route representation.
+- **DEM-10:** Permit future constraints from revisited locations without requiring loop closure or global optimization in the current milestone.
+
+### Mini-map cruise model
+
+- **MMC-01:** Record consecutive mini-map observations with sufficient overlap to estimate relative translation.
+- **MMC-02:** The initial XY proposal shall evaluate Fourier/phase correlation over the valid circular map area; the implementation shall preserve peak/overlap quality and remain replaceable.
+- **MMC-03:** Facing estimation shall support game-specific central cursors rather than hard-code one cursor shape. Polar normalization and aggregation across different orientations are the initial proposal, not a mandated final algorithm.
+- **MMC-04:** Measure movement-speed and rotation-rate distributions without assuming movement direction and facing are identical.
+- **MMC-05:** Estimate temporal stability after movement alignment so transient icons, animations, floating elements, and effects can be down-weighted without requiring exhaustive icon recognition.
 
 ### Adaptive replay
 
@@ -78,6 +114,14 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - **TIM-02:** Measure capture, processing, control-send, and observed-response latency.
 - **TIM-03:** Process the newest frame and discard stale queued frames.
 - **TIM-04:** Target 30 Hz local control and less than 100 ms capture-to-control latency for the initial replay profile, subject to selected camera hardware.
+- **TIM-05:** Retain enough provenance to compute observation age, estimator update rate, processing latency, capture-to-estimate latency, capture-to-control latency, stale-observation use, and game response after control without treating unknown delay as zero.
+- **TIM-06:** Permit observation sources and estimators to operate at different rates without requiring a single heavyweight synchronized pose output.
+
+### Review and diagnosis
+
+- **REV-01:** Extend the existing review tooling to synchronize source frames, mini-map crops and masks, shift/facing estimates, confidence, route progress, trajectory, keyframe/submap membership, controls, and diagnostic images where available.
+- **REV-02:** Make suspicious measurements traceable to neighboring source frames and all associated provenance.
+- **REV-03:** Store correct/suspicious/wrong judgments and comments as structured, machine-readable annotations without destroying original measurements.
 
 ## 4. Quality Requirements
 
@@ -96,3 +140,5 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - Automatic camera optical adjustment
 - Fully autonomous semantic exploration
 - Circumvention of game security or anti-cheat systems
+
+For the current recorder milestone specifically, autonomous replay, scene-based route-relative localization, constrained-traversal control, divergence recovery, loop closure, and a prescribed global optimization method are also out of scope. They remain candidate directions to evaluate after real recorder results exist.
