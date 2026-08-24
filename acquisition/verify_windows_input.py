@@ -50,7 +50,7 @@ class _VerificationFrameSource:
         return {"type": "verification-frame-source", "stream_id": self.stream_id}
 
 
-def _inject_f24() -> None:
+def _inject_key(virtual_key: int) -> None:
     """Inject an otherwise-unused key as a best-effort automated smoke event."""
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.keybd_event.argtypes = [
@@ -59,8 +59,8 @@ def _inject_f24() -> None:
         ctypes.c_ulong,
         ctypes.c_ulong,
     ]
-    user32.keybd_event(0x87, 0, 0, 0)
-    user32.keybd_event(0x87, 0, 0x0002, 0)
+    user32.keybd_event(int(virtual_key), 0, 0, 0)
+    user32.keybd_event(int(virtual_key), 0, 0x0002, 0)
 
 
 def main() -> int:
@@ -68,7 +68,8 @@ def main() -> int:
         description="Verify the active-lifetime Windows Raw Input path"
     )
     parser.add_argument("--window", required=True, help="Exact visible window title")
-    parser.add_argument("--wait", type=float, default=1.0)
+    parser.add_argument("--wait", type=float, default=3.0)
+    parser.add_argument("--settle", type=float, default=1.5)
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--inject-f24",
@@ -92,7 +93,12 @@ def main() -> int:
 
     def sources_started() -> None:
         if args.inject_f24:
-            threading.Timer(0.1, _inject_f24).start()
+            # F23 simulates the queue/switch residue that must be discarded;
+            # F24 is the first eligible input and must become session time zero.
+            threading.Timer(0.1, _inject_key, args=(0x86,)).start()
+            threading.Timer(
+                max(0.2, args.settle + 0.1), _inject_key, args=(0x87,)
+            ).start()
         safety_timer.start()
 
     manifest = AcquisitionRecorder(
@@ -106,6 +112,7 @@ def main() -> int:
         external_stop=safety_stop,
         on_sources_started=sources_started,
         start_on_input=True,
+        input_start_delay_s=args.settle,
         input_start_predicate=lambda packet: packet.kind == "pc_raw_keyboard",
     )
     safety_timer.cancel()
@@ -113,12 +120,16 @@ def main() -> int:
     first_input_time = (
         reader.inputs[0]["session_time_ns"] if reader.inputs else None
     )
+    first_virtual_key = (
+        reader.inputs[0]["payload"].get("virtual_key") if reader.inputs else None
+    )
     diagnostics = source.describe()["raw_input_diagnostics"]
     passed = bool(
         (manifest.get("recording_start") or {}).get("started")
         and first_input_time == 0
         and diagnostics["packets_accepted"] > 0
         and diagnostics["packets_rejected_foreground"] == 0
+        and (not args.inject_f24 or first_virtual_key == 0x87)
     )
 
     result = {
@@ -127,6 +138,7 @@ def main() -> int:
         "manifest_status": manifest["status"],
         "recording_start": manifest.get("recording_start"),
         "first_input_session_time_ns": first_input_time,
+        "first_input_virtual_key": first_virtual_key,
         "input_count": len(reader.inputs),
         "frame_count": len(reader.frames_by_stream.get("verification", [])),
         "diagnostics": diagnostics,

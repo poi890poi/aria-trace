@@ -269,6 +269,8 @@ class SourceFactory:
         }
 
 class AcquisitionWorkbench:
+    INPUT_SETTLE_DELAY_S = 1.5
+    STATE_SCHEMA_VERSION = "1.0"
     CAPTURE_KINDS = (
         "route",
         "game_profile",
@@ -289,6 +291,7 @@ class AcquisitionWorkbench:
         self.session_root = Path(session_root)
         self.artifact_root = Path(artifact_root)
         self.session_root.mkdir(parents=True, exist_ok=True)
+        self.artifact_root.mkdir(parents=True, exist_ok=True)
         self.profiles = profiles or ProfileCatalog()
         self.desktop_api = desktop_api
         self.sources = SourceFactory(
@@ -308,9 +311,138 @@ class AcquisitionWorkbench:
             "capture_exclusion": False,
             "error": None,
         }
+        if not self._restore_state_file():
+            self._armed = self._recover_latest_experiment()
+            if self._armed is not None:
+                self._persist_state()
         for game_profile_id, game in self.profiles.games.items():
             if game.get("poc_workflow"):
                 self._refresh_poc_evidence_index(game_profile_id)
+
+    def _state_path(self) -> Path:
+        return self.artifact_root / "workbench_state.json"
+
+    def _persist_state(self) -> None:
+        _write_json_atomic(
+            self._state_path(),
+            {
+                "schema_version": self.STATE_SCHEMA_VERSION,
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+                "armed": self._armed,
+            },
+        )
+
+    def _restore_state_file(self) -> bool:
+        path = self._state_path()
+        if not path.is_file():
+            return False
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            armed = value.get("armed")
+            if armed is not None:
+                experiment_id = safe_id(armed.get("experiment_id"))
+                if experiment_id != armed.get("experiment_id"):
+                    raise ValueError("Persisted experiment ID is not canonical")
+                if not isinstance(armed.get("frame_source"), dict):
+                    raise ValueError("Persisted frame source is missing")
+                if not isinstance(armed.get("input_source"), dict):
+                    raise ValueError("Persisted input source is missing")
+            self._armed = armed
+            return True
+        except Exception as exc:
+            self._last_error = "Could not restore workbench state: {}: {}".format(
+                type(exc).__name__, exc
+            )
+            return False
+
+    def _recover_latest_experiment(self) -> Optional[dict]:
+        candidates = [
+            path
+            for path in self.session_root.glob("*/run_*/manifest.json")
+            if re.fullmatch(r"run_\d+", path.parent.name)
+        ]
+        if not candidates:
+            return None
+        manifest_path = max(candidates, key=lambda path: path.stat().st_mtime_ns)
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            context = manifest.get("context") or {}
+            experiment_id = safe_id(context.get("experiment_id"))
+            if experiment_id != manifest_path.parent.parent.name:
+                return None
+            game_id = context.get("game_profile_id")
+            route_profile_id = context.get("route_profile_id")
+            game = self.profiles.game(game_id) if game_id else None
+            route = self.profiles.route(route_profile_id) if route_profile_id else None
+            stage_id = context.get("workflow_stage_id")
+            stage = next(
+                (
+                    dict(item)
+                    for item in (game or {}).get("poc_workflow", [])
+                    if item.get("stage_id") == stage_id
+                ),
+                context.get("workflow_stage"),
+            )
+            frame_description = (manifest.get("frame_sources") or [{}])[0]
+            input_description = (manifest.get("input_sources") or [{}])[0]
+            frame_config = dict((game or {}).get("default_frame_source") or {})
+            frame_config["adapter"] = context.get("frame_adapter") or frame_config.get(
+                "adapter", "windows_window"
+            )
+            window_title = frame_description.get(
+                "matched_window_title"
+            ) or frame_description.get("window_title_query")
+            if window_title:
+                frame_config.update(window_title=window_title, exact_title=True)
+            if frame_description.get("requested_fps"):
+                frame_config["fps"] = frame_description["requested_fps"]
+            input_config = dict((game or {}).get("default_input_source") or {})
+            input_config["adapter"] = context.get("input_adapter") or input_config.get(
+                "adapter", "none"
+            )
+            if window_title and input_config["adapter"].startswith("windows_"):
+                input_config.update(window_title=window_title, exact_title=True)
+            if input_description.get("poll_hz"):
+                input_config["poll_hz"] = input_description["poll_hz"]
+            target_runs = int(
+                (stage or {}).get("target_runs")
+                or (route or {}).get("target_runs")
+                or context.get("run_index")
+                or 1
+            )
+            capture_duration_s = float(
+                (stage or {}).get("capture_duration_s")
+                or (route or {}).get("capture_duration_s")
+                or max(5.0, manifest.get("duration_ns", 0) / 1.0e9)
+            )
+            capture_kind = context.get("capture_kind") or "route"
+            capture_id = safe_id(
+                context.get("capture_id") or context.get("route_id")
+            )
+            return {
+                "experiment_id": experiment_id,
+                "game_profile_id": game_id,
+                "route_profile_id": route_profile_id,
+                "route_id": context.get("route_id") or capture_id,
+                "capture_kind": capture_kind,
+                "capture_id": capture_id,
+                "workflow_stage_id": stage_id,
+                "workflow_stage": stage,
+                "game_profile_draft": context.get("game_profile_draft"),
+                "confirmation_label": (stage or {}).get("confirmation_label")
+                or ("full route boundary" if capture_kind == "route" else "useful capture"),
+                "target_runs": target_runs,
+                "capture_duration_s": capture_duration_s,
+                "frame_source": frame_config,
+                "input_source": input_config,
+                "armed_utc": context.get("created_utc") or manifest.get("created_utc"),
+                "restored_from_session": str(manifest_path.parent),
+            }
+        except Exception as exc:
+            self._last_error = "Could not recover latest experiment: {}: {}".format(
+                type(exc).__name__, exc
+            )
+            return None
 
     def set_hud_runtime(
         self,
@@ -354,6 +486,26 @@ class AcquisitionWorkbench:
                             "state": "arming_sources",
                             "status": "ARMING",
                             "detail": "Preparing frame and input capture.",
+                            "color": "#ffd166",
+                        }
+                    )
+                    return common
+                if active["phase"] == "settling_queue_input":
+                    remaining_s = max(
+                        0.0,
+                        (
+                            active["input_eligible_host_time_ns"]
+                            - time.perf_counter_ns()
+                        )
+                        / 1.0e9,
+                    )
+                    common.update(
+                        {
+                            "state": "settling_queue_input",
+                            "status": "SWITCH TO GAME",
+                            "detail": "Ignoring queue-click input · ready in {:.1f}s".format(
+                                remaining_s
+                            ),
                             "color": "#ffd166",
                         }
                     )
@@ -650,6 +802,7 @@ class AcquisitionWorkbench:
             self._compile_state = "not_ready"
             self._compile_result = None
             self._hud_notice = None
+            self._persist_state()
         return self.descriptor()
 
     def disarm(self) -> dict:
@@ -658,6 +811,7 @@ class AcquisitionWorkbench:
                 raise RuntimeError("Cancel the active take before changing configuration")
             self._armed = None
             self._hud_notice = None
+            self._persist_state()
         return self.descriptor()
 
     def _experiment_root(self) -> Path:
@@ -760,7 +914,7 @@ class AcquisitionWorkbench:
                 "active_phase": self._active["phase"] if self._active else None,
                 "capture_policy": {
                     "in_game_controls": "none",
-                    "start": "sources_ready_then_session_starts_on_first_active_input",
+                    "start": "sources_ready_then_queue_input_settles_then_first_active_input",
                     "end": "fixed_duration_or_user_cancel",
                     "route_bounds": "post_take_confirmation",
                     "stages": "derived_or_annotated_after_recording",
@@ -810,6 +964,7 @@ class AcquisitionWorkbench:
                 "stop": threading.Event(),
                 "recording_started_host_time_ns": None,
                 "recording_deadline_host_time_ns": None,
+                "input_eligible_host_time_ns": None,
                 "recorded_input_events": 0,
                 "first_input_kind": None,
             }
@@ -853,10 +1008,19 @@ class AcquisitionWorkbench:
                         "input_adapter": config["input_source"].get(
                             "adapter", "none"
                         ),
-                        "capture_policy": "active_lifetime_first_input_start_v4",
+                        "capture_policy": "settled_active_lifetime_first_input_start_v5",
                     },
                 )
                 def sources_started() -> None:
+                    with self._lock:
+                        if self._active is active:
+                            active["input_eligible_host_time_ns"] = (
+                                time.perf_counter_ns()
+                                + int(self.INPUT_SETTLE_DELAY_S * 1.0e9)
+                            )
+                            active["phase"] = "settling_queue_input"
+
+                def input_eligible() -> None:
                     with self._lock:
                         if self._active is active:
                             active["phase"] = "waiting_for_first_input"
@@ -884,7 +1048,9 @@ class AcquisitionWorkbench:
                     external_stop=active["stop"],
                     on_sources_started=sources_started,
                     start_on_input=True,
+                    input_start_delay_s=self.INPUT_SETTLE_DELAY_S,
                     input_start_predicate=input_packet_is_active,
+                    on_input_eligible=input_eligible,
                     on_recording_started=recording_started,
                     on_input_recorded=input_recorded,
                 )
@@ -997,7 +1163,7 @@ class AcquisitionWorkbench:
         )
         store = AnnotationStore(path)
         for kind, index, note in (
-            ("take_start", start_index, "automatic:first_observed_control_or_game_focus"),
+            ("take_start", start_index, "automatic:first_retained_control"),
             ("take_end", end_index, "automatic:capture_end"),
         ):
             frame = frames[index]

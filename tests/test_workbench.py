@@ -116,6 +116,40 @@ class FakeRawInputApi:
         self.stopped.set()
 
 
+class SettlingRawInputApi(FakeRawInputApi):
+    def run(self, emit, ready_event):
+        ready_event.set()
+        now = time.perf_counter_ns()
+        emit(
+            {
+                "kind": "pc_raw_mouse",
+                "host_time_ns": now,
+                "payload": {
+                    "movement_mode": "relative",
+                    "delta_x": 3,
+                    "delta_y": 0,
+                    "button_transitions": ["left_up"],
+                    "wheel_delta": 0,
+                    "horizontal_wheel_delta": 0,
+                },
+            }
+        )
+        if not self.stopped.wait(0.15):
+            emit(
+                {
+                    "kind": "pc_raw_keyboard",
+                    "host_time_ns": time.perf_counter_ns(),
+                    "payload": {
+                        "virtual_key": 87,
+                        "key_name": "W",
+                        "scan_code": 17,
+                        "pressed": True,
+                    },
+                }
+            )
+        self.stopped.wait(1)
+
+
 class DescribedSource:
     stream_id = "main"
 
@@ -176,6 +210,110 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_restart_restores_persisted_armed_experiment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            profiles = ProfileCatalog(profile_root)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=profiles,
+                desktop_api=ArbitraryDesktop(),
+            )
+            state.arm(
+                {
+                    "game_profile_id": "game-a",
+                    "capture_kind": "full_map",
+                    "capture_id": "game-a-full-map",
+                    "workflow_stage_id": "full-map",
+                    "experiment_id": "persisted-workbench",
+                    "target_runs": 1,
+                    "capture_duration_s": 20,
+                    "window_title": "Popular Game A",
+                }
+            )
+            state.close()
+
+            restored = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=profiles,
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                self.assertEqual(
+                    restored.descriptor()["armed"]["experiment_id"],
+                    "persisted-workbench",
+                )
+                restored.disarm()
+            finally:
+                restored.close()
+            reopened = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=profiles,
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                self.assertIsNone(reopened.descriptor()["armed"])
+            finally:
+                reopened.close()
+
+    def test_restart_recovers_latest_session_when_legacy_state_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_root = root / "profiles"
+            write_catalog(profile_root)
+            path = root / "sessions" / "recovered-experiment" / "run_01"
+            writer = SessionWriter(
+                path,
+                [DescribedSource()],
+                [],
+                video_encoding="mjpeg",
+                session_context={
+                    "experiment_id": "recovered-experiment",
+                    "game_profile_id": "game-a",
+                    "route_profile_id": None,
+                    "route_id": "game-a-full-map",
+                    "capture_kind": "full_map",
+                    "capture_id": "game-a-full-map",
+                    "workflow_stage_id": "full-map",
+                    "workflow_stage": None,
+                    "run_index": 1,
+                    "frame_adapter": "windows_window",
+                    "input_adapter": "windows_raw_keyboard_mouse",
+                },
+            )
+            writer.write_frame(
+                FramePacket(
+                    "main",
+                    np.zeros((32, 48, 3), dtype=np.uint8),
+                    writer.origin_ns,
+                    writer.origin_ns,
+                )
+            )
+            writer.close()
+
+            restored = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(profile_root),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                descriptor = restored.descriptor()
+                self.assertEqual(
+                    descriptor["armed"]["experiment_id"], "recovered-experiment"
+                )
+                self.assertEqual(descriptor["runs"][0]["frames"], 1)
+                self.assertTrue(
+                    (root / "artifacts" / "workbench_state.json").is_file()
+                )
+            finally:
+                restored.close()
+
     def test_queued_take_accepts_raw_input_without_any_focus_gate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -186,9 +324,10 @@ class WorkbenchTests(unittest.TestCase):
                 root / "artifacts",
                 profiles=ProfileCatalog(profile_root),
                 desktop_api=NeverForegroundDesktop(),
-                raw_input_api=FakeRawInputApi(),
+                raw_input_api=SettlingRawInputApi(),
             )
             try:
+                state.INPUT_SETTLE_DELAY_S = 0.1
                 state.arm(
                     {
                         "game_profile_id": "game-a",
@@ -224,6 +363,12 @@ class WorkbenchTests(unittest.TestCase):
                     "active_capture_lifecycle",
                 )
                 self.assertTrue(reader.manifest["recording_start"]["started"])
+                self.assertEqual(
+                    reader.manifest["recording_start"]["input_settle_delay_s"],
+                    0.1,
+                )
+                self.assertEqual(len(reader.inputs), 1)
+                self.assertEqual(reader.inputs[0]["kind"], "pc_raw_keyboard")
                 self.assertEqual(reader.inputs[0]["session_time_ns"], 0)
                 self.assertTrue(reader.frames_by_stream["main"])
             finally:
@@ -286,6 +431,13 @@ class WorkbenchTests(unittest.TestCase):
                 waiting = state.hud_descriptor()
                 self.assertEqual(waiting["state"], "arming_sources")
                 self.assertIn("1/1", waiting["title"])
+                state._active.update(
+                    phase="settling_queue_input",
+                    input_eligible_host_time_ns=time.perf_counter_ns()
+                    + 1_000_000_000,
+                )
+                settling = state.hud_descriptor()
+                self.assertEqual(settling["status"], "SWITCH TO GAME")
                 state._active.update(phase="waiting_for_first_input")
                 self.assertEqual(
                     state.hud_descriptor()["status"], "PLAY TO START"
@@ -601,7 +753,7 @@ class WorkbenchTests(unittest.TestCase):
                         urllib.request.urlopen(base + "/api/hud").read()
                     )
                     self.assertIn("Capture an uninterrupted human take", html)
-                    self.assertIn("first active input received", html)
+                    self.assertIn("next active input becomes time zero", html)
                     self.assertIn("Game / route preset", html)
                     self.assertIn("POC workflow wizard", html)
                     self.assertIn("Confirm/edit game controls", html)

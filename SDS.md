@@ -155,7 +155,7 @@ Two error classes remain separate. An individual shift or facing measurement may
 - Online features are extracted before video encoding and retained as session evidence with source frame indices and extractor metadata.
 - Features generated later from compressed video are separately labeled as versioned, regenerable caches.
 - `AnnotationStore` records append-only frame markers. The reviewer supplies the MVP authoring UI; a future `WorldReadyDetector` may add the same marker type without changing consumers.
-- Full-take acquisition has no in-game authoring controls. Frame and input sources run only for the queued take and discard pre-start observations. The first qualifying input received becomes session time zero and starts the configured-duration clock. There is no separate focus or input-test gate; take boundaries are confirmed or corrected only after gameplay. Landmarks are visual observations, not demonstrator inputs.
+- Full-take acquisition has no in-game authoring controls. Frame and input sources run only for the queued take. A short settling phase discards the queue click and switch residue; the first qualifying input afterward becomes session time zero and starts the configured-duration clock. There is no separate focus or input-test gate. The armed experiment is stored atomically under workbench artifacts and restored on restart; when legacy state is absent, the newest valid session context is recovered. Take boundaries are confirmed or corrected only after gameplay.
 - `PortalInitializationExtractor` selects the `world_ready` to `route_start` interval and preserves whether exported pixels came from raw lossless evidence or decoded compressed video.
 
 ### Game profiling

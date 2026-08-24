@@ -44,12 +44,16 @@ class AcquisitionRecorder:
         started_event: Optional[threading.Event] = None,
         on_sources_started: Optional[Callable[[], None]] = None,
         start_on_input: bool = False,
+        input_start_delay_s: float = 0.0,
         input_start_predicate: Optional[Callable[[InputPacket], bool]] = None,
+        on_input_eligible: Optional[Callable[[], None]] = None,
         on_recording_started: Optional[Callable[[InputPacket], None]] = None,
         on_input_recorded: Optional[Callable[[InputPacket], None]] = None,
     ) -> dict:
         if not self.frame_sources:
             raise ValueError("At least one frame source is required")
+        if input_start_delay_s < 0.0:
+            raise ValueError("Input start delay cannot be negative")
         event_queue = queue.Queue(maxsize=self.queue_size)
         stop_event = threading.Event()
         workers = []
@@ -98,6 +102,8 @@ class AcquisitionRecorder:
         recording_started = not start_on_input
         start_ns = time.perf_counter_ns() if recording_started else None
         first_input_kind = None
+        input_eligible_ns = None
+        input_eligible_announced = False
 
         def handle_event(kind, value) -> None:
             nonlocal recording_started, start_ns, first_input_kind
@@ -108,6 +114,12 @@ class AcquisitionRecorder:
                 stream_id, exc = value
                 raise RuntimeError("Frame source {} failed: {}".format(stream_id, exc))
             if not recording_started:
+                if (
+                    input_eligible_ns is not None
+                    and kind == "input"
+                    and value.host_time_ns < input_eligible_ns
+                ):
+                    return
                 qualifies = (
                     kind == "input"
                     and (
@@ -157,7 +169,19 @@ class AcquisitionRecorder:
                 started_event.set()
             if on_sources_started is not None:
                 on_sources_started()
+            if start_on_input:
+                input_eligible_ns = time.perf_counter_ns() + int(
+                    input_start_delay_s * 1.0e9
+                )
             while True:
+                if (
+                    start_on_input
+                    and not input_eligible_announced
+                    and time.perf_counter_ns() >= input_eligible_ns
+                ):
+                    input_eligible_announced = True
+                    if on_input_eligible is not None:
+                        on_input_eligible()
                 if external_stop is not None and external_stop.is_set():
                     break
                 if (
@@ -228,6 +252,9 @@ class AcquisitionRecorder:
                 "policy": "first_qualifying_input" if start_on_input else "immediate",
                 "started": recording_started,
                 "first_input_kind": first_input_kind,
+                "input_settle_delay_s": (
+                    float(input_start_delay_s) if start_on_input else 0.0
+                ),
             }
             writer.close(status=status, error=error_text)
         return writer.manifest

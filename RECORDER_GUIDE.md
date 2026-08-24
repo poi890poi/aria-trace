@@ -24,7 +24,7 @@ For the first POC:
 2. Use **Windows Raw Keyboard + Mouse** unless intentionally profiling a controller.
 3. Open **Confirm/edit game controls**, verify the bindings used by the current account, add behavior or map-viewer notes, and save the draft.
 4. Select wizard stage 1, read its displayed instructions, and select **Arm recorder**.
-5. Select **Queue next capture** and switch to Genshin. The upper-right HUD says **ARMING**, then **PLAY TO START**. The first active input received starts the session and the `REC · mm:ss` countdown.
+5. Select **Queue next capture** and switch to Genshin while the upper-right HUD says **ARMING** or **SWITCH TO GAME**. Queue/switch input is discarded for 1.5 seconds. When the HUD says **PLAY TO START**, the next active input starts the session and the `REC · mm:ss` countdown.
 6. In this single basic sample, perform a short cruise, stop and rotate the camera only, then hold the camera still and move only. Do not operate the recorder or mark anything while playing.
 7. When the HUD says **CAPTURE COMPLETE**, return to the workbench and confirm the capture. If it says **CAPTURE FAILED**, return and rerecord it.
 8. Select **Change setup** and continue with the full-map and route stages.
@@ -37,7 +37,7 @@ Each stage card shows `confirmed / required` progress. Confirmation refreshes `a
 
 When an input adapter is enabled, a capture with zero control events is rejected automatically and cannot remain **READY**. Raw Input receive, acceptance, and foreground-rejection counters are retained in the session manifest to diagnose an empty stream. Match the recorder's privilege level to the game or try the legacy adapter as a diagnostic fallback if Raw Input remains empty.
 
-For an automated receiver/recorder check that does not consume a gameplay sample, run `python -m acquisition.verify_windows_input --window "Genshin Impact" --inject-f24 --wait 2`. It writes a bounded verification session and passes only when Raw Input is accepted, the recorder starts, and the first durable input is session time zero.
+For an automated receiver/recorder check that does not consume a gameplay sample, run `python -m acquisition.verify_windows_input --window "Genshin Impact" --inject-f24 --settle 1.5 --wait 3`. It injects F23 during settling and F24 afterward, and passes only when F23 is discarded, F24 starts the recorder at session time zero, and a complete verification session is durable.
 
 The normal screen asks for four choices:
 
@@ -54,7 +54,7 @@ Select **Arm recorder** when the summary is correct. Arming only prepares the ta
 
 1. Put the game at the same chosen starting state.
 2. In the workbench, select **Queue next take**.
-3. Switch to the selected game window. The HUD changes from **ARMING** to **PLAY TO START**. The first qualifying control input received is retained at session time zero and starts the countdown. There is no focus gate.
+3. Switch to the selected game window during **ARMING** / **SWITCH TO GAME**. After the 1.5-second settling interval, the HUD changes to **PLAY TO START**. The next qualifying control input is retained at session time zero and starts the countdown. There is no focus gate.
 4. Play the complete route naturally. Preserve the route, speed, camera movement, pauses, and all other behavior you intend the machine to learn.
 5. Simply play the sample. The take stops automatically when the countdown ends. If you finish early, remain in the game until the HUD reports completion.
 6. Return to the workbench after **CAPTURE COMPLETE** and select **Confirm full take boundary** when the captured start and end represent the full route.
