@@ -1072,11 +1072,21 @@ class WindowsRawKeyboardMouseSource(InputSource):
         self._raw_packets_received = 0
         self._raw_packets_accepted = 0
         self._raw_packets_rejected_foreground = 0
+        self._filter_foreground = True
         self._foreground_predicate = None
+        self._foreground_authority = "selected_window_hwnd"
 
     def set_foreground_predicate(self, predicate: Callable[[], bool]) -> None:
         """Use the orchestrator's focus decision instead of a second HWND check."""
+        self._filter_foreground = True
         self._foreground_predicate = predicate
+        self._foreground_authority = "orchestrator_gate"
+
+    def disable_foreground_filter(self) -> None:
+        """Accept Raw Input for the recorder's already-bounded active lifetime."""
+        self._filter_foreground = False
+        self._foreground_predicate = None
+        self._foreground_authority = "active_capture_lifecycle"
 
     def _is_foreground(self) -> bool:
         if self._foreground_predicate is not None:
@@ -1111,7 +1121,7 @@ class WindowsRawKeyboardMouseSource(InputSource):
                     )
                 )
                 return
-            if not self._is_foreground():
+            if self._filter_foreground and not self._is_foreground():
                 self._raw_packets_rejected_foreground += 1
                 return
             self._raw_packets_accepted += 1
@@ -1176,7 +1186,10 @@ class WindowsRawKeyboardMouseSource(InputSource):
                 "window_title_query": self.window_title,
                 "matched_window_title": self.matched_title,
                 "exact_title": self.exact_title,
-                "foreground_only": True,
+                "foreground_only": (
+                    self._foreground_authority != "active_capture_lifecycle"
+                ),
+                "acceptance_policy": self._foreground_authority,
                 "keyboard": "raw_make_break_scan_code_and_virtual_key",
                 "mouse_motion": "raw_relative_delta",
                 "mouse_buttons": "raw_button_transitions_and_wheel",
@@ -1188,11 +1201,7 @@ class WindowsRawKeyboardMouseSource(InputSource):
                     "packets_rejected_foreground": (
                         self._raw_packets_rejected_foreground
                     ),
-                    "foreground_authority": (
-                        "orchestrator_gate"
-                        if self._foreground_predicate is not None
-                        else "selected_window_hwnd"
-                    ),
+                    "foreground_authority": self._foreground_authority,
                 },
             }
         )

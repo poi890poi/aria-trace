@@ -29,7 +29,6 @@ from .windows import (
     WindowsRawKeyboardMouseSource,
     WindowsWindowFrameSource,
     WindowsXInputSource,
-    select_window,
 )
 
 
@@ -349,12 +348,12 @@ class AcquisitionWorkbench:
                 "window_title": armed.get("frame_source", {}).get("window_title"),
             }
             if active is not None:
-                if active["phase"] == "waiting_for_game_focus":
+                if active["phase"] == "arming_sources":
                     common.update(
                         {
-                            "state": "waiting_for_game_focus",
-                            "status": "WAITING FOR GAME",
-                            "detail": "Focus Genshin; your first gameplay input starts recording.",
+                            "state": "arming_sources",
+                            "status": "ARMING",
+                            "detail": "Preparing frame and input capture.",
                             "color": "#ffd166",
                         }
                     )
@@ -624,13 +623,10 @@ class AcquisitionWorkbench:
                 value.get("capture_duration_s")
                 or (route or {}).get("capture_duration_s", 30.0)
             )
-            focus_wait_timeout_s = float(value.get("focus_wait_timeout_s") or 60.0)
             if target_runs < 1 or target_runs > 20:
                 raise ValueError("Target runs must be between 1 and 20")
             if capture_duration_s < 5.0 or capture_duration_s > 600.0:
                 raise ValueError("Capture duration must be between 5 and 600 seconds")
-            if focus_wait_timeout_s < 5.0 or focus_wait_timeout_s > 600.0:
-                raise ValueError("Focus wait must be between 5 and 600 seconds")
 
             self._armed = {
                 "experiment_id": experiment_id,
@@ -646,7 +642,6 @@ class AcquisitionWorkbench:
                 or ("full route boundary" if capture_kind == "route" else "useful capture"),
                 "target_runs": target_runs,
                 "capture_duration_s": capture_duration_s,
-                "focus_wait_timeout_s": focus_wait_timeout_s,
                 "frame_source": frame_config,
                 "input_source": input_config,
                 "armed_utc": datetime.now(timezone.utc).isoformat(),
@@ -765,8 +760,8 @@ class AcquisitionWorkbench:
                 "active_phase": self._active["phase"] if self._active else None,
                 "capture_policy": {
                     "in_game_controls": "none",
-                    "start": "sources_prearmed_then_session_starts_on_first_active_input",
-                    "end": "fixed_duration_or_focus_loss",
+                    "start": "sources_ready_then_session_starts_on_first_active_input",
+                    "end": "fixed_duration_or_user_cancel",
                     "route_bounds": "post_take_confirmation",
                     "stages": "derived_or_annotated_after_recording",
                 },
@@ -780,22 +775,6 @@ class AcquisitionWorkbench:
                 ),
                 "compile_result": self._compile_result,
             }
-
-    def _selected_window_foreground(self, frame_config: dict) -> bool:
-        if frame_config.get("adapter") != "windows_window":
-            return True
-        try:
-            desktop = self._desktop()
-            window = select_window(
-                desktop.list_windows(),
-                frame_config["window_title"],
-                exact=True,
-            )
-            if hasattr(desktop, "is_foreground"):
-                return bool(desktop.is_foreground(window[0]))
-            return bool(desktop.input_snapshot(window[0])["foreground"])
-        except (RuntimeError, ValueError):
-            return False
 
     def _next_run_index(self) -> int:
         if self._armed is None:
@@ -826,25 +805,19 @@ class AcquisitionWorkbench:
             active = {
                 "run_index": run_index,
                 "path": self._run_path(run_index),
-                "phase": "waiting_for_game_focus",
+                "phase": "arming_sources",
                 "cancel": threading.Event(),
                 "stop": threading.Event(),
-                "focus_interrupted": False,
-                "focus_timeout": False,
-                "input_timeout": False,
-                "focus_acquired_host_time_ns": None,
                 "recording_started_host_time_ns": None,
                 "recording_deadline_host_time_ns": None,
                 "recorded_input_events": 0,
                 "first_input_kind": None,
-                "input_focus_gate": threading.Event(),
             }
             self._active = active
             self._hud_notice = None
             self._last_error = None
 
         def work() -> None:
-            guard = None
             hud_result = {
                 "state": "failed",
                 "run_index": run_index,
@@ -855,11 +828,9 @@ class AcquisitionWorkbench:
                 frame_source = self.sources.frame(config["frame_source"])
                 input_source = self.sources.input(config["input_source"])
                 if input_source is not None and hasattr(
-                    input_source, "set_foreground_predicate"
+                    input_source, "disable_foreground_filter"
                 ):
-                    input_source.set_foreground_predicate(
-                        active["input_focus_gate"].is_set
-                    )
+                    input_source.disable_foreground_filter()
                 recorder = AcquisitionRecorder(
                     active["path"],
                     [frame_source],
@@ -882,10 +853,13 @@ class AcquisitionWorkbench:
                         "input_adapter": config["input_source"].get(
                             "adapter", "none"
                         ),
-                        "capture_policy": "prearmed_first_input_start_v3",
+                        "capture_policy": "active_lifetime_first_input_start_v4",
                     },
                 )
-                sources_started = threading.Event()
+                def sources_started() -> None:
+                    with self._lock:
+                        if self._active is active:
+                            active["phase"] = "waiting_for_first_input"
 
                 def recording_started(packet) -> None:
                     with self._lock:
@@ -905,83 +879,16 @@ class AcquisitionWorkbench:
                         if self._active is active:
                             active["recorded_input_events"] += 1
 
-                def guard_focus() -> None:
-                    while not sources_started.wait(0.02):
-                        if active["stop"].is_set():
-                            return
-                    focus_deadline = (
-                        time.monotonic() + config["focus_wait_timeout_s"]
-                    )
-                    focus_acquired = False
-                    input_deadline = None
-                    lost_since = None
-                    while not active["stop"].is_set():
-                        now = time.monotonic()
-                        foreground = self._selected_window_foreground(
-                            config["frame_source"]
-                        )
-                        if not focus_acquired:
-                            if foreground:
-                                focus_acquired_host_time_ns = time.perf_counter_ns()
-                                focus_acquired = True
-                                input_deadline = (
-                                    now + config["focus_wait_timeout_s"]
-                                )
-                                active["input_focus_gate"].set()
-                                with self._lock:
-                                    if self._active is active:
-                                        active["focus_acquired_host_time_ns"] = (
-                                            focus_acquired_host_time_ns
-                                        )
-                                        active["phase"] = "waiting_for_first_input"
-                            elif now >= focus_deadline:
-                                active["focus_timeout"] = True
-                                active["stop"].set()
-                                return
-                        else:
-                            if (
-                                active["recording_started_host_time_ns"] is None
-                                and now >= input_deadline
-                            ):
-                                active["input_timeout"] = True
-                                active["stop"].set()
-                                return
-                            if foreground:
-                                lost_since = None
-                                active["input_focus_gate"].set()
-                            elif lost_since is None:
-                                active["input_focus_gate"].clear()
-                                lost_since = now
-                            elif now - lost_since >= 0.75:
-                                active["input_focus_gate"].clear()
-                                active["focus_interrupted"] = True
-                                active["stop"].set()
-                                return
-                        active["stop"].wait(0.02)
-
-                guard = threading.Thread(
-                    target=guard_focus,
-                    name="acquisition-focus-guard",
-                    daemon=True,
-                )
-                guard.start()
                 manifest = recorder.run(
                     duration_s=config["capture_duration_s"],
                     external_stop=active["stop"],
-                    started_event=sources_started,
+                    on_sources_started=sources_started,
                     start_on_input=True,
-                    input_start_predicate=lambda packet: (
-                        active["input_focus_gate"].is_set()
-                        and input_packet_is_active(packet)
-                    ),
+                    input_start_predicate=input_packet_is_active,
                     on_recording_started=recording_started,
                     on_input_recorded=input_recorded,
                 )
-                # The timed capture is over. Stop the focus guard before file
-                # finalization so returning to the workbench cannot invalidate
-                # an already completed take.
                 active["stop"].set()
-                active["input_focus_gate"].clear()
                 with self._lock:
                     if self._active is active:
                         active["phase"] = "finalizing_capture"
@@ -994,9 +901,6 @@ class AcquisitionWorkbench:
                 empty_input = not input_health["healthy"]
                 failed = bool(
                     active["cancel"].is_set()
-                    or active["focus_interrupted"]
-                    or active["focus_timeout"]
-                    or active["input_timeout"]
                     or not session_started
                     or empty_input
                 )
@@ -1017,12 +921,7 @@ class AcquisitionWorkbench:
                         capture_id=config["capture_id"],
                         failure_note=failure_note,
                     )
-                if active["focus_timeout"]:
-                    with self._lock:
-                        self._last_error = (
-                            "Take never received game focus; rerecord it"
-                        )
-                elif active["input_timeout"] or not session_started:
+                if not session_started:
                     with self._lock:
                         self._last_error = (
                             "No gameplay input was received; the session never "
@@ -1037,9 +936,7 @@ class AcquisitionWorkbench:
                         ).format(input_health["adapter"])
                 elif failed:
                     with self._lock:
-                        self._last_error = (
-                            "Take was canceled or game focus was lost; rerecord it"
-                        )
+                        self._last_error = "Take was canceled; rerecord it"
                 else:
                     hud_result["state"] = "complete"
             except Exception as exc:
@@ -1048,9 +945,6 @@ class AcquisitionWorkbench:
                     self._last_error = "{}: {}".format(type(exc).__name__, exc)
             finally:
                 active["stop"].set()
-                active["input_focus_gate"].clear()
-                if guard is not None:
-                    guard.join(timeout=1)
                 with self._lock:
                     if self._active is active:
                         self._active = None

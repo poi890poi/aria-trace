@@ -42,6 +42,7 @@ class AcquisitionRecorder:
         duration_s: Optional[float] = None,
         external_stop: Optional[threading.Event] = None,
         started_event: Optional[threading.Event] = None,
+        on_sources_started: Optional[Callable[[], None]] = None,
         start_on_input: bool = False,
         input_start_predicate: Optional[Callable[[InputPacket], bool]] = None,
         on_recording_started: Optional[Callable[[InputPacket], None]] = None,
@@ -154,6 +155,8 @@ class AcquisitionRecorder:
 
             if started_event is not None:
                 started_event.set()
+            if on_sources_started is not None:
+                on_sources_started()
             while True:
                 if external_stop is not None and external_stop.is_set():
                     break

@@ -58,7 +58,7 @@ The current milestone is the observation and game-modeling side of this MVP: one
 - **REC-06:** Add and remove portal lifecycle markers without rewriting prior annotation history.
 - **REC-07:** Record an uninterrupted human take without requiring recorder controls, markers, or labels during gameplay; route boundaries, stages, and landmarks are derived or corrected afterward.
 - **REC-08:** For the PC keyboard/mouse POC, preserve raw keyboard transitions and relative mouse motion with per-event timestamps; absolute cursor polling is not sufficient evidence for locked-camera behavior.
-- **REC-09:** Pre-arm capture sources, discard pre-start observations, and start the session clock only when the first qualifying gameplay input is received while the selected game has focus. Persist that first input at session time zero.
+- **REC-09:** Start capture sources only for the queued take, discard pre-start observations, and start the session clock on the first qualifying input received. Persist that first input at session time zero; do not add a separate focus or input-test gate.
 
 ### Demonstration model
 
