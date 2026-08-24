@@ -1072,8 +1072,15 @@ class WindowsRawKeyboardMouseSource(InputSource):
         self._raw_packets_received = 0
         self._raw_packets_accepted = 0
         self._raw_packets_rejected_foreground = 0
+        self._foreground_predicate = None
+
+    def set_foreground_predicate(self, predicate: Callable[[], bool]) -> None:
+        """Use the orchestrator's focus decision instead of a second HWND check."""
+        self._foreground_predicate = predicate
 
     def _is_foreground(self) -> bool:
+        if self._foreground_predicate is not None:
+            return bool(self._foreground_predicate())
         if hasattr(self.desktop_api, "is_foreground"):
             return bool(self.desktop_api.is_foreground(self.hwnd))
         return bool(self.desktop_api.input_snapshot(self.hwnd)["foreground"])
@@ -1180,6 +1187,11 @@ class WindowsRawKeyboardMouseSource(InputSource):
                     "packets_accepted": self._raw_packets_accepted,
                     "packets_rejected_foreground": (
                         self._raw_packets_rejected_foreground
+                    ),
+                    "foreground_authority": (
+                        "orchestrator_gate"
+                        if self._foreground_predicate is not None
+                        else "selected_window_hwnd"
                     ),
                 },
             }

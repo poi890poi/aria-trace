@@ -23,10 +23,11 @@ For the first POC:
 1. Select **Genshin Impact (PC POC)** as the game profile and select the visible Genshin window.
 2. Use **Windows Raw Keyboard + Mouse** unless intentionally profiling a controller.
 3. Open **Confirm/edit game controls**, verify the bindings used by the current account, add behavior or map-viewer notes, and save the draft.
-4. Select wizard stage 1, read its displayed instructions, and select **Arm recorder**.
-5. Select **Queue next capture** and switch to Genshin. The upper-right HUD first says **WAITING FOR GAME**, then shows `REC · mm:ss`. Perform the requested evidence capture until the timer ends.
-6. When the HUD says **CAPTURE COMPLETE**, return to the workbench and confirm the capture. If it says **CAPTURE FAILED**, return and rerecord it.
-7. Select **Change setup** and repeat for the full-map, mini-map calibration, cruise, and route stages.
+4. Select **Test selected input (5 seconds)** and switch to Genshin. Press movement keys and move the mouse until the upper-right HUD reports **INPUT TEST PASSED**. The workbench shows the measured keyboard/mouse counts and blocks capture until this exact window/adapter combination passes.
+5. Select wizard stage 1, read its displayed instructions, and select **Arm recorder**.
+6. Select **Queue next capture** and switch to Genshin. The upper-right HUD first says **WAITING FOR GAME**, then shows `REC · mm:ss`. Perform the requested evidence capture until the timer ends.
+7. When the HUD says **CAPTURE COMPLETE**, return to the workbench and confirm the capture. If it says **CAPTURE FAILED**, return and rerecord it.
+8. Select **Change setup** and repeat for the full-map, mini-map calibration, cruise, and route stages.
 
 The first four stages preserve labeled evidence; they do not yet run automated game input, map stitching, mini-map calibration, or cruise estimators. The route stage retains the existing three-take compile/evaluate flow.
 
@@ -34,7 +35,7 @@ The HUD is enabled automatically on Windows. It is always on top, click-through,
 
 Each stage card shows `confirmed / required` progress. Confirmation refreshes `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json`. This index is the handoff across stages: it identifies each source session and its capture kind/ID, markers, timestamps, frame/input counts, drops, and control-profile draft provenance. It is an evidence inventory, not a claim that the captured map or mini-map data has already been modeled successfully.
 
-When an input adapter is enabled, a capture with zero control events is rejected automatically and cannot remain **READY**. Raw Input receive, acceptance, and foreground-rejection counters are retained in the session manifest to diagnose an empty stream. Match the recorder's privilege level to the game or try the legacy adapter as a diagnostic fallback if Raw Input remains empty.
+When an input adapter is enabled, a matching successful preflight is required before queueing. A capture with zero control events is rejected automatically and cannot remain **READY**. Raw Input receive, acceptance, foreground-rejection, and focus-authority details are retained in the session manifest to diagnose an empty stream. Match the recorder's privilege level to the game or try the legacy adapter as a diagnostic fallback if Raw Input remains empty.
 
 The normal screen asks for four choices:
 
