@@ -51,6 +51,35 @@ def nearest_frame_index(frames: List[dict], host_time_ns: int) -> int:
     )
 
 
+def input_packet_is_active(packet) -> bool:
+    """Return whether one live input packet represents intentional control."""
+    payload = packet.payload or {}
+    if packet.kind == "pc_raw_keyboard":
+        return True
+    if packet.kind == "pc_raw_mouse":
+        return bool(
+            int(payload.get("delta_x", 0))
+            or int(payload.get("delta_y", 0))
+            or payload.get("button_transitions")
+            or int(payload.get("wheel_delta", 0))
+            or int(payload.get("horizontal_wheel_delta", 0))
+        )
+    if packet.kind == "pc_input_state":
+        return bool(payload.get("keys") or payload.get("mouse_buttons"))
+    if packet.kind == "pc_xinput_state":
+        state = payload.get("state") or {}
+        axes = list(state.get("left_stick") or []) + list(
+            state.get("right_stick") or []
+        )
+        return bool(
+            state.get("buttons")
+            or float(state.get("left_trigger", 0.0)) > 0.02
+            or float(state.get("right_trigger", 0.0)) > 0.02
+            or any(abs(float(value)) > 0.08 for value in axes)
+        )
+    return not packet.kind.endswith("_error")
+
+
 def automatic_take_bounds(
     frames: List[dict],
     inputs: List[dict],
@@ -241,8 +270,6 @@ class SourceFactory:
         }
 
 class AcquisitionWorkbench:
-    INPUT_PROBE_DURATION_S = 5.0
-    INPUT_PROBE_FOCUS_TIMEOUT_S = 30.0
     CAPTURE_KINDS = (
         "route",
         "game_profile",
@@ -276,7 +303,6 @@ class AcquisitionWorkbench:
         self._last_error = None
         self._compile_state = "not_ready"
         self._compile_result = None
-        self._input_probe = None
         self._hud_notice = None
         self._hud_runtime = {
             "enabled": False,
@@ -300,255 +326,12 @@ class AcquisitionWorkbench:
                 "error": error or None,
             }
 
-    def _input_probe_descriptor(self) -> dict:
-        probe = self._input_probe
-        if probe is None:
-            return {"status": "not_run", "passed": False}
-        return {
-            key: value
-            for key, value in probe.items()
-            if key not in ("thread", "stop", "focus_gate", "source")
-        }
-
-    @staticmethod
-    def _probe_event_active(packet) -> bool:
-        payload = packet.payload or {}
-        if packet.kind == "pc_raw_keyboard":
-            return True
-        if packet.kind == "pc_raw_mouse":
-            return bool(
-                int(payload.get("delta_x", 0))
-                or int(payload.get("delta_y", 0))
-                or payload.get("button_transitions")
-                or int(payload.get("wheel_delta", 0))
-                or int(payload.get("horizontal_wheel_delta", 0))
-            )
-        if packet.kind == "pc_input_state":
-            return bool(payload.get("keys") or payload.get("mouse_buttons"))
-        if packet.kind == "pc_xinput_state":
-            state = payload.get("state") or {}
-            axes = list(state.get("left_stick") or []) + list(
-                state.get("right_stick") or []
-            )
-            return bool(
-                state.get("buttons")
-                or float(state.get("left_trigger", 0.0)) > 0.02
-                or float(state.get("right_trigger", 0.0)) > 0.02
-                or any(abs(float(value)) > 0.08 for value in axes)
-            )
-        return not packet.kind.endswith("_error")
-
-    def start_input_probe(self, value: dict) -> dict:
-        """Require visible input evidence before allowing a full capture."""
-        with self._lock:
-            if self._active is not None:
-                raise RuntimeError("Wait for or cancel the active capture first")
-            if self._input_probe is not None and self._input_probe.get(
-                "status"
-            ) in ("waiting_for_game_focus", "testing"):
-                raise RuntimeError("An input test is already running")
-            armed = self._armed or {}
-            window_title = str(
-                value.get("window_title")
-                or (armed.get("frame_source") or {}).get("window_title")
-                or ""
-            ).strip()
-            adapter = str(
-                value.get("adapter")
-                or (armed.get("input_source") or {}).get("adapter")
-                or "none"
-            )
-            if not window_title:
-                raise ValueError("Choose a visible game window before testing input")
-            if adapter == "none":
-                self._input_probe = {
-                    "status": "passed",
-                    "passed": True,
-                    "window_title": window_title,
-                    "adapter": adapter,
-                    "message": "Input capture is intentionally disabled.",
-                    "event_counts": {},
-                    "active_events": 0,
-                }
-                return self.descriptor()
-
-            input_config = {
-                "adapter": adapter,
-                "window_title": window_title,
-                "exact_title": True,
-                "poll_hz": int(value.get("poll_hz") or (250 if adapter == "windows_xinput" else 125)),
-            }
-            frame_config = {
-                "adapter": "windows_window",
-                "window_title": window_title,
-            }
-            stop = threading.Event()
-            focus_gate = threading.Event()
-            probe = {
-                "status": "waiting_for_game_focus",
-                "passed": False,
-                "window_title": window_title,
-                "adapter": adapter,
-                "duration_s": self.INPUT_PROBE_DURATION_S,
-                "remaining_s": None,
-                "event_counts": {},
-                "active_events": 0,
-                "keyboard_events": 0,
-                "mouse_events": 0,
-                "message": "Switch to the game to begin the input test.",
-                "stop": stop,
-                "focus_gate": focus_gate,
-                "source": None,
-                "diagnostics": None,
-            }
-            self._input_probe = probe
-
-        def emit(packet) -> None:
-            if not focus_gate.is_set():
-                return
-            active = self._probe_event_active(packet)
-            with self._lock:
-                if self._input_probe is not probe or probe["status"] != "testing":
-                    return
-                counts = probe["event_counts"]
-                counts[packet.kind] = counts.get(packet.kind, 0) + 1
-                if active:
-                    probe["active_events"] += 1
-                    if packet.kind == "pc_raw_keyboard":
-                        probe["keyboard_events"] += 1
-                    elif packet.kind == "pc_raw_mouse":
-                        probe["mouse_events"] += 1
-
-        def work() -> None:
-            source = None
-            try:
-                source = self.sources.input(input_config)
-                probe["source"] = source
-                if hasattr(source, "set_foreground_predicate"):
-                    source.set_foreground_predicate(focus_gate.is_set)
-                source.start(emit)
-                focus_deadline = time.monotonic() + self.INPUT_PROBE_FOCUS_TIMEOUT_S
-                test_deadline = None
-                lost_since = None
-                while not stop.is_set():
-                    now = time.monotonic()
-                    foreground = self._selected_window_foreground(frame_config)
-                    with self._lock:
-                        if self._input_probe is not probe:
-                            return
-                        if test_deadline is None:
-                            if foreground:
-                                focus_gate.set()
-                                test_deadline = now + self.INPUT_PROBE_DURATION_S
-                                probe["status"] = "testing"
-                                probe["message"] = (
-                                    "Press movement keys and move the mouse now."
-                                )
-                            elif now >= focus_deadline:
-                                probe["status"] = "failed"
-                                probe["message"] = "Game focus was not detected in time."
-                                return
-                        else:
-                            probe["remaining_s"] = max(
-                                0, math.ceil(test_deadline - now)
-                            )
-                            if foreground:
-                                lost_since = None
-                            elif lost_since is None:
-                                lost_since = now
-                            elif now - lost_since >= 0.75:
-                                probe["status"] = "failed"
-                                probe["message"] = (
-                                    "Game focus was lost before the input test finished."
-                                )
-                                return
-                            if now >= test_deadline:
-                                raw = adapter == "windows_raw_keyboard_mouse"
-                                passed = bool(
-                                    probe["keyboard_events"] > 0
-                                    and probe["mouse_events"] > 0
-                                    if raw
-                                    else probe["active_events"] > 0
-                                )
-                                probe["passed"] = passed
-                                probe["status"] = "passed" if passed else "failed"
-                                probe["message"] = (
-                                    "Keyboard and mouse input verified."
-                                    if passed and raw
-                                    else "Active controller/input evidence verified."
-                                    if passed
-                                    else "No usable input was observed during the test."
-                                )
-                                return
-                    stop.wait(0.02)
-            except Exception as exc:
-                with self._lock:
-                    if self._input_probe is probe:
-                        probe["status"] = "failed"
-                        probe["message"] = "{}: {}".format(type(exc).__name__, exc)
-            finally:
-                focus_gate.clear()
-                if source is not None:
-                    try:
-                        source.stop()
-                    finally:
-                        with self._lock:
-                            if self._input_probe is probe:
-                                probe["diagnostics"] = source.describe()
-
-        probe["thread"] = threading.Thread(
-            target=work,
-            name="acquisition-input-preflight",
-            daemon=True,
-        )
-        probe["thread"].start()
-        return self.descriptor()
-
     def hud_descriptor(self) -> dict:
         """Return a lightweight status contract for the in-game overlay."""
         with self._lock:
             armed = self._armed
             active = self._active
             notice = self._hud_notice
-            probe = self._input_probe_descriptor()
-            if active is None and probe.get("status") in (
-                "waiting_for_game_focus",
-                "testing",
-                "passed",
-                "failed",
-            ):
-                status = probe["status"]
-                if status == "waiting_for_game_focus":
-                    label = "INPUT TEST · WAITING"
-                    color = "#ffd166"
-                elif status == "testing":
-                    label = "INPUT TEST · {}s".format(
-                        probe.get("remaining_s") or math.ceil(
-                            probe.get("duration_s") or self.INPUT_PROBE_DURATION_S
-                        )
-                    )
-                    color = "#59d7e8"
-                elif status == "passed":
-                    label = "INPUT TEST PASSED"
-                    color = "#6ee7a1"
-                else:
-                    label = "INPUT TEST FAILED"
-                    color = "#ff7b84"
-                counts = probe.get("event_counts") or {}
-                detail = "{} · keyboard {} · mouse {}".format(
-                    probe.get("message") or "",
-                    probe.get("keyboard_events", 0),
-                    probe.get("mouse_events", 0),
-                )
-                return {
-                    "visible": True,
-                    "state": "input_probe_{}".format(status),
-                    "status": label,
-                    "detail": detail,
-                    "color": color,
-                    "window_title": probe.get("window_title"),
-                    "event_counts": counts,
-                }
             if armed is None:
                 return {"visible": False}
             stage = armed.get("workflow_stage") or {}
@@ -571,8 +354,18 @@ class AcquisitionWorkbench:
                         {
                             "state": "waiting_for_game_focus",
                             "status": "WAITING FOR GAME",
-                            "detail": "Focus Genshin to start; capture stops automatically.",
+                            "detail": "Focus Genshin; your first gameplay input starts recording.",
                             "color": "#ffd166",
+                        }
+                    )
+                    return common
+                if active["phase"] == "waiting_for_first_input":
+                    common.update(
+                        {
+                            "state": "waiting_for_first_input",
+                            "status": "PLAY TO START",
+                            "detail": "Begin the sample naturally; the first control becomes time zero.",
+                            "color": "#59d7e8",
                         }
                     )
                     return common
@@ -600,7 +393,9 @@ class AcquisitionWorkbench:
                             remaining_s // 60,
                             remaining_s % 60,
                         ),
-                        "detail": "Keep Genshin focused; stop is automatic.",
+                        "detail": "Inputs recorded: {} · keep playing naturally.".format(
+                            active.get("recorded_input_events", 0)
+                        ),
                         "color": "#ff7b84",
                     }
                 )
@@ -961,7 +756,6 @@ class AcquisitionWorkbench:
                 "game_profile_drafts": self._profile_drafts(),
                 "poc_evidence_indexes": self._poc_evidence_indexes(),
                 "hud_runtime": dict(self._hud_runtime),
-                "input_probe": self._input_probe_descriptor(),
                 "sources": self.sources.descriptor(),
                 "visible_windows": self._windows(),
                 "armed": self._armed,
@@ -971,7 +765,7 @@ class AcquisitionWorkbench:
                 "active_phase": self._active["phase"] if self._active else None,
                 "capture_policy": {
                     "in_game_controls": "none",
-                    "start": "sources_prearmed_then_clock_starts_on_first_game_focus",
+                    "start": "sources_prearmed_then_session_starts_on_first_active_input",
                     "end": "fixed_duration_or_focus_loss",
                     "route_bounds": "post_take_confirmation",
                     "stages": "derived_or_annotated_after_recording",
@@ -1024,18 +818,10 @@ class AcquisitionWorkbench:
             config = dict(self._armed)
             config["frame_source"] = dict(self._armed["frame_source"])
             config["input_source"] = dict(self._armed["input_source"])
-            adapter = config["input_source"].get("adapter", "none")
-            probe = self._input_probe_descriptor()
-            probe_matches = (
-                probe.get("passed")
-                and probe.get("adapter") == adapter
-                and str(probe.get("window_title") or "").casefold()
-                == str(config["frame_source"].get("window_title") or "").casefold()
-            )
-            if adapter != "none" and not probe_matches:
+            if config["input_source"].get("adapter", "none") == "none":
                 raise RuntimeError(
-                    "Run and pass Test selected input for this game window and "
-                    "input adapter before queueing a capture"
+                    "Choose an input adapter; first-input session start cannot "
+                    "work with input capture disabled"
                 )
             active = {
                 "run_index": run_index,
@@ -1045,8 +831,12 @@ class AcquisitionWorkbench:
                 "stop": threading.Event(),
                 "focus_interrupted": False,
                 "focus_timeout": False,
+                "input_timeout": False,
                 "focus_acquired_host_time_ns": None,
+                "recording_started_host_time_ns": None,
                 "recording_deadline_host_time_ns": None,
+                "recorded_input_events": 0,
+                "first_input_kind": None,
                 "input_focus_gate": threading.Event(),
             }
             self._active = active
@@ -1092,10 +882,28 @@ class AcquisitionWorkbench:
                         "input_adapter": config["input_source"].get(
                             "adapter", "none"
                         ),
-                        "capture_policy": "prearmed_uninterrupted_take_v2",
+                        "capture_policy": "prearmed_first_input_start_v3",
                     },
                 )
                 sources_started = threading.Event()
+
+                def recording_started(packet) -> None:
+                    with self._lock:
+                        if self._active is active:
+                            active["recording_started_host_time_ns"] = (
+                                packet.host_time_ns
+                            )
+                            active["recording_deadline_host_time_ns"] = (
+                                packet.host_time_ns
+                                + int(config["capture_duration_s"] * 1.0e9)
+                            )
+                            active["first_input_kind"] = packet.kind
+                            active["phase"] = "recording_uninterrupted_take"
+
+                def input_recorded(_packet) -> None:
+                    with self._lock:
+                        if self._active is active:
+                            active["recorded_input_events"] += 1
 
                 def guard_focus() -> None:
                     while not sources_started.wait(0.02):
@@ -1104,42 +912,45 @@ class AcquisitionWorkbench:
                     focus_deadline = (
                         time.monotonic() + config["focus_wait_timeout_s"]
                     )
-                    end_time = None
+                    focus_acquired = False
+                    input_deadline = None
                     lost_since = None
                     while not active["stop"].is_set():
                         now = time.monotonic()
                         foreground = self._selected_window_foreground(
                             config["frame_source"]
                         )
-                        if end_time is None:
+                        if not focus_acquired:
                             if foreground:
-                                active["input_focus_gate"].set()
                                 focus_acquired_host_time_ns = time.perf_counter_ns()
-                                end_time = now + config["capture_duration_s"]
+                                focus_acquired = True
+                                input_deadline = (
+                                    now + config["focus_wait_timeout_s"]
+                                )
+                                active["input_focus_gate"].set()
                                 with self._lock:
                                     if self._active is active:
                                         active["focus_acquired_host_time_ns"] = (
                                             focus_acquired_host_time_ns
                                         )
-                                        active[
-                                            "recording_deadline_host_time_ns"
-                                        ] = focus_acquired_host_time_ns + int(
-                                            config["capture_duration_s"] * 1.0e9
-                                        )
-                                        active["phase"] = (
-                                            "recording_uninterrupted_take"
-                                        )
+                                        active["phase"] = "waiting_for_first_input"
                             elif now >= focus_deadline:
                                 active["focus_timeout"] = True
                                 active["stop"].set()
                                 return
                         else:
-                            if now >= end_time:
+                            if (
+                                active["recording_started_host_time_ns"] is None
+                                and now >= input_deadline
+                            ):
+                                active["input_timeout"] = True
                                 active["stop"].set()
                                 return
                             if foreground:
                                 lost_since = None
+                                active["input_focus_gate"].set()
                             elif lost_since is None:
+                                active["input_focus_gate"].clear()
                                 lost_since = now
                             elif now - lost_since >= 0.75:
                                 active["input_focus_gate"].clear()
@@ -1154,23 +965,39 @@ class AcquisitionWorkbench:
                     daemon=True,
                 )
                 guard.start()
-                recorder.run(
+                manifest = recorder.run(
+                    duration_s=config["capture_duration_s"],
                     external_stop=active["stop"],
                     started_event=sources_started,
+                    start_on_input=True,
+                    input_start_predicate=lambda packet: (
+                        active["input_focus_gate"].is_set()
+                        and input_packet_is_active(packet)
+                    ),
+                    on_recording_started=recording_started,
+                    on_input_recorded=input_recorded,
                 )
+                # The timed capture is over. Stop the focus guard before file
+                # finalization so returning to the workbench cannot invalidate
+                # an already completed take.
+                active["stop"].set()
+                active["input_focus_gate"].clear()
                 with self._lock:
                     if self._active is active:
                         active["phase"] = "finalizing_capture"
 
-                input_health = input_capture_health(
-                    SessionReader(active["path"]).manifest
+                reader = SessionReader(active["path"])
+                input_health = input_capture_health(reader.manifest)
+                session_started = bool(
+                    (manifest.get("recording_start") or {}).get("started")
                 )
                 empty_input = not input_health["healthy"]
                 failed = bool(
                     active["cancel"].is_set()
                     or active["focus_interrupted"]
                     or active["focus_timeout"]
-                    or active["focus_acquired_host_time_ns"] is None
+                    or active["input_timeout"]
+                    or not session_started
                     or empty_input
                 )
                 failure_note = None
@@ -1180,19 +1007,26 @@ class AcquisitionWorkbench:
                             config["capture_id"], input_health["adapter"]
                         )
                     )
-                self._finalize_take(
-                    active["path"],
-                    config["route_id"],
-                    failed,
-                    active["focus_acquired_host_time_ns"],
-                    capture_kind=config["capture_kind"],
-                    capture_id=config["capture_id"],
-                    failure_note=failure_note,
-                )
+                if session_started and reader.frames_by_stream.get("main"):
+                    self._finalize_take(
+                        active["path"],
+                        config["route_id"],
+                        failed,
+                        active["recording_started_host_time_ns"],
+                        capture_kind=config["capture_kind"],
+                        capture_id=config["capture_id"],
+                        failure_note=failure_note,
+                    )
                 if active["focus_timeout"]:
                     with self._lock:
                         self._last_error = (
                             "Take never received game focus; rerecord it"
+                        )
+                elif active["input_timeout"] or not session_started:
+                    with self._lock:
+                        self._last_error = (
+                            "No gameplay input was received; the session never "
+                            "started. Check the input adapter and try again."
                         )
                 elif empty_input:
                     with self._lock:
@@ -1409,14 +1243,10 @@ class AcquisitionWorkbench:
     def close(self) -> None:
         with self._lock:
             active = self._active
-            probe = self._input_probe
         if active is not None:
             active["cancel"].set()
             active["stop"].set()
             active["thread"].join(timeout=5)
-        if probe is not None and probe.get("thread") is not None:
-            probe["stop"].set()
-            probe["thread"].join(timeout=3)
 
 
 def make_handler(state: AcquisitionWorkbench):
@@ -1478,8 +1308,6 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.arm(value)
                 elif path == "/api/disarm":
                     result = state.disarm()
-                elif path == "/api/input/probe":
-                    result = state.start_input_probe(value)
                 elif path == "/api/take/queue":
                     result = state.queue_next_take()
                 elif path == "/api/take/cancel":

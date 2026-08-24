@@ -99,6 +99,39 @@ class DiagnosticInputSource:
         }
 
 
+class DelayedInputSource:
+    source_id = "delayed-input"
+
+    def __init__(self, delay_s=0.05):
+        self.delay_s = float(delay_s)
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def start(self, emit):
+        def run():
+            if not self.stop_event.wait(self.delay_s):
+                now = time.perf_counter_ns()
+                emit(
+                    InputPacket(
+                        self.source_id,
+                        "pc_raw_keyboard",
+                        now,
+                        {"pressed": True, "foreground": True},
+                    )
+                )
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=1)
+
+    def describe(self):
+        return {"type": "delayed-test-input", "source_id": self.source_id}
+
+
 class FakeWindowsApi:
     def __init__(self):
         self.snapshots = [
@@ -136,6 +169,40 @@ class FakeWindowsApi:
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_deferred_recording_starts_at_first_qualifying_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            started = []
+            manifest = AcquisitionRecorder(
+                Path(temporary) / "first-input-start",
+                [ContinuousFrameSource()],
+                [DelayedInputSource()],
+                video_encoding="mjpeg",
+            ).run(
+                duration_s=0.05,
+                start_on_input=True,
+                input_start_predicate=lambda packet: packet.kind
+                == "pc_raw_keyboard",
+                on_recording_started=lambda packet: started.append(packet.kind),
+            )
+            reader = SessionReader(Path(temporary) / "first-input-start")
+            self.assertEqual(started, ["pc_raw_keyboard"])
+            self.assertTrue(manifest["recording_start"]["started"])
+            self.assertEqual(
+                manifest["recording_start"]["first_input_kind"],
+                "pc_raw_keyboard",
+            )
+            self.assertEqual(reader.inputs[0]["session_time_ns"], 0)
+            self.assertTrue(reader.frames_by_stream["main"])
+            self.assertGreaterEqual(
+                reader.frames_by_stream["main"][0]["session_time_ns"], 0
+            )
+            self.assertTrue(
+                all(
+                    frame["session_time_ns"] >= 0
+                    for frame in reader.frames_by_stream["main"]
+                )
+            )
+
     def test_recorder_persists_final_input_source_diagnostics(self):
         with tempfile.TemporaryDirectory() as temporary:
             input_source = DiagnosticInputSource()

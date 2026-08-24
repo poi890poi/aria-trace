@@ -46,6 +46,13 @@ class ArbitraryDesktop:
         }
 
 
+class NeverForegroundDesktop(ArbitraryDesktop):
+    def input_snapshot(self, hwnd):
+        snapshot = super().input_snapshot(hwnd)
+        snapshot["foreground"] = False
+        return snapshot
+
+
 class FakeXInputApi:
     def __init__(self):
         self.packet = 0
@@ -73,8 +80,6 @@ class FakeRawInputApi:
 
     def run(self, emit, ready_event):
         ready_event.set()
-        # Give the orchestrator time to open its authoritative game-focus gate.
-        time.sleep(0.05)
         emit(
             {
                 "kind": "pc_raw_mouse",
@@ -179,11 +184,16 @@ class WorkbenchTests(unittest.TestCase):
             [
                 "game_profile",
                 "full_map",
-                "minimap_calibration",
-                "minimap_cruise",
                 "route",
             ],
         )
+        first = game["poc_workflow"][0]
+        self.assertEqual(first["target_runs"], 1)
+        self.assertEqual(first["capture_duration_s"], 60)
+        instructions = " ".join(first["instructions"]).casefold()
+        self.assertIn("short cruise", instructions)
+        self.assertIn("rotate the camera only", instructions)
+        self.assertIn("movement only", instructions)
         self.assertTrue(game["profile_editor"]["controls"])
 
     def test_hud_reports_waiting_countdown_and_completion_without_disk_scan(self):
@@ -219,6 +229,10 @@ class WorkbenchTests(unittest.TestCase):
                 waiting = state.hud_descriptor()
                 self.assertEqual(waiting["state"], "waiting_for_game_focus")
                 self.assertIn("1/1", waiting["title"])
+                state._active.update(phase="waiting_for_first_input")
+                self.assertEqual(
+                    state.hud_descriptor()["status"], "PLAY TO START"
+                )
                 state._active.update(
                     phase="recording_uninterrupted_take",
                     recording_deadline_host_time_ns=time.perf_counter_ns()
@@ -238,68 +252,6 @@ class WorkbenchTests(unittest.TestCase):
                 )
             finally:
                 state._active = None
-                state.close()
-
-    def test_input_preflight_counts_raw_controls_and_is_required_for_queue(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            profile_root = root / "profiles"
-            write_catalog(profile_root)
-            state = AcquisitionWorkbench(
-                root / "sessions",
-                root / "artifacts",
-                profiles=ProfileCatalog(profile_root),
-                desktop_api=ArbitraryDesktop(),
-                raw_input_api=FakeRawInputApi(),
-            )
-            state.INPUT_PROBE_DURATION_S = 0.15
-            state.INPUT_PROBE_FOCUS_TIMEOUT_S = 1.0
-            try:
-                state.arm(
-                    {
-                        "game_profile_id": "game-a",
-                        "capture_kind": "full_map",
-                        "capture_id": "game-a-full-map",
-                        "workflow_stage_id": "full-map",
-                        "experiment_id": "input-preflight-test",
-                        "target_runs": 1,
-                        "capture_duration_s": 20,
-                        "window_title": "Popular Game A",
-                        "input_source": {
-                            "adapter": "windows_raw_keyboard_mouse",
-                        },
-                    }
-                )
-                with self.assertRaisesRegex(RuntimeError, "Test selected input"):
-                    state.queue_next_take()
-
-                state.start_input_probe(
-                    {
-                        "window_title": "Popular Game A",
-                        "adapter": "windows_raw_keyboard_mouse",
-                    }
-                )
-                deadline = time.time() + 2
-                probe = state.descriptor()["input_probe"]
-                while (
-                    probe["status"] not in ("passed", "failed")
-                    or probe.get("diagnostics") is None
-                ) and time.time() < deadline:
-                    time.sleep(0.02)
-                    probe = state.descriptor()["input_probe"]
-                self.assertEqual(probe["status"], "passed")
-                self.assertGreaterEqual(probe["keyboard_events"], 1)
-                self.assertGreaterEqual(probe["mouse_events"], 1)
-                self.assertEqual(
-                    probe["diagnostics"]["raw_input_diagnostics"][
-                        "foreground_authority"
-                    ],
-                    "orchestrator_gate",
-                )
-                self.assertEqual(
-                    state.hud_descriptor()["status"], "INPUT TEST PASSED"
-                )
-            finally:
                 state.close()
 
     def test_profile_catalog_keeps_game_and_route_data_separate(self):
@@ -425,6 +377,26 @@ class WorkbenchTests(unittest.TestCase):
         self.assertTrue(events[1].payload["foreground"])
         diagnostics = source.describe()["raw_input_diagnostics"]
         self.assertEqual(diagnostics["packets_received"], 2)
+        self.assertEqual(diagnostics["packets_accepted"], 2)
+        self.assertEqual(diagnostics["packets_rejected_foreground"], 0)
+
+    def test_raw_input_source_uses_workbench_focus_gate_as_authority(self):
+        events = []
+        source = WindowsRawKeyboardMouseSource(
+            "Popular Game A",
+            exact_title=True,
+            desktop_api=NeverForegroundDesktop(),
+            raw_input_api=FakeRawInputApi(),
+        )
+        source.set_foreground_predicate(lambda: True)
+        source.start(events.append)
+        deadline = time.time() + 1
+        while len(events) < 2 and time.time() < deadline:
+            time.sleep(0.005)
+        source.stop()
+        self.assertEqual(len(events), 2)
+        diagnostics = source.describe()["raw_input_diagnostics"]
+        self.assertEqual(diagnostics["foreground_authority"], "orchestrator_gate")
         self.assertEqual(diagnostics["packets_accepted"], 2)
         self.assertEqual(diagnostics["packets_rejected_foreground"], 0)
 
@@ -570,13 +542,12 @@ class WorkbenchTests(unittest.TestCase):
                         urllib.request.urlopen(base + "/api/hud").read()
                     )
                     self.assertIn("Capture an uninterrupted human take", html)
-                    self.assertIn("No in-game recorder commands", html)
+                    self.assertIn("first natural gameplay input", html)
                     self.assertIn("Game / route preset", html)
                     self.assertIn("POC workflow wizard", html)
                     self.assertIn("Confirm/edit game controls", html)
                     self.assertIn("Advanced settings", html)
                     self.assertIn("Arm recorder", html)
-                    self.assertIn("Test selected input", html)
                     self.assertIn("In-game status HUD", html)
                     self.assertIn("Stage captures complete", html)
                     self.assertIn("No control inputs captured", html)

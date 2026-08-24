@@ -44,7 +44,7 @@ Long-session chunking is not implemented yet. Record bounded sessions for now; a
 
 ## Planned game, map, and mini-map acquisition
 
-The Acquisition Workbench now exposes these as a five-stage Genshin POC wizard. It stores a human-editable control-profile draft and records each stage with a distinct capture kind, ID, workflow-stage ID, frames, raw controls, timing, and confirmation markers. It also maintains `artifacts/workbench/poc_evidence/<profile-id>/evidence_index.json`, a structured stage-progress inventory that links confirmed captures to their source sessions, marker state, timing/count summaries, drops, and profile-draft provenance. This first usable slice acquires and indexes organized evidence; the index does not assert semantic success, and automatic behavior inference, map-viewer traversal, full-map construction, mini-map calibration, and cruise estimators are not implemented yet.
+The Acquisition Workbench now exposes a three-stage Genshin POC wizard: one shared basic gameplay sample, full-map viewer evidence, and the repeated route. The basic sample contains a short cruise, rotation-only, and movement-only segment so behavior, ordinary UI, mini-map calibration, and cruise modeling can use one synchronized source session instead of imposing separate player tasks. The workbench stores a human-editable control-profile draft and records each stage with a capture kind, ID, workflow-stage ID, frames, raw controls, timing, and confirmation markers. It also maintains `artifacts/workbench/poc_evidence/<profile-id>/evidence_index.json`, a structured stage-progress inventory that links confirmed captures to their source sessions, marker state, timing/count summaries, drops, and profile-draft provenance. This first usable slice acquires and indexes organized evidence; the index does not assert semantic success, and automatic behavior inference, map-viewer traversal, full-map construction, mini-map calibration, and cruise estimators are not implemented yet.
 
 ### Game profile session
 
@@ -67,13 +67,12 @@ Capture at a zoom/detail level whose effective map resolution exceeds the mini-m
 
 The full-map artifact, live mini-map observations, and reconstructed route geometry are separate coordinate spaces. Any scale, rotation, crop, projection, or alignment relationship among them is an explicit calibrated estimate with provenance and confidence. Do not assume UI icons, occlusions, or map revisions are identical between the viewer and mini-map.
 
-### Calibration take
+### Calibration evidence from the basic gameplay sample
 
-1. Generate continuous horizontal camera input in one direction.
-2. At the same time, generate the repeating vertical pattern `up -> down -> down -> up -> up -> down -> down -> ...`.
-3. Record the full game frames and generated inputs on the normal session timeline.
-4. Aggregate the frames under the working assumption that the mini-map does not rotate with camera orientation. Changing scene content should become less stable while the fixed mini-map remains identifiable.
-5. Evaluate temporal averages/stability maps, thresholding, edges, and a circle detector such as Hough circle detection to propose the mini-map position and boundary.
+1. Use the rotation-only segment from the basic sample; do not ask the player for a separate calibration take.
+2. Retain the full game frames and recorded camera inputs on the normal session timeline.
+3. Aggregate the frames under the working assumption that the mini-map does not rotate with camera orientation. Changing scene content should become less stable while the fixed mini-map remains identifiable.
+4. Evaluate temporal averages/stability maps, thresholding, edges, and a circle detector such as Hough circle detection to propose the mini-map position and boundary.
 
 The exact motion amplitudes, duration, aggregation, thresholds, and detector parameters are deliberately unset pending experimentation. A calibration run succeeds by producing a reusable, versioned artifact with source provenance, circle/mask data, method configuration, and quality—not by returning coordinates only.
 
@@ -85,9 +84,9 @@ Its artifact set must be inspectable by both people and later scripts. At minimu
 - the detected circle overlaid on an original or reference frame;
 - a machine-readable manifest linking those products to the source session, frames, controls, and calibration method/configuration.
 
-### Cruise take
+### Cruise evidence from the basic gameplay sample
 
-After calibration, record continuous movement with enough cadence and sufficiently small inter-frame motion that consecutive circular mini-map observations overlap. Preserve the entire game frame and input stream; mini-map crops, valid-circle masks, shift/facing measurements, and diagnostic outputs are derived records.
+Use the short-cruise and movement-only segments from that same basic sample. They should provide enough cadence and sufficiently small inter-frame motion that consecutive circular mini-map observations overlap. Preserve the entire game frame and input stream; mini-map crops, valid-circle masks, shift/facing measurements, and diagnostic outputs are derived records.
 
 The initial experiments will:
 
@@ -116,11 +115,11 @@ For the PC-only MVP, use the local acquisition workbench:
 
 Open http://127.0.0.1:8765/. Select a game profile, visible game window, and control type. Games with a `poc_workflow` expose guided evidence stages; ordinary route profiles remain available in the same screen. The selected stage or route supplies its instructions, capture count, and duration. For an unprofiled game, choose **Custom route / capture** and enter a short name. Technical IDs and overrides remain under **Advanced settings**. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
 
-On Windows, the normal command also starts a small isolated HUD process. It polls the lightweight `/api/hud` contract and shows waiting-for-focus, recording countdown, finalization, completion, and failure at the selected game window's upper-right. The window uses no-activate and click-through styles, and startup fails closed unless `WDA_EXCLUDEFROMCAPTURE` is successfully applied and read back. This is required because the current `win32_gdi_visible_client_v1` source copies visible desktop pixels. The HUD process is isolated so a desktop-UI failure cannot take down the recorder. Use `--no-hud` for diagnostics or when another status surface is intentionally used; exclusive fullscreen may suppress ordinary topmost overlays, so borderless/windowed fullscreen is preferred.
+On Windows, the normal command also starts a small isolated HUD process. It polls the lightweight `/api/hud` contract and shows waiting-for-focus, **PLAY TO START**, recording countdown, finalization, completion, and failure at the selected game window's upper-right. The window uses no-activate and click-through styles, and startup fails closed unless `WDA_EXCLUDEFROMCAPTURE` is successfully applied and read back. This is required because the current `win32_gdi_visible_client_v1` source copies visible desktop pixels. The HUD process is isolated so a desktop-UI failure cannot take down the recorder. Use `--no-hud` for diagnostics or when another status surface is intentionally used; exclusive fullscreen may suppress ordinary topmost overlays, so borderless/windowed fullscreen is preferred.
 
 Use Windows raw keyboard and mouse for keyboard/mouse play: it preserves make/break scan codes, relative camera deltas, button/wheel transitions, device handles, and per-event timing. Use XInput for controller play: it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Legacy keyboard/cursor polling remains available only for compatibility.
 
-Queue a take, return focus to the selected game, and perform the route naturally. The workbench pre-arms frame and input sources before you switch windows, starts the take clock on the first selected-game focus, and stops after the configured duration. This prevents the first keyboard or mouse event from falling into a source-startup gap. There are no recorder hotkeys, stage buttons, or completion gestures during gameplay. Losing game focus early invalidates the take instead of silently contaminating it.
+Queue a take, return focus to the selected game, and perform the requested sample naturally. The workbench pre-arms frame and input sources before you switch windows, but discards pre-start observations. The first qualifying gameplay input becomes session time zero and starts the configured-duration clock. This both avoids a source-startup gap and prevents window focus alone from consuming recording time. There are no recorder hotkeys, stage buttons, or completion gestures during gameplay. Losing game focus early invalidates the take instead of silently contaminating it.
 
 The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, confirm the full-take route boundaries or use the reviewer to correct them. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions. Compilation is blocked until route boundaries are confirmed.
 

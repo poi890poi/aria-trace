@@ -4,7 +4,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from .models import FramePacket, InputPacket
 from .session import SessionWriter
@@ -42,6 +42,10 @@ class AcquisitionRecorder:
         duration_s: Optional[float] = None,
         external_stop: Optional[threading.Event] = None,
         started_event: Optional[threading.Event] = None,
+        start_on_input: bool = False,
+        input_start_predicate: Optional[Callable[[InputPacket], bool]] = None,
+        on_recording_started: Optional[Callable[[InputPacket], None]] = None,
+        on_input_recorded: Optional[Callable[[InputPacket], None]] = None,
     ) -> dict:
         if not self.frame_sources:
             raise ValueError("At least one frame source is required")
@@ -90,6 +94,46 @@ class AcquisitionRecorder:
 
         status = "complete"
         error_text = None
+        recording_started = not start_on_input
+        start_ns = time.perf_counter_ns() if recording_started else None
+        first_input_kind = None
+
+        def handle_event(kind, value) -> None:
+            nonlocal recording_started, start_ns, first_input_kind
+            if kind == "finished":
+                finished_streams.add(value)
+                return
+            if kind == "error":
+                stream_id, exc = value
+                raise RuntimeError("Frame source {} failed: {}".format(stream_id, exc))
+            if not recording_started:
+                qualifies = (
+                    kind == "input"
+                    and (
+                        input_start_predicate(value)
+                        if input_start_predicate is not None
+                        else True
+                    )
+                )
+                if not qualifies:
+                    return
+                writer.rebase_origin(value.host_time_ns)
+                recording_started = True
+                start_ns = value.host_time_ns
+                first_input_kind = value.kind
+                if on_recording_started is not None:
+                    on_recording_started(value)
+            if kind == "frame":
+                if value.host_capture_time_ns < writer.origin_ns:
+                    return
+                writer.write_frame(value)
+            elif kind == "input":
+                if value.host_time_ns < writer.origin_ns:
+                    return
+                writer.write_input(value)
+                if on_input_recorded is not None:
+                    on_input_recorded(value)
+
         try:
             for source in self.frame_sources:
                 source.start()
@@ -110,11 +154,14 @@ class AcquisitionRecorder:
 
             if started_event is not None:
                 started_event.set()
-            start_ns = time.perf_counter_ns()
             while True:
                 if external_stop is not None and external_stop.is_set():
                     break
-                if duration_s is not None and (time.perf_counter_ns() - start_ns) / 1.0e9 >= duration_s:
+                if (
+                    recording_started
+                    and duration_s is not None
+                    and (time.perf_counter_ns() - start_ns) / 1.0e9 >= duration_s
+                ):
                     break
                 if len(finished_streams) == len(self.frame_sources):
                     break
@@ -122,15 +169,7 @@ class AcquisitionRecorder:
                     kind, value = event_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                if kind == "frame":
-                    writer.write_frame(value)
-                elif kind == "input":
-                    writer.write_input(value)
-                elif kind == "finished":
-                    finished_streams.add(value)
-                elif kind == "error":
-                    stream_id, exc = value
-                    raise RuntimeError("Frame source {} failed: {}".format(stream_id, exc))
+                handle_event(kind, value)
         except KeyboardInterrupt:
             status = "interrupted"
         except Exception as exc:
@@ -171,15 +210,21 @@ class AcquisitionRecorder:
                     kind, value = event_queue.get_nowait()
                 except queue.Empty:
                     break
-                if kind == "frame":
-                    writer.write_frame(value)
-                elif kind == "input":
-                    writer.write_input(value)
+                if recording_started and kind in ("frame", "input"):
+                    handle_event(kind, value)
             # Input sources can only report final receive/filter counters after
             # their worker threads stop. Keep those diagnostics in the durable
             # manifest so an empty stream is explainable instead of mysterious.
             writer.manifest["input_sources"] = [
                 source.describe() for source in self.input_sources
             ]
+            if start_on_input and not recording_started and status == "complete":
+                status = "incomplete"
+                error_text = "No qualifying input was received"
+            writer.manifest["recording_start"] = {
+                "policy": "first_qualifying_input" if start_on_input else "immediate",
+                "started": recording_started,
+                "first_input_kind": first_input_kind,
+            }
             writer.close(status=status, error=error_text)
         return writer.manifest

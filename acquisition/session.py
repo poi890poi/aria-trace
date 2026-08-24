@@ -120,6 +120,19 @@ class SessionWriter:
         for processor in self.frame_processors:
             processor.start(self.path, self.session_id, self.origin_ns)
 
+    def rebase_origin(self, host_time_ns: int) -> None:
+        """Make the first retained event session time zero before any writes."""
+        if self.frame_counts or self.input_counts or self._video_sinks:
+            raise RuntimeError("Cannot rebase a session after recording has started")
+        if self.frame_processors:
+            raise RuntimeError(
+                "Deferred session start is not supported with frame processors"
+            )
+        self.origin_ns = int(host_time_ns)
+        self.manifest["created_utc"] = datetime.now(timezone.utc).isoformat()
+        self.manifest["pc_monotonic_origin_ns"] = self.origin_ns
+        _write_json_atomic(self.path / "manifest.json", self.manifest)
+
     def _video_sink(self, packet: FramePacket):
         stream_id = packet.stream_id
         height, width = packet.image.shape[:2]
