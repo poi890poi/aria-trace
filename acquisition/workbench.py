@@ -353,6 +353,7 @@ class AcquisitionWorkbench:
         self._compile_state = "not_ready"
         self._compile_result = None
         self._hud_notice = None
+        self._session_summary_cache = {}
         self._hud_runtime = {
             "enabled": False,
             "capture_exclusion": False,
@@ -1108,6 +1109,22 @@ class AcquisitionWorkbench:
         raise ValueError("Unknown session label")
 
     def _describe_session(self, path: Path) -> dict:
+        signature = []
+        for name in (
+            "manifest.json",
+            "annotations.jsonl",
+            self.SESSION_METADATA_FILENAME,
+            "frames.jsonl",
+            "inputs.jsonl",
+        ):
+            item_path = path / name
+            if item_path.is_file():
+                stat = item_path.stat()
+                signature.append((name, stat.st_mtime_ns, stat.st_size))
+        cache_key = str(path.resolve())
+        cached = self._session_summary_cache.get(cache_key)
+        if cached and cached["signature"] == signature:
+            return dict(cached["value"])
         reader = SessionReader(path)
         annotations = AnnotationStore(path).list()
         kinds = [item["kind"] for item in annotations]
@@ -1131,7 +1148,7 @@ class AcquisitionWorkbench:
         label = metadata.get("label")
         if label is None:
             label = context.get("segment_label") or ""
-        return {
+        value = {
             "session_key": self._session_key(path),
             "session_id": reader.manifest.get("session_id"),
             "experiment_id": context.get("experiment_id") or path.parent.name,
@@ -1158,12 +1175,25 @@ class AcquisitionWorkbench:
             "markers": kinds,
             "input_capture": input_health,
         }
+        self._session_summary_cache[cache_key] = {
+            "signature": signature,
+            "value": dict(value),
+        }
+        return value
 
     def sessions(self) -> List[dict]:
         values = []
         paths = []
+        active_path = (
+            Path(self._active["path"]).resolve()
+            if self._active is not None
+            else None
+        )
         for manifest_path in self.session_root.glob("*/run_*/manifest.json"):
-            if re.fullmatch(r"run_\d+", manifest_path.parent.name):
+            if (
+                re.fullmatch(r"run_\d+", manifest_path.parent.name)
+                and manifest_path.parent.resolve() != active_path
+            ):
                 paths.append(manifest_path.parent)
         for path in paths:
             try:
@@ -1184,27 +1214,25 @@ class AcquisitionWorkbench:
             reverse=True,
         )
         if self._active is not None:
-            active_path = Path(self._active["path"])
             active_key = self._session_key(active_path)
-            if not any(item.get("session_key") == active_key for item in values):
-                values.insert(
-                    0,
-                    {
-                        "session_key": active_key,
-                        "experiment_id": active_path.parent.name,
-                        "run_index": self._active["run_index"],
-                        "game_profile_id": (self._armed or {}).get(
-                            "game_profile_id"
-                        ),
-                        "created_utc": None,
-                        "duration_s": None,
-                        "frames": None,
-                        "input_events": self._active.get("recorded_input_events", 0),
-                        "dropped_frames": None,
-                        "status": self._active["phase"],
-                        "label": "",
-                    },
-                )
+            values.insert(
+                0,
+                {
+                    "session_key": active_key,
+                    "experiment_id": active_path.parent.name,
+                    "run_index": self._active["run_index"],
+                    "game_profile_id": (self._armed or {}).get(
+                        "game_profile_id"
+                    ),
+                    "created_utc": None,
+                    "duration_s": None,
+                    "frames": None,
+                    "input_events": self._active.get("recorded_input_events", 0),
+                    "dropped_frames": None,
+                    "status": self._active["phase"],
+                    "label": "",
+                },
+            )
         return values
 
     @staticmethod
@@ -1680,6 +1708,7 @@ class AcquisitionWorkbench:
                 stamp, safe_id(path.parent.name), path.name
             )
             path.rename(target)
+            self._session_summary_cache.pop(str(path.resolve()), None)
             game_profile_id = context.get("game_profile_id")
             if game_profile_id:
                 self._refresh_poc_evidence_index(game_profile_id)
