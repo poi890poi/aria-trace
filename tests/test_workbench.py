@@ -10,6 +10,7 @@ from pathlib import Path
 
 from acquisition.annotations import AnnotationStore
 from acquisition.models import FramePacket, InputPacket
+from acquisition.poc_evidence import build_poc_evidence_index
 from acquisition.profiles import ProfileCatalog
 from acquisition.session import SessionReader, SessionWriter, input_capture_health
 from acquisition.workbench import (
@@ -56,6 +57,21 @@ class NeverForegroundDesktop(ArbitraryDesktop):
         return snapshot
 
 
+class IntegrityMismatchDesktop(ArbitraryDesktop):
+    def input_integrity_status(self, hwnd):
+        return {
+            "target_process_id": 991,
+            "target_elevated": True,
+            "recorder_elevated": False,
+            "matched": False,
+        }
+
+
+class FailingCaptureDesktop(ArbitraryDesktop):
+    def capture_client(self, hwnd):
+        raise RuntimeError("synthetic frame failure")
+
+
 class FakeXInputApi:
     def __init__(self):
         self.packet = 0
@@ -89,6 +105,7 @@ class FakeRawInputApi:
                 "kind": "pc_raw_mouse",
                 "host_time_ns": now,
                 "payload": {
+                    "device_handle": 55,
                     "movement_mode": "relative",
                     "delta_x": 14,
                     "delta_y": -7,
@@ -140,10 +157,26 @@ class SettlingRawInputApi(FakeRawInputApi):
                     "kind": "pc_raw_keyboard",
                     "host_time_ns": time.perf_counter_ns(),
                     "payload": {
+                        "device_handle": 55,
                         "virtual_key": 87,
                         "key_name": "W",
                         "scan_code": 17,
                         "pressed": True,
+                    },
+                }
+            )
+            emit(
+                {
+                    "kind": "pc_raw_mouse",
+                    "host_time_ns": time.perf_counter_ns(),
+                    "payload": {
+                        "device_handle": 55,
+                        "movement_mode": "relative",
+                        "delta_x": 9,
+                        "delta_y": -2,
+                        "button_transitions": [],
+                        "wheel_delta": 0,
+                        "horizontal_wheel_delta": 0,
                     },
                 }
             )
@@ -210,6 +243,92 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_poc_evidence_ignores_recoverable_trash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session_root = root / "sessions"
+            writer = SessionWriter(
+                session_root / ".trash" / "deleted-session",
+                [DescribedSource()],
+                [],
+                video_encoding="mjpeg",
+                session_context={
+                    "experiment_id": "deleted",
+                    "game_profile_id": "genshin-impact-pc",
+                    "capture_kind": "game_profile",
+                    "capture_id": "genshin-control-cruise",
+                    "workflow_stage_id": "control-cruise",
+                    "input_adapter": "none",
+                    "input_requirement": "none",
+                },
+            )
+            writer.close()
+
+            index = build_poc_evidence_index(
+                session_root, ProfileCatalog().game("genshin-impact-pc")
+            )
+            self.assertEqual(index["unassigned_sessions"], [])
+            self.assertTrue(all(not stage["sessions"] for stage in index["stages"]))
+
+    def test_simple_session_rejects_privilege_mismatch_before_writing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=IntegrityMismatchDesktop(),
+            )
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError, "second elevated instance cannot replace"
+                ):
+                    state.start_session(
+                        {
+                            "experiment_id": "must-not-exist",
+                            "window_title": "Popular Game A",
+                            "input_adapter": "windows_raw_keyboard_mouse",
+                            "capture_duration_s": 5,
+                        }
+                    )
+                self.assertFalse((root / "sessions" / "must-not-exist").exists())
+                self.assertIsNone(state.descriptor()["armed"])
+            finally:
+                state.close()
+
+    def test_recorder_failure_discards_partial_session_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=FailingCaptureDesktop(),
+            )
+            try:
+                state.start_session(
+                    {
+                        "experiment_id": "failed-capture",
+                        "window_title": "Popular Game A",
+                        "input_adapter": "none",
+                        "capture_duration_s": 5,
+                        "start_delay_s": 0.01,
+                    }
+                )
+                deadline = time.time() + 5
+                while state.descriptor()["active_run"] is not None:
+                    self.assertLess(time.time(), deadline)
+                    time.sleep(0.02)
+
+                self.assertFalse(
+                    (root / "sessions" / "failed-capture" / "run_01").exists()
+                )
+                descriptor = state.descriptor()
+                self.assertEqual(descriptor["sessions"], [])
+                self.assertIn("synthetic frame failure", descriptor["last_error"])
+            finally:
+                state.close()
+
     def test_restart_restores_persisted_armed_experiment(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -351,12 +470,13 @@ class WorkbenchTests(unittest.TestCase):
                     time.sleep(0.02)
 
                 path = root / "sessions" / "no-focus-gate-test" / "run_01"
+                self.assertTrue(path.exists(), state.descriptor()["last_error"])
                 reader = SessionReader(path)
                 diagnostics = reader.manifest["input_sources"][0][
                     "raw_input_diagnostics"
                 ]
-                self.assertEqual(diagnostics["packets_received"], 2)
-                self.assertEqual(diagnostics["packets_accepted"], 2)
+                self.assertEqual(diagnostics["packets_received"], 3)
+                self.assertEqual(diagnostics["packets_accepted"], 3)
                 self.assertEqual(diagnostics["packets_rejected_foreground"], 0)
                 self.assertEqual(
                     diagnostics["foreground_authority"],
@@ -367,7 +487,7 @@ class WorkbenchTests(unittest.TestCase):
                     reader.manifest["recording_start"]["input_settle_delay_s"],
                     0.1,
                 )
-                self.assertEqual(len(reader.inputs), 1)
+                self.assertEqual(len(reader.inputs), 2)
                 self.assertEqual(reader.inputs[0]["kind"], "pc_raw_keyboard")
                 self.assertEqual(reader.inputs[0]["session_time_ns"], 0)
                 self.assertTrue(reader.frames_by_stream["main"])

@@ -106,6 +106,9 @@ def build_poc_evidence_index(
     sessions = []
     errors = []
     for manifest_path in sorted(session_root.glob("**/manifest.json")):
+        relative_parts = manifest_path.relative_to(session_root).parts
+        if ".trash" in relative_parts:
+            continue
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             context = manifest.get("context") or {}

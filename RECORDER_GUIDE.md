@@ -14,6 +14,8 @@ The Acquisition Workbench is the normal way to record a route. It uses the canon
 
 There are no required command-line parameters. The default output locations are `sessions/workbench/` for recordings and `artifacts/workbench/` for compiled results.
 
+When the selected game runs as administrator, the Workbench process serving port 8765 must also run as administrator. Stop any existing non-elevated Workbench first: launching a second elevated copy cannot take over a port that the first copy still owns. The Start action checks this before it creates a session and reports the mismatch on the page.
+
 ## Record and organize sessions
 
 1. Select the game profile and visible game window.
@@ -25,6 +27,8 @@ There are no required command-line parameters. The default output locations are 
 7. Repeat as often as needed. There is no stage selection, arming step, take target, or fixed session limit.
 
 Choosing a non-empty label is the single post-capture review action. Rotation-only and movement-only sessions feed mini-map calibration, while straight-forward/no-turn preserves the cursor-heading-to-observed-map-shift relationship. **Delete** moves an unwanted session under `sessions/workbench/.trash/` so the operation remains recoverable.
+
+Only complete recordings with positive duration and at least one video frame are committed to the session list. Privilege/input failures, recorder errors, cancellations, zero-duration attempts, and frameless attempts are discarded automatically; their error remains visible in the Workbench instead of becoming a session.
 
 The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays. `python -m acquisition.workbench --no-hud` disables it explicitly.
 

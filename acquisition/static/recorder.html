@@ -21,7 +21,7 @@
       <label>Window<select id="window"></select></label>
       <label>Input capture<select id="inputAdapter"></select></label>
       <label>Seconds<input id="duration" type="number" min="5" max="600" step="1" value="30"></label>
-      <div class="helper">Select the game window, press Start recording, then switch to the game. Capture begins after a three-second settling countdown and stops automatically.</div>
+      <div class="helper">Select the game window, press Start recording, then switch to the game. Capture begins after a three-second settling countdown and stops automatically. Failed, canceled, zero-duration, and empty recordings are discarded.</div>
     </div>
     <div class="record-actions">
       <button id="start" class="primary">Start recording</button>
@@ -35,7 +35,7 @@
 </div>
 <script>
 const ui=Object.fromEntries(['game','window','inputAdapter','duration','start','cancel','message','sessions','sessionCount','liveDot','liveText'].map(id=>[id,document.getElementById(id)]));
-let state=null,initialized=false,busy=false,refreshing=false;
+let state=null,initialized=false,busy=false,refreshing=false,actionError='';
 function escapeHtml(value){const div=document.createElement('div');div.textContent=String(value==null?'':value);return div.innerHTML}
 function setOptions(select,items,value){const previous=value==null?select.value:value;select.replaceChildren();items.forEach(item=>select.add(new Option(item.label,item.value)));if(items.some(item=>item.value===previous))select.value=previous}
 function gameName(id){const game=(state.profiles.games||[]).find(item=>item.profile_id===id);return game?game.display_name:(id||'Custom game')}
@@ -69,9 +69,9 @@ function renderSessions(){
 }
 function render(){
   if(!initialized)initialize();const active=state.active_run!==null;[ui.game,ui.window,ui.inputAdapter,ui.duration].forEach(element=>element.disabled=busy||active);ui.start.disabled=busy||active;ui.cancel.disabled=busy||!active;ui.liveDot.className='dot'+(active?' active':'');ui.liveText.textContent=active?statusText(state.active_phase):'Ready';
-  if(state.last_error)showMessage(state.last_error,'error');else if(active)showMessage('Session '+state.active_run+': '+statusText(state.active_phase));else if(!busy)showMessage('Ready for another recording.');renderSessions();
+  if(actionError)showMessage(actionError,'error');else if(state.last_error)showMessage(state.last_error,'error');else if(active)showMessage('Session '+state.active_run+': '+statusText(state.active_phase));else if(!busy)showMessage('Ready for another recording.');renderSessions();
 }
-async function act(work,success){if(busy)return;busy=true;render();try{state=await work();showMessage(success||'Done','ok')}catch(error){showMessage(error.message||String(error),'error')}finally{busy=false;render()}}
+async function act(work,success){if(busy)return;busy=true;actionError='';render();try{state=await work();showMessage(success||'Done','ok')}catch(error){actionError=error.message||String(error)}finally{busy=false;render()}}
 async function startRecording(){await act(()=>post('/api/session/start',{game_profile_id:ui.game.value||null,window_title:ui.window.value,input_adapter:ui.inputAdapter.value,capture_duration_s:Number(ui.duration.value),start_delay_s:3}),'Recording queued. Switch to the game now.')}
 async function changeLabel(sessionKey,label){await act(()=>post('/api/session/label',{session_key:sessionKey,label}),'Session label saved.')}
 async function deleteSession(sessionKey){if(!confirm('Delete this session? It will be moved to recoverable trash.'))return;await act(()=>post('/api/session/delete',{session_key:sessionKey}),'Session moved to trash.')}

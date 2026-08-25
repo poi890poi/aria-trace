@@ -30,6 +30,7 @@ from .windows import (
     WindowsRawKeyboardMouseSource,
     WindowsWindowFrameSource,
     WindowsXInputSource,
+    select_window,
 )
 
 
@@ -910,6 +911,34 @@ class AcquisitionWorkbench:
         except Exception as exc:
             return [{"error": "{}: {}".format(type(exc).__name__, exc)}]
 
+    def _preflight_input_integrity(
+        self, window_title: Optional[str], input_adapter: str
+    ) -> Optional[dict]:
+        """Reject an unreadable Windows input target before creating a session."""
+        if input_adapter != "windows_raw_keyboard_mouse":
+            return None
+        desktop = self._desktop()
+        if not hasattr(desktop, "input_integrity_status"):
+            return None
+        hwnd, matched_title = select_window(
+            desktop.list_windows(), str(window_title or ""), exact=True
+        )
+        status = dict(desktop.input_integrity_status(hwnd))
+        status["matched_window_title"] = matched_title
+        if not status.get("matched", True):
+            target = "elevated" if status.get("target_elevated") else "not elevated"
+            recorder = (
+                "elevated" if status.get("recorder_elevated") else "not elevated"
+            )
+            raise RuntimeError(
+                "Input privilege mismatch: target {!r} is {}, but the Workbench "
+                "serving this page is {}. Stop the Workbench currently using "
+                "this port, then launch it at the same privilege level as the "
+                "game; a second elevated instance cannot replace a server that "
+                "already owns the port.".format(matched_title, target, recorder)
+            )
+        return status
+
     def arm(self, value: dict) -> dict:
         with self._lock:
             if self._active is not None:
@@ -1374,6 +1403,11 @@ class AcquisitionWorkbench:
             game_id or "custom"
         )
         input_adapter = str(value.get("input_adapter") or "none")
+        game = self.profiles.game(game_id) if game_id else None
+        window_title = value.get("window_title") or (
+            (game or {}).get("default_frame_source", {}).get("window_title")
+        )
+        self._preflight_input_integrity(window_title, input_adapter)
         self.arm(
             {
                 "game_profile_id": game_id,
@@ -1383,7 +1417,7 @@ class AcquisitionWorkbench:
                 "route_id": "unlabeled-session",
                 "target_runs": 1,
                 "capture_duration_s": value.get("capture_duration_s") or 30,
-                "window_title": value.get("window_title"),
+                "window_title": window_title,
                 "frame_source": {
                     "adapter": "windows_window",
                     "fps": float(value.get("fps") or 30),
@@ -1424,6 +1458,10 @@ class AcquisitionWorkbench:
                     "Choose an input adapter; first-input session start cannot "
                     "work with input capture disabled"
                 )
+            self._preflight_input_integrity(
+                config["frame_source"].get("window_title"),
+                config["input_source"].get("adapter", "none"),
+            )
             active = {
                 "run_index": run_index,
                 "path": self._run_path(run_index),
@@ -1441,6 +1479,7 @@ class AcquisitionWorkbench:
             self._last_error = None
 
         def work() -> None:
+            keep_session = False
             hud_result = {
                 "state": "failed",
                 "run_index": run_index,
@@ -1551,45 +1590,59 @@ class AcquisitionWorkbench:
                 session_started = bool(
                     (manifest.get("recording_start") or {}).get("started")
                 )
+                frames = reader.frames_by_stream.get("main", [])
+                duration_ns = int(manifest.get("duration_ns") or 0)
                 empty_input = not input_health["healthy"]
                 failed = bool(
                     active["cancel"].is_set()
                     or not session_started
                     or empty_input
+                    or manifest.get("status") != "complete"
+                    or duration_ns <= 0
+                    or not frames
                 )
-                failure_note = None
-                if empty_input:
-                    failure_note = (
-                        "automatic:{}:no_control_input_events:{}".format(
-                            config["capture_id"], input_health["adapter"]
-                        )
-                    )
-                if session_started and reader.frames_by_stream.get("main"):
+                if not failed:
                     self._finalize_take(
                         active["path"],
                         config["route_id"],
-                        failed,
+                        False,
                         active["recording_started_host_time_ns"],
                         capture_kind=config["capture_kind"],
                         capture_id=config["capture_id"],
-                        failure_note=failure_note,
                     )
+                    keep_session = True
                 if not session_started:
                     with self._lock:
                         self._last_error = (
                             "No gameplay input was received; the session never "
-                            "started. Check the input adapter and try again."
+                            "started. The partial capture was discarded. Check "
+                            "the input adapter and try again."
                         )
                 elif empty_input:
                     with self._lock:
                         self._last_error = (
                             "No control input events were recorded by {}. "
-                            "The capture was rejected; verify recorder/game "
-                            "privilege levels or try the legacy input adapter."
+                            "The partial capture was discarded; verify "
+                            "recorder/game privilege levels or try the legacy "
+                            "input adapter."
                         ).format(input_health["adapter"])
-                elif failed:
+                elif active["cancel"].is_set():
                     with self._lock:
-                        self._last_error = "Take was canceled; rerecord it"
+                        self._last_error = (
+                            "Take was canceled; the partial capture was discarded"
+                        )
+                elif manifest.get("status") != "complete":
+                    with self._lock:
+                        self._last_error = (
+                            "Recording did not complete; the partial capture was "
+                            "discarded"
+                        )
+                elif duration_ns <= 0 or not frames:
+                    with self._lock:
+                        self._last_error = (
+                            "Recording contained no usable video duration or "
+                            "frames; the partial capture was discarded"
+                        )
                 else:
                     hud_result["state"] = "complete"
             except Exception as exc:
@@ -1598,6 +1651,23 @@ class AcquisitionWorkbench:
                     self._last_error = "{}: {}".format(type(exc).__name__, exc)
             finally:
                 active["stop"].set()
+                if not keep_session:
+                    try:
+                        if active["path"].exists():
+                            shutil.rmtree(active["path"])
+                        self._session_summary_cache.pop(
+                            str(active["path"].resolve()), None
+                        )
+                    except Exception as exc:
+                        with self._lock:
+                            cleanup_error = "Could not discard failed capture: {}: {}".format(
+                                type(exc).__name__, exc
+                            )
+                            self._last_error = (
+                                "{}; {}".format(self._last_error, cleanup_error)
+                                if self._last_error
+                                else cleanup_error
+                            )
                 try:
                     if config.get("game_profile_id"):
                         self._refresh_poc_evidence_index(
