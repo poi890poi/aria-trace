@@ -21,7 +21,9 @@ class WorkbenchHudProcess:
         if os.name != "nt":
             raise RuntimeError("The in-game HUD is available only on Windows")
         if self.process is not None:
-            return
+            if self.process.poll() is None:
+                return
+            self.stop()
         self.process = subprocess.Popen(
             [
                 sys.executable,

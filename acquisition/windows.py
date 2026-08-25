@@ -1209,7 +1209,8 @@ class WindowsRawKeyboardMouseSource(InputSource):
                     )
                 )
                 return
-            if self._filter_foreground and not self._is_foreground():
+            foreground = self._is_foreground()
+            if self._filter_foreground and not foreground:
                 self._raw_packets_rejected_foreground += 1
                 return
             self._raw_packets_accepted += 1
@@ -1217,7 +1218,7 @@ class WindowsRawKeyboardMouseSource(InputSource):
             payload.update(
                 {
                     "window_title": self.matched_title,
-                    "foreground": True,
+                    "foreground": foreground,
                 }
             )
             emit(
@@ -1278,6 +1279,7 @@ class WindowsRawKeyboardMouseSource(InputSource):
                     self._foreground_authority != "active_capture_lifecycle"
                 ),
                 "acceptance_policy": self._foreground_authority,
+                "foreground_tagged": True,
                 "keyboard": "raw_make_break_scan_code_and_virtual_key",
                 "mouse_motion": "raw_relative_delta",
                 "mouse_buttons": "raw_button_transitions_and_wheel",

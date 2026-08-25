@@ -55,6 +55,8 @@ def nearest_frame_index(frames: List[dict], host_time_ns: int) -> int:
 def input_packet_is_active(packet) -> bool:
     """Return whether one live input packet represents intentional control."""
     payload = packet.payload or {}
+    if not payload.get("foreground", True):
+        return False
     if packet.kind == "pc_raw_keyboard":
         return True
     if packet.kind == "pc_raw_mouse":
@@ -356,10 +358,12 @@ class AcquisitionWorkbench:
         self._hud_notice = None
         self._session_summary_cache = {}
         self._hud_runtime = {
+            "available": False,
             "enabled": False,
             "capture_exclusion": False,
             "error": None,
         }
+        self._hud_toggle = None
         if not self._restore_state_file():
             self._armed = self._recover_latest_experiment()
             if self._armed is not None:
@@ -534,13 +538,47 @@ class AcquisitionWorkbench:
         enabled: bool,
         capture_exclusion: bool = False,
         error: Optional[str] = None,
+        available: Optional[bool] = None,
     ) -> None:
         with self._lock:
             self._hud_runtime = {
+                "available": (
+                    bool(available)
+                    if available is not None
+                    else bool(self._hud_runtime.get("available"))
+                ),
                 "enabled": bool(enabled),
                 "capture_exclusion": bool(capture_exclusion),
                 "error": error or None,
             }
+
+    def configure_hud_control(self, toggle) -> None:
+        """Attach the process-level HUD controller to the HTTP workbench state."""
+        with self._lock:
+            self._hud_toggle = toggle
+            self._hud_runtime["available"] = toggle is not None
+
+    def set_hud_enabled(self, enabled: bool) -> dict:
+        with self._lock:
+            toggle = self._hud_toggle
+        if toggle is None:
+            raise RuntimeError("The in-game overlay is unavailable")
+        try:
+            toggle(bool(enabled))
+        except Exception as exc:
+            self.set_hud_runtime(
+                enabled=False,
+                capture_exclusion=False,
+                error="{}: {}".format(type(exc).__name__, exc),
+                available=True,
+            )
+            raise RuntimeError("Could not change the overlay: {}".format(exc))
+        self.set_hud_runtime(
+            enabled=bool(enabled),
+            capture_exclusion=bool(enabled),
+            available=True,
+        )
+        return self.descriptor()
 
     def hud_descriptor(self) -> dict:
         """Return a lightweight status contract for the in-game overlay."""
@@ -1426,10 +1464,12 @@ class AcquisitionWorkbench:
                     "adapter": input_adapter,
                     "poll_hz": 250 if input_adapter == "windows_xinput" else 125,
                 },
-                "start_trigger": "settled_timer",
+                "start_trigger": (
+                    "settled_timer" if input_adapter == "none" else "first_input"
+                ),
                 "start_delay_s": float(value.get("start_delay_s") or 3),
                 "input_requirement": (
-                    "none" if input_adapter == "none" else "optional"
+                    "none" if input_adapter == "none" else "required"
                 ),
                 "confirmation_label": "labeled session",
             }
@@ -2028,6 +2068,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.delete_session(
                         str(value.get("session_key") or "")
                     )
+                elif path == "/api/hud/toggle":
+                    result = state.set_hud_enabled(bool(value.get("enabled")))
                 elif path == "/api/take/queue":
                     result = state.queue_next_take()
                 elif path == "/api/take/cancel":
@@ -2081,7 +2123,7 @@ def main() -> None:
     parser.add_argument(
         "--no-hud",
         action="store_true",
-        help="disable the capture-safe always-on-top Windows status HUD",
+        help="start with the capture-safe Windows status HUD hidden",
     )
     args = parser.parse_args()
     catalog = ProfileCatalog(args.profile_root) if args.profile_root else ProfileCatalog()
@@ -2093,7 +2135,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), make_handler(state))
     hud = None
     hud_error = None
-    if os.name == "nt" and not args.no_hud:
+    if os.name == "nt":
         try:
             from .hud_process import WorkbenchHudProcess
 
@@ -2108,27 +2150,44 @@ def main() -> None:
                     server.server_address[1],
                 )
             )
-            hud.start()
-            state.set_hud_runtime(
-                enabled=True,
-                capture_exclusion=True,
-            )
+            def toggle_hud(enabled: bool) -> None:
+                if enabled:
+                    hud.start()
+                else:
+                    hud.stop()
+
+            state.configure_hud_control(toggle_hud)
+            if not args.no_hud:
+                toggle_hud(True)
+                state.set_hud_runtime(
+                    enabled=True,
+                    capture_exclusion=True,
+                    available=True,
+                )
+            else:
+                state.set_hud_runtime(
+                    enabled=False,
+                    capture_exclusion=False,
+                    available=True,
+                )
         except Exception as exc:
             hud_error = "{}: {}".format(type(exc).__name__, exc)
             if hud is not None:
                 hud.stop()
-            hud = None
             state.set_hud_runtime(
                 enabled=False,
                 capture_exclusion=False,
                 error=hud_error,
+                available=hud is not None,
             )
     print("AriaTrace Acquisition Workbench")
     print("Open http://{}:{}/".format(args.host, server.server_address[1]))
-    if hud is not None:
+    if state.descriptor()["hud_runtime"]["enabled"]:
         print("In-game HUD enabled (click-through and excluded from capture)")
     elif hud_error:
         print("In-game HUD unavailable: {}".format(hud_error))
+    elif hud is not None:
+        print("In-game HUD hidden (it can be shown from the Workbench)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

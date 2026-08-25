@@ -21,11 +21,12 @@
       <label>Window<select id="window"></select></label>
       <label>Input capture<select id="inputAdapter"></select></label>
       <label>Seconds<input id="duration" type="number" min="5" max="600" step="1" value="30"></label>
-      <div class="helper">Select the game window, press Start recording, then switch to the game. Capture begins after a three-second settling countdown and stops automatically. Failed, canceled, zero-duration, and empty recordings are discarded.</div>
+      <div class="helper">Select the game window, press Start recording, then switch to the game. After a three-second settling countdown, capture waits for your first input in the focused game and then runs for the selected duration. Failed, canceled, zero-duration, and empty recordings are discarded.</div>
     </div>
     <div class="record-actions">
       <button id="start" class="primary">Start recording</button>
       <button id="cancel" class="danger" disabled>Stop</button>
+      <button id="hud">Show overlay</button>
     </div>
   </div>
   <div id="message" class="message" role="status"></div>
@@ -34,7 +35,7 @@
 <section id="sessions" class="sessions" aria-live="polite"></section>
 </div>
 <script>
-const ui=Object.fromEntries(['game','window','inputAdapter','duration','start','cancel','message','sessions','sessionCount','liveDot','liveText'].map(id=>[id,document.getElementById(id)]));
+const ui=Object.fromEntries(['game','window','inputAdapter','duration','start','cancel','hud','message','sessions','sessionCount','liveDot','liveText'].map(id=>[id,document.getElementById(id)]));
 let state=null,initialized=false,busy=false,refreshing=false,actionError='';
 function escapeHtml(value){const div=document.createElement('div');div.textContent=String(value==null?'':value);return div.innerHTML}
 function setOptions(select,items,value){const previous=value==null?select.value:value;select.replaceChildren();items.forEach(item=>select.add(new Option(item.label,item.value)));if(items.some(item=>item.value===previous))select.value=previous}
@@ -43,6 +44,7 @@ function statusText(status){return String(status||'unknown').split('_').join(' '
 function fmtDate(value){if(!value)return 'Recording now';const date=new Date(value);return Number.isNaN(date.valueOf())?value:date.toLocaleString()}
 function fmtDuration(value){if(value==null)return '-';return Number(value).toFixed(1)+' s'}
 function isActiveStatus(status){return ['arming_sources','settling_queue_input','waiting_for_first_input','recording_uninterrupted_take','finalizing_capture'].includes(status)}
+function labelMenuActive(){return !!(document.activeElement&&document.activeElement.matches('.session-controls select'))}
 async function post(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});if(!response.ok)throw new Error(await response.text());return response.json()}
 function showMessage(text,type){ui.message.textContent=text||'';ui.message.className='message'+(type?' '+type:'')}
 function initialize(){
@@ -68,15 +70,16 @@ function renderSessions(){
   });
 }
 function render(){
-  if(!initialized)initialize();const active=state.active_run!==null;[ui.game,ui.window,ui.inputAdapter,ui.duration].forEach(element=>element.disabled=busy||active);ui.start.disabled=busy||active;ui.cancel.disabled=busy||!active;ui.liveDot.className='dot'+(active?' active':'');ui.liveText.textContent=active?statusText(state.active_phase):'Ready';
+  if(!initialized)initialize();const active=state.active_run!==null;const hud=state.hud_runtime||{};[ui.game,ui.window,ui.inputAdapter,ui.duration].forEach(element=>element.disabled=busy||active);ui.start.disabled=busy||active;ui.cancel.disabled=busy||!active;ui.hud.hidden=!hud.available;ui.hud.disabled=busy||!hud.available;ui.hud.textContent=hud.enabled?'Hide overlay':'Show overlay';ui.liveDot.className='dot'+(active?' active':'');ui.liveText.textContent=active?statusText(state.active_phase):'Ready';
   if(actionError)showMessage(actionError,'error');else if(state.last_error)showMessage(state.last_error,'error');else if(active)showMessage('Session '+state.active_run+': '+statusText(state.active_phase));else if(!busy)showMessage('Ready for another recording.');renderSessions();
 }
 async function act(work,success){if(busy)return;busy=true;actionError='';render();try{state=await work();showMessage(success||'Done','ok')}catch(error){actionError=error.message||String(error)}finally{busy=false;render()}}
 async function startRecording(){await act(()=>post('/api/session/start',{game_profile_id:ui.game.value||null,window_title:ui.window.value,input_adapter:ui.inputAdapter.value,capture_duration_s:Number(ui.duration.value),start_delay_s:3}),'Recording queued. Switch to the game now.')}
 async function changeLabel(sessionKey,label){await act(()=>post('/api/session/label',{session_key:sessionKey,label}),'Session label saved.')}
 async function deleteSession(sessionKey){if(!confirm('Delete this session? It will be moved to recoverable trash.'))return;await act(()=>post('/api/session/delete',{session_key:sessionKey}),'Session moved to trash.')}
-async function refresh(){if(busy||refreshing)return;refreshing=true;try{const response=await fetch('/api/state');if(!response.ok)throw new Error(await response.text());state=await response.json();render()}catch(error){showMessage(error.message||String(error),'error')}finally{refreshing=false}}
-ui.start.onclick=startRecording;ui.cancel.onclick=()=>act(()=>post('/api/take/cancel',{}),'Recording stopped.');ui.game.onchange=()=>{const game=(state.profiles.games||[]).find(item=>item.profile_id===ui.game.value);const preferred=game&&game.default_input_source&&game.default_input_source.adapter;if(preferred&&Array.from(ui.inputAdapter.options).some(option=>option.value===preferred))ui.inputAdapter.value=preferred};refresh();setInterval(refresh,1000);
+async function toggleHud(){const enabled=!(state.hud_runtime||{}).enabled;await act(()=>post('/api/hud/toggle',{enabled}),enabled?'Overlay shown.':'Overlay hidden.')}
+async function refresh(){if(busy||refreshing||labelMenuActive())return;refreshing=true;try{const response=await fetch('/api/state');if(!response.ok)throw new Error(await response.text());const nextState=await response.json();if(labelMenuActive())return;state=nextState;render()}catch(error){showMessage(error.message||String(error),'error')}finally{refreshing=false}}
+ui.start.onclick=startRecording;ui.cancel.onclick=()=>act(()=>post('/api/take/cancel',{}),'Recording stopped.');ui.hud.onclick=toggleHud;ui.game.onchange=()=>{const game=(state.profiles.games||[]).find(item=>item.profile_id===ui.game.value);const preferred=game&&game.default_input_source&&game.default_input_source.adapter;if(preferred&&Array.from(ui.inputAdapter.options).some(option=>option.value===preferred))ui.inputAdapter.value=preferred};refresh();setInterval(refresh,1000);
 </script>
 </body>
 </html>

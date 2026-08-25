@@ -21,8 +21,8 @@ When the selected game runs as administrator, the Workbench process serving port
 1. Select the game profile and visible game window.
 2. Choose **Windows Raw Keyboard + Mouse** unless intentionally recording a controller or visual-only evidence.
 3. Set the duration and select **Start recording**.
-4. Switch to the game while the HUD says **ARMING** or **SWITCH TO GAME**. Recording begins after the three-second settling countdown.
-5. Perform one coherent sample. Recording stops automatically; **Stop** is available when an early end is necessary.
+4. Switch to the game while the HUD says **ARMING** or **SWITCH TO GAME**.
+5. After the three-second settling countdown, make the first intended control while the game has focus. That input becomes session time zero. Recording stops after the selected duration; **Stop** is available when an early end is necessary.
 6. Return after **CAPTURE COMPLETE** and choose a label in that session's row. The available labels cover ordinary cruise, rotation-only, movement-only, straight-forward/no-turn, full-map coverage, and route demonstrations.
 7. Repeat as often as needed. There is no stage selection, arming step, take target, or fixed session limit.
 
@@ -30,7 +30,7 @@ Choosing a non-empty label is the single post-capture review action. Rotation-on
 
 Only complete recordings with positive duration and at least one video frame are committed to the session list. Privilege/input failures, recorder errors, cancellations, zero-duration attempts, and frameless attempts are discarded automatically; their error remains visible in the Workbench instead of becoming a session.
 
-The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays. `python -m acquisition.workbench --no-hud` disables it explicitly.
+The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. It hides immediately when the selected game loses focus. Use **Hide overlay** / **Show overlay** in the Workbench at any time; `python -m acquisition.workbench --no-hud` starts with it hidden. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays.
 
 Label changes refresh `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json`. This index identifies each source session and its selected role, markers, timestamps, frame/input counts, and drops. It is an evidence inventory, not a claim that the captured map or mini-map data has already been modeled successfully.
 
@@ -49,7 +49,7 @@ The normal screen asks for four choices:
 
 1. Put the game at the same chosen starting state.
 2. In the workbench, select **Start recording**.
-3. Switch to the selected game window during **ARMING** / **SWITCH TO GAME**. The three-second settling interval discards the queue click and switch residue, then starts the bounded recording. There is no focus gate.
+3. Switch to the selected game window during **ARMING** / **SWITCH TO GAME**. The three-second settling interval discards the queue click and switch residue, then the recorder waits for the first active control while the game has focus.
 4. Play the complete route naturally. Preserve the route, speed, camera movement, pauses, and all other behavior you intend the machine to learn.
 5. Simply play the sample. The take stops automatically when the countdown ends. If you finish early, remain in the game until the HUD reports completion.
 6. Return to the workbench after **CAPTURE COMPLETE** and choose the session label.

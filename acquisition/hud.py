@@ -71,6 +71,14 @@ class _HudWindow:
             HUD_MARGIN,
         )
 
+    @staticmethod
+    def _target_is_foreground(user32, window_title: Optional[str]) -> bool:
+        """Show the overlay only while its exact target game owns focus."""
+        if not window_title:
+            return False
+        target = user32.FindWindowW(None, str(window_title))
+        return bool(target and user32.GetForegroundWindow() == target)
+
     def _run(self) -> None:
         root = None
         try:
@@ -80,6 +88,7 @@ class _HudWindow:
             user32 = ctypes.windll.user32
             user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
             user32.FindWindowW.restype = wintypes.HWND
+            user32.GetForegroundWindow.restype = wintypes.HWND
             user32.GetClientRect.argtypes = [
                 wintypes.HWND,
                 ctypes.POINTER(wintypes.RECT),
@@ -200,7 +209,9 @@ class _HudWindow:
                     if value.get("shutdown"):
                         root.destroy()
                         return
-                    should_show = bool(value.get("visible"))
+                    should_show = bool(value.get("visible")) and self._target_is_foreground(
+                        user32, value.get("window_title")
+                    )
                     if should_show:
                         title.config(text=str(value.get("title") or "ARIATRACE"))
                         status_label.config(
@@ -233,9 +244,9 @@ class _HudWindow:
                     title.config(text="ARIATRACE HUD")
                     status_label.config(text="HUD ERROR", foreground="#ff7b84")
                     detail.config(text="{}: {}".format(type(exc).__name__, exc))
-                    if not visible:
-                        root.deiconify()
-                        visible = True
+                    if visible:
+                        root.withdraw()
+                        visible = False
                 root.after(self.refresh_ms, refresh)
 
             root.after(0, refresh)

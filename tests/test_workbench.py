@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from acquisition.annotations import AnnotationStore
+from acquisition.hud import _HudWindow
 from acquisition.models import FramePacket, InputPacket
 from acquisition.poc_evidence import build_poc_evidence_index
 from acquisition.profiles import ProfileCatalog
@@ -17,6 +18,7 @@ from acquisition.workbench import (
     AcquisitionWorkbench,
     SourceFactory,
     automatic_take_bounds,
+    input_packet_is_active,
     make_handler,
     nearest_frame_index,
     safe_id,
@@ -243,6 +245,67 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_hud_visibility_requires_exact_target_foreground(self):
+        class FakeUser32:
+            foreground = 17
+
+            @staticmethod
+            def FindWindowW(_class_name, title):
+                return 17 if title == "Popular Game A" else 0
+
+            def GetForegroundWindow(self):
+                return self.foreground
+
+        user32 = FakeUser32()
+        self.assertTrue(
+            _HudWindow._target_is_foreground(user32, "Popular Game A")
+        )
+        user32.foreground = 18
+        self.assertFalse(
+            _HudWindow._target_is_foreground(user32, "Popular Game A")
+        )
+        self.assertFalse(_HudWindow._target_is_foreground(user32, None))
+
+    def test_first_input_trigger_ignores_controls_outside_game_focus(self):
+        background = InputPacket(
+            "pc-raw-input",
+            "pc_raw_keyboard",
+            time.perf_counter_ns(),
+            {"foreground": False, "key_name": "W", "pressed": True},
+        )
+        foreground = InputPacket(
+            "pc-raw-input",
+            "pc_raw_keyboard",
+            time.perf_counter_ns(),
+            {"foreground": True, "key_name": "W", "pressed": True},
+        )
+        self.assertFalse(input_packet_is_active(background))
+        self.assertTrue(input_packet_is_active(foreground))
+
+    def test_simple_input_recording_arms_for_first_game_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.queue_next_take = state.descriptor
+                descriptor = state.start_session(
+                    {
+                        "experiment_id": "first-input-session",
+                        "window_title": "Popular Game A",
+                        "input_adapter": "windows_raw_keyboard_mouse",
+                        "capture_duration_s": 20,
+                    }
+                )
+                self.assertEqual(descriptor["armed"]["start_trigger"], "first_input")
+                self.assertEqual(descriptor["armed"]["input_requirement"], "required")
+            finally:
+                state.close()
+
     def test_poc_evidence_ignores_recoverable_trash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -433,7 +496,7 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 restored.close()
 
-    def test_queued_take_accepts_raw_input_without_any_focus_gate(self):
+    def test_queued_take_starts_on_raw_input_while_game_is_foreground(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profile_root = root / "profiles"
@@ -442,7 +505,7 @@ class WorkbenchTests(unittest.TestCase):
                 root / "sessions",
                 root / "artifacts",
                 profiles=ProfileCatalog(profile_root),
-                desktop_api=NeverForegroundDesktop(),
+                desktop_api=ArbitraryDesktop(),
                 raw_input_api=SettlingRawInputApi(),
             )
             try:
@@ -638,6 +701,14 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertTrue(
                     state.descriptor()["hud_runtime"]["capture_exclusion"]
                 )
+                toggles = []
+                state.configure_hud_control(toggles.append)
+                hidden = state.set_hud_enabled(False)
+                self.assertEqual(toggles, [False])
+                self.assertFalse(hidden["hud_runtime"]["enabled"])
+                shown = state.set_hud_enabled(True)
+                self.assertEqual(toggles, [False, True])
+                self.assertTrue(shown["hud_runtime"]["enabled"])
             finally:
                 state._active = None
                 state.close()
@@ -789,6 +860,7 @@ class WorkbenchTests(unittest.TestCase):
         )
         self.assertEqual(diagnostics["packets_accepted"], 2)
         self.assertEqual(diagnostics["packets_rejected_foreground"], 0)
+        self.assertTrue(all(not event.payload["foreground"] for event in events))
 
     def test_xinput_source_emits_complete_controller_state(self):
         events = []
@@ -940,7 +1012,9 @@ class WorkbenchTests(unittest.TestCase):
                     self.assertIn("Sessions", html)
                     self.assertIn("Label", html)
                     self.assertIn("Delete", html)
+                    self.assertIn("Show overlay", html)
                     self.assertIn("three-second settling countdown", html)
+                    self.assertIn("function labelMenuActive()", html)
                     self.assertNotIn("F9", html)
                     self.assertNotIn("Combat Master", html)
                     self.assertEqual(api["armed"]["game_profile_id"], "game-a")
