@@ -6,18 +6,16 @@ The name joins Ariadne's guiding thread, an aria interpreted as a live performan
 
 This is not timed macro playback. Reliable route completion is the objective; localization is one supporting signal.
 
-Genshin Impact PC is the first POC game. The Acquisition Workbench includes a three-stage Genshin workflow: one basic gameplay sample shared by behavior/UI/mini-map modeling, a full-map viewer capture, and the repeatable route. The basic sample asks only for a short cruise, rotation-only, and movement-only segment. The current slice records and labels the evidence; automated map traversal and the map/mini-map estimators remain subsequent implementation work. Autonomous replay design follows evidence from that recorder rather than preceding it.
+Genshin Impact PC is the first POC game. The Acquisition Workbench records an unrestricted number of sessions, then lets the operator classify each one from a short label list: ordinary cruise, rotation-only, movement-only, straight-forward/no-turn, full-map coverage, or route demonstration. The workbench calibrates the circular mini-map from the labeled sessions and preserves the forward segment as the cursor-heading-to-mini-map-shift reference for pose refinement. It persists the masked model, confidence metrics, and boundary, cursor-center, cursor-shape, polar, pose, and quality evidence for review. Automated map traversal and cruise/route estimators remain subsequent work.
 
 Start the integrated PC acquisition flow from the repository root:
 
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/. The normal GUI asks for the game profile, game window, input type, and guided capture or route preset; technical overrides stay under **Advanced settings**. Queue each uninterrupted capture and switch to the game while the HUD says **SWITCH TO GAME**. Queue/switch input is discarded for 1.5 seconds; **PLAY TO START** then means the next active input starts the session. Recording stops automatically; return to the workbench when the HUD says **CAPTURE COMPLETE**.
+Open http://127.0.0.1:8765/. Choose the game, visible game window, input type, and duration, then select **Start recording**. Switch to the game while the HUD says **SWITCH TO GAME**; recording begins after the three-second settling countdown and stops automatically. Every session appears in the list, where it can be labeled or moved to recoverable trash.
 
-For the Genshin POC, choose **Genshin Impact (PC POC)**, confirm the editable controls, select the first wizard stage, and follow the displayed instructions. Arm it, queue the capture, and switch to Genshin during **SWITCH TO GAME**. When **PLAY TO START** appears, the first gameplay input becomes session time zero. Perform the three simple segments, then return and confirm after the HUD reports completion. The workbench persists the armed experiment and restores its existing run slots after restart.
-
-The wizard shows confirmed progress for every stage. Its machine-readable index is written to `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json`; it links stage status to source sessions, confirmation markers, timing/count summaries, and the control-profile draft used for the capture.
+For the Genshin POC, record each useful motion as its own session. After **CAPTURE COMPLETE**, return to the list and choose the matching label. Selecting a label is the single review action that promotes a successful recording to usable evidence. The machine-readable index at `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json` links those labels to source sessions, confirmation markers, timing/count summaries, and profile provenance.
 
 Start with:
 

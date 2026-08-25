@@ -16,7 +16,7 @@ Replay is closed-loop route reproduction. It shall not assume that recorded cont
 - Navigation excludes combat.
 - The target domain includes first-person shooters and third-person MMORPG-style navigation. A simple sandbox may validate plumbing but not target-level performance.
 
-The current milestone is the observation and game-modeling side of this MVP: one basic gameplay sample shared by game profiling, UI observation, mini-map calibration, and cruise modeling; automated full-map acquisition; and a gameplay route recorder/descriptor. Adaptive route replay remains the product goal, but its detailed estimator and controller design is deferred until recordings expose the dominant errors.
+The current milestone is the observation and game-modeling side of this MVP: short capture-plan-labeled gameplay segments for profiling, UI observation, mini-map calibration, and cruise modeling; automated full-map acquisition; and a gameplay route recorder/descriptor. Adaptive route replay remains the product goal, but its detailed estimator and controller design is deferred until recordings expose the dominant errors.
 
 ## 3. Functional Requirements
 
@@ -28,7 +28,8 @@ The current milestone is the observation and game-modeling side of this MVP: one
 - **CAL-02:** Rectify the phone screen into canonical screen coordinates using a screen-plane homography.
 - **CAL-03:** Store calibration, optical settings, validation error, and camera format in a reusable profile.
 - **CAL-04:** Automatically estimate the mini-map's position and circular boundary and store the result, method/configuration provenance, confidence/quality, and inspectable diagnostic images as a reusable structured artifact.
-- **CAL-05:** The initial calibration experiment shall use the rotation-only segment of the shared basic gameplay sample, then use temporal aggregation and circle detection to propose the mini-map boundary. It shall not require a separate player-facing calibration take. This is an experimental procedure, not a fixed algorithm requirement.
+- **CAL-05:** The initial calibration experiment shall use a short rotation-only session labeled by its selected capture plan, then use temporal aggregation and circle detection to propose the mini-map boundary. This is an experimental procedure, not a fixed algorithm requirement.
+- **CAL-06:** Record a straight-forward/no-turn session long enough to produce notable mini-map translation. Preserve it as evidence relating cursor heading, commanded forward motion when available, and observed mini-map shift direction.
 
 ### Full-map acquisition
 
@@ -46,7 +47,8 @@ The current milestone is the observation and game-modeling side of this MVP: one
 - **GPR-04:** Measure relevant behaviors such as movement and rotation response, acceleration/stopping, camera-character coupling, jump/dash behavior, cooldown or recovery timing, collision response, and end-to-end input response where observable.
 - **GPR-05:** Preserve the source frames, input events, probe definition, timing, inferred value, confidence, and human edit history behind each modeled behavior. A manual correction shall not erase the measured result.
 - **GPR-06:** Keep adapter/capture defaults, control specification, measured behavior, map-viewer procedure, and known limitations in one game-profile relationship without coupling route-specific instructions into the game profile.
-- **GPR-07:** Prefer one short basic sample containing ordinary cruise, rotation-only, and movement-only segments as the shared evidence for basic behavior and UI modeling. Additional probes require an evidence-quality reason rather than being imposed by default.
+- **GPR-07:** Prefer separate bounded sessions for ordinary cruise, rotation-only, movement-only, and straight-forward/no-turn evidence. The capture plan shall store the semantic label so a reviewer need only confirm the requested motion is visible. Additional probes require an evidence-quality reason.
+- **GPR-08:** A short labeled session shall support timer-triggered capture with input evidence optional, while route and other input-dependent stages may continue to require first-input start and healthy input capture.
 
 ### Demonstration recording
 
@@ -58,8 +60,8 @@ The current milestone is the observation and game-modeling side of this MVP: one
 - **REC-06:** Add and remove portal lifecycle markers without rewriting prior annotation history.
 - **REC-07:** Record an uninterrupted human take without requiring recorder controls, markers, or labels during gameplay; route boundaries, stages, and landmarks are derived or corrected afterward.
 - **REC-08:** For the PC keyboard/mouse POC, preserve raw keyboard transitions and relative mouse motion with per-event timestamps; absolute cursor polling is not sufficient evidence for locked-camera behavior.
-- **REC-09:** Start capture sources only for the queued take, discard queue/switch input during a short explicit settling interval, and then start the session clock on the first qualifying input received. Persist that first eligible input at session time zero; do not add a separate focus or input-test gate.
-- **REC-10:** Persist the armed experiment configuration and restore its existing run slots after workbench restart. Existing session data shall remain discoverable even when created before state persistence was introduced.
+- **REC-09:** Start capture sources only for the requested session, discard queue/switch input during a short explicit settling interval, and then start the bounded session clock automatically. Do not add a separate focus or input-test gate.
+- **REC-10:** Append any number of sessions across workbench restarts. List existing session data, allow each session to be assigned a role from a controlled label list, and move deleted sessions to recoverable trash.
 
 ### Demonstration model
 
@@ -76,7 +78,7 @@ The current milestone is the observation and game-modeling side of this MVP: one
 
 ### Mini-map cruise model
 
-- **MMC-01:** Use consecutive mini-map observations from the cruise and movement-only segments of the shared basic gameplay sample, with sufficient overlap to estimate relative translation; do not require a separate cruise capture by default.
+- **MMC-01:** Use consecutive mini-map observations from role-labeled cruise and movement-only sessions, with sufficient overlap to estimate relative translation. Use the straight-forward/no-turn session to determine the sign and angular relationship between cursor heading and observed map translation.
 - **MMC-02:** The initial XY proposal shall evaluate Fourier/phase correlation over the valid circular map area; the implementation shall preserve peak/overlap quality and remain replaceable.
 - **MMC-03:** Facing estimation shall support game-specific central cursors rather than hard-code one cursor shape. Polar normalization and aggregation across different orientations are the initial proposal, not a mandated final algorithm.
 - **MMC-04:** Measure movement-speed and rotation-rate distributions without assuming movement direction and facing are identical.

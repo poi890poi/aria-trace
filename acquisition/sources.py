@@ -226,8 +226,71 @@ def estimate_clock_offset(samples):
     return host_midpoint_ns - device_ns, host_after_ns - host_before_ns
 
 
+class AdbClockMapper:
+    """Map Android CLOCK_MONOTONIC timestamps onto PC perf_counter_ns()."""
+
+    def __init__(self, adb: Path, serial: Optional[str] = None, sample_count: int = 7) -> None:
+        self.adb = Path(adb)
+        self.serial = serial
+        self.sample_count = int(sample_count)
+        self.offset_ns = None
+        self.rtt_ns = None
+        self.status = "not-calibrated"
+        self._lock = threading.Lock()
+
+    def _base_command(self):
+        command = [str(self.adb)]
+        if self.serial:
+            command += ["-s", self.serial]
+        return command
+
+    def calibrate(self) -> None:
+        with self._lock:
+            if self.status != "not-calibrated":
+                return
+            samples = []
+            try:
+                for _ in range(self.sample_count):
+                    before = time.perf_counter_ns()
+                    output = subprocess.check_output(
+                        self._base_command() + ["shell", "cat", "/proc/uptime"],
+                        timeout=3,
+                        universal_newlines=True,
+                    )
+                    after = time.perf_counter_ns()
+                    device_ns = int(float(output.split()[0]) * 1.0e9)
+                    samples.append((before, after, device_ns))
+                self.offset_ns, self.rtt_ns = estimate_clock_offset(samples)
+                self.status = "mapped-from-proc-uptime"
+            except Exception:
+                self.offset_ns = None
+                self.rtt_ns = None
+                self.status = "host-receive-time-fallback"
+
+    def to_host_time_ns(self, device_time_ns: int, fallback_ns: Optional[int] = None) -> int:
+        self.calibrate()
+        if self.offset_ns is not None:
+            return int(device_time_ns) + int(self.offset_ns)
+        return int(fallback_ns if fallback_ns is not None else time.perf_counter_ns())
+
+    def describe(self) -> Dict[str, object]:
+        return {
+            "clock_status": self.status,
+            "device_to_pc_offset_ns": self.offset_ns,
+            "clock_sample_rtt_ns": self.rtt_ns,
+            "device_clock": "CLOCK_MONOTONIC",
+            "host_clock": "perf_counter_ns",
+        }
+
+
 class AdbGetEventSource(InputSource):
-    def __init__(self, adb: Path, serial: Optional[str] = None, source_id: str = "getevent") -> None:
+    def __init__(
+        self,
+        adb: Path,
+        serial: Optional[str] = None,
+        source_id: str = "getevent",
+        clock: Optional[AdbClockMapper] = None,
+    ) -> None:
         self.adb = Path(adb)
         self.serial = serial
         self.source_id = source_id
@@ -237,6 +300,7 @@ class AdbGetEventSource(InputSource):
         self.clock_offset_ns = None
         self.clock_rtt_ns = None
         self.clock_status = "not-calibrated"
+        self.clock = clock or AdbClockMapper(self.adb, serial)
 
     def _command(self):
         command = [str(self.adb)]
@@ -247,27 +311,10 @@ class AdbGetEventSource(InputSource):
     def start(self, emit: Callable[[InputPacket], None]) -> None:
         if not self.adb.exists():
             raise RuntimeError("ADB executable does not exist: {}".format(self.adb))
-        samples = []
-        try:
-            base = [str(self.adb)]
-            if self.serial:
-                base += ["-s", self.serial]
-            for _ in range(5):
-                before = time.perf_counter_ns()
-                output = subprocess.check_output(
-                    base + ["shell", "cat", "/proc/uptime"],
-                    timeout=3,
-                    universal_newlines=True,
-                )
-                after = time.perf_counter_ns()
-                device_ns = int(float(output.split()[0]) * 1.0e9)
-                samples.append((before, after, device_ns))
-            self.clock_offset_ns, self.clock_rtt_ns = estimate_clock_offset(samples)
-            self.clock_status = "mapped-from-proc-uptime"
-        except Exception:
-            self.clock_offset_ns = None
-            self.clock_rtt_ns = None
-            self.clock_status = "host-receive-time-fallback"
+        self.clock.calibrate()
+        self.clock_offset_ns = self.clock.offset_ns
+        self.clock_rtt_ns = self.clock.rtt_ns
+        self.clock_status = self.clock.status
         self._process = subprocess.Popen(
             self._command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
         )
@@ -285,11 +332,7 @@ class AdbGetEventSource(InputSource):
                 else:
                     source_time = parsed.pop("device_time_ns")
                     parsed["host_receive_time_ns"] = host_time
-                    mapped_time = (
-                        source_time + self.clock_offset_ns
-                        if self.clock_offset_ns is not None
-                        else host_time
-                    )
+                    mapped_time = self.clock.to_host_time_ns(source_time, host_time)
                     emit(InputPacket(self.source_id, "linux_input", mapped_time, parsed, source_time))
 
         self._thread = threading.Thread(target=read_output, name="getevent-reader", daemon=True)

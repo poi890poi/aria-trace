@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AriaTrace Recorder</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;--bg:#081018;--surface:#101b27;--surface2:#172432;--line:#2a3b4c;--text:#edf5fb;--muted:#96a8b8;--accent:#62d6df;--ok:#72dfa3;--warn:#f4c76a;--bad:#ff818b}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% -10%,#163a4b 0,transparent 34rem),var(--bg);color:var(--text)}button,input,select{font:inherit}button,select,input{border:1px solid var(--line);border-radius:9px;background:var(--surface2);color:var(--text);padding:10px 12px}button{cursor:pointer;font-weight:750}button:hover:not(:disabled){border-color:var(--accent)}button:disabled,select:disabled,input:disabled{opacity:.45;cursor:not-allowed}.primary{border-color:var(--accent);background:var(--accent);color:#052126}.danger{color:var(--bad)}.shell{width:min(1120px,calc(100% - 30px));margin:auto;padding:34px 0 52px}header{display:flex;align-items:end;justify-content:space-between;gap:20px;margin-bottom:22px}.eyebrow{color:var(--accent);font-size:12px;font-weight:850;letter-spacing:.14em;text-transform:uppercase}h1{font-size:clamp(32px,5vw,50px);letter-spacing:-.035em;margin:5px 0 0}.subtitle{color:var(--muted);margin:8px 0 0;line-height:1.5}.live{display:flex;align-items:center;gap:8px;color:var(--muted);white-space:nowrap}.dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 5px rgba(114,223,163,.1)}.dot.active{background:var(--bad);box-shadow:0 0 0 5px rgba(255,129,139,.12)}.panel{background:rgba(16,27,39,.94);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 20px 70px rgba(0,0,0,.18)}.recorder{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end}.fields{display:grid;grid-template-columns:1.1fr 1.5fr 1.15fr .6fr;gap:12px}label{display:grid;gap:7px;color:var(--muted);font-size:12px;font-weight:700}.record-actions{display:flex;gap:9px}.record-actions button{min-height:42px}.helper{grid-column:1/-1;color:var(--muted);font-size:12px;line-height:1.45}.message{min-height:21px;margin-top:13px;color:var(--muted);font-size:13px}.message.error{color:var(--bad)}.message.ok{color:var(--ok)}.section-head{display:flex;align-items:end;justify-content:space-between;margin:28px 0 11px;gap:15px}.section-head h2{font-size:21px;margin:0}.count{color:var(--muted);font-size:13px}.sessions{display:grid;gap:9px}.session{display:grid;grid-template-columns:minmax(210px,1.35fr) minmax(145px,.8fr) minmax(235px,1.15fr) auto;gap:14px;align-items:center;background:rgba(16,27,39,.9);border:1px solid var(--line);border-radius:13px;padding:14px 15px}.session.active{border-color:var(--warn)}.session-title{font-weight:800}.session-key{display:block;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace;margin-top:4px;overflow-wrap:anywhere}.meta{color:var(--muted);font-size:12px;line-height:1.55}.status{display:inline-flex;border-radius:999px;border:1px solid var(--line);padding:4px 8px;font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}.status.ready{color:var(--ok);border-color:#2f7250}.status.recorded{color:var(--accent);border-color:#28717a}.status.failed,.status.invalid{color:var(--bad);border-color:#7b3840}.status.recording_uninterrupted_take,.status.arming_sources,.status.settling_queue_input,.status.waiting_for_first_input,.status.finalizing_capture{color:var(--warn);border-color:#7c6636}.session-controls{display:flex;align-items:end;gap:8px}.session-controls label{min-width:210px}.session-controls select{width:100%}.delete{padding:10px 11px}.empty{padding:46px 20px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:13px}.empty strong{display:block;color:var(--text);font-size:17px;margin-bottom:5px}@media(max-width:900px){.recorder{grid-template-columns:1fr}.fields{grid-template-columns:repeat(2,minmax(0,1fr))}.record-actions{justify-content:flex-start}.session{grid-template-columns:1fr 1fr}.session-controls{grid-column:1/-1}.session-controls label{flex:1}}@media(max-width:580px){.shell{width:min(100% - 20px,1120px);padding-top:23px}header{align-items:start;flex-direction:column}.fields,.session{grid-template-columns:1fr}.session-controls{grid-column:auto;align-items:end}.session-controls label{min-width:0}.record-actions{display:grid;grid-template-columns:1fr auto}.primary{width:100%}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header>
+  <div><div class="eyebrow">AriaTrace</div><h1>Recorder</h1><p class="subtitle">Capture an uninterrupted human take. Record first, then label and organize each session afterward.</p></div>
+  <div class="live"><span id="liveDot" class="dot"></span><span id="liveText">Ready</span></div>
+</header>
+<section class="panel" aria-label="Recording controls">
+  <div class="recorder">
+    <div class="fields">
+      <label>Game<select id="game"></select></label>
+      <label>Window<select id="window"></select></label>
+      <label>Input capture<select id="inputAdapter"></select></label>
+      <label>Seconds<input id="duration" type="number" min="5" max="600" step="1" value="30"></label>
+      <div class="helper">Select the game window, press Start recording, then switch to the game. Capture begins after a three-second settling countdown and stops automatically.</div>
+    </div>
+    <div class="record-actions">
+      <button id="start" class="primary">Start recording</button>
+      <button id="cancel" class="danger" disabled>Stop</button>
+    </div>
+  </div>
+  <div id="message" class="message" role="status"></div>
+</section>
+<div class="section-head"><h2>Sessions</h2><div id="sessionCount" class="count">0 sessions</div></div>
+<section id="sessions" class="sessions" aria-live="polite"></section>
+</div>
+<script>
+const ui=Object.fromEntries(['game','window','inputAdapter','duration','start','cancel','message','sessions','sessionCount','liveDot','liveText'].map(id=>[id,document.getElementById(id)]));
+let state=null,initialized=false,busy=false;
+function escapeHtml(value){const div=document.createElement('div');div.textContent=String(value==null?'':value);return div.innerHTML}
+function setOptions(select,items,value){const previous=value==null?select.value:value;select.replaceChildren();items.forEach(item=>select.add(new Option(item.label,item.value)));if(items.some(item=>item.value===previous))select.value=previous}
+function gameName(id){const game=(state.profiles.games||[]).find(item=>item.profile_id===id);return game?game.display_name:(id||'Custom game')}
+function statusText(status){return String(status||'unknown').split('_').join(' ')}
+function fmtDate(value){if(!value)return 'Recording now';const date=new Date(value);return Number.isNaN(date.valueOf())?value:date.toLocaleString()}
+function fmtDuration(value){if(value==null)return '-';return Number(value).toFixed(1)+' s'}
+function isActiveStatus(status){return ['arming_sources','settling_queue_input','waiting_for_first_input','recording_uninterrupted_take','finalizing_capture'].includes(status)}
+async function post(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});if(!response.ok)throw new Error(await response.text());return response.json()}
+function showMessage(text,type){ui.message.textContent=text||'';ui.message.className='message'+(type?' '+type:'')}
+function initialize(){
+  const games=(state.profiles.games||[]).map(item=>({label:item.display_name,value:item.profile_id}));games.unshift({label:'Custom / unprofiled game',value:''});
+  const armed=state.armed||{};setOptions(ui.game,games,armed.game_profile_id||'');
+  const windows=(state.visible_windows||[]).filter(item=>item.title).map(item=>({label:item.title,value:item.title}));
+  const currentWindow=(armed.frame_source||{}).window_title;setOptions(ui.window,windows,currentWindow||((windows[0]||{}).value||''));
+  const inputs=(state.sources.input_adapters||[]).filter(item=>item.adapter!=='adb_getevent').map(item=>({label:item.label,value:item.adapter}));
+  setOptions(ui.inputAdapter,inputs,(armed.input_source||{}).adapter||'windows_raw_keyboard_mouse');
+  if(armed.capture_duration_s)ui.duration.value=String(armed.capture_duration_s);initialized=true;
+}
+function renderSessions(){
+  const sessions=state.sessions||[];ui.sessionCount.textContent=sessions.length+' session'+(sessions.length===1?'':'s');ui.sessions.replaceChildren();
+  if(!sessions.length){ui.sessions.innerHTML='<div class="empty"><strong>No sessions yet</strong>Your recordings will appear here.</div>';return}
+  sessions.forEach(item=>{
+    const active=isActiveStatus(item.status);const card=document.createElement('article');card.className='session'+(active?' active':'');
+    const identity=document.createElement('div');identity.innerHTML='<div class="session-title">'+escapeHtml(item.run_index?'Session '+item.run_index:'Session')+'</div><span class="session-key">'+escapeHtml(item.session_key)+'</span>';
+    const when=document.createElement('div');when.className='meta';when.innerHTML=escapeHtml(fmtDate(item.finished_utc||item.created_utc))+'<br>'+escapeHtml(gameName(item.game_profile_id));
+    const stats=document.createElement('div');stats.className='meta';stats.innerHTML='<span class="status '+escapeHtml(item.status)+'">'+escapeHtml(statusText(item.status))+'</span><br>'+escapeHtml(fmtDuration(item.duration_s))+' / '+escapeHtml(item.frames==null?'-':item.frames)+' frames / '+escapeHtml(item.input_events==null?'-':item.input_events)+' inputs';
+    const controls=document.createElement('div');controls.className='session-controls';const label=document.createElement('label');label.textContent='Label';const select=document.createElement('select');
+    (state.session_labels||[]).forEach(option=>select.add(new Option(option.label,option.value)));if(!Array.from(select.options).some(option=>option.value===item.label)&&item.label)select.add(new Option(item.label,item.label));select.value=item.label||'';select.disabled=busy||active;select.onchange=()=>changeLabel(item.session_key,select.value);label.append(select);
+    const remove=document.createElement('button');remove.className='delete danger';remove.textContent='Delete';remove.title='Move session to recoverable trash';remove.disabled=busy||active;remove.onclick=()=>deleteSession(item.session_key);controls.append(label,remove);card.append(identity,when,stats,controls);ui.sessions.append(card);
+  });
+}
+function render(){
+  if(!initialized)initialize();const active=state.active_run!==null;[ui.game,ui.window,ui.inputAdapter,ui.duration].forEach(element=>element.disabled=busy||active);ui.start.disabled=busy||active;ui.cancel.disabled=busy||!active;ui.liveDot.className='dot'+(active?' active':'');ui.liveText.textContent=active?statusText(state.active_phase):'Ready';
+  if(state.last_error)showMessage(state.last_error,'error');else if(active)showMessage('Session '+state.active_run+': '+statusText(state.active_phase));else if(!busy)showMessage('Ready for another recording.');renderSessions();
+}
+async function act(work,success){if(busy)return;busy=true;render();try{state=await work();showMessage(success||'Done','ok')}catch(error){showMessage(error.message||String(error),'error')}finally{busy=false;render()}}
+async function startRecording(){await act(()=>post('/api/session/start',{game_profile_id:ui.game.value||null,window_title:ui.window.value,input_adapter:ui.inputAdapter.value,capture_duration_s:Number(ui.duration.value),start_delay_s:3}),'Recording queued. Switch to the game now.')}
+async function changeLabel(sessionKey,label){await act(()=>post('/api/session/label',{session_key:sessionKey,label}),'Session label saved.')}
+async function deleteSession(sessionKey){if(!confirm('Delete this session? It will be moved to recoverable trash.'))return;await act(()=>post('/api/session/delete',{session_key:sessionKey}),'Session moved to trash.')}
+async function refresh(){if(busy)return;try{const response=await fetch('/api/state');if(!response.ok)throw new Error(await response.text());state=await response.json();render()}catch(error){showMessage(error.message||String(error),'error')}}
+ui.start.onclick=startRecording;ui.cancel.onclick=()=>act(()=>post('/api/take/cancel',{}),'Recording stopped.');ui.game.onchange=()=>{const game=(state.profiles.games||[]).find(item=>item.profile_id===ui.game.value);const preferred=game&&game.default_input_source&&game.default_input_source.adapter;if(preferred&&Array.from(ui.inputAdapter.options).some(option=>option.value===preferred))ui.inputAdapter.value=preferred};refresh();setInterval(refresh,1000);
+</script>
+</body>
+</html>

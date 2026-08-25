@@ -44,7 +44,7 @@ Long-session chunking is not implemented yet. Record bounded sessions for now; a
 
 ## Planned game, map, and mini-map acquisition
 
-The Acquisition Workbench now exposes a three-stage Genshin POC wizard: one shared basic gameplay sample, full-map viewer evidence, and the repeated route. The basic sample contains a short cruise, rotation-only, and movement-only segment so behavior, ordinary UI, mini-map calibration, and cruise modeling can use one synchronized source session instead of imposing separate player tasks. The workbench stores a human-editable control-profile draft and records each stage with a capture kind, ID, workflow-stage ID, frames, raw controls, timing, and confirmation markers. It also maintains `artifacts/workbench/poc_evidence/<profile-id>/evidence_index.json`, a structured stage-progress inventory that links confirmed captures to their source sessions, marker state, timing/count summaries, drops, and profile-draft provenance. This first usable slice acquires and indexes organized evidence; the index does not assert semantic success, and automatic behavior inference, map-viewer traversal, full-map construction, mini-map calibration, and cruise estimators are not implemented yet.
+The Acquisition Workbench exposes separate short Genshin POC stages for ordinary cruise, rotation-only, movement-only, and straight-forward/no-turn motion, followed by full-map viewer evidence and the repeated route. Each short stage supplies `segment_label`, structured motion semantics, timer-start behavior, and its input requirement. The workbench stores a human-editable control-profile draft and records each stage with its label, capture kind/ID, workflow-stage ID, frames, optional raw controls, timing, and confirmation markers. It also maintains `artifacts/workbench/poc_evidence/<profile-id>/evidence_index.json`, a structured stage-progress inventory that links confirmed captures to their source sessions, marker state, timing/count summaries, drops, and profile-draft provenance. Mini-map calibration selects confirmed sessions by role instead of asking for timestamp boundaries.
 
 ### Game profile session
 
@@ -61,15 +61,15 @@ Every inferred field retains its probe definition, source frames and input recor
 
 ### Full map-viewer acquisition
 
-Complete map texture should be acquired from the game's full map viewer, not reconstructed only from the smaller semi-transparent mini-map. The current wizard records a guided, manually navigated full-map evidence take. The next automation uses the confirmed viewer open/close, pan, zoom, region/layer switching, and related UI controls to navigate and capture every accessible area. Locked, undiscovered, occluded, or otherwise inaccessible areas are reported explicitly rather than silently counted as complete.
+Complete map texture should be acquired from the game's full map viewer, not reconstructed only from the smaller semi-transparent mini-map. The current recorder accepts a manually navigated take labeled **Full-map coverage** afterward. The next automation uses the confirmed viewer open/close, pan, zoom, region/layer switching, and related UI controls to navigate and capture every accessible area. Locked, undiscovered, occluded, or otherwise inaccessible areas are reported explicitly rather than silently counted as complete.
 
 Capture at a zoom/detail level whose effective map resolution exceeds the mini-map, with sufficient overlap or other registration evidence. The resulting versioned artifact retains original source frames, viewer/control state and timing, transforms, coverage/completeness information, quality diagnostics, and derived tiles or mosaics. Coverage gaps or poor registration should trigger an automated retry or an explicit request for human review.
 
 The full-map artifact, live mini-map observations, and reconstructed route geometry are separate coordinate spaces. Any scale, rotation, crop, projection, or alignment relationship among them is an explicit calibrated estimate with provenance and confidence. Do not assume UI icons, occlusions, or map revisions are identical between the viewer and mini-map.
 
-### Calibration evidence from the basic gameplay sample
+### Calibration evidence from labeled short sessions
 
-1. Use the rotation-only segment from the basic sample; do not ask the player for a separate calibration take.
+1. Use the entire confirmed rotation-only session selected by its manifest label; do not ask the player to mark a time range.
 2. Retain the full game frames and recorded camera inputs on the normal session timeline.
 3. Aggregate the frames under the working assumption that the mini-map does not rotate with camera orientation. Changing scene content should become less stable while the fixed mini-map remains identifiable.
 4. Evaluate temporal averages/stability maps, thresholding, edges, and a circle detector such as Hough circle detection to propose the mini-map position and boundary.
@@ -84,9 +84,9 @@ Its artifact set must be inspectable by both people and later scripts. At minimu
 - the detected circle overlaid on an original or reference frame;
 - a machine-readable manifest linking those products to the source session, frames, controls, and calibration method/configuration.
 
-### Cruise evidence from the basic gameplay sample
+### Cruise and heading-motion evidence from labeled sessions
 
-Use the short-cruise and movement-only segments from that same basic sample. They should provide enough cadence and sufficiently small inter-frame motion that consecutive circular mini-map observations overlap. Preserve the entire game frame and input stream; mini-map crops, valid-circle masks, shift/facing measurements, and diagnostic outputs are derived records.
+Use the ordinary-cruise and movement-only sessions at enough cadence that consecutive circular mini-map observations overlap. The straight-forward/no-turn session must produce notable translation and constrains movement to cursor heading, establishing the relationship between estimated cursor angle and observed mini-map shift direction. Preserve the entire game frame and any available input stream; mini-map crops, valid-circle masks, shift/facing measurements, and diagnostic outputs are derived records.
 
 The initial experiments will:
 
@@ -113,15 +113,15 @@ For the PC-only MVP, use the local acquisition workbench:
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
     python -m acquisition.workbench
 
-Open http://127.0.0.1:8765/. Select a game profile, visible game window, and control type. Games with a `poc_workflow` expose guided evidence stages; ordinary route profiles remain available in the same screen. The selected stage or route supplies its instructions, capture count, and duration. For an unprofiled game, choose **Custom route / capture** and enter a short name. Technical IDs and overrides remain under **Advanced settings**. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
+Open http://127.0.0.1:8765/. Select a game profile, visible game window, control type, and duration, then select **Start recording**. The screen intentionally has no guided-stage or arming state: every completed capture is appended to the session list and can be classified afterward with a label dropdown. Unwanted sessions are moved to recoverable trash. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
 
 On Windows, the normal command also starts a small isolated HUD process. It polls the lightweight `/api/hud` contract and shows **ARMING**, **SWITCH TO GAME**, **PLAY TO START**, recording countdown, finalization, completion, and failure at the selected game window's upper-right. The window uses no-activate and click-through styles, and startup fails closed unless `WDA_EXCLUDEFROMCAPTURE` is successfully applied and read back. This is required because the current `win32_gdi_visible_client_v1` source copies visible desktop pixels. The HUD process is isolated so a desktop-UI failure cannot take down the recorder. Use `--no-hud` for diagnostics or when another status surface is intentionally used; exclusive fullscreen may suppress ordinary topmost overlays, so borderless/windowed fullscreen is preferred.
 
 Use Windows raw keyboard and mouse for keyboard/mouse play: it preserves make/break scan codes, relative camera deltas, button/wheel transitions, device handles, and per-event timing. Use XInput for controller play: it preserves locomotion and camera axes, triggers, buttons, magnitude, and timing. Legacy keyboard/cursor polling remains available only for compatibility.
 
-Queue a take and switch to the selected game during the 1.5-second **SWITCH TO GAME** settling phase. The workbench starts frame and input sources for the bounded take lifetime but discards queue/switch input. After **PLAY TO START**, the first qualifying input received becomes session time zero and starts the configured-duration clock. There is no focus gate, input test, recorder hotkey, stage button, or completion gesture during gameplay. The armed experiment is persisted in `artifacts/workbench/workbench_state.json`; restart restores the same experiment and run slots, with legacy recovery from the newest session manifest when no state file exists.
+Select **Start recording** and switch to the selected game during **SWITCH TO GAME**. The workbench starts the selected sources for the bounded session lifetime, discards queue/switch residue, and starts after its three-second timer. There is no focus gate, input test, recorder hotkey, stage button, or completion gesture during gameplay. Recordings append under a stable per-game experiment folder, so the operator can create any number of sessions across restarts.
 
-The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, confirm the full-take route boundaries or use the reviewer to correct them. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions. Compilation is blocked until route boundaries are confirmed.
+The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, choosing a non-empty session label is the explicit content-review action. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions.
 
 The workbench is an orchestrator, not another recorder. Game defaults live under profiles/games, route instructions live under profiles/routes, and replaceable Windows, UVC, and ADB sources feed the same AcquisitionRecorder and session schema.
 ## Standalone recorder (advanced)
@@ -181,6 +181,38 @@ H.264 needs FFmpeg on `PATH` or supplied with `--ffmpeg PATH`. `--video-crf` con
 `--portal-id` and `--route-id` provide defaults for later annotations. They do not assert that loading has completed or that localization succeeded.
 
 `AdbGetEventSource` stores raw Linux input events. It samples `/proc/uptime`, chooses the lowest-round-trip clock measurement, and maps kernel event timestamps to PC monotonic time. If clock sampling fails, it explicitly falls back to host receive time. Device-specific gamepad normalization and touch-slot interpretation remain downstream decoders so raw evidence is never lost.
+
+### Continuous Android screen and input capture
+
+The continuous Android adapter uses the pinned scrcpy 4.1 phone-side server over
+ADB. One full display encode is decoded on the PC and fanned out into repeatable
+ROI streams. Every ROI derived from a source frame carries the same Android
+MediaCodec presentation timestamp; raw `getevent -lt` timestamps use Android
+`CLOCK_MONOTONIC`, and one lowest-RTT `/proc/uptime` calibration maps both onto
+the PC session clock.
+
+Each `--android-roi` is `ID=x,y,w,h[,output_w,output_h[,crf]]`. Repeat it for
+multiple streams. A zero width or height extends to the frame edge. ROI
+coordinates refer to the captured orientation at start, which is locked for the
+take. Output width/height performs host-side downsampling, and CRF selects that
+stream's stored H.264 quality (lower is higher quality).
+
+```powershell
+python -m acquisition.record `
+  --adb E:\Android\Sdk\platform-tools\adb.exe `
+  --scrcpy-server .tools\scrcpy-win64-v4.1\scrcpy-server `
+  --android-roi full=0,0,0,0,1280,720,22 `
+  --android-roi minimap=24,24,420,420,256,256,16 `
+  --duration 20 `
+  --output sessions\android_demo
+```
+
+Raw Android input is enabled automatically. Add `--no-android-input` only for a
+screen-only diagnostic. `--android-save-phone` (or
+`--android-save-phone /sdcard/SomeDirectory`) additionally ZIPs the complete
+finalized session, pushes it to the phone, and prints the resulting device path.
+The ZIP contains the videos plus `frames.jsonl`, `inputs.jsonl`, and the clock
+mapping; copying only a video would discard the synchronization authority.
 
 ## Inspect
 

@@ -35,12 +35,117 @@ INPUT_ERROR_KINDS = {
     "pc_raw_input_error",
 }
 
+_RAW_SWITCH_KEYS = {"alt", "tab", "shift", "ctrl", "windows", "left_windows", "right_windows"}
+_DEFAULT_MOVEMENT_KEYS = {"W", "A", "S", "D"}
 
-def input_capture_health(manifest: dict) -> dict:
-    """Summarize whether a configured workbench input stream has evidence."""
+
+def _input_event_parts(event):
+    if isinstance(event, dict):
+        return event.get("kind"), event.get("payload") or {}
+    return getattr(event, "kind", None), getattr(event, "payload", None) or {}
+
+
+def summarize_input_evidence(events: Iterable[object]) -> dict:
+    """Classify persisted input without letting switch or injected input pass."""
+    summary = {
+        "event_count": 0,
+        "error_events": 0,
+        "physical_events": 0,
+        "synthetic_events": 0,
+        "meaningful_events": 0,
+        "raw_keyboard_events": 0,
+        "raw_mouse_events": 0,
+        "movement_key_events": 0,
+        "relative_mouse_events": 0,
+        "xinput_active_events": 0,
+        "legacy_active_events": 0,
+        "key_names": [],
+    }
+    key_names = set()
+    previous_legacy_cursor = None
+    for event in events or ():
+        kind, payload = _input_event_parts(event)
+        summary["event_count"] += 1
+        if kind in INPUT_ERROR_KINDS:
+            summary["error_events"] += 1
+            continue
+        if kind == "pc_raw_keyboard":
+            summary["raw_keyboard_events"] += 1
+            device_handle = int(payload.get("device_handle") or 0)
+            if not device_handle:
+                summary["synthetic_events"] += 1
+                continue
+            summary["physical_events"] += 1
+            name = str(payload.get("key_name") or "")
+            if name:
+                key_names.add(name)
+            if name.upper() in _DEFAULT_MOVEMENT_KEYS:
+                summary["movement_key_events"] += 1
+                summary["meaningful_events"] += 1
+            elif name.casefold() not in _RAW_SWITCH_KEYS:
+                summary["meaningful_events"] += 1
+        elif kind == "pc_raw_mouse":
+            summary["raw_mouse_events"] += 1
+            device_handle = int(payload.get("device_handle") or 0)
+            if not device_handle:
+                summary["synthetic_events"] += 1
+                continue
+            summary["physical_events"] += 1
+            active = bool(
+                int(payload.get("delta_x", 0))
+                or int(payload.get("delta_y", 0))
+                or payload.get("button_transitions")
+                or int(payload.get("wheel_delta", 0))
+                or int(payload.get("horizontal_wheel_delta", 0))
+            )
+            if active:
+                summary["relative_mouse_events"] += 1
+                summary["meaningful_events"] += 1
+        elif kind == "pc_xinput_state":
+            state = payload.get("state") or {}
+            axes = list(state.get("left_stick") or []) + list(
+                state.get("right_stick") or []
+            )
+            active = bool(
+                state.get("buttons")
+                or float(state.get("left_trigger", 0.0)) > 0.02
+                or float(state.get("right_trigger", 0.0)) > 0.02
+                or any(abs(float(value)) > 0.08 for value in axes)
+            )
+            if active:
+                summary["physical_events"] += 1
+                summary["meaningful_events"] += 1
+                summary["xinput_active_events"] += 1
+        elif kind == "pc_input_state":
+            cursor = tuple(payload.get("cursor_client") or ())
+            active = bool(payload.get("keys") or payload.get("mouse_buttons"))
+            if previous_legacy_cursor is not None and cursor and cursor != previous_legacy_cursor:
+                active = True
+            if cursor:
+                previous_legacy_cursor = cursor
+            if active:
+                summary["physical_events"] += 1
+                summary["meaningful_events"] += 1
+                summary["legacy_active_events"] += 1
+        else:
+            summary["physical_events"] += 1
+            summary["meaningful_events"] += 1
+    summary["key_names"] = sorted(key_names)
+    return summary
+
+
+def input_capture_health(manifest: dict, inputs: Optional[Iterable[object]] = None) -> dict:
+    """Require physical, stage-appropriate controls rather than any packet."""
     context = manifest.get("context") or {}
     adapter = context.get("input_adapter")
-    required = bool(adapter and adapter != "none")
+    input_requirement = context.get("input_requirement")
+    if input_requirement not in (None, "required", "optional", "none"):
+        input_requirement = None
+    required = (
+        input_requirement == "required"
+        if input_requirement is not None
+        else bool(adapter and adapter != "none")
+    )
     counts = manifest.get("input_counts") or {}
     control_events = sum(
         int(count)
@@ -52,12 +157,39 @@ def input_capture_health(manifest: dict) -> dict:
         for key, count in counts.items()
         if str(key).rsplit(":", 1)[-1] in INPUT_ERROR_KINDS
     )
+    evidence = summarize_input_evidence(inputs) if inputs is not None else None
+    missing = []
+    capture_kind = context.get("capture_kind")
+    if required and evidence is None:
+        missing.append("detailed_input_evidence")
+    elif required and adapter == "windows_raw_keyboard_mouse":
+        if not evidence["physical_events"]:
+            missing.append("physical_keyboard_or_mouse")
+        if not evidence["meaningful_events"]:
+            missing.append("gameplay_control")
+        if capture_kind in ("game_profile", "route") and not evidence["movement_key_events"]:
+            missing.append("movement_key")
+        if capture_kind == "game_profile" and not evidence["relative_mouse_events"]:
+            missing.append("relative_mouse_motion")
+    elif required and adapter == "windows_xinput":
+        if not evidence["xinput_active_events"]:
+            missing.append("active_controller_control")
+    elif required and adapter == "windows_keyboard_mouse":
+        if not evidence["legacy_active_events"]:
+            missing.append("active_keyboard_or_mouse")
+    elif required and not evidence["meaningful_events"]:
+        missing.append("gameplay_control")
     return {
         "adapter": adapter or "unknown",
+        "requirement": input_requirement or (
+            "required" if required else "none"
+        ),
         "required": required,
         "control_events": control_events,
         "error_events": error_events,
-        "healthy": not required or control_events > 0,
+        "healthy": not required or not missing,
+        "missing": missing,
+        "evidence": evidence,
     }
 
 
@@ -74,6 +206,7 @@ class SessionWriter:
         ffmpeg: Optional[Path] = None,
         frame_processors=(),
         session_context: Optional[dict] = None,
+        video_stream_options: Optional[dict] = None,
     ) -> None:
         self.path = Path(path)
         if self.path.exists() and any(self.path.iterdir()):
@@ -87,6 +220,7 @@ class SessionWriter:
         self.frame_processors = list(frame_processors)
         self.session_id = str(uuid.uuid4())
         self.session_context = dict(session_context or {})
+        self.video_stream_options = dict(video_stream_options or {})
         self.origin_ns = time.perf_counter_ns()
         self.frame_counts = Counter()
         self.input_counts = Counter()
@@ -144,14 +278,19 @@ class SessionWriter:
         path_without_suffix = self.path / "video_{}".format(_safe_id(stream_id))
         # The container rate is for ordinary playback only. Exact acquisition
         # timing is retained in frames.jsonl.
+        stream_options = self.video_stream_options.get(stream_id, {})
+        encoding = stream_options.get("encoding", self.video_encoding)
+        fps = float(stream_options.get("fps", self.video_fps))
+        crf = int(stream_options.get("crf", self.video_crf))
+        preset = stream_options.get("preset", self.video_preset)
         sink = create_video_sink(
             path_without_suffix,
             shape,
-            self.video_encoding,
-            self.video_fps,
+            encoding,
+            fps,
             self.ffmpeg,
-            self.video_crf,
-            self.video_preset,
+            crf,
+            preset,
         )
         self._video_sinks[stream_id] = sink
         self._video_shapes[stream_id] = shape

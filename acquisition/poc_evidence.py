@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .annotations import AnnotationStore
-from .session import input_capture_health
+from .session import SessionReader, input_capture_health
 
 
 READY_MARKERS = {
@@ -15,11 +15,11 @@ READY_MARKERS = {
 }
 
 
-def _session_status(manifest: dict, marker_kinds: Iterable[str]) -> str:
+def _session_status(manifest: dict, marker_kinds: Iterable[str], inputs=None) -> str:
     kinds = set(marker_kinds)
     if "route_failed" in kinds or "capture_failed" in kinds:
         return "failed"
-    input_health = input_capture_health(manifest)
+    input_health = input_capture_health(manifest, inputs)
     if manifest.get("status") == "complete" and not input_health["healthy"]:
         return "failed"
     expected = (
@@ -42,7 +42,24 @@ def _indexed_session(session_root: Path, manifest_path: Path) -> dict:
     annotations = AnnotationStore(session_path).list()
     marker_kinds = [item["kind"] for item in annotations]
     context = manifest.get("context") or {}
-    input_health = input_capture_health(manifest)
+    metadata = {}
+    metadata_path = session_path / "session_metadata.json"
+    if metadata_path.is_file():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    effective_context = dict(context)
+    for key in (
+        "capture_kind",
+        "capture_id",
+        "workflow_stage_id",
+    ):
+        if metadata.get(key):
+            effective_context[key] = metadata[key]
+    if "label" in metadata:
+        effective_context["segment_label"] = metadata.get("label") or None
+    effective_manifest = dict(manifest)
+    effective_manifest["context"] = effective_context
+    reader = SessionReader(session_path)
+    input_health = input_capture_health(manifest, reader.inputs)
     try:
         relative_path = str(session_path.relative_to(session_root))
     except ValueError:
@@ -52,7 +69,7 @@ def _indexed_session(session_root: Path, manifest_path: Path) -> dict:
         "session_id": manifest.get("session_id"),
         "relative_path": relative_path,
         "superseded": superseded,
-        "status": _session_status(manifest, marker_kinds),
+        "status": _session_status(effective_manifest, marker_kinds, reader.inputs),
         "manifest_status": manifest.get("status"),
         "created_utc": manifest.get("created_utc"),
         "finished_utc": manifest.get("finished_utc"),
@@ -65,9 +82,13 @@ def _indexed_session(session_root: Path, manifest_path: Path) -> dict:
         "experiment_id": context.get("experiment_id"),
         "game_profile_id": context.get("game_profile_id"),
         "run_index": context.get("run_index"),
-        "capture_kind": context.get("capture_kind"),
-        "capture_id": context.get("capture_id"),
-        "workflow_stage_id": context.get("workflow_stage_id"),
+        "capture_kind": effective_context.get("capture_kind"),
+        "capture_id": effective_context.get("capture_id"),
+        "workflow_stage_id": effective_context.get("workflow_stage_id"),
+        "segment_label": effective_context.get("segment_label"),
+        "segment_semantics": context.get("segment_semantics"),
+        "start_trigger": context.get("start_trigger"),
+        "input_requirement": context.get("input_requirement"),
         "profile_draft_updated_utc": (
             (context.get("game_profile_draft") or {}).get("updated_utc")
         ),
@@ -144,6 +165,10 @@ def build_poc_evidence_index(
                 "display_name": stage.get("display_name"),
                 "capture_kind": stage.get("capture_kind"),
                 "capture_id": stage.get("capture_id"),
+                "segment_label": stage.get("segment_label"),
+                "segment_semantics": stage.get("segment_semantics"),
+                "start_trigger": stage.get("start_trigger", "first_input"),
+                "input_requirement": stage.get("input_requirement", "required"),
                 "required_captures": required,
                 "ready_captures": status_counts["ready"],
                 "status": status,

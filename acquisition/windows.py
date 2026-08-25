@@ -92,6 +92,8 @@ class WindowsDesktopApi:
             raise RuntimeError("Windows desktop capture is available only on Windows")
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
         self._configure_signatures()
         try:
             self.user32.SetProcessDPIAware()
@@ -117,6 +119,11 @@ class WindowsDesktopApi:
         self.user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
         self.user32.GetCursorPos.restype = wintypes.BOOL
         self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self.user32.GetWindowThreadProcessId.restype = wintypes.DWORD
         self.user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
         self.user32.GetAsyncKeyState.restype = ctypes.c_short
         self.user32.GetDC.argtypes = [wintypes.HWND]
@@ -143,6 +150,72 @@ class WindowsDesktopApi:
         self.gdi32.DeleteObject.restype = wintypes.BOOL
         self.gdi32.DeleteDC.argtypes = [handle]
         self.gdi32.DeleteDC.restype = wintypes.BOOL
+        self.kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        self.kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        self.kernel32.OpenProcess.restype = wintypes.HANDLE
+        self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.kernel32.CloseHandle.restype = wintypes.BOOL
+        self.advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        self.advapi32.OpenProcessToken.restype = wintypes.BOOL
+        self.advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self.advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+    def _process_is_elevated(self, process_handle) -> bool:
+        token = wintypes.HANDLE()
+        if not self.advapi32.OpenProcessToken(
+            process_handle, 0x0008, ctypes.byref(token)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            elevated = wintypes.DWORD()
+            returned = wintypes.DWORD()
+            if not self.advapi32.GetTokenInformation(
+                token,
+                20,
+                ctypes.byref(elevated),
+                ctypes.sizeof(elevated),
+                ctypes.byref(returned),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return bool(elevated.value)
+        finally:
+            self.kernel32.CloseHandle(token)
+
+    def input_integrity_status(self, hwnd: int) -> dict:
+        """Compare recorder and target elevation before observing game input."""
+        process_id = wintypes.DWORD()
+        if not self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        target_process = self.kernel32.OpenProcess(0x1000, False, process_id.value)
+        if not target_process:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            target_elevated = self._process_is_elevated(target_process)
+        finally:
+            self.kernel32.CloseHandle(target_process)
+        recorder_elevated = self._process_is_elevated(
+            self.kernel32.GetCurrentProcess()
+        )
+        return {
+            "target_process_id": int(process_id.value),
+            "target_elevated": target_elevated,
+            "recorder_elevated": recorder_elevated,
+            "matched": target_elevated == recorder_elevated,
+        }
 
     def list_windows(self) -> List[Tuple[int, str]]:
         values = []
@@ -1075,6 +1148,7 @@ class WindowsRawKeyboardMouseSource(InputSource):
         self._filter_foreground = True
         self._foreground_predicate = None
         self._foreground_authority = "selected_window_hwnd"
+        self._integrity_status = None
 
     def set_foreground_predicate(self, predicate: Callable[[], bool]) -> None:
         """Use the orchestrator's focus decision instead of a second HWND check."""
@@ -1103,6 +1177,20 @@ class WindowsRawKeyboardMouseSource(InputSource):
             self.window_title,
             self.exact_title,
         )
+        if hasattr(self.desktop_api, "input_integrity_status"):
+            self._integrity_status = self.desktop_api.input_integrity_status(
+                self.hwnd
+            )
+            if not self._integrity_status["matched"]:
+                raise RuntimeError(
+                    "Input privilege mismatch: target {!r} is {}elevated but "
+                    "the recorder is {}elevated. Run the workbench at the same "
+                    "elevation as the game.".format(
+                        self.matched_title,
+                        "" if self._integrity_status["target_elevated"] else "not ",
+                        "" if self._integrity_status["recorder_elevated"] else "not ",
+                    )
+                )
         self._ready_event.clear()
         self._errors = []
         self._raw_packets_received = 0
@@ -1195,6 +1283,7 @@ class WindowsRawKeyboardMouseSource(InputSource):
                 "mouse_buttons": "raw_button_transitions_and_wheel",
                 "timing": "pc_monotonic_per_raw_event",
                 "behavior_fidelity": "keyboard_and_locked_camera_mouse",
+                "integrity": self._integrity_status,
                 "raw_input_diagnostics": {
                     "packets_received": self._raw_packets_received,
                     "packets_accepted": self._raw_packets_accepted,

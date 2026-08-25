@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 import urllib.request
 import json
+import queue
 import sqlite3
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +22,10 @@ from acquisition.extract_portal_init import extract_initialization
 from acquisition.review import ReviewState, make_handler
 from acquisition.session import SessionReader, SessionWriter
 from acquisition.sources import estimate_clock_offset, parse_getevent_line
+from acquisition.android_capture import (
+    AndroidRoiFrameSource,
+    parse_android_roi,
+)
 from acquisition.video import find_ffmpeg
 from acquisition.windows import (
     WindowsKeyboardMouseSource,
@@ -169,6 +174,54 @@ class FakeWindowsApi:
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_parses_android_roi_with_target_and_quality(self):
+        spec = parse_android_roi("minimap=20,30,400,360,256,224,17")
+        self.assertEqual(spec.stream_id, "minimap")
+        self.assertEqual((spec.x, spec.y, spec.width, spec.height), (20, 30, 400, 360))
+        self.assertEqual((spec.output_width, spec.output_height), (256, 224))
+        self.assertEqual(spec.crf, 17)
+        with self.assertRaisesRegex(ValueError, "4, 6, or 7"):
+            parse_android_roi("bad=1,2,3")
+        with self.assertRaisesRegex(ValueError, "between 0 and 51"):
+            parse_android_roi("bad=0,0,10,10,8,8,60")
+
+    def test_android_roi_preserves_shared_timestamp_and_resizes(self):
+        class FakeHub:
+            def __init__(self):
+                self.items = {}
+
+            def register(self, stream_id):
+                result = queue.Queue()
+                self.items[stream_id] = result
+                return result
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def take_drops(self, stream_id):
+                return 2
+
+            def describe(self):
+                return {"type": "fake"}
+
+        hub = FakeHub()
+        source = AndroidRoiFrameSource(
+            hub, parse_android_roi("roi=2,3,8,6,4,2,20")
+        )
+        source.start()
+        image = np.arange(12 * 16 * 3, dtype=np.uint8).reshape((12, 16, 3))
+        hub.items["roi"].put(("frame", 7, image, 111, 222, 333))
+        packet = source.read()
+        self.assertEqual(packet.image.shape, (2, 4, 3))
+        self.assertEqual(packet.source_time_ns, 111)
+        self.assertEqual(packet.host_capture_time_ns, 222)
+        self.assertEqual(packet.host_receive_time_ns, 333)
+        self.assertEqual(packet.metadata["source_sequence"], 7)
+        self.assertEqual(packet.dropped_before, 2)
+
     def test_deferred_recording_starts_at_first_qualifying_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             started = []
@@ -202,6 +255,30 @@ class AcquisitionTests(unittest.TestCase):
                     for frame in reader.frames_by_stream["main"]
                 )
             )
+
+    def test_deferred_recording_can_start_on_timer_without_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            started = []
+            manifest = AcquisitionRecorder(
+                Path(temporary) / "timer-start",
+                [ContinuousFrameSource()],
+                [],
+                video_encoding="mjpeg",
+            ).run(
+                duration_s=0.04,
+                start_after_delay_s=0.02,
+                on_recording_started=lambda packet: started.append(packet),
+            )
+            reader = SessionReader(Path(temporary) / "timer-start")
+            self.assertEqual(started, [None])
+            self.assertEqual(
+                manifest["recording_start"]["policy"], "settled_timer"
+            )
+            self.assertEqual(
+                manifest["recording_start"]["automatic_start_delay_s"], 0.02
+            )
+            self.assertTrue(reader.frames_by_stream["main"])
+            self.assertFalse(reader.inputs)
 
     def test_recorder_persists_final_input_source_diagnostics(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -11,7 +11,7 @@ from pathlib import Path
 from acquisition.annotations import AnnotationStore
 from acquisition.models import FramePacket, InputPacket
 from acquisition.profiles import ProfileCatalog
-from acquisition.session import SessionReader, SessionWriter
+from acquisition.session import SessionReader, SessionWriter, input_capture_health
 from acquisition.workbench import (
     AcquisitionWorkbench,
     SourceFactory,
@@ -385,18 +385,77 @@ class WorkbenchTests(unittest.TestCase):
             [stage["capture_kind"] for stage in game["poc_workflow"]],
             [
                 "game_profile",
+                "minimap_calibration",
+                "minimap_calibration",
+                "minimap_calibration",
                 "full_map",
                 "route",
             ],
         )
-        first = game["poc_workflow"][0]
-        self.assertEqual(first["target_runs"], 1)
-        self.assertEqual(first["capture_duration_s"], 60)
-        instructions = " ".join(first["instructions"]).casefold()
-        self.assertIn("short cruise", instructions)
-        self.assertIn("rotate the camera only", instructions)
-        self.assertIn("movement only", instructions)
+        labels = [stage.get("segment_label") for stage in game["poc_workflow"]]
+        self.assertEqual(
+            labels[:4],
+            [
+                "ordinary_cruise",
+                "rotation_only",
+                "movement_only",
+                "forward_no_turn",
+            ],
+        )
+        forward = game["poc_workflow"][3]
+        self.assertEqual(forward["capture_duration_s"], 10)
+        self.assertEqual(forward["start_trigger"], "settled_timer")
+        self.assertEqual(forward["input_requirement"], "optional")
+        self.assertEqual(
+            forward["segment_semantics"]["movement_direction"],
+            "cursor_heading",
+        )
+        instructions = " ".join(forward["instructions"]).casefold()
+        self.assertIn("mini-map shift", instructions)
+        self.assertIn("do not turn", instructions)
         self.assertTrue(game["profile_editor"]["controls"])
+
+    def test_optional_labeled_segment_can_arm_without_input_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                armed = state.arm(
+                    {
+                        "game_profile_id": "genshin-impact-pc",
+                        "capture_kind": "minimap_calibration",
+                        "capture_id": "genshin-minimap-forward-no-turn",
+                        "workflow_stage_id": "minimap-forward-no-turn",
+                        "experiment_id": "forward-no-input-test",
+                        "window_title": "Popular Game A",
+                        "input_source": {"adapter": "none"},
+                    }
+                )["armed"]
+                self.assertEqual(armed["segment_label"], "forward_no_turn")
+                self.assertEqual(armed["start_trigger"], "settled_timer")
+                self.assertEqual(armed["input_requirement"], "optional")
+            finally:
+                state.close()
+
+        health = input_capture_health(
+            {
+                "context": {
+                    "input_adapter": "windows_raw_keyboard_mouse",
+                    "input_requirement": "optional",
+                    "capture_kind": "minimap_calibration",
+                },
+                "input_counts": {},
+            },
+            [],
+        )
+        self.assertFalse(health["required"])
+        self.assertEqual(health["requirement"], "optional")
+        self.assertTrue(health["healthy"])
 
     def test_hud_reports_waiting_countdown_and_completion_without_disk_scan(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -752,16 +811,16 @@ class WorkbenchTests(unittest.TestCase):
                     hud_api = json.loads(
                         urllib.request.urlopen(base + "/api/hud").read()
                     )
-                    self.assertIn("Capture an uninterrupted human take", html)
-                    self.assertIn("next active input becomes time zero", html)
-                    self.assertIn("Game / route preset", html)
-                    self.assertIn("POC workflow wizard", html)
-                    self.assertIn("Confirm/edit game controls", html)
-                    self.assertIn("Advanced settings", html)
-                    self.assertIn("Arm recorder", html)
-                    self.assertIn("In-game status HUD", html)
-                    self.assertIn("Stage captures complete", html)
-                    self.assertIn("No control inputs captured", html)
+                    self.assertIn(
+                        "Record first, then label and organize each session afterward.",
+                        html,
+                    )
+                    self.assertIn("Start recording", html)
+                    self.assertIn("Input capture", html)
+                    self.assertIn("Sessions", html)
+                    self.assertIn("Label", html)
+                    self.assertIn("Delete", html)
+                    self.assertIn("three-second settling countdown", html)
                     self.assertNotIn("F9", html)
                     self.assertNotIn("Combat Master", html)
                     self.assertEqual(api["armed"]["game_profile_id"], "game-a")
@@ -1041,19 +1100,109 @@ class WorkbenchTests(unittest.TestCase):
                     {
                         "game_profile_id": "genshin-impact-pc",
                         "capture_kind": "game_profile",
-                        "capture_id": "genshin-control-profile",
-                        "workflow_stage_id": "game-profile",
+                        "capture_id": "genshin-control-cruise",
+                        "workflow_stage_id": "control-cruise",
                         "experiment_id": "genshin-profile-test",
                         "target_runs": 1,
                         "capture_duration_s": 20,
                         "window_title": "Popular Game A",
                     }
                 )["armed"]
-                self.assertEqual(armed["workflow_stage"]["stage_id"], "game-profile")
+                self.assertEqual(armed["workflow_stage"]["stage_id"], "control-cruise")
+                self.assertEqual(armed["segment_label"], "ordinary_cruise")
+                self.assertEqual(armed["start_trigger"], "settled_timer")
                 self.assertEqual(
                     armed["game_profile_draft"]["controls"]["dash"]["binding"],
                     "Right Mouse",
                 )
+            finally:
+                state.close()
+
+    def test_session_manager_lists_labels_appends_and_trashes_sessions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.arm(
+                    {
+                        "experiment_id": "managed-sessions",
+                        "capture_kind": "game_profile",
+                        "capture_id": "unlabeled-session",
+                        "target_runs": 1,
+                        "capture_duration_s": 10,
+                        "window_title": "Popular Game A",
+                        "frame_source": {"adapter": "windows_window", "fps": 30},
+                        "input_source": {"adapter": "none"},
+                        "start_trigger": "settled_timer",
+                        "input_requirement": "none",
+                    }
+                )
+                path = state._run_path(1)
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                    session_context={
+                        "experiment_id": "managed-sessions",
+                        "capture_kind": "game_profile",
+                        "capture_id": "unlabeled-session",
+                        "run_index": 1,
+                        "input_adapter": "none",
+                        "input_requirement": "none",
+                    },
+                )
+                for index in range(3):
+                    timestamp = writer.origin_ns + index * 33_000_000
+                    writer.write_frame(
+                        FramePacket(
+                            "main",
+                            np.full((32, 32, 3), index, dtype=np.uint8),
+                            timestamp,
+                            timestamp,
+                        )
+                    )
+                writer.close()
+                state._finalize_take(
+                    path,
+                    "unlabeled-session",
+                    failed=False,
+                    capture_kind="game_profile",
+                    capture_id="unlabeled-session",
+                )
+
+                sessions = state.descriptor()["sessions"]
+                self.assertEqual(len(sessions), 1)
+                self.assertEqual(sessions[0]["session_key"], "managed-sessions/run_01")
+                self.assertEqual(sessions[0]["status"], "recorded")
+                self.assertEqual(sessions[0]["label"], "")
+
+                labeled = state.label_session(
+                    "managed-sessions/run_01", "rotation_only"
+                )["sessions"][0]
+                self.assertEqual(labeled["label"], "rotation_only")
+                self.assertEqual(labeled["status"], "ready")
+                metadata = json.loads(
+                    (path / "session_metadata.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    metadata["workflow_stage_id"], "minimap-rotation-only"
+                )
+                self.assertEqual(state._next_run_index(), 2)
+
+                deleted = state.delete_session("managed-sessions/run_01")
+                self.assertEqual(deleted["sessions"], [])
+                self.assertFalse(path.exists())
+                self.assertEqual(
+                    len(list((root / "sessions" / ".trash").iterdir())), 1
+                )
+                with self.assertRaisesRegex(ValueError, "Invalid session"):
+                    state.delete_session("../outside")
             finally:
                 state.close()
 

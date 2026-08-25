@@ -10,14 +10,15 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from replay.alignment import align_session
 from replay.package import compile_replay_package
 
 from .annotations import AnnotationStore
+from .minimap_calibration import calibrate_segment_sessions, calibrate_session
 from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
@@ -278,6 +279,52 @@ class AcquisitionWorkbench:
         "minimap_calibration",
         "minimap_cruise",
     )
+    SESSION_LABELS = (
+        {"value": "", "label": "Unlabeled"},
+        {
+            "value": "ordinary_cruise",
+            "label": "Ordinary movement + camera",
+            "capture_kind": "game_profile",
+            "workflow_stage_id": "control-cruise",
+            "capture_id": "genshin-control-cruise",
+        },
+        {
+            "value": "rotation_only",
+            "label": "Rotate camera, stand still",
+            "capture_kind": "minimap_calibration",
+            "workflow_stage_id": "minimap-rotation-only",
+            "capture_id": "genshin-minimap-rotation-only",
+        },
+        {
+            "value": "movement_only",
+            "label": "Move without turning camera",
+            "capture_kind": "minimap_calibration",
+            "workflow_stage_id": "minimap-movement-only",
+            "capture_id": "genshin-minimap-movement-only",
+        },
+        {
+            "value": "forward_no_turn",
+            "label": "Straight forward, no camera turn",
+            "capture_kind": "minimap_calibration",
+            "workflow_stage_id": "minimap-forward-no-turn",
+            "capture_id": "genshin-minimap-forward-no-turn",
+        },
+        {
+            "value": "full_map",
+            "label": "Full-map coverage",
+            "capture_kind": "full_map",
+            "workflow_stage_id": "full-map",
+            "capture_id": "genshin-full-map",
+        },
+        {
+            "value": "route",
+            "label": "Route demonstration",
+            "capture_kind": "route",
+            "workflow_stage_id": "route",
+            "capture_id": "genshin-poc-short-route",
+        },
+    )
+    SESSION_METADATA_FILENAME = "session_metadata.json"
 
     def __init__(
         self,
@@ -347,6 +394,27 @@ class AcquisitionWorkbench:
                     raise ValueError("Persisted frame source is missing")
                 if not isinstance(armed.get("input_source"), dict):
                     raise ValueError("Persisted input source is missing")
+                stage = armed.get("workflow_stage") or {}
+                armed.setdefault("segment_label", stage.get("segment_label"))
+                armed.setdefault(
+                    "segment_semantics", stage.get("segment_semantics")
+                )
+                armed.setdefault(
+                    "start_trigger", stage.get("start_trigger") or "first_input"
+                )
+                armed.setdefault(
+                    "input_requirement",
+                    stage.get("input_requirement")
+                    or (
+                        "required"
+                        if armed["start_trigger"] == "first_input"
+                        else "optional"
+                    ),
+                )
+                armed.setdefault(
+                    "start_delay_s",
+                    float(stage.get("start_delay_s") or self.INPUT_SETTLE_DELAY_S),
+                )
             self._armed = armed
             return True
         except Exception as exc:
@@ -428,6 +496,21 @@ class AcquisitionWorkbench:
                 "capture_id": capture_id,
                 "workflow_stage_id": stage_id,
                 "workflow_stage": stage,
+                "segment_label": context.get("segment_label")
+                or (stage or {}).get("segment_label"),
+                "segment_semantics": context.get("segment_semantics")
+                or (stage or {}).get("segment_semantics"),
+                "start_trigger": context.get("start_trigger")
+                or (stage or {}).get("start_trigger")
+                or "first_input",
+                "input_requirement": context.get("input_requirement")
+                or (stage or {}).get("input_requirement")
+                or "required",
+                "start_delay_s": float(
+                    context.get("start_delay_s")
+                    or (stage or {}).get("start_delay_s")
+                    or self.INPUT_SETTLE_DELAY_S
+                ),
                 "game_profile_draft": context.get("game_profile_draft"),
                 "confirmation_label": (stage or {}).get("confirmation_label")
                 or ("full route boundary" if capture_kind == "route" else "useful capture"),
@@ -472,7 +555,9 @@ class AcquisitionWorkbench:
             ).get("run_index")
             title = "ARIATRACE"
             if run_index:
-                title += " · {}/{}".format(run_index, armed["target_runs"])
+                title += " · SESSION {}/{}".format(
+                    run_index, int(armed.get("target_runs") or 1)
+                )
             title += " · {}".format(stage_name)
             common = {
                 "visible": True,
@@ -503,8 +588,14 @@ class AcquisitionWorkbench:
                         {
                             "state": "settling_queue_input",
                             "status": "SWITCH TO GAME",
-                            "detail": "Ignoring queue-click input · ready in {:.1f}s".format(
-                                remaining_s
+                            "detail": (
+                                "Recording starts automatically in {:.1f}s".format(
+                                    remaining_s
+                                )
+                                if armed.get("start_trigger") == "settled_timer"
+                                else "Ignoring queue-click input · ready in {:.1f}s".format(
+                                    remaining_s
+                                )
                             ),
                             "color": "#ffd166",
                         }
@@ -625,6 +716,123 @@ class AcquisitionWorkbench:
                     "error": "{}: {}".format(type(exc).__name__, exc),
                 }
         return values
+
+
+    def _minimap_calibration_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "minimap_calibrations" / safe_id(game_profile_id)
+
+    def _minimap_calibrations(self) -> dict:
+        values = {}
+        root = self.artifact_root / "minimap_calibrations"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/calibration.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item["calibration_id"] = path.parent.name
+                item["artifact_relative_path"] = str(path.parent.relative_to(self.artifact_root))
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append({"calibration_id": path.parent.name, "status": "invalid", "error": "{}: {}".format(type(exc).__name__, exc)})
+        for items in values.values():
+            items.sort(key=lambda item: item.get("generated_utc") or "", reverse=True)
+        return values
+
+    def run_minimap_calibration(self, value: dict) -> dict:
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            game = self.profiles.game(game_profile_id)
+            calibration_config = game.get("minimap_calibration")
+            if not calibration_config:
+                raise ValueError("The selected game has no mini-map calibration profile")
+            session_root = self.session_root.resolve()
+
+            def checked_session(relative_path: str):
+                if not relative_path:
+                    raise ValueError("Choose every required calibration segment")
+                path = (session_root / relative_path).resolve()
+                try:
+                    path.relative_to(session_root)
+                except ValueError:
+                    raise ValueError("Calibration session must stay inside the session root")
+                manifest_path = path / "manifest.json"
+                if not manifest_path.is_file():
+                    raise ValueError("Calibration session has no manifest")
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                context = manifest.get("context") or {}
+                if context.get("game_profile_id") != game_profile_id:
+                    raise ValueError("Calibration session belongs to another game")
+                return path, manifest, context
+
+            rotation_relative = str(value.get("rotation_session_relative_path") or "")
+            if rotation_relative:
+                rotation_path, _, _ = checked_session(rotation_relative)
+                movement_path, movement_manifest, _ = checked_session(
+                    str(value.get("movement_session_relative_path") or "")
+                )
+                forward_path, _, _ = checked_session(
+                    str(value.get("forward_session_relative_path") or "")
+                )
+                context = movement_manifest.get("context") or {}
+                calibration_id = safe_id(
+                    "{}-segmented-run{:02d}".format(
+                        context.get("experiment_id")
+                        or movement_manifest.get("session_id"),
+                        int(context.get("run_index") or 1),
+                    )
+                )
+                output = self._minimap_calibration_root(game_profile_id) / calibration_id
+                result = calibrate_segment_sessions(
+                    rotation_path,
+                    movement_path,
+                    output,
+                    calibration_config,
+                    forward_session_path=forward_path,
+                )
+            else:
+                session_path, manifest, context = checked_session(
+                    str(value.get("session_relative_path") or "")
+                )
+                if context.get("workflow_stage_id") != "game-profile":
+                    raise ValueError("Legacy calibration requires a basic gameplay sample")
+                try:
+                    segments = {
+                        "rotation_only": [
+                            float(value.get("rotation_start_s")),
+                            float(value.get("rotation_end_s")),
+                        ],
+                        "movement_only": [
+                            float(value.get("movement_start_s")),
+                            float(value.get("movement_end_s")),
+                        ],
+                    }
+                except (TypeError, ValueError):
+                    raise ValueError("Enter all four segment boundaries in seconds")
+                calibration_id = safe_id("{}-run{:02d}".format(context.get("experiment_id") or manifest.get("session_id"), int(context.get("run_index") or 1)))
+                output = self._minimap_calibration_root(game_profile_id) / calibration_id
+                result = calibrate_session(
+                    session_path, output, segments, calibration_config
+                )
+            result["calibration_id"] = calibration_id
+            result["artifact_relative_path"] = str(output.relative_to(self.artifact_root))
+            _write_json_atomic(output / "calibration.json", result)
+            self._last_error = None
+        return self.descriptor()
+
+    def minimap_calibration_image(self, game_profile_id: str, calibration_id: str, name: str) -> bytes:
+        if Path(name).name != name or not name.lower().endswith(".png"):
+            raise ValueError("Invalid evidence image name")
+        root = self._minimap_calibration_root(game_profile_id) / safe_id(calibration_id)
+        descriptor = json.loads((root / "calibration.json").read_text(encoding="utf-8"))
+        declared = {item.get("name") for item in descriptor.get("evidence", [])}
+        if name not in declared:
+            raise ValueError("Unknown calibration evidence image")
+        return (root / name).read_bytes()
 
     def _profile_drafts(self) -> dict:
         values = {}
@@ -780,6 +988,40 @@ class AcquisitionWorkbench:
             if capture_duration_s < 5.0 or capture_duration_s > 600.0:
                 raise ValueError("Capture duration must be between 5 and 600 seconds")
 
+            segment_label = value.get("segment_label") or (
+                workflow_stage or {}
+            ).get("segment_label")
+            segment_semantics = value.get("segment_semantics") or (
+                workflow_stage or {}
+            ).get("segment_semantics")
+            start_trigger = str(
+                value.get("start_trigger")
+                or (workflow_stage or {}).get("start_trigger")
+                or "first_input"
+            )
+            if start_trigger not in ("first_input", "settled_timer"):
+                raise ValueError("Unsupported recording start trigger: {}".format(start_trigger))
+            input_requirement = str(
+                value.get("input_requirement")
+                or (workflow_stage or {}).get("input_requirement")
+                or ("required" if start_trigger == "first_input" else "optional")
+            )
+            if input_requirement not in ("required", "optional", "none"):
+                raise ValueError(
+                    "Input requirement must be required, optional, or none"
+                )
+            if input_requirement == "required" and input_config.get("adapter") == "none":
+                raise ValueError("This capture requires an input adapter")
+            if start_trigger == "first_input" and input_config.get("adapter") == "none":
+                raise ValueError("First-input start requires an input adapter")
+            start_delay_s = float(
+                value.get("start_delay_s")
+                or (workflow_stage or {}).get("start_delay_s")
+                or self.INPUT_SETTLE_DELAY_S
+            )
+            if start_delay_s < 0.0 or start_delay_s > 30.0:
+                raise ValueError("Recording start delay must be between 0 and 30 seconds")
+
             self._armed = {
                 "experiment_id": experiment_id,
                 "game_profile_id": game_id,
@@ -789,6 +1031,11 @@ class AcquisitionWorkbench:
                 "capture_id": capture_id,
                 "workflow_stage_id": workflow_stage_id,
                 "workflow_stage": workflow_stage,
+                "segment_label": segment_label,
+                "segment_semantics": segment_semantics,
+                "start_trigger": start_trigger,
+                "input_requirement": input_requirement,
+                "start_delay_s": start_delay_s,
                 "game_profile_draft": self._profile_drafts().get(game_id),
                 "confirmation_label": value.get("confirmation_label")
                 or ("full route boundary" if capture_kind == "route" else "useful capture"),
@@ -822,6 +1069,144 @@ class AcquisitionWorkbench:
     def _run_path(self, run_index: int) -> Path:
         return self._experiment_root() / "run_{:02d}".format(run_index)
 
+    def _session_key(self, path: Path) -> str:
+        return path.resolve().relative_to(self.session_root.resolve()).as_posix()
+
+    def _session_path(self, session_key: str, require_manifest: bool = True) -> Path:
+        pure = PurePosixPath(str(session_key or ""))
+        if (
+            pure.is_absolute()
+            or len(pure.parts) != 2
+            or any(part in ("", ".", "..") for part in pure.parts)
+            or not re.fullmatch(r"run_\d+", pure.parts[1])
+        ):
+            raise ValueError("Invalid session identifier")
+        root = self.session_root.resolve()
+        path = (root / Path(*pure.parts)).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise ValueError("Session must stay inside the session root")
+        if require_manifest and not (path / "manifest.json").is_file():
+            raise ValueError("Unknown recorded session")
+        return path
+
+    def _session_metadata(self, path: Path) -> dict:
+        metadata_path = path / self.SESSION_METADATA_FILENAME
+        if not metadata_path.is_file():
+            return {}
+        try:
+            value = json.loads(metadata_path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _label_definition(self, label: str) -> dict:
+        for item in self.SESSION_LABELS:
+            if item["value"] == label:
+                return dict(item)
+        raise ValueError("Unknown session label")
+
+    def _describe_session(self, path: Path) -> dict:
+        reader = SessionReader(path)
+        annotations = AnnotationStore(path).list()
+        kinds = [item["kind"] for item in annotations]
+        input_health = input_capture_health(reader.manifest, reader.inputs)
+        metadata = self._session_metadata(path)
+        context = reader.manifest.get("context") or {}
+        if "route_failed" in kinds or "capture_failed" in kinds:
+            status = "failed"
+        elif not input_health["healthy"]:
+            status = "failed"
+        elif (
+            "route_start" in kinds and "route_complete" in kinds
+        ) or (
+            "capture_start" in kinds and "capture_complete" in kinds
+        ):
+            status = "ready"
+        elif "take_start" in kinds and "take_end" in kinds:
+            status = "recorded"
+        else:
+            status = "incomplete"
+        label = metadata.get("label")
+        if label is None:
+            label = context.get("segment_label") or ""
+        return {
+            "session_key": self._session_key(path),
+            "session_id": reader.manifest.get("session_id"),
+            "experiment_id": context.get("experiment_id") or path.parent.name,
+            "run_index": context.get("run_index"),
+            "game_profile_id": context.get("game_profile_id"),
+            "window_title": (
+                (reader.manifest.get("frame_sources") or [{}])[0].get(
+                    "matched_window_title"
+                )
+                or (reader.manifest.get("frame_sources") or [{}])[0].get(
+                    "window_title_query"
+                )
+            ),
+            "created_utc": reader.manifest.get("created_utc"),
+            "finished_utc": reader.manifest.get("finished_utc"),
+            "duration_s": reader.manifest.get("duration_ns", 0) / 1.0e9,
+            "frames": len(reader.frames_by_stream.get("main", [])),
+            "input_events": len(reader.inputs),
+            "dropped_frames": reader.manifest.get("dropped_frames", {}).get(
+                "main", 0
+            ),
+            "status": status,
+            "label": label,
+            "markers": kinds,
+            "input_capture": input_health,
+        }
+
+    def sessions(self) -> List[dict]:
+        values = []
+        paths = []
+        for manifest_path in self.session_root.glob("*/run_*/manifest.json"):
+            if re.fullmatch(r"run_\d+", manifest_path.parent.name):
+                paths.append(manifest_path.parent)
+        for path in paths:
+            try:
+                values.append(self._describe_session(path))
+            except Exception as exc:
+                values.append(
+                    {
+                        "session_key": self._session_key(path),
+                        "status": "invalid",
+                        "label": "",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        values.sort(
+            key=lambda item: item.get("finished_utc")
+            or item.get("created_utc")
+            or item.get("session_key", ""),
+            reverse=True,
+        )
+        if self._active is not None:
+            active_path = Path(self._active["path"])
+            active_key = self._session_key(active_path)
+            if not any(item.get("session_key") == active_key for item in values):
+                values.insert(
+                    0,
+                    {
+                        "session_key": active_key,
+                        "experiment_id": active_path.parent.name,
+                        "run_index": self._active["run_index"],
+                        "game_profile_id": (self._armed or {}).get(
+                            "game_profile_id"
+                        ),
+                        "created_utc": None,
+                        "duration_s": None,
+                        "frames": None,
+                        "input_events": self._active.get("recorded_input_events", 0),
+                        "dropped_frames": None,
+                        "status": self._active["phase"],
+                        "label": "",
+                    },
+                )
+        return values
+
     @staticmethod
     def _archive_existing(path: Path) -> None:
         if not path.exists():
@@ -850,7 +1235,7 @@ class AcquisitionWorkbench:
             reader = SessionReader(path)
             annotations = AnnotationStore(path).list()
             kinds = [item["kind"] for item in annotations]
-            input_health = input_capture_health(reader.manifest)
+            input_health = input_capture_health(reader.manifest, reader.inputs)
             if "route_failed" in kinds or "capture_failed" in kinds:
                 status = "needs_rerecord"
             elif not input_health["healthy"]:
@@ -890,10 +1275,16 @@ class AcquisitionWorkbench:
     def _runs(self) -> List[dict]:
         if self._armed is None:
             return []
-        return [
-            self._slot(index)
-            for index in range(1, self._armed["target_runs"] + 1)
-        ]
+        indexes = set()
+        root = self._experiment_root()
+        if root.is_dir():
+            for path in root.glob("run_*"):
+                match = re.fullmatch(r"run_(\d+)", path.name)
+                if match:
+                    indexes.add(int(match.group(1)))
+        if self._active is not None:
+            indexes.add(int(self._active["run_index"]))
+        return [self._slot(index) for index in sorted(indexes)]
 
     def descriptor(self) -> dict:
         with self._lock:
@@ -904,11 +1295,14 @@ class AcquisitionWorkbench:
                 "profiles": self.profiles.descriptor(),
                 "game_profile_drafts": self._profile_drafts(),
                 "poc_evidence_indexes": self._poc_evidence_indexes(),
+                "minimap_calibrations": self._minimap_calibrations(),
                 "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
                 "visible_windows": self._windows(),
                 "armed": self._armed,
                 "runs": runs,
+                "sessions": self.sessions(),
+                "session_labels": [dict(item) for item in self.SESSION_LABELS],
                 "all_runs_ready": all_ready,
                 "active_run": self._active["run_index"] if self._active else None,
                 "active_phase": self._active["phase"] if self._active else None,
@@ -933,12 +1327,52 @@ class AcquisitionWorkbench:
     def _next_run_index(self) -> int:
         if self._armed is None:
             raise RuntimeError("Configure and arm an experiment first")
-        for run_index in range(1, self._armed["target_runs"] + 1):
-            if self._slot(run_index)["status"] != "ready":
-                return run_index
-        raise RuntimeError("All requested runs are already complete")
+        indexes = []
+        root = self._experiment_root()
+        if root.is_dir():
+            for path in root.glob("run_*"):
+                match = re.fullmatch(r"run_(\d+)", path.name)
+                if match:
+                    indexes.append(int(match.group(1)))
+        return max(indexes or [0]) + 1
+
     def queue_next_take(self) -> dict:
         return self.queue_take(self._next_run_index())
+
+    def start_session(self, value: dict) -> dict:
+        """Apply the simple recorder settings and append one new session."""
+        game_id = value.get("game_profile_id") or None
+        experiment_id = value.get("experiment_id") or "recordings-{}".format(
+            game_id or "custom"
+        )
+        input_adapter = str(value.get("input_adapter") or "none")
+        self.arm(
+            {
+                "game_profile_id": game_id,
+                "experiment_id": experiment_id,
+                "capture_kind": "game_profile",
+                "capture_id": "unlabeled-session",
+                "route_id": "unlabeled-session",
+                "target_runs": 1,
+                "capture_duration_s": value.get("capture_duration_s") or 30,
+                "window_title": value.get("window_title"),
+                "frame_source": {
+                    "adapter": "windows_window",
+                    "fps": float(value.get("fps") or 30),
+                },
+                "input_source": {
+                    "adapter": input_adapter,
+                    "poll_hz": 250 if input_adapter == "windows_xinput" else 125,
+                },
+                "start_trigger": "settled_timer",
+                "start_delay_s": float(value.get("start_delay_s") or 3),
+                "input_requirement": (
+                    "none" if input_adapter == "none" else "optional"
+                ),
+                "confirmation_label": "labeled session",
+            }
+        )
+        return self.queue_next_take()
 
     def queue_take(self, run_index: int) -> dict:
         with self._lock:
@@ -946,12 +1380,18 @@ class AcquisitionWorkbench:
                 raise RuntimeError("Configure and arm an experiment first")
             if self._active is not None:
                 raise RuntimeError("A take is already active")
-            if run_index < 1 or run_index > self._armed["target_runs"]:
-                raise ValueError("Run index is outside the configured experiment")
+            if run_index < 1:
+                raise ValueError("Run index must be positive")
+            if run_index > int(self._armed.get("target_runs") or 1):
+                self._armed["target_runs"] = run_index
+                self._persist_state()
             config = dict(self._armed)
             config["frame_source"] = dict(self._armed["frame_source"])
             config["input_source"] = dict(self._armed["input_source"])
-            if config["input_source"].get("adapter", "none") == "none":
+            if (
+                config.get("start_trigger", "first_input") == "first_input"
+                and config["input_source"].get("adapter", "none") == "none"
+            ):
                 raise RuntimeError(
                     "Choose an input adapter; first-input session start cannot "
                     "work with input capture disabled"
@@ -1002,13 +1442,22 @@ class AcquisitionWorkbench:
                         "capture_id": config["capture_id"],
                         "workflow_stage_id": config.get("workflow_stage_id"),
                         "workflow_stage": config.get("workflow_stage"),
+                        "segment_label": config.get("segment_label"),
+                        "segment_semantics": config.get("segment_semantics"),
+                        "start_trigger": config.get("start_trigger"),
+                        "input_requirement": config.get("input_requirement"),
+                        "start_delay_s": config.get("start_delay_s"),
                         "game_profile_draft": config.get("game_profile_draft"),
                         "run_index": run_index,
                         "frame_adapter": config["frame_source"]["adapter"],
                         "input_adapter": config["input_source"].get(
                             "adapter", "none"
                         ),
-                        "capture_policy": "settled_active_lifetime_first_input_start_v5",
+                        "capture_policy": (
+                            "settled_active_lifetime_first_input_start_v5"
+                            if config.get("start_trigger") == "first_input"
+                            else "settled_timer_start_segment_v1"
+                        ),
                     },
                 )
                 def sources_started() -> None:
@@ -1016,7 +1465,7 @@ class AcquisitionWorkbench:
                         if self._active is active:
                             active["input_eligible_host_time_ns"] = (
                                 time.perf_counter_ns()
-                                + int(self.INPUT_SETTLE_DELAY_S * 1.0e9)
+                                + int(config["start_delay_s"] * 1.0e9)
                             )
                             active["phase"] = "settling_queue_input"
 
@@ -1028,14 +1477,19 @@ class AcquisitionWorkbench:
                 def recording_started(packet) -> None:
                     with self._lock:
                         if self._active is active:
-                            active["recording_started_host_time_ns"] = (
+                            started_ns = (
                                 packet.host_time_ns
+                                if packet is not None
+                                else active["input_eligible_host_time_ns"]
                             )
+                            active["recording_started_host_time_ns"] = started_ns
                             active["recording_deadline_host_time_ns"] = (
-                                packet.host_time_ns
+                                started_ns
                                 + int(config["capture_duration_s"] * 1.0e9)
                             )
-                            active["first_input_kind"] = packet.kind
+                            active["first_input_kind"] = (
+                                packet.kind if packet is not None else None
+                            )
                             active["phase"] = "recording_uninterrupted_take"
 
                 def input_recorded(_packet) -> None:
@@ -1047,8 +1501,13 @@ class AcquisitionWorkbench:
                     duration_s=config["capture_duration_s"],
                     external_stop=active["stop"],
                     on_sources_started=sources_started,
-                    start_on_input=True,
-                    input_start_delay_s=self.INPUT_SETTLE_DELAY_S,
+                    start_on_input=config.get("start_trigger") == "first_input",
+                    start_after_delay_s=(
+                        config["start_delay_s"]
+                        if config.get("start_trigger") == "settled_timer"
+                        else None
+                    ),
+                    input_start_delay_s=config["start_delay_s"],
                     input_start_predicate=input_packet_is_active,
                     on_input_eligible=input_eligible,
                     on_recording_started=recording_started,
@@ -1060,7 +1519,7 @@ class AcquisitionWorkbench:
                         active["phase"] = "finalizing_capture"
 
                 reader = SessionReader(active["path"])
-                input_health = input_capture_health(reader.manifest)
+                input_health = input_capture_health(reader.manifest, reader.inputs)
                 session_started = bool(
                     (manifest.get("recording_start") or {}).get("started")
                 )
@@ -1111,10 +1570,6 @@ class AcquisitionWorkbench:
                     self._last_error = "{}: {}".format(type(exc).__name__, exc)
             finally:
                 active["stop"].set()
-                with self._lock:
-                    if self._active is active:
-                        self._active = None
-                    self._hud_notice = hud_result
                 try:
                     if config.get("game_profile_id"):
                         self._refresh_poc_evidence_index(
@@ -1128,6 +1583,10 @@ class AcquisitionWorkbench:
                                     type(exc).__name__, exc
                                 )
                             )
+                with self._lock:
+                    if self._active is active:
+                        self._active = None
+                    self._hud_notice = hud_result
         active["thread"] = threading.Thread(
             target=work,
             name="acquisition-uninterrupted-take",
@@ -1142,6 +1601,90 @@ class AcquisitionWorkbench:
                 return self.descriptor()
             self._active["cancel"].set()
             self._active["stop"].set()
+        return self.descriptor()
+
+    def label_session(self, session_key: str, label: str) -> dict:
+        with self._lock:
+            if self._active is not None and self._session_key(
+                Path(self._active["path"])
+            ) == session_key:
+                raise RuntimeError("Wait for the active recording to finish")
+            definition = self._label_definition(str(label or ""))
+            path = self._session_path(session_key)
+            reader = SessionReader(path)
+            context = reader.manifest.get("context") or {}
+            metadata = {
+                "schema_version": "1.0",
+                "label": definition["value"],
+                "label_display": definition["label"],
+                "capture_kind": definition.get("capture_kind"),
+                "workflow_stage_id": definition.get("workflow_stage_id"),
+                "capture_id": definition.get("capture_id"),
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            _write_json_atomic(path / self.SESSION_METADATA_FILENAME, metadata)
+
+            # Choosing a non-empty label is the single post-capture review action.
+            # It promotes a successfully recorded take to usable evidence.
+            if definition["value"]:
+                annotations = AnnotationStore(path).list()
+                by_kind = {item["kind"]: item for item in annotations}
+                if "take_start" in by_kind and "take_end" in by_kind:
+                    pair = (
+                        ("route_start", "route_complete")
+                        if definition.get("capture_kind") == "route"
+                        else ("capture_start", "capture_complete")
+                    )
+                    store = AnnotationStore(path)
+                    for marker, source_name in zip(
+                        pair, ("take_start", "take_end")
+                    ):
+                        if marker not in by_kind:
+                            source = by_kind[source_name]
+                            store.add(
+                                marker,
+                                source["session_time_ns"],
+                                source["stream_id"],
+                                source["frame_index"],
+                                route_id=(
+                                    definition.get("capture_id")
+                                    if marker.startswith("route_")
+                                    else None
+                                ),
+                                note="session_manager_label:{}".format(
+                                    definition["value"]
+                                ),
+                            )
+            game_profile_id = context.get("game_profile_id")
+            if game_profile_id:
+                self._refresh_poc_evidence_index(game_profile_id)
+            self._last_error = None
+        return self.descriptor()
+
+    def delete_session(self, session_key: str) -> dict:
+        """Remove a session from the Workbench by moving it to recoverable trash."""
+        with self._lock:
+            path = self._session_path(session_key)
+            if self._active is not None and path.resolve() == Path(
+                self._active["path"]
+            ).resolve():
+                raise RuntimeError("Cancel the active recording before deleting it")
+            manifest = json.loads(
+                (path / "manifest.json").read_text(encoding="utf-8")
+            )
+            context = manifest.get("context") or {}
+            trash = self.session_root / ".trash"
+            trash.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            target = trash / "{}-{}-{}".format(
+                stamp, safe_id(path.parent.name), path.name
+            )
+            path.rename(target)
+            game_profile_id = context.get("game_profile_id")
+            if game_profile_id:
+                self._refresh_poc_evidence_index(game_profile_id)
+            self._hud_notice = None
+            self._last_error = None
         return self.descriptor()
 
     @staticmethod
@@ -1310,7 +1853,7 @@ class AcquisitionWorkbench:
 
 
 def make_handler(state: AcquisitionWorkbench):
-    static_path = Path(__file__).resolve().parent / "static" / "workbench.html"
+    static_path = Path(__file__).resolve().parent / "static" / "recorder.html"
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, content_type: str, body: bytes) -> None:
@@ -1340,7 +1883,8 @@ def make_handler(state: AcquisitionWorkbench):
 
         def do_GET(self):
             try:
-                path = urlparse(self.path).path
+                parsed = urlparse(self.path)
+                path = parsed.path
                 if path == "/":
                     self._send(
                         200,
@@ -1351,8 +1895,14 @@ def make_handler(state: AcquisitionWorkbench):
                     self._json(200, state.descriptor())
                 elif path == "/api/hud":
                     self._json(200, state.hud_descriptor())
+                elif path == "/api/minimap-calibration/image":
+                    query = parse_qs(parsed.query)
+                    body = state.minimap_calibration_image(query.get("game_id", [""])[0], query.get("calibration_id", [""])[0], query.get("name", [""])[0])
+                    self._send(200, "image/png", body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
+            except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
+                self._send(400, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
             except Exception as exc:
                 self._send(
                     500,
@@ -1368,6 +1918,17 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.arm(value)
                 elif path == "/api/disarm":
                     result = state.disarm()
+                elif path == "/api/session/start":
+                    result = state.start_session(value)
+                elif path == "/api/session/label":
+                    result = state.label_session(
+                        str(value.get("session_key") or ""),
+                        str(value.get("label") or ""),
+                    )
+                elif path == "/api/session/delete":
+                    result = state.delete_session(
+                        str(value.get("session_key") or "")
+                    )
                 elif path == "/api/take/queue":
                     result = state.queue_next_take()
                 elif path == "/api/take/cancel":
@@ -1378,6 +1939,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.compile_and_evaluate()
                 elif path == "/api/profile/draft":
                     result = state.save_profile_draft(value)
+                elif path == "/api/minimap-calibration/run":
+                    result = state.run_minimap_calibration(value)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
                     return
