@@ -4,6 +4,18 @@ AriaTrace is PC-hosted, vision-guided gameplay replay for an unrooted Android de
 
 The name joins Ariadne's guiding thread, an aria interpreted as a live performance, and the recorded trace that connects both sessions. See [PROJECT_DEFINITION.md](PROJECT_DEFINITION.md) for the complete purpose and story.
 
+## Ariadne's thread
+
+![Ariadne gives Theseus a ball of thread before he enters the Labyrinth](assets/ariadne-thread.jpg)
+
+*Ariadne gives Theseus the thread before he enters the Labyrinth.*
+
+In Greek mythology, Ariadne gave Theseus a ball of thread before he entered the Labyrinth to confront the Minotaur. Theseus secured one end at the entrance and unwound the thread as he travelled through the maze. After the confrontation, the path he had laid down guided him out again.
+
+That is the central metaphor for AriaTrace. A human demonstration lays down a perceptual thread: route observations, landmarks, actions, timing, and uncertainty remain connected as evidence. During a later run, AriaTrace does not blindly repeat a timed sequence. It watches the current scene, finds where it is relative to the recorded trace, and adjusts its actions to keep following that thread toward the destination.
+
+The **aria** in the name emphasizes that every run is a new performance rather than an identical playback. The **trace** is both the route left by the demonstration and the inspectable evidence connecting what was seen, what was done, and why the replay chose its next action.
+
 This is not timed macro playback. Reliable route completion is the objective; localization is one supporting signal.
 
 Genshin Impact PC is the first POC game. The Acquisition Workbench records an unrestricted number of sessions, then lets the operator classify each one from a short label list: ordinary cruise, rotation-only, movement-only, straight-forward/no-turn, full-map coverage, or route demonstration. The workbench calibrates the circular mini-map from the labeled sessions and preserves the forward segment as the cursor-heading-to-mini-map-shift reference for pose refinement. It persists the masked model, confidence metrics, and boundary, cursor-center, cursor-shape, polar, pose, and quality evidence for review. Automated map traversal and cruise/route estimators remain subsequent work.
