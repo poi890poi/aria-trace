@@ -27,6 +27,9 @@ The current milestone is the observation and game-modeling side of this MVP: sho
 - **CAL-01:** Calibrate camera intrinsics and distortion using a standard ChArUco workflow.
 - **CAL-02:** Rectify the phone screen into canonical screen coordinates using a screen-plane homography.
 - **CAL-03:** Store calibration, optical settings, validation error, and camera format in a reusable profile.
+- **CAL-03A:** Store the authoritative rig calibration as a commented YAML artifact. Its consumer contract shall declare the undistorted input space, input-to-output 3x3 transformation matrix, output size, canonical top-left phone-screen origin, output scaling, and valid mask so downstream agents do not need to infer coordinate conventions.
+- **CAL-03B:** Provide a no-interpolation 1:1 camera-pixel inspection area for manual focus and image-quality review, with raw and undistorted views and current-versus-best comparison.
+- **CAL-03C:** Measure camera-view/phone-screen coverage, camera utilization, screen-view IoU, task-ROI coverage, geometry uncertainty, and end-to-end matchable resolving power using both ADB-to-camera and camera-to-camera references where available.
 - **CAL-04:** Automatically estimate the mini-map's position and circular boundary and store the result, method/configuration provenance, confidence/quality, and inspectable diagnostic images as a reusable structured artifact.
 - **CAL-05:** The initial calibration experiment shall use a short rotation-only session labeled by its selected capture plan, then use temporal aggregation and circle detection to propose the mini-map boundary. This is an experimental procedure, not a fixed algorithm requirement.
 - **CAL-06:** Record a straight-forward/no-turn session long enough to produce notable mini-map translation. Preserve it as evidence relating cursor heading, commanded forward motion when available, and observed mini-map shift direction.

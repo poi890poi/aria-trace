@@ -142,6 +142,8 @@ Two error classes remain separate. An individual shift or facing measurement may
 - A ChArUco calibration estimates camera intrinsics and distortion.
 - A screen-plane homography maps the undistorted image to the canonical phone screen.
 - Rectification maps are precomputed. Capture uses a single latest-frame slot, not a queue.
+- The rig-calibration procedure and artifact contract are specified in `RIG_CALIBRATION.md`. The calibrated UVC layer owns lens undistortion; downstream consumers use the commented `calibration.yaml` input-to-output matrix plus its explicit top-left canonical origin, scale, output size, and valid mask.
+- The workbench calibration view provides a raw/undistorted 1:1 sample inspector without interpolation. Geometry quality includes screen coverage, camera utilization, screen-view IoU, task-ROI coverage, and transform uncertainty. Optical quality is gated by held-out ADB-to-camera and camera-to-camera matching rather than nominal pixel count or sharpness alone.
 
 ### Recorder
 
