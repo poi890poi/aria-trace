@@ -30,9 +30,19 @@ The current milestone is the observation and game-modeling side of this MVP: sho
 - **CAL-03A:** Store the authoritative rig calibration as a commented YAML artifact. Its consumer contract shall declare the undistorted input space, input-to-output 3x3 transformation matrix, output size, canonical top-left phone-screen origin, output scaling, and valid mask so downstream agents do not need to infer coordinate conventions.
 - **CAL-03B:** Provide a no-interpolation 1:1 camera-pixel inspection area for manual focus and image-quality review, with raw and undistorted views and current-versus-best comparison.
 - **CAL-03C:** Measure camera-view/phone-screen coverage, camera utilization, screen-view IoU, task-ROI coverage, geometry uncertainty, and end-to-end matchable resolving power using both ADB-to-camera and camera-to-camera references where available.
+- **CAL-03D:** Measure control-to-camera-perception latency with timestamped alternating visual signals. Preserve clock conversion separately from the causal latency distribution and report latency tails, jitter, missed/ambiguous transitions, endpoint criterion, and inspectable evidence.
 - **CAL-04:** Automatically estimate the mini-map's position and circular boundary and store the result, method/configuration provenance, confidence/quality, and inspectable diagnostic images as a reusable structured artifact.
 - **CAL-05:** The initial calibration experiment shall use a short rotation-only session labeled by its selected capture plan, then use temporal aggregation and circle detection to propose the mini-map boundary. This is an experimental procedure, not a fixed algorithm requirement.
 - **CAL-06:** Record a straight-forward/no-turn session long enough to produce notable mini-map translation. Preserve it as evidence relating cursor heading, commanded forward motion when available, and observed mini-map shift direction.
+
+### Spatial and temporal unification
+
+- **SPU-01:** Represent phone screens, raw/undistorted camera images, mini-map observations, stitched area/global maps, and imported device/session datasets as explicitly named, versioned coordinate frames.
+- **SPU-02:** Exchange directed transform observations through a producer-independent contract containing matrix/model direction, units, axes, validity region/time, uncertainty, confidence, provenance, and artifact revision.
+- **SPU-03:** Compose compatible transforms without requiring any producer to know integrating components. Reject ambiguous coordinate conventions and retain the exact transform chain used by every result.
+- **SPU-04:** Treat clock mappings and causal control-to-perception latency as separate models. Never hide measured latency inside a clock offset or compensate it without an explicit consumer request.
+- **SPU-05:** Preserve imported datasets in their original frames and add registration edges rather than rewriting source pixels or timestamps.
+- **SPU-06:** Preserve multiple spatial hypotheses for ambiguous matching until evidence or review accepts or rejects them.
 
 ### Full-map acquisition
 

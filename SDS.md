@@ -144,6 +144,15 @@ Two error classes remain separate. An individual shift or facing measurement may
 - Rectification maps are precomputed. Capture uses a single latest-frame slot, not a queue.
 - The rig-calibration procedure and artifact contract are specified in `RIG_CALIBRATION.md`. The calibrated UVC layer owns lens undistortion; downstream consumers use the commented `calibration.yaml` input-to-output matrix plus its explicit top-left canonical origin, scale, output size, and valid mask.
 - The workbench calibration view provides a raw/undistorted 1:1 sample inspector without interpolation. Geometry quality includes screen coverage, camera utilization, screen-view IoU, task-ROI coverage, and transform uncertainty. Optical quality is gated by held-out ADB-to-camera and camera-to-camera matching rather than nominal pixel count or sharpness alone.
+- Rig calibration measures a generic control-to-camera-perception baseline with alternating complementary signals and pseudorandom dwell lengths. The core depends only on timestamped stimulus and observation interfaces. It preserves transition evidence, latency distribution and tails, jitter, endpoint semantics, and timestamp uncertainty; clock alignment remains a separate model.
+
+### Spatial and temporal unification
+
+- `SPATIAL_UNIFICATION.md` defines the producer-independent relationship among phone screens, camera images, mini-map observations, stitched maps, and recordings from other devices or sessions.
+- Producers export self-describing coordinate frames and directed transform observations with units, axes, validity, time, uncertainty, confidence, version, and evidence. Registry adapters import these fragments; producers do not import or know the registry or other integrating components.
+- Static rig/crop/stitch relationships and timestamped live pose relationships use the same frame-graph contract. Ambiguous map matches remain multiple weighted hypotheses instead of being collapsed into a false single transform.
+- Clock transforms map timestamp coordinates. Causal latencies describe physical delay distributions. Resolvers expose both and apply latency compensation only when explicitly requested.
+- Source datasets and artifact revisions remain immutable. Cross-device/session registration adds versioned edges and never rewrites original pixels, timestamps, or measurements.
 
 ### Recorder
 

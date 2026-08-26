@@ -25,6 +25,7 @@ Start with:
 - [SRS.md](SRS.md) — brief requirements
 - [SDS.md](SDS.md) — brief architecture and replaceable interfaces
 - [RIG_CALIBRATION.md](RIG_CALIBRATION.md) — USB-camera/phone geometry, focus, matchability, UI, and YAML contract
+- [SPATIAL_UNIFICATION.md](SPATIAL_UNIFICATION.md) — coordinate-frame graph for screens, cameras, mini-maps, maps, datasets, and time
 - [RECORDER_GUIDE.md](RECORDER_GUIDE.md) — minimal GUI workflow for recording repeated routes
 - [poc/README.md](poc/README.md) — pose-estimation POC commands
 - [poc/RESULTS.md](poc/RESULTS.md) — measured results
