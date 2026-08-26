@@ -1,0 +1,9 @@
+-r requirements-rig-calibration.txt
+
+PySide6>=6.2,<6.6; python_version < "3.8"
+qrcode[pil]>=7.4,<8; python_version < "3.8"
+PyInstaller>=5.13,<6; python_version < "3.8"
+
+PySide6>=6.6,<7; python_version >= "3.8"
+qrcode[pil]>=7.4,<9; python_version >= "3.8"
+PyInstaller>=6.10,<7; python_version >= "3.8"

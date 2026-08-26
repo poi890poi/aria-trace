@@ -61,6 +61,35 @@ The supplied Genshin orientation columns were rejected as ground truth: their qu
 
 `acquisition/rig_calibration/` now implements the independent core specified by `RIG_CALIBRATION.md` and exports producer-independent spatial fragments compatible with `SPATIAL_UNIFICATION.md`. Its package-owned `FrameSample`, `ControlEvent`, and `SignalObservation` contracts prevent camera, ADB, workbench, game-profile, map, route, and dataset implementations from leaking into calibration algorithms.
 
+`acquisition/rig_calibration/app/` adds the standalone PySide6 Windows operator
+workflow without changing that core boundary. USB camera, phone target service,
+and ADB reference capture are explicit actions, not startup side effects.
+Developers can replace each through a public adapter or `module:function`
+factory. The app presents geometry overlays, normalized frames, exact 1:1 and
+4x-nearest inspection, MR95 matchability, alternating-signal camera latency,
+and reviewed commented-YAML/evidence export. Its PyInstaller build uses an
+isolated project-local environment and does not write recorder sessions.
+The matchability sweep supports either the generated raster or an explicitly
+enabled per-target ADB screenshot as its digital reference.
+
+The standalone one-folder distribution was built on 2026-08-26 with the
+host's Python 3.7 compatibility line (PySide6 6.5.3 and PyInstaller 5.13.2).
+The build completed with 227 files totaling 256,851,052 bytes at
+`artifacts/rig-calibration-app/windows/AriaTraceRigCalibration/`. Per the
+operator's host-isolation requirement, the executable was not launched, no
+camera/ADB/port was accessed, and repository or hardware tests were not run in
+this session. PyInstaller emitted only its ordinary conditional-import report
+and a Windows API-set lookup warning for Qt's platform plugins; runtime GUI and
+hardware verification therefore remains explicitly pending.
+
+Host-isolation note: the first packaging attempt inherited PyInstaller's
+default user cache and its `--clean` option cleared that cache before failing
+on a version-specific spec argument. It did not touch a recorder session,
+device, running process, or project artifact, but could invalidate cached
+analysis used by another later PyInstaller build. The script was corrected to
+remove `--clean` and set `PYINSTALLER_CONFIG_DIR` beneath `.tools/`; the final
+successful builds used only that project-local cache.
+
 Implemented capabilities are camera-to-screen homography fitting; screen coverage, camera utilization, screen-view IoU, required-region coverage, reprojection quality, extrapolation warnings, and confidence; multi-view planar intrinsic calibration; optional ChArUco target generation/detection; lens rectification and explicit one-matrix normalization with top-left origin and scale; exact no-resampling 1:1 inspection crops; matchability/MR95 evaluation through a caller-supplied matcher; alternating-signal control-to-perception latency with clock/latency separation and paired ADB/camera endpoints; commented YAML persistence; valid masks; evidence renderers; and dependency-free spatial-frame/transform export.
 
 Nine focused synthetic tests pass in both the ordinary OpenCV environment and an isolated OpenCV Contrib 4.6.0 environment. The Contrib run renders and detects the real ChArUco target rather than only testing the missing-dependency path. The complete repository suite passes 68/68 tests in 47.146 seconds.

@@ -17,6 +17,20 @@ The package provides:
 
 `FrameSample`, `ControlEvent`, and `SignalObservation` are package-owned values. An external UVC, ADB, workbench, or dataset adapter converts its native packets into these values; the calibration package never imports those implementations.
 
+## Standalone Windows application
+
+The optional [PySide6 application](app/README.md) supplies the guided USB-camera
+workflow while retaining this package boundary. Run it from source with:
+
+```powershell
+python -m acquisition.rig_calibration.app
+```
+
+Camera, ADB, and phone presentation use public adapter classes and optional
+`module:function` factories. Importing or launching the app does not claim
+hardware, run ADB, start the phone server, or write into recorder sessions.
+The isolated PyInstaller build is documented in the app guide.
+
 ## Dependency boundary
 
 Ordinary geometry, normalization, matchability, latency, YAML, and spatial export require NumPy, OpenCV, and PyYAML. Live ChArUco functions require the ArUco module from `opencv-contrib-python-headless`; importing the package does not require it. [`requirements-rig-calibration.txt`](../../requirements-rig-calibration.txt) describes an isolated environment with that feature enabled.
