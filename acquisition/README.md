@@ -124,6 +124,8 @@ Select **Start recording** and switch to the selected game during **SWITCH TO GA
 The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, choosing a non-empty session label is the explicit content-review action. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions.
 
 The workbench is an orchestrator, not another recorder. Game defaults live under profiles/games, route instructions live under profiles/routes, and replaceable Windows, UVC, and ADB sources feed the same AcquisitionRecorder and session schema.
+
+The independent [`rig_calibration`](rig_calibration/README.md) package implements camera/phone geometry, normalization, matchability, alternating-signal latency, commented YAML artifacts, and spatial export. It deliberately has no dependency on the workbench, camera/ADB drivers, game profiles, maps, or dataset registries; those systems integrate through small adapters.
 ## Standalone recorder (advanced)
 
 The workbench above is the normal recorder interface. Use this command-line interface for adapter diagnostics, scripted acquisition, and non-GUI sources.

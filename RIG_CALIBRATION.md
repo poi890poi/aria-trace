@@ -688,3 +688,7 @@ The implementation should add:
 The core interfaces use generic frames, targets, required regions, stimuli, and observers. Game profiles, ADB commands, UVC drivers, UI controls, map artifacts, and dataset importers remain replaceable adapters outside the module.
 
 Rig calibration remains separate from game-specific mini-map calibration. Rig calibration converts physical-camera pixels into canonical phone-screen observations. Mini-map calibration then finds and models the game UI within that normalized coordinate system.
+
+## 15. Current implementation
+
+The independent core is implemented under `acquisition/rig_calibration/`; its API and dependency boundary are documented in `acquisition/rig_calibration/README.md`. Synthetic verification is in `tests/test_rig_calibration.py`. The package includes spatial-fragment export but does not implement the external spatial registry/resolver, workbench UI, UVC/ADB adapters, or hardware-specific camera-control layer.

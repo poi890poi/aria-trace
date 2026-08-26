@@ -1,6 +1,6 @@
 # Project status and continuation guide
 
-Last updated: 2026-08-24 (Asia/Taipei)
+Last updated: 2026-08-26 (Asia/Taipei)
 
 ## Current decision
 
@@ -56,6 +56,16 @@ python -m pip install -r requirements-poc.txt
 The supplied Genshin orientation columns were rejected as ground truth: their quaternion norms ranged from 0.000124 to 0.369 and contained large discontinuities. The full COLMAP model is therefore only a pseudo-reference.
 
 ## Experiments completed
+
+### Independent camera-to-phone rig calibration package
+
+`acquisition/rig_calibration/` now implements the independent core specified by `RIG_CALIBRATION.md` and exports producer-independent spatial fragments compatible with `SPATIAL_UNIFICATION.md`. Its package-owned `FrameSample`, `ControlEvent`, and `SignalObservation` contracts prevent camera, ADB, workbench, game-profile, map, route, and dataset implementations from leaking into calibration algorithms.
+
+Implemented capabilities are camera-to-screen homography fitting; screen coverage, camera utilization, screen-view IoU, required-region coverage, reprojection quality, extrapolation warnings, and confidence; multi-view planar intrinsic calibration; optional ChArUco target generation/detection; lens rectification and explicit one-matrix normalization with top-left origin and scale; exact no-resampling 1:1 inspection crops; matchability/MR95 evaluation through a caller-supplied matcher; alternating-signal control-to-perception latency with clock/latency separation and paired ADB/camera endpoints; commented YAML persistence; valid masks; evidence renderers; and dependency-free spatial-frame/transform export.
+
+Nine focused synthetic tests pass in both the ordinary OpenCV environment and an isolated OpenCV Contrib 4.6.0 environment. The Contrib run renders and detects the real ChArUco target rather than only testing the missing-dependency path. The complete repository suite passes 68/68 tests in 47.146 seconds.
+
+The package is implemented, but hardware capture adapters, the workbench calibration UI, automatic camera-control sweeps, and measurements from a real phone/camera rig remain open. Do not treat synthetic coverage, matchability, or latency values as hardware results.
 
 ### Canonical acquisition recorder: Windows adapters
 

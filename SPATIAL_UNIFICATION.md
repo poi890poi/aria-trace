@@ -445,3 +445,5 @@ Automated tests should cover:
 - evidence/provenance retention in every resolved result.
 
 The first implementation can use a directed graph and local matrix/covariance composition. Global graph optimization is optional later work and must not change the producer contracts.
+
+`acquisition/rig_calibration/spatial_export.py` implements the rig producer's dependency-free fragment export and validation boundary. The central registry, transform-path resolver, other producer adapters, and optional graph optimization remain separate work.
