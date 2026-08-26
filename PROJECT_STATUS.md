@@ -66,11 +66,30 @@ workflow without changing that core boundary. USB camera, phone target service,
 and ADB reference capture are explicit actions, not startup side effects.
 Developers can replace each through a public adapter or `module:function`
 factory. The app presents geometry overlays, normalized frames, exact 1:1 and
-4x-nearest inspection, MR95 matchability, alternating-signal camera latency,
+4x-nearest inspection, a legacy project-defined matchability sweep,
+alternating-signal camera latency,
 and reviewed commented-YAML/evidence export. Its PyInstaller build uses an
 isolated project-local environment and does not write recorder sessions.
 The matchability sweep supports either the generated raster or an explicitly
 enabled per-target ADB screenshot as its digital reference.
+
+The legacy sweep's `MR95` name and calculation are deprecated: they are not a
+formal standard or an established benchmark metric and must not be used for
+calibration acceptance. `RIG_CALIBRATION.md` now specifies ISO 12233:2024
+e-SFR, with derived MTF50/MTF10, for image-chain resolution. Computer-vision
+matching is reported separately using Oxford/VGG repeatability and matching
+score, HPatches-style MMA at ground-truth reprojection thresholds, match counts,
+coverage, and downstream geometry/pose error. Implementation replacement of
+the legacy evaluator and GUI remains pending; existing outputs must retain an
+explicit legacy label rather than being relabeled.
+
+The design now distinguishes both sampled grids. The primary display-referred
+e-SFR/MTF result uses `cy/dpx`; native camera analysis retains `cy/cpx` as
+supporting evidence, and `cy/mm`/`lp/mm` is secondary and requires measured
+display pitch. Alternating one-pixel dark and bright phone lines are the
+`0.5 cy/dpx` display-Nyquist endpoint, not an ambiguous `1 line/pixel` metric.
+Pre-warp camera samples are converted with local geometry, so camera
+oversampling helps measurement without inflating the display-referred result.
 
 The standalone one-folder distribution was built on 2026-08-26 with the
 host's Python 3.7 compatibility line (PySide6 6.5.3 and PyInstaller 5.13.2).
@@ -90,7 +109,7 @@ analysis used by another later PyInstaller build. The script was corrected to
 remove `--clean` and set `PYINSTALLER_CONFIG_DIR` beneath `.tools/`; the final
 successful builds used only that project-local cache.
 
-Implemented capabilities are camera-to-screen homography fitting; screen coverage, camera utilization, screen-view IoU, required-region coverage, reprojection quality, extrapolation warnings, and confidence; multi-view planar intrinsic calibration; optional ChArUco target generation/detection; lens rectification and explicit one-matrix normalization with top-left origin and scale; exact no-resampling 1:1 inspection crops; matchability/MR95 evaluation through a caller-supplied matcher; alternating-signal control-to-perception latency with clock/latency separation and paired ADB/camera endpoints; commented YAML persistence; valid masks; evidence renderers; and dependency-free spatial-frame/transform export.
+Implemented capabilities are camera-to-screen homography fitting; screen coverage, camera utilization, screen-view IoU, required-region coverage, reprojection quality, extrapolation warnings, and confidence; multi-view planar intrinsic calibration; optional ChArUco target generation/detection; lens rectification and explicit one-matrix normalization with top-left origin and scale; exact no-resampling 1:1 inspection crops; a deprecated legacy project-defined matchability evaluator; alternating-signal control-to-perception latency with clock/latency separation and paired ADB/camera endpoints; commented YAML persistence; valid masks; evidence renderers; and dependency-free spatial-frame/transform export. ISO 12233 e-SFR/MTF and the replacement established feature-matching metrics are documented but not yet implemented.
 
 Nine focused synthetic tests pass in both the ordinary OpenCV environment and an isolated OpenCV Contrib 4.6.0 environment. The Contrib run renders and detects the real ChArUco target rather than only testing the missing-dependency path. The complete repository suite passes 68/68 tests in 47.146 seconds.
 

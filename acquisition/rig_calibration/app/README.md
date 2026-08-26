@@ -21,19 +21,34 @@ The normal sequence is:
 4. Set the required ROI and fit one reviewed geometry frame.
 5. Inspect the boundary overlay, normalized frame, exact 1:1 pixels, and 4x
    nearest-neighbour magnification.
-6. Run the controlled MR95 sweep and alternating-signal latency measurement.
+6. After the implementation is updated, run the ISO 12233 e-SFR/MTF capture
+   and established feature-matching evaluation; latency remains a separate
+   alternating-signal measurement.
 7. Optionally list ADB devices or capture one ADB reference image.
 8. Save the reviewed YAML and evidence bundle.
 
 Distance and pose are explicitly approximate when the entered phone diagonal
-or camera HFOV are assumptions. The acceptance-oriented resolving-power value
-is the end-to-end `MR95` matchability result, not the relative Laplacian focus
-number.
+or camera HFOV are assumptions. ISO 12233:2024 e-SFR is the standardized
+imaging-resolution method; MTF50 and MTF10 are derived crossing-frequency
+summaries. Feature repeatability, matching score, MMA at declared
+normalized-screen-pixel thresholds, match counts, coverage, and downstream
+pose error measure computer-vision matching separately.
 
-The MR95 sweep normally compares the known generated raster with normalized
-camera observations. Its explicit ADB-reference checkbox instead captures each
-displayed target through the configured `AdbAdapter`, enabling the intended
-ADB-to-camera matching measurement without coupling the core to ADB.
+The replacement UI must label both sampled grids explicitly. Its primary curve
+and MTF crossings are display-referred cycles per display pixel (`cy/dpx`),
+including the one-pixel-line Nyquist endpoint at `0.5 cy/dpx`. Cycles per camera
+pixel (`cy/cpx`) is a secondary native-analysis view. A `cy/mm` axis is permitted
+only with measured display pitch. The UI must not say merely `lines/pixel`, and
+it must derive the display-referred axis from pre-warp camera samples and local
+geometry rather than measuring authoritative MTF from the resampled preview.
+
+Important current limitation: the built application still exposes a
+project-defined `MR95` sweep. That name and calculation are deprecated and
+must not be used as standards-compliant calibration or acceptance evidence.
+The controlled generated/ADB reference acquisition remains useful raw evidence,
+but the evaluator, UI labels, YAML fields, and quality gates require the
+standards-aligned implementation described in `RIG_CALIBRATION.md`. Legacy
+results must not be silently relabeled as MTF or MMA.
 
 ## Adapter customization
 

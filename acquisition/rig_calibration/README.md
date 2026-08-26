@@ -10,7 +10,8 @@ The package provides:
 - optional ChArUco target generation and detection;
 - lens rectification and one-matrix frame normalization;
 - no-interpolation 1:1 inspection crops and review-image renderers;
-- matcher-independent MR95 evaluation plus a phase-correlation baseline;
+- a legacy project-defined matchability evaluator, retained temporarily for
+  compatibility but deprecated as calibration evidence;
 - alternating-signal control-to-perception latency and paired-endpoint delay;
 - commented `calibration.yaml` persistence and validation;
 - dependency-free spatial-fragment export.
@@ -30,6 +31,24 @@ Camera, ADB, and phone presentation use public adapter classes and optional
 `module:function` factories. Importing or launching the app does not claim
 hardware, run ADB, start the phone server, or write into recorder sessions.
 The isolated PyInstaller build is documented in the app guide.
+
+The package's current `evaluate_matchability` function and `MR95`-style result
+are not an ISO, IEEE, EMVA, Oxford/VGG, or HPatches metric. They must not be
+reported as standardized resolving power. The replacement design in
+[`RIG_CALIBRATION.md`](../../RIG_CALIBRATION.md) uses ISO 12233:2024 e-SFR with
+derived MTF50/MTF10 for physical imaging resolution, then reports feature
+repeatability, matching score, MMA by ground-truth reprojection threshold,
+match counts, coverage, and downstream pose error separately.
+
+Resolution frequencies retain their sampling domain. The primary
+display-referred e-SFR/MTF result uses cycles per display pixel (`cy/dpx`), while
+cycles per camera pixel (`cy/cpx`) is retained as the native analysis/audit
+axis. Cycles per millimetre (`cy/mm` or `lp/mm`) is emitted only when physical
+display pitch is measured. One-pixel-wide alternating phone lines are
+`0.5 cy/dpx`, not an unqualified `1 line/pixel`; they are a Nyquist stress
+target rather than a standalone resolution result. Samples are measured before
+homography normalization and their frequency axis is transformed using the
+local geometry, so resampling does not become part of the MTF measurement.
 
 ## Dependency boundary
 

@@ -34,8 +34,15 @@ Camera-to-phone rig calibration has a separate Windows desktop application:
 Its USB camera, phone target, and optional ADB access are operator initiated and
 do not touch recorder sessions. See
 [the app guide](acquisition/rig_calibration/app/README.md) for the guided
-geometry, exact-pixel focus, MR95 matchability, latency, YAML, adapter, and
-isolated PyInstaller build workflows.
+geometry, exact-pixel focus, standardized e-SFR/MTF design, established feature
+matching measurements, latency, YAML, adapter, and isolated PyInstaller build
+workflows. The current executable's project-defined `MR95` screen is deprecated
+and is not standards-compliant calibration evidence. The replacement design
+reports its primary display-referred e-SFR/MTF result in cycles per display
+pixel; cycles per camera pixel is retained only as the native analysis axis,
+while physical cycles/mm is optional and requires measured display pitch. A
+one-pixel alternating phone pattern is `0.5 cycles/display-pixel`, not an
+unqualified `1 line/pixel` result.
 
 For the Genshin POC, record each useful motion as its own session. After **CAPTURE COMPLETE**, return to the list and choose the matching label. Selecting a label is the single review action that promotes a successful recording to usable evidence. The machine-readable index at `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json` links those labels to source sessions, confirmation markers, timing/count summaries, and profile provenance.
 

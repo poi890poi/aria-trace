@@ -240,73 +240,162 @@ The inspector provides:
 - current, frozen-best, side-by-side, and blink comparison modes;
 - an ROI reticle and canonical mini-map outline;
 - clipping indicators and luminance histogram;
-- current and best MR95-20 score;
+- current and best ISO 12233 e-SFR/MTF result at the inspected ROI;
 - focus/exposure stability over the recent burst;
 - a warning when browser or canvas scaling would make the view non-1:1.
 
 The raw tab is authoritative for optical focus because rectification interpolation can hide or introduce apparent sharpness. The undistorted tab verifies the actual pixels consumed by normalization.
 
-If manual focus is used, every settled adjustment becomes one sample on a focus sweep. The UI shows `better`, `worse`, or `unchanged within uncertainty` relative to the best retained sample. If UVC focus control is writable, the wizard may sweep supported values automatically, select the best held-out matchability result, and then lock focus.
+If manual focus is used, every settled adjustment becomes one sample on a focus sweep. The UI shows `better`, `worse`, or `unchanged within uncertainty` relative to the best retained sample. If UVC focus control is writable, the wizard may sweep supported values automatically, select the best reviewed e-SFR/MTF result, and then lock focus. Task matching is evaluated separately after optical focus is fixed.
 
-## 8. Match-Based Resolving Power
+## 8. Standardized Resolution and Established Matching Metrics
 
-Nominal camera pixels, Laplacian variance, and ordinary MTF do not measure whether AriaTrace can match a pre-captured reference to a live physical-camera frame. The primary global metric is **MR95-20: Matchable Resolution at 95% reliability over a 20 mm patch**.
+There is no ISO, IEEE, or EMVA standard that defines a scalar "smallest
+computer-vision-matchable detail" for a display-camera-matcher pipeline. This
+design therefore does not create or rename such a scalar. It reports the
+standardized image-chain measurement and the established computer-vision
+matching measurements separately.
 
-MR95-20 is the largest number of independent band-limited detail cells that fit across a nominal 20 mm display patch while the production matcher recovers the correct translation and rotation in at least 95% of held-out trials.
+The former `MR95-20` name and calculation were project-defined. They are
+deprecated and must not appear as an accepted calibration metric, quality
+gate, UI headline, or newly generated YAML field. Existing artifacts retain
+their original value only as explicitly labeled legacy data; they must not be
+silently translated into MTF, repeatability, matching score, or MMA.
 
-Example interpretation:
+### 8.1 ISO 12233 e-SFR and MTF
 
-```text
-MR95-20: 64 cells across 20 mm
-Smallest reliably matchable detail: 20 / 64 = 0.31 mm
-Estimated matchable cells across a 28 mm mini-map: 90
-```
+Physical imaging resolution is measured using the slanted-edge electronic
+spatial frequency response procedure from **ISO 12233:2024, Digital cameras —
+Resolution and spatial frequency responses**. The authoritative result is the
+normalized e-SFR curve. The following conventional crossing-frequency
+summaries are derived from that curve and labeled as derived values:
 
-Higher is better. When physical patch size is assumed, the metric is labeled `nominal`; its relative value remains useful for focus and distance optimization.
+- `MTF50`: spatial frequency where normalized response first reaches 0.50;
+- `MTF10`: spatial frequency where normalized response first reaches 0.10.
 
-### 8.1 Targets
+The display and camera are two different sampled grids, so every frequency
+must name its grid. Do not use the unqualified term `lines/pixel`, which is
+ambiguous by a factor of two. One spatial cycle (one line pair) contains one
+dark and one bright line width. Use:
 
-The phone displays seeded, band-limited targets at progressively finer scales. The suite includes:
+- `cycles_per_display_pixel` (`cy/dpx`) for a target rendered on the phone and
+  for the primary display-referred system e-SFR/MTF result;
+- `cycles_per_camera_pixel` (`cy/cpx`) for the native camera-analysis curve and
+  reproducibility diagnostics;
+- `cycles_per_mm_on_phone_plane` (`cy/mm`, equivalently `lp/mm`) only when the
+  physical display scale is measured.
 
-- luminance textures;
-- red/green and blue/yellow chromatic textures;
-- multiple pattern orientations and phases;
-- mini-map-like contours, paths, landmarks, and icon clutter;
-- a directional cursor-like shape.
+A raster whose dark and bright lines are each one logical display pixel wide
+has a two-display-pixel period and is therefore `0.5 cy/dpx`, the display-grid
+Nyquist limit. It may be described as one line width per display pixel only
+when that convention is stated explicitly; it must not be recorded simply as
+`1 line/pixel`. The one-pixel raster is an upper-end stress condition, not a
+claim that the camera resolves that frequency.
 
-Using the complete capture-and-match path automatically includes phone pixel layout, camera Bayer pattern, lens blur, demosaicing, sharpening, noise reduction, moire, exposure, compression, and rectification effects.
+The authoritative samples are taken from the unwarped camera analysis raster,
+but the headline curve and MTF crossings are transformed back and reported in
+`cy/dpx`. This measures the finest logical display features preserved by the
+complete display-to-camera chain, which is the rig's task-relevant quantity.
+The native `cy/cpx` curve is retained as supporting evidence, not used as the
+primary resolving-power score. A homography-normalized phone image is not the
+measurement input because interpolation changes its spatial frequency
+response; normalized images remain appropriate for downstream matching and
+pose tests.
 
-### 8.2 Reference modes
+In the locally axis-aligned, isotropic case, if the sampling ratio is `s`
+camera pixels per display pixel, `f_c = f_d / s` and therefore
+`f_d = s * f_c`. In the general projective case, transform the oriented
+spatial-frequency vector with the transpose of the local camera-to-display
+homography Jacobian and retain the ROI position and direction used. This makes
+camera oversampling beneficial without allowing high camera pixel density to
+inflate the display-referred result. If the measured display pitch is
+`p_d mm/dpx`, a display-domain frequency converts as
+`f_mm = f_d / p_d cy/mm`.
 
-Two modes are measured separately:
+Preserve both frequency axes, the local conversion/Jacobian, full curve, edge
+image, edge angle, linearization/OECF procedure, sampling frequency, ROI,
+channel, and crossing method so the summaries remain auditable. If physical
+display pitch is assumed rather than measured, retain `cy/dpx` and `cy/cpx` and
+omit the absolute `cy/mm` result rather than presenting a nominal conversion as
+measured.
 
-- `adb_to_camera`: an ADB screenshot or known rendered target is matched to a live camera frame.
-- `camera_to_camera`: a retained physical-camera reference is matched to a later live camera frame.
+The target suite includes a frequency sweep below and through the practical
+cutoff, including but not relying on the `0.5 cy/dpx` one-pixel endpoint. It
+also includes multiple edge/pattern orientations, screen positions, luminance
+levels, contrast levels, and luminance/colour channels. Multiple subpixel
+phases are required because logical display pixels, physical phone subpixels,
+the camera Bayer grid, demosaicing, sharpening, and resampling can produce
+phase-dependent aliasing and moire. Results are reported per condition plus a
+declared conservative aggregate; one favorable edge or one-pixel raster cannot
+represent the complete mini-map ROI.
 
-The primary score is the conservative supported-mode result. Per-mode, luminance, chromatic, orientation, and motion scores remain visible so a single headline value cannot hide a systematic failure.
+Laplacian variance and Tenengrad may remain responsive focus aids, but they are
+relative diagnostics, not standardized resolving-power results and not
+acceptance metrics.
 
-### 8.3 Trial definition
+### 8.2 Established feature-matching measurements
 
-Targets receive known translations and rotations. A held-out trial succeeds only when:
+Planar target pairs use the known camera-to-screen homography as ground truth.
+Report the established Oxford/VGG and HPatches-style measurements without
+inventing a combined name:
 
-- the matcher selects the correct correspondence;
-- translation error is no more than 1% of patch width;
-- rotation error is no more than 1 degree;
-- the result passes the production matcher's ambiguity test, such as correlation-peak margin or geometric-inlier support.
+- **Repeatability:** ground-truth corresponding detected regions divided by
+  the smaller detected-region count within the common visible area.
+- **Matching score:** correct descriptor matches divided by the smaller
+  detected-region count within the common visible area.
+- **Mean Matching Accuracy at threshold `t`, `MMA@t`:** fraction of evaluated
+  matches whose ground-truth reprojection error is no greater than `t`
+  normalized-screen pixels, averaged over image pairs.
 
-Report:
+Always report `MMA@1px`, `MMA@2px`, `MMA@3px`, and the complete `MMA@1..10px`
+curve, together with detected-feature count, evaluated-match count,
+correct-match count, spatial coverage, and failure count. MMA alone can look
+excellent when a matcher returns very few correspondences, so counts,
+repeatability, and matching score are mandatory companions.
 
-- static and moving-target MR95-20;
-- median and P95 translation error as a percentage of mini-map diameter;
-- median and P95 rotation error in degrees;
-- catastrophic mismatch rate;
-- match-confidence separation;
-- score stability across the capture burst;
-- bootstrap 95% confidence interval.
+The system-level result is the downstream homography, translation, rotation,
+or pose error produced from those correspondences. Report median, P95, and the
+accuracy/AUC curve at declared application thresholds. Matcher confidence or
+correlation response is diagnostic evidence only; it is not ground truth.
 
-Slanted-edge MTF50, Laplacian sharpness, signal level, clipping, and noise may be retained as diagnostic evidence. They do not determine task acceptance.
+### 8.3 References and conditions
 
-### 8.4 Control-to-perception latency
+Measure reference modes separately:
+
+- `adb_to_camera`: an ADB screenshot or known rendered target is matched to a
+  normalized physical-camera observation;
+- `camera_to_camera`: a retained physical-camera reference is matched to a
+  later normalized physical-camera observation.
+
+Use held-out trials spanning real mini-map content and controlled targets,
+static and moving capture, luminance and colour, orientation, subpixel phase,
+focus, exposure, phone brightness, and expected rig variation. Detail size in
+display pixels, `cy/dpx`, `cy/cpx`, or measured `cy/mm` is a trial condition—not
+a new metric. Report every condition or a declared worst-case aggregate so a
+single headline number cannot hide a systematic failure.
+
+### 8.4 Ground truth and acceptance
+
+A correct match is determined by homography reprojection error, not by the
+matcher accepting itself. A pose trial is accepted only when the downstream
+translation and rotation errors satisfy caller-declared mini-map requirements.
+Report catastrophic false matches separately from rejected/no-result trials.
+
+Calibration acceptance uses all of the following:
+
+- reviewed ISO 12233 e-SFR curve and derived MTF50/MTF10 for the required ROI;
+- repeatability and matching score;
+- MMA curve at declared normalized-screen-pixel thresholds;
+- sufficient correct-match count and spatial coverage;
+- downstream translation, rotation, or pose-error distributions;
+- results stratified by reference mode and capture condition;
+- confidence intervals with the sampling unit and trial count stated.
+
+No threshold in this document is universal. Thresholds come from the
+mini-map estimator's permitted position and direction error and must be
+validated on recorded target-game evidence.
+
+### 8.5 Control-to-perception latency
 
 Rig calibration also measures the delay from a timestamped control request to the first observation that reliably contains the requested visual state. The physical-camera endpoint is required for the rig result; an ADB/screenshot observation endpoint and device presentation endpoint are retained when available. These are generic display/capture-pipeline baselines and must not be mislabeled as a particular game's complete input-response latency.
 
@@ -378,11 +467,12 @@ The workbench flow contains four pages or progressive panels.
 - Green safe area, amber extrapolated area, and red cropped required area.
 - Coverage, utilization, IoU, roll, pitch/yaw, and positioning guidance.
 
-### Focus, timing, and matchability
+### Focus, timing, and feature matching
 
 - The 1:1 inspector described above.
-- Current versus best focus position and MR95-20.
-- Match examples at the passing and failing resolution boundary.
+- Current versus best ISO 12233 e-SFR curve and derived MTF50/MTF10.
+- Repeatability, matching score, MMA curves, match counts, spatial coverage,
+  and reviewed correct/incorrect match examples.
 - Exposure, clipping, motion-blur, and temporal-stability warnings.
 - Alternating-signal state, accepted-transition count, latency distribution, and command/observation timeline.
 
@@ -408,7 +498,9 @@ artifacts/rig_calibrations/<rig-id>/<calibration-id>/
 |-- screen_overlap.png
 |-- focus_best_raw_1x.png
 |-- focus_best_undistorted_1x.png
-|-- matchability_curve.png
+|-- slanted_edge_roi.png
+|-- esfr_mtf_curve.png
+|-- mma_curve.png
 |-- match_examples.png
 |-- latency_timeline.png
 |-- latency_distribution.png
@@ -528,19 +620,77 @@ required_roi:
   guard_band_px: 31.0
   source: game_profile
 
+image_quality:
+  standard: "ISO 12233:2024"
+  method: slanted_edge_e_sfr
+  # Never write an unqualified "lines/pixel": one cycle/line pair contains
+  # one dark and one bright line width, so the term is factor-of-two ambiguous.
+  display_target:
+    spatial_frequency_unit: cycles_per_display_pixel
+    # One-pixel dark + one-pixel bright lines have a two-pixel period.
+    maximum_test_frequency: 0.5
+    minimum_line_width_display_px: 1
+    logical_pixel_definition: canonical_phone_screen_pixel
+  roi_space: camera_raw_px
+  oecf_linearization: measured
+  # Samples come from the pre-warp camera raster. The frequency axis is then
+  # transformed to display pixels; a warped image is not used to measure MTF.
+  primary_spatial_frequency_unit: cycles_per_display_pixel
+  native_analysis_frequency_unit: cycles_per_camera_pixel
+  local_sampling:
+    method: local_camera_to_display_homography_jacobian
+    source: measured_geometry
+    roi_position_camera_xy: [960.0, 540.0]
+    # Illustrative locally isotropic special case; retain the full Jacobian
+    # for perspective or direction-dependent conversion.
+    camera_pixels_per_display_pixel: 1.00
+    jacobian_display_px_per_camera_px: [[1.0, 0.0], [0.0, 1.0]]
+  display_referred:
+    # Primary crossings: finest logical-display detail preserved by the chain.
+    spatial_frequency_unit: cycles_per_display_pixel
+    luminance_mtf50: 0.184
+    luminance_mtf10: 0.327
+  camera_analysis:
+    # Supporting native-axis values retained for audit and reproducibility.
+    spatial_frequency_unit: cycles_per_camera_pixel
+    luminance_mtf50: 0.184
+    luminance_mtf10: 0.327
+  physical_frequency:
+    unit: cycles_per_mm_on_phone_plane
+    source: measured
+    display_pitch_mm_per_display_pixel: 0.0359
+    luminance_mtf50: 5.12
+    luminance_mtf10: 9.10
+  conditions:
+    edge_angles_deg: [5.0, 85.0]
+    screen_positions: [required_roi_center, required_roi_tl, required_roi_br]
+    channels: [luminance, red, green, blue]
+    subpixel_phase_count: 8
+  curve_file: "esfr_mtf_curve.csv"
+
 matchability:
-  metric: MR95-20
-  patch_size_mm: 20.0
-  patch_size_source: measured
-  primary_cells_across_patch: 64
-  smallest_matchable_detail_mm: 0.3125
-  adb_to_camera_cells: 64
-  camera_to_camera_cells: 71
-  static_cells: 71
-  moving_cells: 64
-  bootstrap_95_ci_cells: [60, 67]
-  translation_error_p95_minimap_fraction: 0.008
-  rotation_error_p95_deg: 0.72
+  protocol: planar_homography_ground_truth
+  threshold_space: normalized_screen_px
+  reference_modes: [adb_to_camera, camera_to_camera]
+  repeatability: 0.842
+  matching_score: 0.781
+  mma_by_threshold_px:
+    1: 0.746
+    2: 0.889
+    3: 0.934
+    4: 0.951
+    5: 0.963
+    6: 0.971
+    7: 0.976
+    8: 0.980
+    9: 0.983
+    10: 0.985
+  detected_feature_count: 614
+  evaluated_match_count: 482
+  correct_match_count_at_1px: 360
+  common_area_coverage: 0.93
+  downstream_translation_error_p95_px: 0.84
+  downstream_rotation_error_p95_deg: 0.72
   catastrophic_mismatch_rate: 0.004
   matcher:
     name: "aria_minimap_matcher"
@@ -597,6 +747,7 @@ timing:
 
 confidence:
   geometry: 0.96
+  image_quality: 0.94
   matchability: 0.91
   timing: 0.93
   overall: 0.91
@@ -618,7 +769,9 @@ evidence:
   screen_overlap: "screen_overlap.png"
   focus_best_raw_1x: "focus_best_raw_1x.png"
   focus_best_undistorted_1x: "focus_best_undistorted_1x.png"
-  matchability_curve: "matchability_curve.png"
+  slanted_edge_roi: "slanted_edge_roi.png"
+  esfr_mtf_curve: "esfr_mtf_curve.png"
+  mma_curve: "mma_curve.png"
   match_examples: "match_examples.png"
 ```
 
@@ -650,13 +803,16 @@ Geometry confidence includes:
 - extrapolation distance at the required ROI;
 - intrinsic-calibration quality when available.
 
-Matchability confidence includes:
+Image-quality and matching confidence include:
 
+- slanted-edge count, position, angle, channel, phase, and OECF provenance;
+- e-SFR curve stability and derived MTF crossing uncertainty;
 - held-out target count;
 - static and moving trials;
 - reference-mode agreement;
 - colour/orientation worst-case performance;
-- bootstrap interval width;
+- repeatability, matching score, MMA, correct-match count, and spatial coverage;
+- confidence-interval method and width;
 - temporal stability after focus and exposure are locked.
 
 Timing confidence includes accepted transition count, state separability, missed/ambiguous rate, clock uncertainty, camera-frame quantization, rising/falling agreement, and latency stability over the run.
@@ -667,6 +823,9 @@ Initial task gates should require:
 - 100% configured guard-band coverage;
 - no required-ROI pixels outside the valid mask;
 - transform uncertainty below the caller-supplied permitted position error;
+- reviewed e-SFR/MTF performance throughout the required ROI;
+- repeatability, matching score, MMA, correct-match count, and feature coverage
+  above caller-supplied requirements;
 - P95 translation and rotation errors below the caller-supplied estimator limits;
 - catastrophic mismatch rate below the declared route-safety limit;
 - enough accepted alternating transitions to characterize latency tails, with missed and ambiguous rates reported rather than hidden.
@@ -681,7 +840,9 @@ The implementation should add:
 - a calibrated UVC source responsible for lens correction and calibration metadata;
 - a workbench calibration UI with the geometry overlay and 1:1 inspector;
 - a small YAML loader/validator shared by all consumers;
-- evidence rendering and repeatable synthetic tests for matrix direction, origin, scaling, partial-screen geometry, and matchability scoring;
+- evidence rendering and repeatable tests for matrix direction, origin,
+  scaling, partial-screen geometry, ISO 12233 e-SFR/MTF processing, and
+  established feature-matching measurements;
 - repeatable timing tests for alternating-signal detection, clock/latency separation, transition rejection, and tail statistics;
 - a dependency-free spatial export adapter conforming to `SPATIAL_UNIFICATION.md`.
 
@@ -696,9 +857,25 @@ The independent core is implemented under `acquisition/rig_calibration/`; its AP
 The optional standalone Windows application is implemented under
 `acquisition/rig_calibration/app/`. It provides a PySide6 guided UI, opt-in
 OpenCV camera capture, a fullscreen phone target service, exact-pixel review,
-controlled MR95 trials, alternating-signal camera latency, optional ADB
+a legacy project-defined matchability sweep, alternating-signal camera latency, optional ADB
 reference capture, and reviewed bundle export. Camera, ADB, and phone target
 implementations are public replaceable adapters; hardware-specific controls
 and alternative transports remain outside the calibration algorithms. The
 PyInstaller build is isolated beneath `.tools/` and emits its distribution
 beneath ignored `artifacts/` storage.
+
+The app's current `MR95` label and evaluator are deprecated and must not be
+used as calibration acceptance evidence. The next implementation revision must
+replace that screen and YAML output with the ISO 12233 e-SFR/MTF and established
+repeatability, matching-score, MMA, match-count, coverage, and downstream-error
+results defined above. This documentation change deliberately does not relabel
+legacy output as standards-compliant evidence.
+
+## 16. Normative and Benchmark References
+
+- [ISO 12233:2024 — Digital cameras — Resolution and spatial frequency responses](https://www.iso.org/standard/88626.html)
+- [Oxford VGG affine-feature detector repeatability protocol](https://www.robots.ox.ac.uk/~vgg/research/affine/evaluation.html)
+- [Oxford VGG region-descriptor matching-score protocol](https://www.robots.ox.ac.uk/~vgg/research/affine/desc_evaluation.html)
+- [HPatches: A Benchmark and Evaluation of Handcrafted and Learned Local Descriptors](https://openaccess.thecvf.com/content_cvpr_2017/html/Balntas_HPatches_A_Benchmark_CVPR_2017_paper.html)
+- [Image Matching across Wide Baselines: From Paper to Practice](https://research.google/pubs/image-matching-across-wide-baselines-from-paper-to-practice/)
+- [IEEE 2020-2024 — Standard for Automotive System Image Quality](https://standards.ieee.org/ieee/2020/11960/)
