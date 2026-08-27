@@ -695,6 +695,7 @@ class WorkbenchTests(unittest.TestCase):
             [stage["capture_kind"] for stage in game["poc_workflow"]],
             [
                 "game_profile",
+                "scene_yaw_calibration",
                 "minimap_calibration",
                 "minimap_calibration",
                 "minimap_calibration",
@@ -704,15 +705,16 @@ class WorkbenchTests(unittest.TestCase):
         )
         labels = [stage.get("segment_label") for stage in game["poc_workflow"]]
         self.assertEqual(
-            labels[:4],
+            labels[:5],
             [
                 "ordinary_cruise",
+                "scene_rotation_360",
                 "rotation_only",
                 "movement_only",
                 "forward_no_turn",
             ],
         )
-        forward = game["poc_workflow"][3]
+        forward = game["poc_workflow"][4]
         self.assertEqual(forward["capture_duration_s"], 10)
         self.assertEqual(forward["start_trigger"], "settled_timer")
         self.assertEqual(forward["input_requirement"], "optional")
@@ -1680,6 +1682,23 @@ class WorkbenchTests(unittest.TestCase):
                 ]["rotation_only"]
                 self.assertEqual(candidates[0]["session_key"], "managed-sessions/run_01")
                 self.assertTrue(candidates[0]["recommended"])
+
+                scene_labeled = state.label_session(
+                    "managed-sessions/run_01", "scene_rotation_360"
+                )["sessions"][0]
+                self.assertEqual(scene_labeled["label"], "scene_rotation_360")
+                metadata = json.loads(
+                    (path / "session_metadata.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(metadata["capture_kind"], "scene_yaw_calibration")
+                self.assertEqual(metadata["workflow_stage_id"], "scene-rotation-360")
+                self.assertEqual(metadata["capture_id"], "genshin-scene-rotation-360")
+                scene_candidates = state.descriptor()["analysis_candidates"][
+                    "genshin-impact-pc"
+                ]["scene_rotation_360"]
+                self.assertEqual(
+                    scene_candidates[0]["session_key"], "managed-sessions/run_01"
+                )
 
                 opened = []
                 state._folder_opener = opened.append

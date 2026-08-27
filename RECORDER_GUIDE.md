@@ -27,7 +27,7 @@ When the selected game runs as administrator, the Workbench process serving port
 3. Set the duration and select **Start recording**.
 4. Switch to the game while the HUD says **ARMING** or **SWITCH TO GAME**.
 5. After the three-second settling countdown, make the first intended control while the game has focus. That input becomes session time zero. Recording stops after the selected duration; **Stop** is available when an early end is necessary.
-6. Return after **CAPTURE COMPLETE** and choose a label in that session's row. The available labels cover ordinary cruise, rotation-only, movement-only, straight-forward/no-turn, full-map coverage, and route demonstrations.
+6. Return after **CAPTURE COMPLETE** and choose a label in that session's row. The available labels cover ordinary cruise, mini-map rotation-only, slow scene rotation through at least 360 degrees, movement-only, straight-forward/no-turn, full-map coverage, and route demonstrations.
 7. Repeat as often as needed. There is no stage selection, arming step, take target, or fixed session limit.
 
 Choosing a non-empty label is the single post-capture review action. Rotation-only and movement-only sessions feed mini-map calibration, while straight-forward/no-turn preserves the cursor-heading-to-observed-map-shift relationship. **Delete** moves an unwanted session under `sessions/workbench/.trash/` so the operation remains recoverable.

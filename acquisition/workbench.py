@@ -574,6 +574,7 @@ class AcquisitionWorkbench:
         "full_map",
         "minimap_calibration",
         "minimap_cruise",
+        "scene_yaw_calibration",
     )
     SESSION_LABELS = (
         {"value": "", "label": "Unlabeled"},
@@ -590,6 +591,13 @@ class AcquisitionWorkbench:
             "capture_kind": "minimap_calibration",
             "workflow_stage_id": "minimap-rotation-only",
             "capture_id": "genshin-minimap-rotation-only",
+        },
+        {
+            "value": "scene_rotation_360",
+            "label": "Slow horizontal scene turn (360°+)",
+            "capture_kind": "scene_yaw_calibration",
+            "workflow_stage_id": "scene-rotation-360",
+            "capture_id": "genshin-scene-rotation-360",
         },
         {
             "value": "movement_only",
@@ -1118,6 +1126,9 @@ class AcquisitionWorkbench:
         keys = {str(item).upper() for item in evidence.get("key_names") or ()}
         if role == "rotation_only":
             score += min(mouse, 1000) / 50.0 - min(movement, 100) / 5.0
+        elif role == "scene_rotation_360":
+            score += min(mouse, 4000) / 50.0 - min(movement, 100) / 5.0
+            score += min(duration, 90.0) / 3.0
         elif role == "movement_only":
             score += min(movement, 1000) / 50.0 - min(mouse, 100) / 5.0
         elif role == "forward_no_turn":
@@ -1133,6 +1144,7 @@ class AcquisitionWorkbench:
         """Return ranked retained sessions for each label-driven analysis role."""
         roles = {
             "rotation_only",
+            "scene_rotation_360",
             "movement_only",
             "forward_no_turn",
             "full_map",
@@ -2648,6 +2660,23 @@ class AcquisitionWorkbench:
             path = self._session_path(session_key)
             reader = SessionReader(path)
             context = reader.manifest.get("context") or {}
+            game_id = context.get("game_profile_id")
+            if definition["value"] and game_id:
+                game = self.profiles.game(game_id)
+                stage = next(
+                    (
+                        item
+                        for item in game.get("poc_workflow") or ()
+                        if item.get("segment_label") == definition["value"]
+                    ),
+                    None,
+                )
+                if stage is not None:
+                    definition.update(
+                        capture_kind=stage.get("capture_kind"),
+                        workflow_stage_id=stage.get("stage_id"),
+                        capture_id=stage.get("capture_id"),
+                    )
             metadata = {
                 "schema_version": "1.0",
                 "label": definition["value"],

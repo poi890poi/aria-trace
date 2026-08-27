@@ -40,6 +40,19 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 - Calibration results remain reviewable; numerical confidence never silently
   substitutes for user review.
 
+## Scene-relative yaw calibration
+
+- A separate `scene_rotation_360` session records a stationary character while
+  the camera turns slowly on the horizontal axis through at least 360 degrees.
+- Scene pixels, not mini-map rotation or raw input magnitude, provide the
+  relative-yaw measurement. UI regions may be masked but remain preserved in
+  the source recording.
+- Calibration must detect and visualize the full-turn loop closure, report
+  accumulated rotation, direction, closure error, tracked/inlier features,
+  confidence, timing, and rejected frames, and retain per-frame estimates.
+- Scene-yaw calibration and verification have their own Workbench tab and
+  source selector. They do not modify mini-map/cursor calibration.
+
 ## Straight-forward shift and pose verification
 
 - The system estimates the mini-map content displacement from the beginning to
@@ -76,7 +89,8 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 - Calibration and stitching are available from the same simple session-list
   Workbench; stage-selection recording flow is not reintroduced.
 - Mini-map/cursor calibration, pose verification, and map stitching have
-  separate task tabs. Each tab identifies the exact input role and session.
+  separate task tabs, as does scene-relative yaw calibration. Each tab
+  identifies the exact input role and session.
 - A tab displays a result only when its recorded provenance exactly matches the
   currently selected sessions. Historical POC artifacts and results from other
   selections are not mixed into the task view.
