@@ -19,11 +19,12 @@ The normal sequence is:
 3. Enter a camera ID and click **Start camera**. Camera probing is optional and
    happens only through **Probe indices**, because probing briefly claims devices.
 4. Set the required ROI and fit one reviewed geometry frame.
-5. Inspect the boundary overlay, normalized frame, exact 1:1 pixels, and 4x
-   nearest-neighbour magnification.
-6. After the implementation is updated, run the ISO 12233 e-SFR/MTF capture
-   and established feature-matching evaluation; latency remains a separate
-   alternating-signal measurement.
+5. Inspect the boundary overlay and its full-plane screen/viewport/quality-patch
+   inset, normalized frame, exact 1:1 pixels, and 4x nearest-neighbour
+   magnification.
+6. Run the display-referred ISO 12233 e-SFR/MTF capture and ground-truth
+   feature-matching evaluation; latency remains a separate alternating-signal
+   measurement.
 7. Optionally list ADB devices or capture one ADB reference image.
 8. Save the reviewed YAML and evidence bundle.
 
@@ -42,13 +43,26 @@ only with measured display pitch. The UI must not say merely `lines/pixel`, and
 it must derive the display-referred axis from pre-warp camera samples and local
 geometry rather than measuring authoritative MTF from the resampled preview.
 
-Important current limitation: the built application still exposes a
-project-defined `MR95` sweep. That name and calculation are deprecated and
-must not be used as standards-compliant calibration or acceptance evidence.
-The controlled generated/ADB reference acquisition remains useful raw evidence,
-but the evaluator, UI labels, YAML fields, and quality gates require the
-standards-aligned implementation described in `RIG_CALIBRATION.md`. Legacy
-results must not be silently relabeled as MTF or MMA.
+The GUI establishes the ChArUco-atlas geometry and camera/screen IoU before it
+enables quality trials. It chooses a conservative quality patch inside the
+camera-visible intersection with the required ROI, so a camera may cover only
+part of the display. e-SFR uses pre-warp camera samples whose locations are
+mapped into display pixels; feature matching uses the atlas homography as
+ground truth. The former `MR95` controls and YAML output are no longer exposed.
+The built-in presenter also verifies that its physical canvas matches the
+declared display raster. Every controlled quality frame must be newer than a
+paint acknowledgement for that exact target revision, rather than merely
+newer than a fixed delay.
+
+The e-SFR implementation records `non_certified` conformance and warns when a
+measured camera OECF LUT was not supplied. A saved result remains a warning
+until caller-specific task thresholds are configured and real hardware evidence
+passes them.
+
+The previously built one-folder Windows distribution predates this replacement
+and must be rebuilt before operator use. This source revision was implemented
+without launching the GUI or accessing a camera, ADB device, phone target, or
+listening port.
 
 ## Adapter customization
 
@@ -69,8 +83,11 @@ the default bind port is ephemeral to avoid collisions with other services.
 
 Factories take no arguments and return `CameraAdapter`, `AdbAdapter`, or
 `PhoneTargetAdapter` instances respectively. A camera adapter supplies
-timestamped BGR `FrameSample` values. An ADB adapter may represent real ADB,
-another phone-side agent, or a prerecorded/deterministic reference source.
+timestamped BGR `FrameSample` values, including `receive_time_ns` on the host
+monotonic clock for controlled captures. A target adapter reports paint
+acknowledgements keyed by presentation revision, also with host-monotonic
+receive timestamps. An ADB adapter may represent real ADB, another phone-side
+agent, or a prerecorded/deterministic reference source.
 
 The built-in OpenCV camera adapter accepts numeric indices and adapter-specific
 stream paths. Its DirectShow index probe is bounded and opt-in. The built-in

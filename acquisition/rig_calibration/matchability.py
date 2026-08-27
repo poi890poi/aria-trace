@@ -1,4 +1,8 @@
-"""End-to-end matchability trials and MR95-style resolving-power scores."""
+"""Private legacy MR95 implementation retained for old internal artifacts.
+
+New code must use :mod:`feature_matching`; this module is intentionally absent
+from the package's public exports and from the rig-calibration application.
+"""
 
 from collections import defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence, Tuple

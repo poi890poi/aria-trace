@@ -10,8 +10,10 @@ The package provides:
 - optional ChArUco target generation and detection;
 - lens rectification and one-matrix frame normalization;
 - no-interpolation 1:1 inspection crops and review-image renderers;
-- a legacy project-defined matchability evaluator, retained temporarily for
-  compatibility but deprecated as calibration evidence;
+- display-referred ISO 12233 slanted-edge e-SFR/MTF analysis from native,
+  pre-homography camera samples;
+- homography-ground-truth feature repeatability, matching score, MMA, spatial
+  coverage, match counts, and downstream geometry error;
 - alternating-signal control-to-perception latency and paired-endpoint delay;
 - commented `calibration.yaml` persistence and validation;
 - dependency-free spatial-fragment export.
@@ -32,11 +34,9 @@ Camera, ADB, and phone presentation use public adapter classes and optional
 hardware, run ADB, start the phone server, or write into recorder sessions.
 The isolated PyInstaller build is documented in the app guide.
 
-The package's current `evaluate_matchability` function and `MR95`-style result
-are not an ISO, IEEE, EMVA, Oxford/VGG, or HPatches metric. They must not be
-reported as standardized resolving power. The replacement design in
-[`RIG_CALIBRATION.md`](../../RIG_CALIBRATION.md) uses ISO 12233:2024 e-SFR with
-derived MTF50/MTF10 for physical imaging resolution, then reports feature
+The public calibration API and GUI no longer use the former project-defined
+`MR95` evaluator. [`RIG_CALIBRATION.md`](../../RIG_CALIBRATION.md) specifies ISO
+12233:2024 slanted-edge e-SFR with derived MTF50/MTF10, then reports feature
 repeatability, matching score, MMA by ground-truth reprojection threshold,
 match counts, coverage, and downstream pose error separately.
 
@@ -50,9 +50,17 @@ target rather than a standalone resolution result. Samples are measured before
 homography normalization and their frequency axis is transformed using the
 local geometry, so resampling does not become part of the MTF measurement.
 
+The ChArUco target is an atlas: marker/corner IDs locate the camera viewport in
+the complete canonical display even when the camera sees neither the full
+screen nor its outer boundary. Geometry, screen coverage, camera utilization,
+and IoU are fitted first. Quality trials then use a conservative patch wholly
+inside the camera-visible intersection with the required task ROI. A partial
+screen can therefore be measured honestly, while a cropped required ROI still
+prevents calibration acceptance.
+
 ## Dependency boundary
 
-Ordinary geometry, normalization, matchability, latency, YAML, and spatial export require NumPy, OpenCV, and PyYAML. Live ChArUco functions require the ArUco module from `opencv-contrib-python-headless`; importing the package does not require it. [`requirements-rig-calibration.txt`](../../requirements-rig-calibration.txt) describes an isolated environment with that feature enabled.
+Ordinary geometry, normalization, e-SFR, feature matching, latency, YAML, and spatial export require NumPy, OpenCV, and PyYAML. Live ChArUco functions require the ArUco module from `opencv-contrib-python-headless`; importing the package does not require it. [`requirements-rig-calibration.txt`](../../requirements-rig-calibration.txt) describes an isolated environment with that feature enabled.
 
 The current project environment may use ordinary `opencv-python-headless`. In that environment, calling a ChArUco function fails with an explicit installation message while every other package function remains available.
 

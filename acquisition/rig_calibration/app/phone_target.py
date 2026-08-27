@@ -48,7 +48,12 @@ class PhoneTargetAdapter(ABC):
 
     @abstractmethod
     def telemetry(self) -> Mapping[str, Any]:
-        pass
+        """Return presentation telemetry using host-monotonic receive times.
+
+        Controlled image capture expects an ``acknowledgements`` sequence whose
+        entries identify ``revision``, set ``painted`` true, and include
+        ``server_receive_time_ns`` after the target has reached the display.
+        """
 
     @abstractmethod
     def stop(self) -> None:
@@ -77,13 +82,15 @@ function report(){fetch('/telemetry',{method:'POST',headers:{'content-type':'app
  screen_width:screen.width,screen_height:screen.height,orientation:screen.orientation?.type||''})}).catch(()=>{});}
 function draw(mode){if(mode==='black'||mode==='white'){ctx.fillStyle=mode;ctx.fillRect(0,0,canvas.width,canvas.height);}
  else if(image){ctx.imageSmoothingEnabled=false;ctx.drawImage(image,0,0,canvas.width,canvas.height);}}
+function afterPaint(s){requestAnimationFrame(()=>requestAnimationFrame(()=>fetch('/ack',
+ {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(
+ {revision:s.revision,token:s.token,client_time_ms:performance.now(),painted:true,
+ canvas_width:canvas.width,canvas_height:canvas.height})}).catch(()=>{})));}
 async function poll(){try{const s=await (await fetch('/state.json',{cache:'no-store'})).json();
  note.textContent=s.label+' · '+canvas.width+'×'+canvas.height;
  if(s.revision!==revision){revision=s.revision;lastMode=s.mode;
-  if(s.mode==='image'){const next=new Image();next.onload=()=>{image=next;draw('image')};
-   next.src='/image.png?v='+revision;}else draw(s.mode);
-  fetch('/ack',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(
-   {revision:s.revision,token:s.token,client_time_ms:performance.now()})}).catch(()=>{});
+  if(s.mode==='image'){const next=new Image();next.onload=()=>{image=next;draw('image');afterPaint(s)};
+   next.src='/image.png?v='+revision;}else{draw(s.mode);afterPaint(s);}
  }else draw(lastMode);}catch(e){note.textContent='PC target service disconnected';}
  setTimeout(poll,40);}
 document.querySelector('#go').onclick=async()=>{try{await document.documentElement.requestFullscreen();}catch(e){}
@@ -95,7 +102,7 @@ class _TargetState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.mode = "image"
-        self.label = "ChArUco geometry target"
+        self.label = "ChArUco screen atlas"
         self.token = "charuco"
         self.revision = 0
         self.issued_time_ns = 0
@@ -225,7 +232,7 @@ class LocalPhoneTargetServer(PhoneTargetAdapter):
             raise RuntimeError("Phone target service is already running")
         self._layout = layout
         self._charuco = generate_charuco_target(layout)
-        self._set("image", "ChArUco geometry target", "charuco", self._charuco)
+        self._set("image", "ChArUco screen atlas", "charuco", self._charuco)
         server = ThreadingHTTPServer((self.bind_host, self.port), _handler(self._state))
         server.daemon_threads = True
         self._server = server
@@ -242,7 +249,7 @@ class LocalPhoneTargetServer(PhoneTargetAdapter):
         if self._charuco is None:
             raise RuntimeError("Phone target service is not running")
         return self._set(
-            "image", "ChArUco geometry target", "charuco", self._charuco
+            "image", "ChArUco screen atlas", "charuco", self._charuco
         )
 
     def present_image(self, image: np.ndarray, label: str) -> Presentation:

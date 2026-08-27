@@ -35,11 +35,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..contracts import ControlEvent, MatchTrial, SignalObservation
-from ..geometry import CharucoLayout, generate_band_limited_target, generate_charuco_target
-from ..inspection import render_latency_timeline, render_matchability_curve
+from ..contracts import ControlEvent, SignalObservation
+from ..feature_matching import (
+    aggregate_feature_matching,
+    evaluate_feature_matching,
+    generate_feature_target,
+)
+from ..geometry import CharucoLayout, generate_charuco_target
+from ..image_quality import (
+    aggregate_esfr_measurements,
+    generate_slanted_edge_target,
+    measure_slanted_edge_esfr,
+)
+from ..inspection import (
+    render_esfr_curve,
+    render_feature_matching_curve,
+    render_feature_matching_overlay,
+    render_latency_timeline,
+)
 from ..latency import estimate_latency
-from ..matchability import PhaseCorrelationMatcher, evaluate_matchability
 from .device_adapters import (
     AdbAdapter,
     CameraAdapter,
@@ -191,11 +205,15 @@ class RigCalibrationWindow(QMainWindow):
         self.layout: Optional[CharucoLayout] = None
         self.target_image: Optional[np.ndarray] = None
         self.analysis: Optional[CalibrationAnalysis] = None
-        self.matchability: Optional[dict[str, Any]] = None
+        self.image_quality: Optional[dict[str, Any]] = None
+        self.feature_matching: Optional[dict[str, Any]] = None
+        self.quality_evidence: dict[str, np.ndarray] = {}
         self.timing: Optional[dict[str, Any]] = None
         self.adb_reference: Optional[np.ndarray] = None
-        self._quality_plan: list[tuple[int, int, np.ndarray]] = []
-        self._quality_trials: list[MatchTrial] = []
+        self._quality_plan: list[dict[str, Any]] = []
+        self._esfr_measurements: list[dict[str, Any]] = []
+        self._feature_trials: list[dict[str, Any]] = []
+        self._quality_failures: list[dict[str, str]] = []
         self._quality_active = False
         self._latency_active = False
         self._latency_events: list[ControlEvent] = []
@@ -229,7 +247,10 @@ class RigCalibrationWindow(QMainWindow):
             ("Normalized phone", False),
             ("Exact 1:1 pixels", True),
             ("4× nearest-neighbour", True),
-            ("Matchability", False),
+            ("e-SFR / MTF", False),
+            ("Feature matching", False),
+            ("Match examples", False),
+            ("Edge evidence", True),
             ("Latency", False),
             ("ADB reference", False),
         ):
@@ -371,21 +392,31 @@ class RigCalibrationWindow(QMainWindow):
         return group
 
     def _quality_group(self) -> QGroupBox:
-        group = QGroupBox("4 · Focus and resolving power")
+        group = QGroupBox("4 · Display detail and feature matching")
         form = QFormLayout(group)
-        self.patch_mm = self._double(1.0, 200.0, 20.0, " mm")
-        form.addRow("Physical patch", self.patch_mm)
-        self.quality_use_adb = QCheckBox("Capture each digital reference through the configured ADB adapter")
+        atlas_note = QLabel(
+            "The ChArUco atlas must be fitted first. Trials use only the camera-visible "
+            "part of the required ROI; whole-display visibility is not assumed."
+        )
+        atlas_note.setWordWrap(True)
+        form.addRow(atlas_note)
+        self.quality_use_adb = QCheckBox(
+            "Use the configured ADB adapter for feature-target references"
+        )
         self.quality_use_adb.setToolTip(
-            "Opt-in: invokes the ADB adapter once per displayed quality target."
+            "Opt-in: invokes ADB only for the three feature-matching targets. "
+            "Slanted-edge geometry always comes from its exact generated specification."
         )
         form.addRow(self.quality_use_adb)
-        sweep = QPushButton("Run controlled MR95 sweep")
+        sweep = QPushButton("Run ISO e-SFR and feature-matching trials")
         sweep.clicked.connect(self._start_quality_sweep)
         form.addRow(sweep)
-        self.quality_result = QLabel("Fit geometry before running the sweep.")
+        self.quality_result = QLabel("Fit the ChArUco atlas and review IoU first.")
         self.quality_result.setWordWrap(True)
         form.addRow(self.quality_result)
+        self.matching_result = QLabel("Feature matching not measured.")
+        self.matching_result.setWordWrap(True)
+        form.addRow(self.matching_result)
         return group
 
     def _latency_group(self) -> QGroupBox:
@@ -467,7 +498,7 @@ class RigCalibrationWindow(QMainWindow):
             ),
             phone_diagonal_in=self.phone_diagonal.value(),
             camera_horizontal_fov_deg=self.camera_hfov.value(),
-            patch_size_mm=self.patch_mm.value(),
+            patch_size_mm=20.0,
         )
 
     def _start_target(self) -> None:
@@ -592,6 +623,24 @@ class RigCalibrationWindow(QMainWindow):
         if self.analysis_thread is not None and self.analysis_thread.isRunning():
             return
         try:
+            browser = dict(self.phone_target.telemetry().get("browser", {}))
+            canvas_width = browser.get("canvas_width")
+            canvas_height = browser.get("canvas_height")
+            declared_width, declared_height = self._current_inputs().screen_size_px
+            if canvas_width is not None and canvas_height is not None and (
+                int(canvas_width) != declared_width
+                or int(canvas_height) != declared_height
+            ):
+                raise ValueError(
+                    "Phone canvas is {}x{} physical pixels, but the declared display "
+                    "raster is {}x{}. Enter fullscreen and make these values agree "
+                    "before fitting the atlas.".format(
+                        canvas_width,
+                        canvas_height,
+                        declared_width,
+                        declared_height,
+                    )
+                )
             thread = AnalysisThread(
                 self.latest_sample.image,
                 self._current_inputs(),
@@ -610,7 +659,9 @@ class RigCalibrationWindow(QMainWindow):
 
     def _analysis_complete(self, value: object) -> None:
         self.analysis = value
-        self.matchability = None
+        self.image_quality = None
+        self.feature_matching = None
+        self.quality_evidence = {}
         self.timing = None
         self.image_panes["Geometry evidence"].set_bgr(value.overlay)
         self.image_panes["Normalized phone"].set_bgr(value.normalized)
@@ -619,8 +670,9 @@ class RigCalibrationWindow(QMainWindow):
         metrics = value.geometry.metrics
         pose = value.guidance["pose"]
         focus = value.guidance["focus"]
+        quality_region = value.guidance["quality_region"]
         lines = [
-            "Detected: {} corners / {} markers".format(value.detection["corner_count"], value.detection["marker_count"]),
+            "ChArUco atlas: {} corners / {} markers".format(value.detection["corner_count"], value.detection["marker_count"]),
             "Screen coverage: {:.1%}".format(metrics["screen_coverage"]),
             "Camera utilization: {:.1%}".format(metrics["camera_utilization"]),
             "Camera/screen IoU: {:.1%}".format(metrics["screen_view_iou"]),
@@ -628,6 +680,15 @@ class RigCalibrationWindow(QMainWindow):
             "Required ROI supported by corners: {:.1%}".format(metrics["required_region_detected_hull_coverage"]),
             "Reprojection P95: {:.2f} px".format(metrics["reprojection_p95_px"]),
             "Geometry confidence: {:.1%}".format(value.geometry.confidence),
+            (
+                "Visible quality patch: x={} y={} w={} h={} display px".format(
+                    *quality_region["xywh"]
+                )
+                if quality_region["xywh"] is not None
+                else "Visible quality patch: unavailable ({})".format(
+                    quality_region.get("error", "insufficient visible task area")
+                )
+            ),
             "Approx. distance: {:.0f} mm".format(pose["distance_mm"]),
             "Approx. off-axis: {:.1f}°; roll: {:.1f}°".format(pose["off_axis_deg"], pose["roll_deg"]),
             "Relative focus: Laplacian {:.1f}; Tenengrad {:.1f}".format(
@@ -637,7 +698,13 @@ class RigCalibrationWindow(QMainWindow):
             "Guidance:",
         ] + ["• " + message for message in value.guidance["messages"]]
         lines.append("")
-        lines.append("Distance and tilt use the entered diagonal and HFOV assumptions; MR95 is the comparable acceptance metric.")
+        lines.append(
+            "Atlas geometry and IoU are established first. Display-referred e-SFR/MTF and "
+            "feature matching use only the visible quality patch."
+        )
+        lines.append(
+            "Distance and tilt use the entered diagonal and HFOV assumptions; they do not affect cy/dpx."
+        )
         self.geometry_results.setPlainText("\n".join(lines))
         self.images.setCurrentWidget(self.image_panes["Geometry evidence"])
         self._set_status("Geometry evidence is ready for review. Inspect the overlay and exact-pixel focus tabs.")
@@ -650,121 +717,327 @@ class RigCalibrationWindow(QMainWindow):
 
     def _start_quality_sweep(self) -> None:
         if self.analysis is None:
-            self._set_status("Fit and review geometry before measuring matchability.", True)
+            self._set_status("Fit and review the ChArUco atlas and IoU before quality measurement.", True)
             return
         if not self.phone_url.text():
-            self._set_status("Start the phone target service before measuring matchability.", True)
+            self._set_status("Start the phone target service before quality measurement.", True)
             return
         if self._quality_active or self._latency_active:
             self._set_status("Another controlled presentation is already active.", True)
             return
-        screen_size = self.analysis.inputs.screen_size_px
+        quality_rect = self.analysis.guidance["quality_region"]["xywh"]
+        if quality_rect is None:
+            self._set_status(
+                "Atlas IoU is available, but the camera-visible required ROI is too small "
+                "for a safe quality patch. Reposition the camera or adjust the required ROI.",
+                True,
+            )
+            return
         self._quality_plan = []
-        for cells in (8, 12, 16, 24, 32, 48, 64):
-            for repeat in range(3):
-                image = generate_band_limited_target(screen_size, cells, 7919 + cells * 31 + repeat)
-                self._quality_plan.append((cells, repeat, image))
-        self._quality_trials = []
+        for channel in ("luminance", "red", "green", "blue"):
+            for angle in (5.0, 85.0):
+                for phase in (0.0, 0.5):
+                    self._quality_plan.append(
+                        {
+                            "kind": "esfr",
+                            "channel": channel,
+                            "angle": angle,
+                            "phase": phase,
+                            "label": "e-SFR {} {:.0f}deg phase {:.1f}".format(
+                                channel, angle, phase
+                            ),
+                        }
+                    )
+        for repeat, seed in enumerate((7319, 11587, 19001), 1):
+            self._quality_plan.append(
+                {
+                    "kind": "feature_matching",
+                    "seed": seed,
+                    "label": "feature matching target {}".format(repeat),
+                }
+            )
+        self._quality_total = len(self._quality_plan)
+        self._esfr_measurements = []
+        self._feature_trials = []
+        self._quality_failures = []
+        self.quality_evidence = {}
+        self.image_quality = None
+        self.feature_matching = None
         self._quality_active = True
-        self.quality_result.setText("Running 21 controlled target observations…")
-        self._set_status("Matchability sweep active. Keep the rig fixed; targets change automatically.")
+        self.quality_result.setText(
+            "Running {} controlled observations in the visible display patch…".format(
+                self._quality_total
+            )
+        )
+        self.matching_result.setText("Waiting for feature targets.")
+        self._set_status(
+            "e-SFR and matching trials are active. Keep the atlas-fitted rig fixed."
+        )
         self._quality_next()
 
     def _quality_next(self) -> None:
         if not self._quality_plan:
             self._finish_quality()
             return
-        cells, repeat, target = self._quality_plan.pop(0)
+        item = self._quality_plan.pop(0)
         try:
-            self.phone_target.present_image(target, "MR95 detail {} repeat {}".format(cells, repeat + 1))
+            quality_rect = self.analysis.guidance["quality_region"]["xywh"]
+            if item["kind"] == "esfr":
+                item["target"] = generate_slanted_edge_target(
+                    self.analysis.inputs.screen_size_px,
+                    quality_rect,
+                    edge_angle_deg=item["angle"],
+                    phase_display_px=item["phase"],
+                    channel=item["channel"],
+                )
+            else:
+                item["target"] = generate_feature_target(
+                    self.analysis.inputs.screen_size_px,
+                    quality_rect,
+                    item["seed"],
+                )
+            presentation = self.phone_target.present_image(item["target"], item["label"])
+            item["issued_time_ns"] = int(presentation.issued_time_ns)
+            item["revision"] = int(presentation.revision)
+            item["ack_wait_attempts"] = 0
+            item["frame_wait_attempts"] = 0
         except Exception as exc:
             self._quality_active = False
-            self._set_status("Cannot present matchability target: {}".format(exc), True)
+            self._set_status("Cannot present quality target: {}".format(exc), True)
             return
-        QTimer.singleShot(750, lambda: self._quality_capture(cells, repeat, target))
+        QTimer.singleShot(750, lambda: self._quality_capture(item))
 
-    def _quality_capture(self, cells: int, repeat: int, target: np.ndarray) -> None:
+    def _quality_capture(self, item: dict[str, Any]) -> None:
         if not self._quality_active or self.latest_sample is None or self.analysis is None:
             self._quality_active = False
             return
-        try:
-            reference_full = target
-            reference_mode = "generated_to_camera"
-            if self.quality_use_adb.isChecked():
-                adb_sample = self.adb.capture_screen(self.adb_serial.text().strip() or None)
-                expected_size = self.analysis.inputs.screen_size_px
-                if adb_sample.image.shape[1::-1] != expected_size:
-                    raise ValueError(
-                        "ADB reference is {}x{}, expected canonical {}x{}".format(
-                            adb_sample.image.shape[1],
-                            adb_sample.image.shape[0],
-                            expected_size[0],
-                            expected_size[1],
-                        )
-                    )
-                reference_full = adb_sample.image
-                reference_mode = "adb_to_camera"
-                self.adb_reference = adb_sample.image.copy()
-                self.image_panes["ADB reference"].set_bgr(self.adb_reference)
-            calibration = self.analysis.calibration["normalization"]
-            normalized = cv2.warpPerspective(
-                self.latest_sample.image,
-                np.asarray(calibration["matrix_3x3"], dtype=np.float64),
-                tuple(map(int, calibration["output_size_px"])),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=(0, 0, 0),
+        acknowledgements = self.phone_target.telemetry().get(
+            "acknowledgements", []
+        )
+        matching_acknowledgements = [
+            value
+            for value in acknowledgements
+            if int(value.get("revision", -1)) == int(item.get("revision", -2))
+            and bool(value.get("painted", False))
+        ]
+        if not matching_acknowledgements:
+            if int(item.get("ack_wait_attempts", 0)) < 20:
+                item["ack_wait_attempts"] = int(
+                    item.get("ack_wait_attempts", 0)
+                ) + 1
+                QTimer.singleShot(100, lambda: self._quality_capture(item))
+                return
+            self._quality_failures.append(
+                {
+                    "kind": str(item.get("kind")),
+                    "label": str(item.get("label")),
+                    "error": "phone did not acknowledge painting this target revision",
+                }
             )
-            x, y, width, height = self.analysis.inputs.required_roi_xywh
-            observed = normalized[y : y + height, x : x + width].copy()
-            reference = reference_full[y : y + height, x : x + width].copy()
-            self._quality_trials.append(
-                MatchTrial(
-                    detail_cells_across=cells,
-                    reference=reference,
-                    observed=observed,
-                    reference_mode=reference_mode,
-                    pattern_family="luminance",
-                    moving=False,
-                    trial_id="cells-{}-repeat-{}".format(cells, repeat + 1),
-                )
-            )
-            completed = len(self._quality_trials)
-            self.quality_result.setText("Captured {} of 21 observations…".format(completed))
             self._quality_next()
+            return
+        paint_ack_time = max(
+            int(value.get("server_receive_time_ns", 0))
+            for value in matching_acknowledgements
+        )
+        # Phone presentation and acknowledgement timestamps use this process's
+        # monotonic clock.
+        # Custom camera adapters may expose a device clock in ``time_ns``;
+        # ``receive_time_ns`` is therefore the comparable freshness clock.
+        receive_time = getattr(self.latest_sample, "receive_time_ns", None)
+        frame_clock = str(
+            getattr(self.latest_sample, "clock_id", "host_monotonic_ns")
+        )
+        if receive_time is None and frame_clock != "host_monotonic_ns":
+            self._quality_failures.append(
+                {
+                    "kind": str(item.get("kind")),
+                    "label": str(item.get("label")),
+                    "error": (
+                        "camera adapter uses clock {!r} but did not supply a "
+                        "host-monotonic receive_time_ns"
+                    ).format(frame_clock),
+                }
+            )
+            self._quality_next()
+            return
+        frame_time = int(
+            receive_time
+            if receive_time is not None
+            else getattr(self.latest_sample, "time_ns", 0)
+        )
+        freshness_boundary = max(
+            int(item.get("issued_time_ns", 0)), paint_ack_time
+        )
+        if frame_time <= freshness_boundary:
+            if int(item.get("frame_wait_attempts", 0)) < 20:
+                item["frame_wait_attempts"] = int(
+                    item.get("frame_wait_attempts", 0)
+                ) + 1
+                QTimer.singleShot(100, lambda: self._quality_capture(item))
+                return
+            self._quality_failures.append(
+                {
+                    "kind": str(item.get("kind")),
+                    "label": str(item.get("label")),
+                    "error": "no post-presentation camera frame arrived",
+                }
+            )
+            self._quality_next()
+            return
+        try:
+            camera_frame = self.latest_sample.image.copy()
+            quality_rect = self.analysis.guidance["quality_region"]["xywh"]
+            transform = self.analysis.geometry.matrix_3x3
+            if item["kind"] == "esfr":
+                result, evidence = measure_slanted_edge_esfr(
+                    camera_frame,
+                    transform,
+                    quality_rect,
+                    edge_angle_deg=item["angle"],
+                    phase_display_px=item["phase"],
+                    channel=item["channel"],
+                    geometry_confidence=self.analysis.geometry.confidence,
+                )
+                result["target_label"] = item["label"]
+                result["presentation_issued_time_ns"] = int(item["issued_time_ns"])
+                result["phone_paint_ack_time_ns"] = paint_ack_time
+                result["camera_frame_time_ns"] = frame_time
+                result["camera_frame_time_basis"] = (
+                    "host_receive_monotonic"
+                    if receive_time is not None
+                    else "host_monotonic_adapter_time"
+                )
+                self._esfr_measurements.append(result)
+                evidence_name = "edge-{}-{:02d}-phase-{}".format(
+                    item["channel"], int(item["angle"]), str(item["phase"]).replace(".", "p")
+                )
+                self.quality_evidence[evidence_name] = evidence
+                self.image_panes["Edge evidence"].set_bgr(evidence)
+            else:
+                reference = item["target"]
+                reference_mode = "generated_to_camera"
+                if self.quality_use_adb.isChecked():
+                    adb_sample = self.adb.capture_screen(
+                        self.adb_serial.text().strip() or None
+                    )
+                    expected_size = self.analysis.inputs.screen_size_px
+                    if adb_sample.image.shape[1::-1] != expected_size:
+                        raise ValueError(
+                            "ADB reference is {}x{}, expected canonical {}x{}".format(
+                                adb_sample.image.shape[1],
+                                adb_sample.image.shape[0],
+                                expected_size[0],
+                                expected_size[1],
+                            )
+                        )
+                    reference = adb_sample.image
+                    reference_mode = "adb_to_camera"
+                    self.adb_reference = reference.copy()
+                    self.image_panes["ADB reference"].set_bgr(self.adb_reference)
+                trial = evaluate_feature_matching(
+                    reference,
+                    camera_frame,
+                    transform,
+                    quality_rect,
+                    reference_mode=reference_mode,
+                    geometry_confidence=self.analysis.geometry.confidence,
+                )
+                trial["target_label"] = item["label"]
+                trial["target_seed"] = int(item["seed"])
+                trial["presentation_issued_time_ns"] = int(item["issued_time_ns"])
+                trial["phone_paint_ack_time_ns"] = paint_ack_time
+                trial["camera_frame_time_ns"] = frame_time
+                trial["camera_frame_time_basis"] = (
+                    "host_receive_monotonic"
+                    if receive_time is not None
+                    else "host_monotonic_adapter_time"
+                )
+                self._feature_trials.append(trial)
+                match_evidence = render_feature_matching_overlay(
+                    reference, camera_frame, trial
+                )
+                evidence_name = "feature-matches-seed-{}".format(item["seed"])
+                self.quality_evidence[evidence_name] = match_evidence
+                self.image_panes["Match examples"].set_bgr(match_evidence)
         except Exception as exc:
-            self._quality_active = False
-            self._set_status("Matchability capture failed: {}".format(exc), True)
-            try:
-                self.phone_target.present_charuco()
-            except Exception:
-                pass
+            self._quality_failures.append(
+                {"kind": str(item.get("kind")), "label": str(item.get("label")), "error": str(exc)}
+            )
+        completed = self._quality_total - len(self._quality_plan)
+        self.quality_result.setText(
+            "Captured {} of {} observations; {} failed conditions.".format(
+                completed, self._quality_total, len(self._quality_failures)
+            )
+        )
+        self._quality_next()
 
     def _finish_quality(self) -> None:
         try:
-            self.matchability = evaluate_matchability(
-                self._quality_trials,
-                PhaseCorrelationMatcher(minimum_response=0.10),
-                patch_size_mm=self.patch_mm.value(),
-                reliability_threshold=0.95,
+            if not self._esfr_measurements:
+                raise ValueError("Every slanted-edge condition failed")
+            self.image_quality = aggregate_esfr_measurements(self._esfr_measurements)
+            self.image_quality["quality_region"] = dict(
+                self.analysis.guidance["quality_region"]
             )
-            result = self.matchability
-            smallest = result.get("smallest_matchable_detail_mm")
+            self.image_quality["failed_conditions"] = [
+                item for item in self._quality_failures if item["kind"] == "esfr"
+            ]
+            display = self.image_quality["display_referred"]
+            edge_failures = len(
+                [
+                    item
+                    for item in self._quality_failures
+                    if item["kind"] == "esfr"
+                ]
+            )
             self.quality_result.setText(
-                "{} = {} cells across {:.1f} mm; smallest detail {}; failure {:.1%}; confidence {:.1%}.".format(
-                    result["metric"],
-                    result["primary_cells_across_patch"],
-                    result["patch_size_mm"],
-                    "{:.3f} mm".format(smallest) if smallest is not None else "unresolved",
-                    result["failure_rate"],
-                    result["confidence"],
+                "Display-referred MTF50 {}; MTF10 {} cy/dpx; {} measured edge conditions, "
+                "{} failures; confidence {:.1%}.".format(
+                    "{:.3f}".format(display["mtf50_conservative"])
+                    if display["mtf50_conservative"] is not None
+                    else ">0.500",
+                    "{:.3f}".format(display["mtf10_conservative"])
+                    if display["mtf10_conservative"] is not None
+                    else ">0.500",
+                    len(self._esfr_measurements),
+                    edge_failures,
+                    self.image_quality["confidence"],
                 )
             )
-            self.image_panes["Matchability"].set_bgr(render_matchability_curve(result))
-            self.images.setCurrentWidget(self.image_panes["Matchability"])
-            self._set_status("Matchability evidence is ready for review.")
+            self.image_panes["e-SFR / MTF"].set_bgr(render_esfr_curve(self.image_quality))
+            if self._feature_trials:
+                self.feature_matching = aggregate_feature_matching(self._feature_trials)
+                self.feature_matching["failed_trials"] = [
+                    item
+                    for item in self._quality_failures
+                    if item["kind"] == "feature_matching"
+                ]
+                primary = self.feature_matching["primary_threshold_display_px"]
+                self.matching_result.setText(
+                    "At {} display px: repeatability {:.1%}, matching score {:.1%}, "
+                    "MMA {:.1%}; {} evaluated matches; coverage {:.1%}; catastrophic {:.1%}.".format(
+                        primary,
+                        self.feature_matching["repeatability_by_threshold_px"][primary],
+                        self.feature_matching["matching_score_by_threshold_px"][primary],
+                        self.feature_matching["mma_by_threshold_px"][primary],
+                        self.feature_matching["evaluated_match_count"],
+                        self.feature_matching["spatial_coverage_min"],
+                        self.feature_matching["catastrophic_mismatch_rate"],
+                    )
+                )
+                self.image_panes["Feature matching"].set_bgr(
+                    render_feature_matching_curve(self.feature_matching)
+                )
+            else:
+                self.feature_matching = None
+                self.matching_result.setText("Every feature-matching target failed.")
+            self.images.setCurrentWidget(self.image_panes["e-SFR / MTF"])
+            self._set_status(
+                "Display-referred e-SFR and ground-truth matching evidence are ready for review."
+            )
         except Exception as exc:
-            self._set_status("Matchability evaluation failed: {}".format(exc), True)
+            self._set_status("Quality evaluation failed: {}".format(exc), True)
         finally:
             self._quality_active = False
             try:
@@ -891,9 +1164,11 @@ class RigCalibrationWindow(QMainWindow):
             yaml_path = save_analysis_bundle(
                 output,
                 self.analysis,
-                matchability=self.matchability,
+                image_quality=self.image_quality,
+                feature_matching=self.feature_matching,
                 timing=self.timing,
                 adb_reference=self.adb_reference,
+                quality_evidence=self.quality_evidence,
             )
             self.save_result.setText("Saved {}".format(yaml_path))
             self._set_status("Calibration bundle saved. Status remains warning until required evidence gates pass.")

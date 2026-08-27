@@ -62,7 +62,12 @@ class CameraAdapter(ABC):
 
     @abstractmethod
     def read(self) -> FrameSample:
-        """Return the next timestamped BGR frame."""
+        """Return the next timestamped BGR frame.
+
+        Controlled target capture requires ``receive_time_ns`` in the host
+        monotonic clock so device-clock timestamps can still be ordered against
+        phone paint acknowledgements.
+        """
 
     @abstractmethod
     def close(self) -> None:

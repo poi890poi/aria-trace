@@ -9,27 +9,30 @@ from acquisition.rig_calibration import (
     CharucoLayout,
     ControlEvent,
     FrameNormalizer,
-    MatchResult,
-    MatchTrial,
-    PhaseCorrelationMatcher,
     SignalObservation,
+    aggregate_esfr_measurements,
+    aggregate_feature_matching,
     build_calibration,
     detect_charuco_correspondences,
     estimate_latency,
     estimate_paired_delay,
     estimate_screen_geometry,
-    evaluate_matchability,
+    evaluate_feature_matching,
     export_spatial_fragment,
     extract_one_to_one_patch,
-    generate_band_limited_target,
     generate_charuco_target,
+    generate_feature_target,
+    generate_slanted_edge_target,
     load_calibration_yaml,
+    measure_slanted_edge_esfr,
     nearest_neighbor_magnify,
+    render_esfr_curve,
+    render_feature_matching_curve,
+    render_feature_matching_overlay,
     render_geometry_overlay,
     render_latency_timeline,
-    render_matchability_curve,
+    select_visible_quality_region,
     validate_spatial_fragment,
-    warp_target,
     write_calibration_bundle,
 )
 from acquisition.rig_calibration.geometry import transform_points
@@ -106,6 +109,43 @@ class RigGeometryTests(unittest.TestCase):
         self.assertEqual(overlay.shape, image.shape)
         self.assertGreater(int(np.max(overlay)), 0)
         self.assertEqual(value["geometry"]["mode"], "homography_only")
+
+    def test_partial_display_atlas_selects_only_camera_visible_quality_region(self):
+        camera_size = (400, 300)
+        screen_size = (800, 600)
+        camera_to_screen = np.asarray(
+            [[1.0, 0.0, 100.0], [0.0, 1.0, 50.0], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        xx, yy = np.meshgrid(np.linspace(20, 380, 7), np.linspace(20, 280, 6))
+        camera_points = np.column_stack([xx.reshape(-1), yy.reshape(-1)])
+        screen_points = transform_points(camera_points, camera_to_screen)
+        required = np.asarray(
+            [[140, 90], [460, 90], [460, 310], [140, 310]], dtype=np.float64
+        )
+        geometry = estimate_screen_geometry(
+            camera_points,
+            screen_points,
+            camera_size,
+            screen_size,
+            required_region_screen_xy=required,
+        )
+        self.assertLess(geometry.metrics["screen_coverage"], 0.30)
+        self.assertLess(geometry.metrics["screen_view_iou"], 0.30)
+        region = select_visible_quality_region(
+            camera_size,
+            screen_size,
+            geometry.matrix_3x3,
+            required_region_screen_xy=required,
+            margin_display_px=8,
+        )
+        x, y, width, height = region["xywh"]
+        self.assertEqual(width, height)
+        self.assertGreaterEqual(width, 64)
+        self.assertGreaterEqual(x, 108)
+        self.assertGreaterEqual(y, 58)
+        self.assertLessEqual(x + width, 492)
+        self.assertLessEqual(y + height, 342)
 
     def test_charuco_dependency_is_explicit(self):
         layout = CharucoLayout((320, 640), squares_x=5, squares_y=9)
@@ -210,55 +250,66 @@ class RigLatencyTests(unittest.TestCase):
             estimate_latency(events, observations, stable_observations=1)
 
 
-class RigMatchabilityTests(unittest.TestCase):
-    def test_phase_correlation_and_target_generation(self):
-        target = generate_band_limited_target((256, 192), 20, 17)
-        observed = warp_target(target, (4.0, -3.0))
-        result = PhaseCorrelationMatcher(minimum_response=0.01).match(target, observed)
-        self.assertLess(np.linalg.norm(np.asarray(result.translation_xy) - np.asarray([4.0, -3.0])), 0.5)
-
-    def test_conservative_resolution_score(self):
-        trials = []
-        results = []
-        for cells in (8, 16, 32):
-            for index in range(20):
-                image = np.zeros((100, 100, 3), dtype=np.uint8)
-                trials.append(
-                    MatchTrial(
-                        cells,
-                        image,
-                        image,
-                        expected_translation_xy=(2.0, -1.0),
-                        expected_rotation_deg=0.5,
-                        trial_id="{}-{}".format(cells, index),
-                    )
-                )
-                failed = cells == 32 and index < 2
-                results.append(
-                    MatchResult(
-                        (2.0, -1.0),
-                        0.5,
-                        confidence=0.9,
-                        ambiguous=failed,
-                    )
-                )
-
-        class QueueMatcher:
-            def __init__(self, values):
-                self.values = iter(values)
-
-            def match(self, reference, observed):
-                return next(self.values)
-
-        score = evaluate_matchability(
-            trials, QueueMatcher(results), bootstrap_samples=30
+class RigImageQualityTests(unittest.TestCase):
+    def test_display_referred_esfr_uses_prewarp_oversampled_camera_pixels(self):
+        screen_size = (320, 240)
+        rect = (40, 40, 240, 160)
+        target = generate_slanted_edge_target(
+            screen_size, rect, edge_angle_deg=5.0, channel="luminance"
         )
-        self.assertEqual(score["metric"], "MR95-20")
-        self.assertEqual(score["primary_cells_across_patch"], 16)
-        self.assertAlmostEqual(score["smallest_matchable_detail_mm"], 1.25)
-        curve = render_matchability_curve(score)
-        self.assertEqual(curve.shape, (480, 900, 3))
-        self.assertGreater(int(np.max(curve)), 0)
+        observed = cv2.resize(target, (640, 480), interpolation=cv2.INTER_NEAREST)
+        observed = cv2.GaussianBlur(observed, (0, 0), 1.2)
+        camera_to_screen = np.asarray(
+            [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        result, evidence = measure_slanted_edge_esfr(
+            observed,
+            camera_to_screen,
+            rect,
+            edge_angle_deg=5.0,
+            channel="luminance",
+        )
+        display = result["display_referred"]
+        self.assertEqual(result["measurement_input_space"], "camera_pre_homography_px")
+        self.assertEqual(display["spatial_frequency_unit"], "cycles_per_display_pixel")
+        self.assertAlmostEqual(
+            result["sampling"]["camera_px_per_display_px_along_edge_normal"],
+            2.0,
+            places=2,
+        )
+        self.assertIsNotNone(display["mtf50"])
+        self.assertLessEqual(max(display["frequency"]), 0.5)
+        self.assertGreater(evidence.size, 0)
+        aggregate = aggregate_esfr_measurements([result, result])
+        curve = render_esfr_curve(aggregate)
+        self.assertEqual(curve.shape, (560, 1000, 3))
+        self.assertGreater(int(np.max(curve)), 22)
+
+    def test_ground_truth_feature_metrics_and_mma(self):
+        screen_size = (480, 360)
+        rect = (40, 40, 400, 280)
+        reference = generate_feature_target(screen_size, rect, seed=91)
+        transform = np.eye(3, dtype=np.float64)
+        first = evaluate_feature_matching(reference, reference, transform, rect)
+        second = evaluate_feature_matching(
+            generate_feature_target(screen_size, rect, seed=92),
+            generate_feature_target(screen_size, rect, seed=92),
+            transform,
+            rect,
+        )
+        self.assertGreater(first["evaluated_match_count"], 20)
+        self.assertGreater(first["repeatability_by_threshold_px"][1], 0.90)
+        self.assertGreater(first["mma_by_threshold_px"][1], 0.90)
+        self.assertEqual(first["downstream_geometry"]["status"], "estimated")
+        aggregate = aggregate_feature_matching([first, second])
+        self.assertGreater(aggregate["matching_score_by_threshold_px"][3], 0.80)
+        curve = render_feature_matching_curve(aggregate)
+        self.assertEqual(curve.shape, (560, 1000, 3))
+        self.assertGreater(int(np.max(curve)), 22)
+        overlay = render_feature_matching_overlay(reference, reference, first)
+        self.assertEqual(overlay.ndim, 3)
+        self.assertGreater(int(np.max(overlay)), 22)
 
 
 if __name__ == "__main__":

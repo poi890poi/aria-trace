@@ -66,22 +66,20 @@ workflow without changing that core boundary. USB camera, phone target service,
 and ADB reference capture are explicit actions, not startup side effects.
 Developers can replace each through a public adapter or `module:function`
 factory. The app presents geometry overlays, normalized frames, exact 1:1 and
-4x-nearest inspection, a legacy project-defined matchability sweep,
+4x-nearest inspection, display-referred e-SFR/MTF and feature-matching trials,
 alternating-signal camera latency,
 and reviewed commented-YAML/evidence export. Its PyInstaller build uses an
 isolated project-local environment and does not write recorder sessions.
-The matchability sweep supports either the generated raster or an explicitly
-enabled per-target ADB screenshot as its digital reference.
+The feature-matching trials support either the generated raster or an
+explicitly enabled per-target ADB screenshot as their digital reference.
 
-The legacy sweep's `MR95` name and calculation are deprecated: they are not a
-formal standard or an established benchmark metric and must not be used for
-calibration acceptance. `RIG_CALIBRATION.md` now specifies ISO 12233:2024
-e-SFR, with derived MTF50/MTF10, for image-chain resolution. Computer-vision
-matching is reported separately using Oxford/VGG repeatability and matching
-score, HPatches-style MMA at ground-truth reprojection thresholds, match counts,
-coverage, and downstream geometry/pose error. Implementation replacement of
-the legacy evaluator and GUI remains pending; existing outputs must retain an
-explicit legacy label rather than being relabeled.
+The public API, GUI, YAML, and acceptance path replace the former project-defined
+resolving-power sweep with ISO 12233:2024 slanted-edge e-SFR, derived MTF50 and
+MTF10, and separate homography-ground-truth feature matching. The latter reports
+point repeatability, matching score, MMA at `1..10` display-pixel reprojection
+thresholds, match counts, spatial coverage, catastrophic failures, and
+downstream homography error. Existing legacy artifacts retain their original
+label and are not relabeled.
 
 The design now distinguishes both sampled grids. The primary display-referred
 e-SFR/MTF result uses `cy/dpx`; native camera analysis retains `cy/cpx` as
@@ -101,6 +99,11 @@ this session. PyInstaller emitted only its ordinary conditional-import report
 and a Windows API-set lookup warning for Qt's platform plugins; runtime GUI and
 hardware verification therefore remains explicitly pending.
 
+That packaged distribution predates the 2026-08-27 e-SFR/feature-matching
+source replacement. It must be rebuilt before operator use; the revised source
+has not been launched and has not accessed camera, ADB, phone, or network-port
+state on this host.
+
 Host-isolation note: the first packaging attempt inherited PyInstaller's
 default user cache and its `--clean` option cleared that cache before failing
 on a version-specific spec argument. It did not touch a recorder session,
@@ -109,11 +112,15 @@ analysis used by another later PyInstaller build. The script was corrected to
 remove `--clean` and set `PYINSTALLER_CONFIG_DIR` beneath `.tools/`; the final
 successful builds used only that project-local cache.
 
-Implemented capabilities are camera-to-screen homography fitting; screen coverage, camera utilization, screen-view IoU, required-region coverage, reprojection quality, extrapolation warnings, and confidence; multi-view planar intrinsic calibration; optional ChArUco target generation/detection; lens rectification and explicit one-matrix normalization with top-left origin and scale; exact no-resampling 1:1 inspection crops; a deprecated legacy project-defined matchability evaluator; alternating-signal control-to-perception latency with clock/latency separation and paired ADB/camera endpoints; commented YAML persistence; valid masks; evidence renderers; and dependency-free spatial-frame/transform export. ISO 12233 e-SFR/MTF and the replacement established feature-matching metrics are documented but not yet implemented.
+Implemented capabilities are camera-to-screen homography fitting; screen coverage, camera utilization, screen-view IoU, required-region coverage, reprojection quality, extrapolation warnings, and confidence; multi-view planar intrinsic calibration; optional ChArUco-atlas target generation/detection; lens rectification and explicit one-matrix normalization with top-left origin and scale; exact no-resampling 1:1 inspection crops; display-referred slanted-edge e-SFR/MTF from pre-warp camera samples; homography-ground-truth point repeatability, matching score, MMA, match counts, coverage, and downstream geometry error; alternating-signal control-to-perception latency with clock/latency separation and paired ADB/camera endpoints; commented YAML persistence; valid masks; evidence renderers; and dependency-free spatial-frame/transform export.
 
 Nine focused synthetic tests pass in both the ordinary OpenCV environment and an isolated OpenCV Contrib 4.6.0 environment. The Contrib run renders and detects the real ChArUco target rather than only testing the missing-dependency path. The complete repository suite passes 68/68 tests in 47.146 seconds.
 
-The package is implemented, but hardware capture adapters, the workbench calibration UI, automatic camera-control sweeps, and measurements from a real phone/camera rig remain open. Do not treat synthetic coverage, matchability, or latency values as hardware results.
+The package and standalone calibration UI are implemented, but device-specific
+hardware adapters, automatic camera-control sweeps, measured OECF acquisition,
+and measurements from a real phone/camera rig remain open. The new quality path
+has not been executed against hardware on this host. Do not treat synthetic
+coverage, image-quality, feature-matching, or latency values as hardware results.
 
 ### Canonical acquisition recorder: Windows adapters
 

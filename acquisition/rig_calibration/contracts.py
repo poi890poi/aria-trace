@@ -79,6 +79,9 @@ class SignalObservation:
                 raise ValueError("State probabilities must be within [0, 1]")
 
 
+# Retained only so previously serialized/internal legacy matchability callers
+# fail neither at import nor during migration. New calibration code does not
+# export or use these project-defined trial/result contracts.
 @dataclass(frozen=True)
 class MatchResult:
     translation_xy: Tuple[float, float]

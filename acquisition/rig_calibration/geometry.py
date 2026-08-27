@@ -54,6 +54,128 @@ def _normalized_polygon(polygon: np.ndarray, size: Sequence[int]) -> np.ndarray:
     return np.asarray(polygon, dtype=np.float64) / np.asarray([width, height])
 
 
+def visible_screen_mask(
+    camera_size_px: Sequence[int],
+    screen_size_px: Sequence[int],
+    camera_to_screen_3x3: Sequence[Sequence[float]],
+) -> np.ndarray:
+    """Return screen pixels backed by real camera samples without interpolation."""
+
+    camera_width, camera_height = map(int, camera_size_px)
+    screen_width, screen_height = map(int, screen_size_px)
+    if min(camera_width, camera_height, screen_width, screen_height) <= 0:
+        raise ValueError("Camera and screen sizes must be positive")
+    source = np.full((camera_height, camera_width), 255, dtype=np.uint8)
+    return cv2.warpPerspective(
+        source,
+        matrix_3x3(camera_to_screen_3x3),
+        (screen_width, screen_height),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+
+def select_visible_quality_region(
+    camera_size_px: Sequence[int],
+    screen_size_px: Sequence[int],
+    camera_to_screen_3x3: Sequence[Sequence[float]],
+    required_region_screen_xy: Optional[Sequence[Sequence[float]]] = None,
+    supported_region_screen_xy: Optional[Sequence[Sequence[float]]] = None,
+    supported_region_margin_display_px: int = 0,
+    margin_display_px: int = 8,
+    minimum_size_display_px: int = 64,
+    maximum_size_display_px: int = 640,
+) -> Dict[str, Any]:
+    """Choose a square quality patch wholly inside visible task-screen pixels.
+
+    The ChArUco atlas establishes the camera-to-display transform first. This
+    helper then intersects its camera-backed mask with the caller's task ROI and
+    finds a conservative inscribed square. It therefore works when the camera
+    sees only a small part of the display and never treats black warp borders as
+    captured evidence.
+    """
+
+    screen_width, screen_height = map(int, screen_size_px)
+    mask = visible_screen_mask(
+        camera_size_px, screen_size_px, camera_to_screen_3x3
+    )
+    candidate = mask.copy()
+    required_area = float(screen_width * screen_height)
+    if required_region_screen_xy is not None:
+        required = points_xy(required_region_screen_xy, minimum=3)
+        if not cv2.isContourConvex(required.astype(np.float32).reshape((-1, 1, 2))):
+            raise ValueError("Required region must be a convex polygon")
+        required_mask = np.zeros_like(candidate)
+        cv2.fillConvexPoly(
+            required_mask, np.round(required).astype(np.int32), 255, cv2.LINE_8
+        )
+        candidate = cv2.bitwise_and(candidate, required_mask)
+        required_area = max(_polygon_area(required), 1.0)
+    if supported_region_screen_xy is not None:
+        supported = points_xy(supported_region_screen_xy, minimum=3)
+        support_mask = np.zeros_like(candidate)
+        cv2.fillConvexPoly(
+            support_mask, np.round(supported).astype(np.int32), 255, cv2.LINE_8
+        )
+        support_margin = max(0, int(supported_region_margin_display_px))
+        if support_margin:
+            support_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (support_margin * 2 + 1, support_margin * 2 + 1),
+            )
+            support_mask = cv2.dilate(support_mask, support_kernel, iterations=1)
+        candidate = cv2.bitwise_and(candidate, support_mask)
+
+    margin = max(0, int(margin_display_px))
+    if margin:
+        kernel_size = margin * 2 + 1
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (kernel_size, kernel_size)
+        )
+        safe = cv2.erode(candidate, kernel, iterations=1)
+    else:
+        safe = candidate
+    if not np.any(safe):
+        raise ValueError("No camera-visible pixels remain inside the required ROI")
+
+    distance = cv2.distanceTransform((safe > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    _, radius, _, center = cv2.minMaxLoc(distance)
+    half = int(np.floor(float(radius) / np.sqrt(2.0)))
+    half = min(half, max(1, int(maximum_size_display_px) // 2))
+    size = half * 2
+    if size < int(minimum_size_display_px):
+        raise ValueError(
+            "Camera-visible task region is too small for quality measurement: "
+            "{} px square available, {} px required".format(
+                size, int(minimum_size_display_px)
+            )
+        )
+    center_x, center_y = map(int, center)
+    left = max(0, min(screen_width - size, center_x - half))
+    top = max(0, min(screen_height - size, center_y - half))
+    rect_mask = safe[top : top + size, left : left + size]
+    if rect_mask.shape != (size, size) or not np.all(rect_mask > 0):
+        raise RuntimeError("Cannot construct a fully camera-visible quality patch")
+
+    visible_required_area = float(np.count_nonzero(candidate))
+    return {
+        "status": "available",
+        "xywh": [int(left), int(top), int(size), int(size)],
+        "space": "canonical_phone_screen_px",
+        "selection": "largest_conservative_square_in_visible_required_region",
+        "requires_detected_atlas_hull_support": supported_region_screen_xy is not None,
+        "atlas_hull_support_margin_display_px": max(
+            0, int(supported_region_margin_display_px)
+        ),
+        "margin_display_px": margin,
+        "visible_required_fraction": float(
+            np.clip(visible_required_area / required_area, 0.0, 1.0)
+        ),
+        "valid_pixel_count": int(np.count_nonzero(candidate)),
+    }
+
+
 def estimate_screen_geometry(
     camera_points_xy: Sequence[Sequence[float]],
     screen_points_xy: Sequence[Sequence[float]],

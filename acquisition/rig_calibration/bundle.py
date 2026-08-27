@@ -67,7 +67,8 @@ def build_calibration(
     rig: Optional[Mapping[str, Any]] = None,
     optics: Optional[Mapping[str, Any]] = None,
     required_roi: Optional[Mapping[str, Any]] = None,
-    matchability: Optional[Mapping[str, Any]] = None,
+    image_quality: Optional[Mapping[str, Any]] = None,
+    feature_matching: Optional[Mapping[str, Any]] = None,
     timing: Optional[Mapping[str, Any]] = None,
     status: str = "warning",
     ransac_threshold_screen_px: float = 2.0,
@@ -116,15 +117,18 @@ def build_calibration(
 
     confidence = {
         "geometry": float(geometry.confidence),
-        "matchability": float((matchability or {}).get("confidence", 0.0)),
+        "image_quality": float((image_quality or {}).get("confidence", 0.0)),
+        "feature_matching": float((feature_matching or {}).get("confidence", 0.0)),
         "timing": float((timing or {}).get("confidence", 0.0)),
         "overall": float(geometry.confidence),
         "assumptions": [],
         "warnings": list(geometry.warnings),
     }
     measured_confidences = [confidence["geometry"]]
-    if matchability:
-        measured_confidences.append(confidence["matchability"])
+    if image_quality:
+        measured_confidences.append(confidence["image_quality"])
+    if feature_matching:
+        measured_confidences.append(confidence["feature_matching"])
     if timing:
         measured_confidences.append(confidence["timing"])
     confidence["overall"] = float(min(measured_confidences))
@@ -165,7 +169,8 @@ def build_calibration(
         "normalization": normalization,
         "geometry": geometry_value,
         "required_roi": dict(required_roi or {}),
-        "matchability": dict(matchability or {}),
+        "image_quality": dict(image_quality or {}),
+        "feature_matching": dict(feature_matching or {}),
         "timing": dict(timing or {}),
         "confidence": confidence,
         "applicability": {

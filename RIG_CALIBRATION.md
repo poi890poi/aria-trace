@@ -151,6 +151,14 @@ If trusted intrinsics already exist for the exact camera mode, they may be reuse
 
 After the rig is locked, the phone displays a ChArUco board whose marker IDs and margins locate every board point in canonical phone-screen coordinates. The layout is generated for the phone aspect ratio so that useful identified corners remain visible under partial cropping.
 
+The board is treated as a coordinate atlas, not merely as a picture whose
+outer boundary must be visible. Detected IDs locate the camera viewport within
+the complete logical display even when the camera sees only a partial screen.
+The wizard must fit this atlas and report screen coverage, camera utilization,
+screen-view IoU, required-ROI coverage, and extrapolation risk before it may
+present any e-SFR or feature target. Quality trials use only a conservative
+patch wholly inside the camera-visible intersection with the required ROI.
+
 The system captures a burst and:
 
 1. Undistorts each accepted frame.
@@ -203,6 +211,13 @@ The required mini-map ROI and its guard band are evaluated independently:
 - perspective scale ratio across the ROI.
 
 A partial-screen view may be excellent for AriaTrace even when full-screen IoU is low. The preferred pose is the closest view that keeps 100% of the required ROI and guard band while satisfying matchability and uncertainty limits.
+
+The target presenter must report its physical drawing-buffer dimensions and a
+paint acknowledgement for every controlled target revision. The dimensions
+must match the declared canonical display raster. A quality observation is
+eligible only when its host-receive timestamp is later than the acknowledgement
+for the exact painted revision; a fixed sleep is not evidence that the intended
+target reached the camera.
 
 ### Pose and positioning
 
@@ -336,11 +351,14 @@ acceptance metrics.
 ### 8.2 Established feature-matching measurements
 
 Planar target pairs use the known camera-to-screen homography as ground truth.
-Report the established Oxford/VGG and HPatches-style measurements without
-inventing a combined name:
+Report established homography-ground-truth measurements without inventing a
+combined name. The baseline implementation uses keypoint centres rather than
+affine-region overlap and labels that distinction explicitly:
 
-- **Repeatability:** ground-truth corresponding detected regions divided by
-  the smaller detected-region count within the common visible area.
+- **Point repeatability at threshold `t`:** mutually nearest detected keypoint
+  centres within `t` display pixels under the ground-truth homography, divided
+  by the smaller detected-keypoint count in the common visible area. This is
+  not mislabeled as Oxford affine-region repeatability.
 - **Matching score:** correct descriptor matches divided by the smaller
   detected-region count within the common visible area.
 - **Mean Matching Accuracy at threshold `t`, `MMA@t`:** fraction of evaluated
@@ -362,10 +380,12 @@ correlation response is diagnostic evidence only; it is not ground truth.
 
 Measure reference modes separately:
 
-- `adb_to_camera`: an ADB screenshot or known rendered target is matched to a
-  normalized physical-camera observation;
+- `generated_to_camera`: the exact generated target is matched directly to the
+  pre-warp physical-camera observation;
+- `adb_to_camera`: an ADB screenshot is matched directly to the pre-warp
+  physical-camera observation;
 - `camera_to_camera`: a retained physical-camera reference is matched to a
-  later normalized physical-camera observation.
+  later physical-camera observation.
 
 Use held-out trials spanning real mini-map content and controlled targets,
 static and moving capture, luminance and colour, orientation, subpixel phase,
@@ -461,8 +481,9 @@ The workbench flow contains four pages or progressive panels.
 ### Geometry
 
 - Live frame with detected corners.
-- Solid detected screen boundary.
-- Dashed inferred off-camera boundary.
+- Detected ChArUco corner support and the projected complete screen boundary.
+- Full-plane inset comparing the complete screen, camera viewport, and selected
+  camera-visible quality patch when boundaries extend outside the raw frame.
 - Required mini-map ROI and guard band.
 - Green safe area, amber extrapolated area, and red cropped required area.
 - Coverage, utilization, IoU, roll, pitch/yaw, and positioning guidance.
@@ -612,6 +633,17 @@ geometry:
   yaw_deg: 1.7
   distance_mm: 248.0
   distance_source: measured
+  charuco_atlas:
+    fit_precedes_quality_measurement: true
+    detected_corner_count: 54
+    detected_marker_count: 38
+    screen_view_iou: 0.70
+  quality_region:
+    status: available
+    # Entirely inside the camera-visible required ROI and supported atlas hull.
+    xywh: [26, 50, 294, 294]
+    space: canonical_phone_screen_px
+    requires_detected_atlas_hull_support: true
 
 required_roi:
   # Canonical phone-screen coordinates; example values only.
@@ -623,6 +655,8 @@ required_roi:
 image_quality:
   standard: "ISO 12233:2024"
   method: slanted_edge_e_sfr
+  implementation_conformance: non_certified
+  measurement_input_space: camera_pre_homography_px
   # Never write an unqualified "lines/pixel": one cycle/line pair contains
   # one dark and one bright line width, so the term is factor-of-two ambiguous.
   display_target:
@@ -631,49 +665,46 @@ image_quality:
     maximum_test_frequency: 0.5
     minimum_line_width_display_px: 1
     logical_pixel_definition: canonical_phone_screen_pixel
-  roi_space: camera_raw_px
-  oecf_linearization: measured
   # Samples come from the pre-warp camera raster. The frequency axis is then
   # transformed to display pixels; a warped image is not used to measure MTF.
   primary_spatial_frequency_unit: cycles_per_display_pixel
   native_analysis_frequency_unit: cycles_per_camera_pixel
-  local_sampling:
-    method: local_camera_to_display_homography_jacobian
-    source: measured_geometry
-    roi_position_camera_xy: [960.0, 540.0]
-    # Illustrative locally isotropic special case; retain the full Jacobian
-    # for perspective or direction-dependent conversion.
-    camera_pixels_per_display_pixel: 1.00
-    jacobian_display_px_per_camera_px: [[1.0, 0.0], [0.0, 1.0]]
+  display_nyquist_cycles_per_display_pixel: 0.5
+  condition_count: 16
   display_referred:
-    # Primary crossings: finest logical-display detail preserved by the chain.
+    aggregation: minimum_response_curve_across_declared_conditions
     spatial_frequency_unit: cycles_per_display_pixel
-    luminance_mtf50: 0.184
-    luminance_mtf10: 0.327
-  camera_analysis:
-    # Supporting native-axis values retained for audit and reproducibility.
-    spatial_frequency_unit: cycles_per_camera_pixel
-    luminance_mtf50: 0.184
-    luminance_mtf10: 0.327
-  physical_frequency:
-    unit: cycles_per_mm_on_phone_plane
-    source: measured
-    display_pitch_mm_per_display_pixel: 0.0359
-    luminance_mtf50: 5.12
-    luminance_mtf10: 9.10
+    mtf50_conservative: 0.184
+    mtf10_conservative: 0.327
+    frequency: [0.0, 0.002, 0.004, 0.006] # abbreviated example; artifact retains full curve
+    mtf_conservative: [1.0, 0.998, 0.994, 0.989]
+    mtf_median: [1.0, 0.999, 0.996, 0.992]
   conditions:
-    edge_angles_deg: [5.0, 85.0]
-    screen_positions: [required_roi_center, required_roi_tl, required_roi_br]
-    channels: [luminance, red, green, blue]
-    subpixel_phase_count: 8
-  curve_file: "esfr_mtf_curve.csv"
+    - channel: luminance
+      edge_angle_display_deg: 5.0
+      phase_display_px: 0.0
+      mtf50: 0.201
+      mtf10: 0.351
+      confidence: 0.93
+  # Each retained measurement also contains its full cy/dpx curve, native
+  # cy/cpx axis, local homography Jacobian, sample/bin support, OECF status,
+  # target/capture timestamps, confidence components, and warnings.
+  measurements: [] # abbreviated here
+  failed_conditions: []
 
-matchability:
+feature_matching:
   protocol: planar_homography_ground_truth
-  threshold_space: normalized_screen_px
-  reference_modes: [adb_to_camera, camera_to_camera]
-  repeatability: 0.842
-  matching_score: 0.781
+  threshold_space: canonical_display_px
+  reference_modes: [generated_to_camera, adb_to_camera, camera_to_camera]
+  primary_threshold_display_px: 3
+  repeatability_by_threshold_px:
+    1: 0.710
+    2: 0.814
+    3: 0.842
+  matching_score_by_threshold_px:
+    1: 0.662
+    2: 0.748
+    3: 0.781
   mma_by_threshold_px:
     1: 0.746
     2: 0.889
@@ -685,17 +716,14 @@ matchability:
     8: 0.980
     9: 0.983
     10: 0.985
-  detected_feature_count: 614
+  denominator_feature_count: 614
   evaluated_match_count: 482
-  correct_match_count_at_1px: 360
-  common_area_coverage: 0.93
-  downstream_translation_error_p95_px: 0.84
-  downstream_rotation_error_p95_deg: 0.72
+  correct_match_count_by_threshold_px: {1: 360, 2: 429, 3: 451}
+  spatial_coverage_min: 0.72
+  downstream_reprojection_p95_display_px: 0.84
   catastrophic_mismatch_rate: 0.004
-  matcher:
-    name: "aria_minimap_matcher"
-    version: "1.0"
-    config_sha256: "sha256-of-matcher-configuration"
+  detector_descriptors: [SIFT]
+  trials: [] # retains per-trial counts, match errors/examples, and downstream solve
 
 timing:
   # Clock conversion and causal latency are intentionally separate.
@@ -748,7 +776,7 @@ timing:
 confidence:
   geometry: 0.96
   image_quality: 0.94
-  matchability: 0.91
+  feature_matching: 0.91
   timing: 0.93
   overall: 0.91
   assumptions: []
@@ -857,19 +885,21 @@ The independent core is implemented under `acquisition/rig_calibration/`; its AP
 The optional standalone Windows application is implemented under
 `acquisition/rig_calibration/app/`. It provides a PySide6 guided UI, opt-in
 OpenCV camera capture, a fullscreen phone target service, exact-pixel review,
-a legacy project-defined matchability sweep, alternating-signal camera latency, optional ADB
-reference capture, and reviewed bundle export. Camera, ADB, and phone target
+ChArUco-atlas IoU/coverage fitting, display-referred slanted-edge e-SFR/MTF,
+homography-ground-truth feature matching, alternating-signal camera latency,
+optional ADB reference capture, and reviewed bundle export. Camera, ADB, and phone target
 implementations are public replaceable adapters; hardware-specific controls
 and alternative transports remain outside the calibration algorithms. The
 PyInstaller build is isolated beneath `.tools/` and emits its distribution
 beneath ignored `artifacts/` storage.
 
-The app's current `MR95` label and evaluator are deprecated and must not be
-used as calibration acceptance evidence. The next implementation revision must
-replace that screen and YAML output with the ISO 12233 e-SFR/MTF and established
-repeatability, matching-score, MMA, match-count, coverage, and downstream-error
-results defined above. This documentation change deliberately does not relabel
-legacy output as standards-compliant evidence.
+The public API, UI, and new YAML output no longer expose the former
+project-defined resolving-power result. e-SFR output declares the implementation
+`non_certified`, records whether measured OECF linearization was applied, and
+retains per-condition failures. Calibration remains `warning` until the caller
+provides task-specific acceptance thresholds. The previously packaged Windows
+distribution predates this source revision and must be rebuilt before hardware
+review; no camera, phone, ADB, or GUI was exercised while implementing it.
 
 ## 16. Normative and Benchmark References
 

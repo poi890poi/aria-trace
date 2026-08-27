@@ -36,9 +36,9 @@ do not touch recorder sessions. See
 [the app guide](acquisition/rig_calibration/app/README.md) for the guided
 geometry, exact-pixel focus, standardized e-SFR/MTF design, established feature
 matching measurements, latency, YAML, adapter, and isolated PyInstaller build
-workflows. The current executable's project-defined `MR95` screen is deprecated
-and is not standards-compliant calibration evidence. The replacement design
-reports its primary display-referred e-SFR/MTF result in cycles per display
+workflows. The current source replaces the former project-defined resolving
+power screen with display-referred e-SFR/MTF and ground-truth feature matching.
+It reports its primary e-SFR/MTF result in cycles per display
 pixel; cycles per camera pixel is retained only as the native analysis axis,
 while physical cycles/mm is optional and requires measured display pitch. A
 one-pixel alternating phone pattern is `0.5 cycles/display-pixel`, not an

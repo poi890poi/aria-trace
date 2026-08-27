@@ -13,13 +13,19 @@ import cv2
 import numpy as np
 
 from ..bundle import build_calibration, write_calibration_bundle
-from ..geometry import CharucoLayout, detect_charuco_correspondences
+from ..geometry import (
+    CharucoLayout,
+    detect_charuco_correspondences,
+    select_visible_quality_region,
+    transform_points,
+)
 from ..inspection import (
     extract_one_to_one_patch,
     nearest_neighbor_magnify,
+    render_esfr_curve,
+    render_feature_matching_curve,
     render_geometry_overlay,
     render_latency_timeline,
-    render_matchability_curve,
 )
 
 
@@ -168,7 +174,7 @@ def positioning_guidance(calibration: Mapping[str, Any], pose: Mapping[str, Any]
     if float(geometry["reprojection_p95_px"]) > 2.0:
         messages.append("Hold the rig steady and refit; corner reprojection error is high.")
     if not messages:
-        messages.append("Geometry is well positioned; continue to focus and matchability.")
+        messages.append("Geometry is well positioned; continue to focus and image-quality measurement.")
     return messages
 
 
@@ -229,17 +235,63 @@ def analyze_frame(
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=(0, 0, 0),
     )
-    x, y, width, height = inputs.required_roi_xywh
-    center = (x + (width - 1) / 2.0, y + (height - 1) / 2.0)
-    patch_width = min(320, width)
-    patch_height = min(240, height)
+    try:
+        supported_hull = cv2.convexHull(
+            np.asarray(detection["screen_points_xy"], dtype=np.float32)[
+                geometry.inlier_mask
+            ]
+        ).reshape((-1, 2))
+        quality_region = select_visible_quality_region(
+            camera_size,
+            inputs.screen_size_px,
+            geometry.matrix_3x3,
+            required_region_screen_xy=inputs.required_polygon,
+            supported_region_screen_xy=supported_hull,
+            supported_region_margin_display_px=int(round(layout.square_px)),
+        )
+    except (ValueError, RuntimeError) as exc:
+        quality_region = {
+            "status": "unavailable",
+            "xywh": None,
+            "space": "canonical_phone_screen_px",
+            "selection": "camera_visible_required_intersection",
+            "error": str(exc),
+        }
+    if quality_region["xywh"] is not None:
+        qx, qy, qwidth, qheight = quality_region["xywh"]
+        screen_center = np.asarray(
+            [[qx + (qwidth - 1) / 2.0, qy + (qheight - 1) / 2.0]],
+            dtype=np.float64,
+        )
+        camera_center = transform_points(screen_center, geometry.inverse_matrix_3x3)[0]
+    else:
+        camera_center = np.asarray(
+            [(frame.shape[1] - 1) / 2.0, (frame.shape[0] - 1) / 2.0],
+            dtype=np.float64,
+        )
+    patch_width = min(320, frame.shape[1])
+    patch_height = min(240, frame.shape[0])
     patch, patch_metadata = extract_one_to_one_patch(
-        normalized, center, (patch_width, patch_height)
+        frame, camera_center, (patch_width, patch_height)
     )
     pose = _estimate_pose(geometry.screen_polygon_input_xy, camera_size, inputs)
     focus = _focus_metrics(patch)
     messages = positioning_guidance(calibration, pose)
+    if quality_region["status"] != "available":
+        messages.append(
+            "No safe quality patch is available: {}".format(quality_region["error"])
+        )
     calibration["geometry"]["approximate_pose"] = pose
+    calibration["geometry"]["charuco_atlas"] = {
+        "fit_precedes_quality_measurement": True,
+        "screen_size_px": list(inputs.screen_size_px),
+        "detected_corner_ids": [int(value) for value in detection["corner_ids"]],
+        "detected_corner_count": int(detection["corner_count"]),
+        "detected_marker_count": int(detection["marker_count"]),
+        "screen_view_iou": float(geometry.metrics["screen_view_iou"]),
+        "screen_coverage": float(geometry.metrics["screen_coverage"]),
+    }
+    calibration["geometry"]["quality_region"] = dict(quality_region)
     calibration["confidence"]["assumptions"].extend(
         ["phone_diagonal_in", "camera_horizontal_fov_deg"]
     )
@@ -248,13 +300,20 @@ def analyze_frame(
         "pose": pose,
         "focus": focus,
         "inspection_patch": patch_metadata,
+        "quality_region": quality_region,
     }
     return CalibrationAnalysis(
         inputs=inputs,
         layout=layout,
         raw_frame=frame.copy(),
         target_image=target_image.copy(),
-        overlay=render_geometry_overlay(frame, geometry, detection["camera_points_xy"]),
+        overlay=render_geometry_overlay(
+            frame,
+            geometry,
+            detection["camera_points_xy"],
+            quality_region["xywh"],
+            canonical_screen_size_px=inputs.screen_size_px,
+        ),
         normalized=normalized,
         one_to_one_patch=patch,
         magnified_patch=nearest_neighbor_magnify(patch, 4),
@@ -270,35 +329,51 @@ def analyze_frame(
 def save_analysis_bundle(
     output_directory: Path,
     analysis: CalibrationAnalysis,
-    matchability: Optional[Mapping[str, Any]] = None,
+    image_quality: Optional[Mapping[str, Any]] = None,
+    feature_matching: Optional[Mapping[str, Any]] = None,
     timing: Optional[Mapping[str, Any]] = None,
     adb_reference: Optional[np.ndarray] = None,
+    quality_evidence: Optional[Mapping[str, np.ndarray]] = None,
 ) -> Path:
     """Save review evidence and the consumer-facing commented YAML contract."""
 
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     calibration = copy.deepcopy(analysis.calibration)
-    calibration["matchability"] = dict(matchability or {})
+    calibration["image_quality"] = dict(image_quality or {})
+    calibration["feature_matching"] = dict(feature_matching or {})
     calibration["timing"] = dict(timing or {})
     measured = [float(calibration["confidence"]["geometry"])]
-    if matchability:
-        calibration["confidence"]["matchability"] = float(matchability.get("confidence", 0.0))
-        measured.append(calibration["confidence"]["matchability"])
+    if image_quality:
+        calibration["confidence"]["image_quality"] = float(image_quality.get("confidence", 0.0))
+        measured.append(calibration["confidence"]["image_quality"])
+    if feature_matching:
+        calibration["confidence"]["feature_matching"] = float(feature_matching.get("confidence", 0.0))
+        measured.append(calibration["confidence"]["feature_matching"])
     if timing:
         camera_timing = timing.get("camera", timing)
         calibration["confidence"]["timing"] = float(camera_timing.get("confidence", 0.0))
         measured.append(calibration["confidence"]["timing"])
     calibration["confidence"]["overall"] = min(measured)
     geometry = calibration["geometry"]
-    accepted = bool(
+    measurements_complete = bool(
         float(geometry["required_region_coverage"]) >= 0.999
         and float(geometry["required_region_detected_hull_coverage"]) >= 0.999
         and float(geometry["reprojection_p95_px"]) <= 2.0
-        and matchability
-        and int(matchability.get("primary_cells_across_patch", 0)) > 0
+        and image_quality
+        and image_quality.get("display_referred", {}).get("mtf50_conservative") is not None
+        and feature_matching
+        and int(feature_matching.get("evaluated_match_count", 0)) > 0
     )
-    calibration["status"] = "accepted" if accepted else "warning"
+    # These measurements are evidence, not a universal pass/fail gate.  A task
+    # integration must evaluate its own declared thresholds before changing the
+    # status to accepted; merely finding a non-empty policy object is not proof
+    # that its requirements were satisfied.
+    calibration["status"] = "warning"
+    if measurements_complete:
+        calibration["confidence"]["warnings"].append(
+            "task_acceptance_thresholds_not_configured"
+        )
     files = {
         "raw_geometry_frame": "geometry-raw.png",
         "geometry_overlay": "geometry-overlay.png",
@@ -316,9 +391,22 @@ def save_analysis_bundle(
         files["inspection_4x_nearest"]: analysis.magnified_patch,
         files["charuco_target"]: analysis.target_image,
     }
-    if matchability:
-        files["matchability_curve"] = "matchability-curve.png"
-        images[files["matchability_curve"]] = render_matchability_curve(matchability)
+    if image_quality:
+        files["esfr_mtf_curve"] = "esfr-mtf-curve.png"
+        images[files["esfr_mtf_curve"]] = render_esfr_curve(image_quality)
+    if feature_matching:
+        files["feature_matching_curve"] = "feature-matching-curve.png"
+        images[files["feature_matching_curve"]] = render_feature_matching_curve(feature_matching)
+    for evidence_name, evidence_image in dict(quality_evidence or {}).items():
+        safe_name = "".join(
+            character if character.isalnum() or character in ("-", "_") else "-"
+            for character in str(evidence_name)
+        ).strip("-")
+        if not safe_name:
+            continue
+        filename = "{}.png".format(safe_name)
+        files[safe_name] = filename
+        images[filename] = evidence_image
     if timing:
         camera_timing = timing.get("camera", timing)
         if camera_timing.get("transitions"):
