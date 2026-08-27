@@ -1076,7 +1076,16 @@ class AcquisitionWorkbench:
                 "finished_utc": None,
                 "request": request,
                 "error": None,
+                "message": "Waiting for the background worker",
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
             }
+
+        def report(message: str) -> None:
+            with self._lock:
+                job = self._analysis_jobs.get(kind)
+                if job and job.get("job_id") == job_id:
+                    job["message"] = str(message)
+                    job["updated_utc"] = datetime.now(timezone.utc).isoformat()
 
         def work() -> None:
             with self._lock:
@@ -1085,8 +1094,10 @@ class AcquisitionWorkbench:
                     return
                 job["status"] = "running"
                 job["started_utc"] = datetime.now(timezone.utc).isoformat()
+                job["message"] = "Starting analysis"
+                job["updated_utc"] = job["started_utc"]
             try:
-                runner(dict(value))
+                runner(dict(value), report)
             except Exception as exc:
                 with self._lock:
                     job = self._analysis_jobs.get(kind)
@@ -1095,17 +1106,21 @@ class AcquisitionWorkbench:
                         job["error"] = "{}: {}".format(
                             type(exc).__name__, exc
                         )
+                        job["message"] = "Analysis failed"
                         job["finished_utc"] = datetime.now(
                             timezone.utc
                         ).isoformat()
+                        job["updated_utc"] = job["finished_utc"]
             else:
                 with self._lock:
                     job = self._analysis_jobs.get(kind)
                     if job and job.get("job_id") == job_id:
                         job["status"] = "complete"
+                        job["message"] = "Analysis complete"
                         job["finished_utc"] = datetime.now(
                             timezone.utc
                         ).isoformat()
+                        job["updated_utc"] = job["finished_utc"]
 
         threading.Thread(
             target=work,
@@ -1127,7 +1142,9 @@ class AcquisitionWorkbench:
     def queue_map_stitch(self, value: dict) -> dict:
         return self._queue_analysis("map_stitching", value, self.run_map_stitch)
 
-    def run_minimap_calibration(self, value: dict) -> dict:
+    def run_minimap_calibration(self, value: dict, progress=None) -> dict:
+        if progress:
+            progress("Checking the selected calibration sessions")
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("Wait for the active take to finish")
@@ -1235,7 +1252,11 @@ class AcquisitionWorkbench:
 
         if legacy:
             result = calibrate_session(
-                session_path, output, segments, calibration_config
+                session_path,
+                output,
+                segments,
+                calibration_config,
+                progress=progress,
             )
         else:
             result = calibrate_segment_sessions(
@@ -1243,8 +1264,11 @@ class AcquisitionWorkbench:
                 movement_path,
                 output,
                 calibration_config,
+                progress=progress,
             )
 
+        if progress:
+            progress("Saving the calibration result and evidence index")
         with self._lock:
             result["source_sessions"] = source_sessions
             result["calibration_id"] = calibration_id
@@ -1263,8 +1287,10 @@ class AcquisitionWorkbench:
             raise ValueError("Unknown calibration evidence image")
         return (root / name).read_bytes()
 
-    def run_pose_verification(self, value: dict) -> dict:
+    def run_pose_verification(self, value: dict, progress=None) -> dict:
         """Cross-check the existing pose model against one forward session."""
+        if progress:
+            progress("Checking the calibration and forward session")
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("Wait for the active take to finish")
@@ -1313,9 +1339,14 @@ class AcquisitionWorkbench:
                 raise ValueError("Expected a forward_no_turn session")
 
         verification = verify_forward_session(
-            forward_path, calibration_root, calibration_root
+            forward_path,
+            calibration_root,
+            calibration_root,
+            progress=progress,
         )
 
+        if progress:
+            progress("Saving pose verification evidence")
         with self._lock:
             verification["calibration_id"] = calibration_id
             verification["source_session_key"] = forward_key
@@ -1372,7 +1403,9 @@ class AcquisitionWorkbench:
             )
         return values
 
-    def run_map_stitch(self, value: dict) -> dict:
+    def run_map_stitch(self, value: dict, progress=None) -> dict:
+        if progress:
+            progress("Checking the selected full-map session")
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("Wait for the active take to finish")
@@ -1399,8 +1432,10 @@ class AcquisitionWorkbench:
             stitch_id = safe_id(described.get("session_id") or path.name)
             output = self._map_stitch_root(game_profile_id) / stitch_id
 
-        result = stitch_map_session(path, output)
+        result = stitch_map_session(path, output, progress=progress)
 
+        if progress:
+            progress("Saving the stitched-map result and evidence index")
         with self._lock:
             result["source_session_key"] = relative
             result["stitch_id"] = stitch_id

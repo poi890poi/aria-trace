@@ -114,9 +114,14 @@ def _verification_graphic(
 
 
 def verify_forward_session(
-    session_path: Path, calibration_path: Path, output_path: Path
+    session_path: Path,
+    calibration_path: Path,
+    output_path: Path,
+    progress=None,
 ) -> dict:
     """Verify calibrated cursor pose against one straight-forward map shift."""
+    if progress:
+        progress("Loading the forward session and calibrated cursor model")
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     reader = SessionReader(session_path)
@@ -131,6 +136,12 @@ def verify_forward_session(
             if not ok:
                 break
             decoded.append(frame)
+            if progress and len(decoded) % 90 == 0:
+                progress(
+                    "Decoding forward video: {} / {} frames".format(
+                        len(decoded), len(records)
+                    )
+                )
     finally:
         capture.release()
     count = min(len(decoded), len(records))
@@ -159,7 +170,11 @@ def verify_forward_session(
         <= 15.0 ** 2
     )
     mask[cursor_hole] = 0
+    if progress:
+        progress("Estimating the start-to-end mini-map shift")
     shift, response = estimate_masked_shift(first_crop, last_crop, mask)
+    if progress:
+        progress("Estimating cursor pose at the start and end frames")
     poses = [
         estimator.public_result(
             estimator.estimate(
@@ -217,6 +232,8 @@ def verify_forward_session(
         {"name": "forward_registration_overlay.png", "title": "Aligned overlay and registration residual", "category": "shift"},
         {"name": "forward_pose_shift.png", "title": "Cursor pose and map-shift relationship", "category": "pose_verification"},
     ]
+    if progress:
+        progress("Rendering shift, correlation, and pose evidence")
     _write_image(output_path / "forward_start.png", masked_first)
     _write_image(output_path / "forward_end.png", masked_last)
     _write_image(output_path / "forward_registration_overlay.png", registration_review)
@@ -252,5 +269,7 @@ def verify_forward_session(
         "world_heading_status": "relative_offset_only",
         "evidence": evidence,
     }
+    if progress:
+        progress("Writing the forward pose-verification result")
     _atomic_json(output_path / "forward_verification.json", result)
     return result

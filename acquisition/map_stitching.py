@@ -51,7 +51,7 @@ def _estimate_translation(first: np.ndarray, second: np.ndarray):
     return (float(shift[0] * 2.0), float(shift[1] * 2.0)), float(response)
 
 
-def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
+def stitch_map_frames(frames, output_path: Path, provenance=None, progress=None) -> dict:
     """Register overlapping map-view frames and write a reviewable mosaic."""
     if len(frames) < 2:
         raise ValueError("Map stitching needs at least two frames")
@@ -66,6 +66,8 @@ def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
     }
     x0, y0 = margins["left"], margins["top"]
     x1, y1 = width - margins["right"], height - margins["bottom"]
+    if progress:
+        progress("Cropping map viewports from {} decoded frames".format(len(frames)))
     viewports = [frame[y0:y1, x0:x1] for frame in frames]
     positions = [np.array([0.0, 0.0])]
     selected = [0]
@@ -74,6 +76,14 @@ def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
     reference_index = 0
     reference_position = np.array([0.0, 0.0])
     for index in range(1, len(viewports)):
+        if progress and (
+            index == 1 or index % 25 == 0 or index == len(viewports) - 1
+        ):
+            progress(
+                "Registering map frames: {} / {}".format(
+                    index, len(viewports) - 1
+                )
+            )
         shift, response = _estimate_translation(reference, viewports[index])
         magnitude = float(np.linalg.norm(shift))
         accepted = bool(
@@ -114,6 +124,12 @@ def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
     canvas_height = int(maximum[1] - minimum[1] + viewport_height)
     if canvas_width * canvas_height > 120_000_000:
         raise RuntimeError("Estimated map mosaic is implausibly large")
+    if progress:
+        progress(
+            "Composing the observed {} x {} map mosaic".format(
+                canvas_width, canvas_height
+            )
+        )
     accumulator = np.zeros((canvas_height, canvas_width, 3), np.float32)
     weights = np.zeros((canvas_height, canvas_width), np.float32)
     feather = cv2.createHanningWindow(
@@ -136,6 +152,8 @@ def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
         np.uint8(np.clip(weights / max(float(weights.max()), 1.0) * 255, 0, 255)),
         cv2.COLORMAP_TURBO,
     )
+    if progress:
+        progress("Building registration-quality and coverage evidence")
     quality = np.full((360, 900, 3), 18, np.uint8)
     responses = [float(item["response"]) for item in registrations]
     for index in range(1, len(responses)):
@@ -170,6 +188,8 @@ def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
         {"name": "registration_quality.png", "title": "Pairwise registration quality", "category": "quality"},
         {"name": "alignment_samples.png", "title": "Representative frame alignments", "category": "quality"},
     ]
+    if progress:
+        progress("Writing the mosaic and five review images")
     _write_image(output_path / "mosaic.png", mosaic)
     _write_image(output_path / "coverage.png", coverage)
     _write_image(output_path / "coverage_heatmap.png", coverage_heatmap)
@@ -202,8 +222,11 @@ def stitch_map_frames(frames, output_path: Path, provenance=None) -> dict:
     return result
 
 
-def stitch_map_session(session_path: Path, output_path: Path) -> dict:
+def stitch_map_session(session_path: Path, output_path: Path, progress=None) -> dict:
     reader = SessionReader(session_path)
+    records = reader.frames_by_stream.get("main", [])
+    if progress:
+        progress("Decoding the full-map recording")
     capture = cv2.VideoCapture(str(reader.video_path("main")))
     frames = []
     try:
@@ -212,6 +235,12 @@ def stitch_map_session(session_path: Path, output_path: Path) -> dict:
             if not ok:
                 break
             frames.append(frame)
+            if progress and len(frames) % 90 == 0:
+                progress(
+                    "Decoding full-map video: {} / {} frames".format(
+                        len(frames), len(records)
+                    )
+                )
     finally:
         capture.release()
     return stitch_map_frames(
@@ -220,6 +249,7 @@ def stitch_map_session(session_path: Path, output_path: Path) -> dict:
         provenance={
             "source_session_path": str(Path(session_path).resolve()),
             "source_session_id": reader.manifest.get("session_id"),
-            "source_frame_records": reader.frames_by_stream.get("main", []),
+            "source_frame_records": records,
         },
+        progress=progress,
     )

@@ -892,15 +892,24 @@ def calibrate_minimap_frames(
     output_path: Path,
     config: Optional[dict] = None,
     provenance: Optional[dict] = None,
+    progress=None,
 ) -> dict:
     """Calibrate from already labeled frame arrays and persist review evidence."""
     config = _merged_config(config)
     output_path = Path(output_path)
     if rotation_frames.ndim != 4 or movement_frames.ndim != 4:
         raise ValueError("Calibration frames must be N x H x W x C arrays")
+    if progress:
+        progress("Fitting the circular mini-map boundary")
     boundary = _boundary_model(rotation_frames, config["boundary"])
+    if progress:
+        progress("Fitting the cursor pivot from movement frames")
     center = _rotation_center(movement_frames, boundary["metrics"], config["cursor"])
+    if progress:
+        progress("Fitting the cursor shape and polar template")
     shape = _cursor_shape(rotation_frames, center["metrics"], config["cursor"])
+    if progress:
+        progress("Rendering boundary, cursor, and polar evidence")
     evidence = _write_evidence(
         output_path, rotation_frames, movement_frames, boundary, center, shape
     )
@@ -940,6 +949,8 @@ def calibrate_minimap_frames(
     # world-heading reference is supplied.
     from .cursor_pose import estimate_cursor_pose_frames
 
+    if progress:
+        progress("Verifying cursor pose across the movement session")
     pose_fps = float((provenance or {}).get("container_fps") or 30.0)
     movement_start_s = float(
         ((provenance or {}).get("segments") or {}).get("movement_only", [0.0])[0]
@@ -961,6 +972,8 @@ def calibrate_minimap_frames(
     )
     result["cursor_pose_validation"] = pose_summary
     result["evidence"].extend(pose_summary["evidence"])
+    if progress:
+        progress("Writing the calibrated model and pose evidence")
     _atomic_json(output_path / "calibration.json", result)
     return result
 
@@ -970,6 +983,7 @@ def calibrate_session(
     output_path: Path,
     segments: dict,
     config: Optional[dict] = None,
+    progress=None,
 ) -> dict:
     """Decode approved segment intervals from one acquisition session."""
     session_path = Path(session_path).resolve()
@@ -978,12 +992,16 @@ def calibrate_session(
     reader = SessionReader(session_path)
     video_path = reader.video_path("main")
     frame_records = reader.frames_by_stream.get("main", [])
+    if progress:
+        progress("Decoding the rotation-only calibration frames")
     rotation_frames, fps = _read_video_segment(
         video_path,
         segments["rotation_only"],
         config["crop_xywh"],
         frame_records=frame_records,
     )
+    if progress:
+        progress("Decoding the movement-only calibration frames")
     movement_frames, _ = _read_video_segment(
         video_path,
         segments["movement_only"],
@@ -1008,6 +1026,7 @@ def calibrate_session(
         output_path,
         config=config,
         provenance=provenance,
+        progress=progress,
     )
 
 
@@ -1017,6 +1036,7 @@ def calibrate_segment_sessions(
     output_path: Path,
     config: Optional[dict] = None,
     forward_session_path: Optional[Path] = None,
+    progress=None,
 ) -> dict:
     """Calibrate from short sessions whose capture plan supplies each label."""
     config = _merged_config(config)
@@ -1048,9 +1068,13 @@ def calibrate_segment_sessions(
         )
         return reader, frames, fps
 
+    if progress:
+        progress("Decoding the rotation-only calibration session")
     rotation_reader, rotation_frames, rotation_fps = read_session(
         rotation_session_path, "rotation_only"
     )
+    if progress:
+        progress("Decoding the movement-only calibration session")
     movement_reader, movement_frames, movement_fps = read_session(
         movement_session_path, "movement_only"
     )
@@ -1098,6 +1122,7 @@ def calibrate_segment_sessions(
         output_path,
         config=config,
         provenance=provenance,
+        progress=progress,
     )
 
 
