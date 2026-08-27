@@ -7,6 +7,7 @@ import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from acquisition.annotations import AnnotationStore
 from acquisition.hud import _HudWindow
@@ -1492,6 +1493,93 @@ class WorkbenchTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "Invalid session"):
                     state.delete_session("../outside")
+            finally:
+                state.close()
+
+    def test_map_stitch_uses_ready_full_map_session_and_serves_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                path = root / "sessions" / "map-captures" / "run_01"
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                    session_context={
+                        "experiment_id": "map-captures",
+                        "game_profile_id": "genshin-impact-pc",
+                        "capture_kind": "full_map",
+                        "capture_id": "genshin-full-map",
+                        "run_index": 1,
+                        "input_adapter": "none",
+                        "input_requirement": "none",
+                    },
+                )
+                for index in range(2):
+                    timestamp = writer.origin_ns + index * 33_000_000
+                    writer.write_frame(
+                        FramePacket(
+                            "main",
+                            np.full((32, 32, 3), index, dtype=np.uint8),
+                            timestamp,
+                            timestamp,
+                        )
+                    )
+                writer.close()
+                (path / "session_metadata.json").write_text(
+                    json.dumps({"label": "full_map", "status": "ready"}),
+                    encoding="utf-8",
+                )
+
+                def fake_stitch(_session_path, output):
+                    output.mkdir(parents=True, exist_ok=True)
+                    (output / "mosaic.png").write_bytes(b"png-evidence")
+                    return {
+                        "schema_version": "1.0",
+                        "generated_utc": "2026-08-27T12:00:00+00:00",
+                        "status": "review_required",
+                        "evidence": [
+                            {
+                                "name": "mosaic.png",
+                                "title": "Observed full-map mosaic",
+                                "category": "map",
+                            }
+                        ],
+                        "registrations": [{"accepted": True}],
+                        "provenance": {"source_frame_records": [{"frame_index": 0}]},
+                    }
+
+                with patch(
+                    "acquisition.workbench.stitch_map_session",
+                    side_effect=fake_stitch,
+                ):
+                    descriptor = state.run_map_stitch(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "session_relative_path": "map-captures/run_01",
+                        }
+                    )
+                stitch = descriptor["map_stitches"]["genshin-impact-pc"][0]
+                self.assertEqual(stitch["status"], "review_required")
+                self.assertNotIn("registrations", stitch)
+                self.assertNotIn("source_frame_records", stitch["provenance"])
+                self.assertEqual(
+                    state.map_stitch_image(
+                        "genshin-impact-pc", stitch["stitch_id"], "mosaic.png"
+                    ),
+                    b"png-evidence",
+                )
+                with self.assertRaisesRegex(ValueError, "Invalid map-stitch"):
+                    state.map_stitch_image(
+                        "genshin-impact-pc", stitch["stitch_id"], "../mosaic.png"
+                    )
             finally:
                 state.close()
 

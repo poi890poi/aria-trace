@@ -18,7 +18,9 @@ from replay.alignment import align_session
 from replay.package import compile_replay_package
 
 from .annotations import AnnotationStore
+from .map_stitching import stitch_map_session
 from .minimap_calibration import calibrate_segment_sessions, calibrate_session
+from .minimap_verification import verify_forward_session
 from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
@@ -1001,6 +1003,14 @@ class AcquisitionWorkbench:
                     calibration_config,
                     forward_session_path=forward_path,
                 )
+                if forward_path is not None:
+                    verification = verify_forward_session(
+                        forward_path, output, output
+                    )
+                    result["forward_verification"] = verification
+                    result.setdefault("evidence", []).extend(
+                        verification.get("evidence") or []
+                    )
             else:
                 session_path, manifest, context = checked_session(
                     str(value.get("session_relative_path") or "")
@@ -1039,6 +1049,90 @@ class AcquisitionWorkbench:
         declared = {item.get("name") for item in descriptor.get("evidence", [])}
         if name not in declared:
             raise ValueError("Unknown calibration evidence image")
+        return (root / name).read_bytes()
+
+    def _map_stitch_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "map_stitches" / safe_id(game_profile_id)
+
+    def _map_stitches(self) -> dict:
+        values = {}
+        root = self.artifact_root / "map_stitches"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/map_stitch.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item.pop("registrations", None)
+                provenance = dict(item.get("provenance") or {})
+                provenance.pop("source_frame_records", None)
+                item["provenance"] = provenance
+                item["stitch_id"] = path.parent.name
+                item["artifact_relative_path"] = str(
+                    path.parent.relative_to(self.artifact_root)
+                )
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append(
+                    {
+                        "stitch_id": path.parent.name,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        for items in values.values():
+            items.sort(
+                key=lambda item: item.get("generated_utc") or "", reverse=True
+            )
+        return values
+
+    def run_map_stitch(self, value: dict) -> dict:
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            self.profiles.game(game_profile_id)
+            relative = str(value.get("session_relative_path") or "")
+            if not relative:
+                candidates = (
+                    self.analysis_candidates()
+                    .get(game_profile_id, {})
+                    .get("full_map", [])
+                )
+                relative = str(candidates[0]["session_key"]) if candidates else ""
+            if not relative:
+                raise ValueError("No ready full_map session is available")
+            path = self._session_path(relative)
+            described = self._describe_session(path)
+            if described.get("game_profile_id") != game_profile_id:
+                raise ValueError("Map session belongs to another game")
+            if described.get("label") != "full_map":
+                raise ValueError("Expected a full_map session")
+            stitch_id = safe_id(described.get("session_id") or path.name)
+            output = self._map_stitch_root(game_profile_id) / stitch_id
+            result = stitch_map_session(path, output)
+            result["stitch_id"] = stitch_id
+            result["artifact_relative_path"] = str(
+                output.relative_to(self.artifact_root)
+            )
+            _write_json_atomic(output / "map_stitch.json", result)
+            self._last_error = None
+        return self.descriptor()
+
+    def map_stitch_image(
+        self, game_profile_id: str, stitch_id: str, name: str
+    ) -> bytes:
+        if Path(name).name != name or not name.lower().endswith(".png"):
+            raise ValueError("Invalid map-stitch evidence image name")
+        root = self._map_stitch_root(game_profile_id) / safe_id(stitch_id)
+        descriptor = json.loads(
+            (root / "map_stitch.json").read_text(encoding="utf-8")
+        )
+        declared = {item.get("name") for item in descriptor.get("evidence", [])}
+        if name not in declared:
+            raise ValueError("Unknown map-stitch evidence image")
         return (root / name).read_bytes()
 
     def _profile_drafts(self) -> dict:
@@ -1558,6 +1652,7 @@ class AcquisitionWorkbench:
                 "game_profile_drafts": self._profile_drafts(),
                 "poc_evidence_indexes": self._poc_evidence_indexes(),
                 "minimap_calibrations": self._minimap_calibrations(),
+                "map_stitches": self._map_stitches(),
                 "analysis_candidates": self.analysis_candidates(),
                 "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
@@ -2237,6 +2332,14 @@ def make_handler(state: AcquisitionWorkbench):
                     query = parse_qs(parsed.query)
                     body = state.minimap_calibration_image(query.get("game_id", [""])[0], query.get("calibration_id", [""])[0], query.get("name", [""])[0])
                     self._send(200, "image/png", body)
+                elif path == "/api/map-stitch/image":
+                    query = parse_qs(parsed.query)
+                    body = state.map_stitch_image(
+                        query.get("game_id", [""])[0],
+                        query.get("stitch_id", [""])[0],
+                        query.get("name", [""])[0],
+                    )
+                    self._send(200, "image/png", body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
             except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
@@ -2285,6 +2388,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.save_profile_draft(value)
                 elif path == "/api/minimap-calibration/run":
                     result = state.run_minimap_calibration(value)
+                elif path == "/api/map-stitch/run":
+                    result = state.run_map_stitch(value)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
                     return
