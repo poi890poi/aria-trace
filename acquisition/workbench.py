@@ -853,6 +853,70 @@ class AcquisitionWorkbench:
             items.sort(key=lambda item: item.get("generated_utc") or "", reverse=True)
         return values
 
+    @staticmethod
+    def _analysis_candidate_score(session: dict, role: str) -> float:
+        evidence = (session.get("input_capture") or {}).get("evidence") or {}
+        duration = float(session.get("duration_s") or 0.0)
+        frames = int(session.get("frames") or 0)
+        dropped = int(session.get("dropped_frames") or 0)
+        score = duration + min(frames, 1800) / 60.0 - dropped * 20.0
+        mouse = int(evidence.get("raw_mouse_events") or 0)
+        movement = int(evidence.get("movement_key_events") or 0)
+        keys = {str(item).upper() for item in evidence.get("key_names") or ()}
+        if role == "rotation_only":
+            score += min(mouse, 1000) / 50.0 - min(movement, 100) / 5.0
+        elif role == "movement_only":
+            score += min(movement, 1000) / 50.0 - min(mouse, 100) / 5.0
+        elif role == "forward_no_turn":
+            score += min(movement, 1000) / 50.0
+            if keys and keys.issubset({"W"}):
+                score += 20.0
+            score -= min(mouse, 100) / 5.0
+        elif role == "full_map":
+            score += min(mouse, 2000) / 100.0 + min(duration, 300.0) / 10.0
+        return round(score, 4)
+
+    def analysis_candidates(self) -> dict:
+        """Return ranked retained sessions for each label-driven analysis role."""
+        roles = {
+            "rotation_only",
+            "movement_only",
+            "forward_no_turn",
+            "full_map",
+            "ordinary_cruise",
+            "route",
+        }
+        values = {}
+        for session in self.sessions():
+            role = session.get("label")
+            game_profile_id = session.get("game_profile_id")
+            if (
+                role not in roles
+                or not game_profile_id
+                or session.get("status") != "ready"
+                or int(session.get("frames") or 0) <= 0
+            ):
+                continue
+            candidate = dict(session)
+            candidate["quality_score"] = self._analysis_candidate_score(
+                session, role
+            )
+            values.setdefault(game_profile_id, {}).setdefault(role, []).append(
+                candidate
+            )
+        for game in values.values():
+            for candidates in game.values():
+                candidates.sort(
+                    key=lambda item: (
+                        float(item["quality_score"]),
+                        item.get("finished_utc") or "",
+                    ),
+                    reverse=True,
+                )
+                for index, candidate in enumerate(candidates):
+                    candidate["recommended"] = index == 0
+        return values
+
     def run_minimap_calibration(self, value: dict) -> dict:
         with self._lock:
             if self._active is not None:
@@ -883,14 +947,43 @@ class AcquisitionWorkbench:
                     raise ValueError("Calibration session belongs to another game")
                 return path, manifest, context
 
-            rotation_relative = str(value.get("rotation_session_relative_path") or "")
-            if rotation_relative:
-                rotation_path, _, _ = checked_session(rotation_relative)
-                movement_path, movement_manifest, _ = checked_session(
-                    str(value.get("movement_session_relative_path") or "")
+            if not value.get("session_relative_path"):
+                candidates = self.analysis_candidates().get(game_profile_id, {})
+
+                def choose(role: str, field: str, required: bool = True):
+                    relative = str(value.get(field) or "")
+                    if not relative:
+                        ranked = candidates.get(role) or []
+                        relative = str(ranked[0]["session_key"]) if ranked else ""
+                    if not relative:
+                        if required:
+                            raise ValueError(
+                                "No ready {} session is available".format(role)
+                            )
+                        return None, None, None
+                    path, manifest, context = checked_session(relative)
+                    metadata = self._session_metadata(path)
+                    actual_role = metadata.get("label") or context.get(
+                        "segment_label"
+                    )
+                    if actual_role != role:
+                        raise ValueError(
+                            "Expected a {} session, got {}".format(
+                                role, actual_role or "unlabeled"
+                            )
+                        )
+                    return path, manifest, context
+
+                rotation_path, _, _ = choose(
+                    "rotation_only", "rotation_session_relative_path"
                 )
-                forward_path, _, _ = checked_session(
-                    str(value.get("forward_session_relative_path") or "")
+                movement_path, movement_manifest, _ = choose(
+                    "movement_only", "movement_session_relative_path"
+                )
+                forward_path, _, _ = choose(
+                    "forward_no_turn",
+                    "forward_session_relative_path",
+                    required=False,
                 )
                 context = movement_manifest.get("context") or {}
                 calibration_id = safe_id(
@@ -1465,6 +1558,7 @@ class AcquisitionWorkbench:
                 "game_profile_drafts": self._profile_drafts(),
                 "poc_evidence_indexes": self._poc_evidence_indexes(),
                 "minimap_calibrations": self._minimap_calibrations(),
+                "analysis_candidates": self.analysis_candidates(),
                 "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
                 "visible_windows": self._windows(),

@@ -1405,6 +1405,7 @@ class WorkbenchTests(unittest.TestCase):
             try:
                 state.arm(
                     {
+                        "game_profile_id": "genshin-impact-pc",
                         "experiment_id": "managed-sessions",
                         "capture_kind": "game_profile",
                         "capture_id": "unlabeled-session",
@@ -1425,6 +1426,7 @@ class WorkbenchTests(unittest.TestCase):
                     video_encoding="mjpeg",
                     session_context={
                         "experiment_id": "managed-sessions",
+                        "game_profile_id": "genshin-impact-pc",
                         "capture_kind": "game_profile",
                         "capture_id": "unlabeled-session",
                         "run_index": 1,
@@ -1469,6 +1471,11 @@ class WorkbenchTests(unittest.TestCase):
                     metadata["workflow_stage_id"], "minimap-rotation-only"
                 )
                 self.assertEqual(state._next_run_index(), 2)
+                candidates = state.descriptor()["analysis_candidates"][
+                    "genshin-impact-pc"
+                ]["rotation_only"]
+                self.assertEqual(candidates[0]["session_key"], "managed-sessions/run_01")
+                self.assertTrue(candidates[0]["recommended"])
 
                 opened = []
                 state._folder_opener = opened.append
