@@ -26,6 +26,7 @@ from acquisition.workbench import (
     make_handler,
     nearest_frame_index,
     occupied_port_message,
+    parse_adb_devices,
     safe_id,
 )
 from acquisition.windows import (
@@ -894,7 +895,7 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIsNone(factory.input({"adapter": "none"}))
         self.assertEqual(
             {item["adapter"] for item in factory.descriptor()["frame_adapters"]},
-            {"windows_window", "uvc", "adb_screenshot"},
+            {"windows_window", "android_scrcpy", "uvc", "adb_screenshot"},
         )
         xinput = next(
             item
@@ -902,6 +903,142 @@ class WorkbenchTests(unittest.TestCase):
             if item["adapter"] == "windows_xinput"
         )
         self.assertEqual(xinput["status"], "recommended_pc_mvp")
+
+    def test_parses_available_and_unavailable_adb_devices(self):
+        devices = parse_adb_devices(
+            "List of devices attached\n"
+            "ABC123 device product:r8q model:SM_G781B device:r8q transport_id:1\n"
+            "OFFLINE offline transport_id:2\n"
+        )
+        self.assertEqual(devices[0]["serial"], "ABC123")
+        self.assertEqual(devices[0]["model"], "SM_G781B")
+        self.assertTrue(devices[0]["available"])
+        self.assertFalse(devices[1]["available"])
+
+    def test_android_capture_pair_shares_one_device_clock(self):
+        factory = SourceFactory()
+        clock = object()
+        hub = type(
+            "FakeHub",
+            (),
+            {"register": lambda self, _stream_id: object()},
+        )()
+        input_source = object()
+        factory._adb = lambda _config: Path("adb")
+        with patch("acquisition.workbench.AdbClockMapper", return_value=clock), patch(
+            "acquisition.workbench.find_scrcpy_server", return_value=Path("server")
+        ), patch("acquisition.workbench.ScrcpyCaptureHub", return_value=hub) as hub_type, patch(
+            "acquisition.workbench.AdbGetEventSource", return_value=input_source
+        ) as input_type:
+            frame, captured_input = factory.capture_sources(
+                {"adapter": "android_scrcpy", "serial": "ANDROID123"},
+                {"adapter": "adb_getevent"},
+            )
+        self.assertEqual(frame.stream_id, "main")
+        self.assertIs(captured_input, input_source)
+        self.assertIs(hub_type.call_args[1]["clock"], clock)
+        self.assertIs(input_type.call_args[1]["clock"], clock)
+
+    def test_simple_android_session_uses_scrcpy_and_getevent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.queue_next_take = state.descriptor
+                descriptor = state.start_session(
+                    {
+                        "game_profile_id": "genshin-impact-android",
+                        "capture_adapter": "android_scrcpy",
+                        "serial": "ANDROID123",
+                        "input_adapter": "adb_getevent",
+                        "capture_duration_s": 20,
+                    }
+                )
+                self.assertEqual(
+                    descriptor["armed"]["frame_source"]["adapter"],
+                    "android_scrcpy",
+                )
+                self.assertEqual(
+                    descriptor["armed"]["frame_source"]["serial"], "ANDROID123"
+                )
+                self.assertEqual(
+                    descriptor["armed"]["input_source"]["adapter"],
+                    "adb_getevent",
+                )
+                self.assertEqual(descriptor["armed"]["start_trigger"], "first_input")
+            finally:
+                state.close()
+
+    def test_android_straight_forward_uses_fixed_motion_events_and_releases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            stop = threading.Event()
+            session = root / "sessions" / "android" / "run_01"
+            session.mkdir(parents=True)
+            state._armed = {
+                "frame_source": {"adapter": "android_scrcpy", "serial": "ANDROID123"}
+            }
+            state._active = {
+                "phase": "waiting_for_first_input",
+                "stop": stop,
+                "path": session,
+                "android_control_events": [],
+            }
+            state.sources._adb = lambda _config: Path("adb")
+            state.descriptor = lambda: {}
+            calls = []
+
+            def capture(command, **_kwargs):
+                calls.append(command[-3:])
+                if command[-3] == "MOVE":
+                    stop.set()
+
+            try:
+                with self.assertRaisesRegex(ValueError, "non-zero movement vector"):
+                    state.run_android_straight_forward(
+                        {
+                            "start_x": 420,
+                            "start_y": 820,
+                            "end_x": 420,
+                            "end_y": 820,
+                            "duration_s": 8,
+                        }
+                    )
+                with patch("acquisition.workbench.subprocess.check_call", side_effect=capture):
+                    state.run_android_straight_forward(
+                        {
+                            "start_x": 420,
+                            "start_y": 820,
+                            "end_x": 420,
+                            "end_y": 640,
+                            "duration_s": 8,
+                        }
+                    )
+                    deadline = time.time() + 2
+                    while (state._android_control or {}).get("status") == "running":
+                        self.assertLess(time.time(), deadline)
+                        time.sleep(0.01)
+                self.assertEqual(
+                    calls,
+                    [["DOWN", "420", "820"], ["MOVE", "420", "640"], ["UP", "420", "640"]],
+                )
+                self.assertEqual(state._android_control["status"], "complete")
+                self.assertEqual(len(state._active["android_control_events"]), 1)
+                self.assertFalse((session / "android_control.json").exists())
+            finally:
+                state._active = None
+                state.close()
 
     def test_raw_input_decoder_preserves_mouse_and_keyboard_details(self):
         mouse = _RawInput()

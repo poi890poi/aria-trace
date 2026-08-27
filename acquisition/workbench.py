@@ -6,6 +6,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -22,6 +23,12 @@ from replay.alignment import align_session
 from replay.package import compile_replay_package
 
 from .annotations import AnnotationStore
+from .android_capture import (
+    AndroidRoiFrameSource,
+    AndroidRoiSpec,
+    ScrcpyCaptureHub,
+    find_scrcpy_server,
+)
 from .map_stitching import stitch_map_session
 from .minimap_calibration import calibrate_segment_sessions, calibrate_session
 from .minimap_verification import verify_forward_session
@@ -29,7 +36,12 @@ from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
 from .session import SessionReader, input_capture_health
-from .sources import AdbGetEventSource, AdbScreenshotFrameSource, OpenCvCameraFrameSource
+from .sources import (
+    AdbClockMapper,
+    AdbGetEventSource,
+    AdbScreenshotFrameSource,
+    OpenCvCameraFrameSource,
+)
 from .windows import (
     WindowsDesktopApi,
     WindowsKeyboardMouseSource,
@@ -41,6 +53,31 @@ from .windows import (
 
 
 WORKBENCH_SERVICE = "aria-trace-workbench"
+
+
+def parse_adb_devices(output: str) -> List[dict]:
+    """Parse `adb devices -l` without treating unavailable devices as targets."""
+    devices = []
+    for line in str(output or "").splitlines():
+        fields = line.strip().split()
+        if len(fields) < 2 or fields[0] == "List":
+            continue
+        properties = {}
+        for field in fields[2:]:
+            if ":" in field:
+                key, value = field.split(":", 1)
+                properties[key] = value
+        devices.append(
+            {
+                "serial": fields[0],
+                "status": fields[1],
+                "available": fields[1] == "device",
+                "model": properties.get("model"),
+                "product": properties.get("product"),
+                "device": properties.get("device"),
+            }
+        )
+    return devices
 
 
 def is_client_disconnect(exc: BaseException) -> bool:
@@ -243,6 +280,17 @@ def input_failure_message(diagnostics: dict) -> str:
     raw = diagnostics.get("raw_input") or {}
     evidence = health.get("evidence") or {}
     missing = ", ".join(health.get("missing") or ()) or "required gameplay input"
+    if health.get("adapter") != "windows_raw_keyboard_mouse":
+        return (
+            "Input capture failed validation for {} (missing: {}). Persisted {}, "
+            "meaningful {}, error events {}. The failed session was discarded."
+        ).format(
+            health.get("adapter") or "unknown adapter",
+            missing,
+            int(diagnostics.get("persisted_input_events") or 0),
+            int(evidence.get("meaningful_events") or 0),
+            int(health.get("error_events") or 0),
+        )
     return (
         "Input capture failed validation (missing: {}). Raw Input received {}, "
         "accepted {}, persisted {}, physical {}, meaningful {}, foreground {}. "
@@ -331,6 +379,11 @@ class SourceFactory:
 
     FRAME_ADAPTERS = (
         {"adapter": "windows_window", "label": "Windows game window", "status": "pc_mvp"},
+        {
+            "adapter": "android_scrcpy",
+            "label": "Android device (scrcpy)",
+            "status": "available",
+        },
         {"adapter": "uvc", "label": "UVC camera", "status": "available"},
         {"adapter": "adb_screenshot", "label": "ADB screenshot", "status": "available"},
     )
@@ -375,9 +428,70 @@ class SourceFactory:
     @staticmethod
     def _adb(config: dict) -> Path:
         value = config.get("adb") or shutil.which("adb")
-        if not value:
-            raise RuntimeError("ADB is not on PATH and no executable was configured")
-        return Path(value)
+        if value:
+            return Path(value)
+        bundled = (
+            Path(__file__).resolve().parents[1]
+            / ".tools"
+            / "scrcpy-win64-v4.1"
+            / ("adb.exe" if os.name == "nt" else "adb")
+        )
+        if bundled.is_file():
+            return bundled
+        raise RuntimeError("ADB is not on PATH and no executable was configured")
+
+    def android_devices(self) -> List[dict]:
+        adb = self._adb({})
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        output = subprocess.check_output(
+            [str(adb), "devices", "-l"],
+            timeout=5,
+            universal_newlines=True,
+            creationflags=creationflags,
+        )
+        return parse_adb_devices(output)
+
+    def capture_sources(self, frame_config: dict, input_config: dict):
+        """Build a synchronized frame/input pair for one recorder lifetime."""
+        if frame_config.get("adapter") != "android_scrcpy":
+            return self.frame(frame_config), self.input(input_config)
+        serial = str(frame_config.get("serial") or "").strip()
+        if not serial:
+            raise ValueError("Choose a connected Android device")
+        adb = self._adb(frame_config)
+        clock = AdbClockMapper(adb, serial)
+        server_config = frame_config.get("scrcpy_server")
+        bundled_server = (
+            Path(__file__).resolve().parents[1]
+            / ".tools"
+            / "scrcpy-win64-v4.1"
+            / "scrcpy-server"
+        )
+        if not server_config and bundled_server.is_file():
+            server_config = bundled_server
+        hub = ScrcpyCaptureHub(
+            adb,
+            find_scrcpy_server(server_config),
+            serial=serial,
+            ffmpeg=frame_config.get("ffmpeg"),
+            clock=clock,
+            bit_rate=int(frame_config.get("bit_rate") or 16_000_000),
+            max_fps=float(frame_config.get("max_fps") or 60.0),
+        )
+        frame_source = AndroidRoiFrameSource(
+            hub,
+            AndroidRoiSpec("main", 0, 0, 0, 0),
+        )
+        if input_config.get("adapter") == "adb_getevent":
+            input_source = AdbGetEventSource(
+                adb,
+                serial=serial,
+                source_id=input_config.get("source_id", "android-input"),
+                clock=clock,
+            )
+        else:
+            input_source = self.input(input_config)
+        return frame_source, input_source
 
     def frame(self, config: dict):
         adapter = config.get("adapter")
@@ -403,6 +517,10 @@ class SourceFactory:
                 serial=config.get("serial"),
                 stream_id=config.get("stream_id", "main"),
                 fps=float(config.get("fps", 2.0)),
+            )
+        if adapter == "android_scrcpy":
+            raise RuntimeError(
+                "Android scrcpy capture must be created with its synchronized input source"
             )
         raise ValueError("Unsupported frame adapter: {}".format(adapter))
 
@@ -534,6 +652,7 @@ class AcquisitionWorkbench:
         self._compile_state = "not_ready"
         self._compile_result = None
         self._analysis_jobs = {}
+        self._android_control = None
         self._hud_notice = None
         self._session_summary_cache = {}
         self._instance = {
@@ -1594,6 +1713,17 @@ class AcquisitionWorkbench:
                     "windows_keyboard_mouse",
                 ):
                     input_config.update(window_title=window_title, exact_title=True)
+            elif frame_config.get("adapter") == "android_scrcpy":
+                serial = str(frame_config.get("serial") or "").strip()
+                if not serial:
+                    raise ValueError("Choose a connected Android device")
+                if input_config.get("adapter") not in ("adb_getevent", "none"):
+                    raise ValueError(
+                        "Android display capture supports Android getevent or no input capture"
+                    )
+                frame_config["serial"] = serial
+                if input_config.get("adapter") == "adb_getevent":
+                    input_config["serial"] = serial
 
             capture_kind = str(value.get("capture_kind") or "route")
             if capture_kind not in self.CAPTURE_KINDS:
@@ -1994,6 +2124,9 @@ class AcquisitionWorkbench:
                 "all_runs_ready": all_ready,
                 "active_run": self._active["run_index"] if self._active else None,
                 "active_phase": self._active["phase"] if self._active else None,
+                "android_control": (
+                    dict(self._android_control) if self._android_control else None
+                ),
                 "capture_policy": {
                     "in_game_controls": "none",
                     "start": "sources_ready_then_queue_input_settles_then_first_active_input",
@@ -2012,6 +2145,114 @@ class AcquisitionWorkbench:
                 ),
                 "compile_result": self._compile_result,
             }
+
+    def android_devices(self) -> dict:
+        """Enumerate devices only on explicit request from the Android UI."""
+        try:
+            return {"devices": self.sources.android_devices(), "error": None}
+        except Exception as exc:
+            return {
+                "devices": [],
+                "error": "{}: {}".format(type(exc).__name__, exc),
+            }
+
+    def run_android_straight_forward(self, value: dict) -> dict:
+        """Hold one exact touchscreen vector through ADB motion events."""
+        try:
+            start_x = int(value.get("start_x"))
+            start_y = int(value.get("start_y"))
+            end_x = int(value.get("end_x"))
+            end_y = int(value.get("end_y"))
+            duration_s = float(value.get("duration_s"))
+        except (TypeError, ValueError):
+            raise ValueError("Enter integer start/end coordinates and a hold duration")
+        if min(start_x, start_y, end_x, end_y) < 0:
+            raise ValueError("Touch coordinates cannot be negative")
+        if (start_x, start_y) == (end_x, end_y):
+            raise ValueError("Straight-forward touch needs a non-zero movement vector")
+        if duration_s < 0.25 or duration_s > 120.0:
+            raise ValueError("Straight-forward hold must be between 0.25 and 120 seconds")
+
+        with self._lock:
+            active = self._active
+            armed = self._armed or {}
+            frame_config = armed.get("frame_source") or {}
+            if active is None:
+                raise RuntimeError("Start an Android recording first")
+            if frame_config.get("adapter") != "android_scrcpy":
+                raise RuntimeError("Straight-forward touch is available only for Android capture")
+            if active.get("phase") not in (
+                "waiting_for_first_input",
+                "recording_uninterrupted_take",
+            ):
+                raise RuntimeError("Wait until Android input is ready")
+            if self._android_control and self._android_control.get("status") == "running":
+                raise RuntimeError("A straight-forward touch is already running")
+            serial = str(frame_config.get("serial") or "")
+            adb = self.sources._adb(frame_config)
+            control = {
+                "status": "running",
+                "kind": "straight_forward_touch",
+                "serial": serial,
+                "start_xy": [start_x, start_y],
+                "end_xy": [end_x, end_y],
+                "requested_duration_s": duration_s,
+                "started_utc": datetime.now(timezone.utc).isoformat(),
+                "detail": "Holding the configured Android movement vector.",
+            }
+            self._android_control = control
+
+        def motion(action: str, x: int, y: int) -> None:
+            command = [str(adb), "-s", serial, "shell", "input", "touchscreen", "motionevent", action, str(x), str(y)]
+            subprocess.check_call(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+
+        def work() -> None:
+            down = False
+            timing = {}
+            error = None
+            try:
+                timing["down_host_time_ns"] = time.perf_counter_ns()
+                motion("DOWN", start_x, start_y)
+                down = True
+                timing["move_host_time_ns"] = time.perf_counter_ns()
+                motion("MOVE", end_x, end_y)
+                active["stop"].wait(duration_s)
+            except Exception as exc:
+                error = "{}: {}".format(type(exc).__name__, exc)
+            finally:
+                if down:
+                    try:
+                        timing["up_host_time_ns"] = time.perf_counter_ns()
+                        motion("UP", end_x, end_y)
+                    except Exception as exc:
+                        if error is None:
+                            error = "{}: {}".format(type(exc).__name__, exc)
+                result = dict(control)
+                result.update(timing)
+                result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+                result["status"] = "failed" if error else "complete"
+                result["detail"] = error or "Straight-forward touch released."
+                with self._lock:
+                    active.setdefault("android_control_events", []).append(result)
+                    self._android_control = result
+                    if error:
+                        self._last_error = "Android control failed: {}".format(error)
+
+        control_thread = threading.Thread(
+            target=work,
+            name="android-straight-forward-control",
+            daemon=True,
+        )
+        with self._lock:
+            active["android_control_thread"] = control_thread
+        control_thread.start()
+        return self.descriptor()
 
     def _next_run_index(self) -> int:
         if self._armed is None:
@@ -2036,10 +2277,44 @@ class AcquisitionWorkbench:
         )
         input_adapter = str(value.get("input_adapter") or "none")
         game = self.profiles.game(game_id) if game_id else None
+        capture_adapter = str(
+            value.get("capture_adapter")
+            or (game or {}).get("default_frame_source", {}).get("adapter")
+            or "windows_window"
+        )
+        if capture_adapter not in ("windows_window", "android_scrcpy"):
+            raise ValueError("Unsupported recorder capture adapter: {}".format(capture_adapter))
         window_title = value.get("window_title") or (
             (game or {}).get("default_frame_source", {}).get("window_title")
         )
-        self._preflight_input_integrity(window_title, input_adapter)
+        serial = str(value.get("serial") or "").strip()
+        if capture_adapter == "android_scrcpy":
+            if not serial:
+                raise ValueError("Choose a connected Android device")
+            if input_adapter not in ("adb_getevent", "none"):
+                raise ValueError(
+                    "Android sessions support Android getevent or no input capture"
+                )
+            android_fps = float(value.get("fps") or 60)
+            frame_source = {
+                "adapter": "android_scrcpy",
+                "serial": serial,
+                "fps": android_fps,
+                "max_fps": android_fps,
+                "bit_rate": int(value.get("bit_rate") or 16_000_000),
+            }
+            input_source = {"adapter": input_adapter, "serial": serial}
+            window_title = None
+        else:
+            self._preflight_input_integrity(window_title, input_adapter)
+            frame_source = {
+                "adapter": "windows_window",
+                "fps": float(value.get("fps") or 30),
+            }
+            input_source = {
+                "adapter": input_adapter,
+                "poll_hz": 250 if input_adapter == "windows_xinput" else 125,
+            }
         self.arm(
             {
                 "game_profile_id": game_id,
@@ -2050,14 +2325,8 @@ class AcquisitionWorkbench:
                 "target_runs": 1,
                 "capture_duration_s": value.get("capture_duration_s") or 30,
                 "window_title": window_title,
-                "frame_source": {
-                    "adapter": "windows_window",
-                    "fps": float(value.get("fps") or 30),
-                },
-                "input_source": {
-                    "adapter": input_adapter,
-                    "poll_hz": 250 if input_adapter == "windows_xinput" else 125,
-                },
+                "frame_source": frame_source,
+                "input_source": input_source,
                 "start_trigger": (
                     "settled_timer" if input_adapter == "none" else "first_input"
                 ),
@@ -2107,8 +2376,11 @@ class AcquisitionWorkbench:
                 "input_eligible_host_time_ns": None,
                 "recorded_input_events": 0,
                 "first_input_kind": None,
+                "android_control_events": [],
+                "android_control_thread": None,
             }
             self._active = active
+            self._android_control = None
             self._hud_notice = None
             self._last_error = None
             self._last_capture_diagnostics = None
@@ -2123,8 +2395,9 @@ class AcquisitionWorkbench:
             }
             try:
                 self._archive_existing(active["path"])
-                frame_source = self.sources.frame(config["frame_source"])
-                input_source = self.sources.input(config["input_source"])
+                frame_source, input_source = self.sources.capture_sources(
+                    config["frame_source"], config["input_source"]
+                )
                 if input_source is not None and hasattr(
                     input_source, "disable_foreground_filter"
                 ):
@@ -2217,6 +2490,9 @@ class AcquisitionWorkbench:
                     on_input_recorded=input_recorded,
                 )
                 active["stop"].set()
+                control_thread = active.get("android_control_thread")
+                if control_thread is not None:
+                    control_thread.join(timeout=6)
                 with self._lock:
                     if self._active is active:
                         active["phase"] = "finalizing_capture"
@@ -2243,6 +2519,14 @@ class AcquisitionWorkbench:
                     or not frames
                 )
                 if not failed:
+                    if active.get("android_control_events"):
+                        _write_json_atomic(
+                            active["path"] / "android_control.json",
+                            {
+                                "schema_version": "1.0",
+                                "events": list(active["android_control_events"]),
+                            },
+                        )
                     self._finalize_take(
                         active["path"],
                         config["route_id"],
@@ -2664,6 +2948,8 @@ def make_handler(state: AcquisitionWorkbench):
                     self._json(200, state.descriptor())
                 elif path == "/api/instance":
                     self._json(200, state.instance_descriptor())
+                elif path == "/api/android/devices":
+                    self._json(200, state.android_devices())
                 elif path == "/api/hud":
                     self._json(200, state.hud_descriptor())
                 elif path == "/api/minimap-calibration/image":
@@ -2699,6 +2985,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.disarm()
                 elif path == "/api/session/start":
                     result = state.start_session(value)
+                elif path == "/api/android/straight-forward":
+                    result = state.run_android_straight_forward(value)
                 elif path == "/api/session/label":
                     result = state.label_session(
                         str(value.get("session_key") or ""),

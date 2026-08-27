@@ -52,6 +52,10 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 - This reference may improve pose-orientation sign and angular-offset
   estimation; it must not claim resolved world heading without supporting
   evidence.
+- The dashboard reports observed pose-estimator wall time per frame and masked
+  shift-estimator wall time as median and p95. Pose timing excludes model load
+  and evidence rendering; shift timing uses repeated complete calls after one
+  warm-up. Benchmarking must not change estimator math or acceptance thresholds.
 
 ## Full-map stitching
 

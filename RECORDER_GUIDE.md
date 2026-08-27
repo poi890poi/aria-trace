@@ -1,6 +1,6 @@
 # Recorder guide
 
-The Acquisition Workbench is the normal way to record a route. It uses the canonical AriaTrace recorder: the PC window and input adapters used by the current POC can later be replaced by Android/UVC adapters without changing the session format or recording workflow.
+The Acquisition Workbench is the normal way to record a route. It uses the canonical AriaTrace recorder for Windows-window and Android-device capture without changing the session format or recording workflow.
 
 ## Start the recorder
 
@@ -33,6 +33,14 @@ When the selected game runs as administrator, the Workbench process serving port
 Choosing a non-empty label is the single post-capture review action. Rotation-only and movement-only sessions feed mini-map calibration, while straight-forward/no-turn preserves the cursor-heading-to-observed-map-shift relationship. **Delete** moves an unwanted session under `sessions/workbench/.trash/` so the operation remains recoverable.
 
 Only complete recordings with positive duration and at least one video frame are committed to the session list. Privilege/input failures, recorder errors, cancellations, zero-duration attempts, and frameless attempts are discarded automatically; their error remains visible in the Workbench instead of becoming a session.
+
+### Android recording
+
+Choose **Android device (scrcpy)** under **Capture from**, then select one explicitly enumerated, authorized device. Android video uses the existing continuous scrcpy H.264 transport; raw touchscreen events use `getevent`, and both are mapped to the PC monotonic clock. Device discovery occurs only when the Android source is selected, so ordinary Workbench polling does not contact a phone.
+
+For a straight-forward/no-turn sample, expand **Straight-forward touch assist** after entering the current-screen coordinates for the movement joystick center and exact forward endpoint. Once the recorder reports that input is ready, **Hold straight forward** sends distinct touchscreen `DOWN` and `MOVE` events, holds the endpoint for the requested duration, and sends `UP` even if the take stops early. The Workbench never guesses these device- and layout-specific coordinates. The actual injected touch remains observable in `getevent`; `android_control.json` preserves the requested vector and host timing beside the session.
+
+The Android game profile intentionally does not copy PC mini-map crop geometry or cursor thresholds. First record and label Android evidence; enable Android calibration only after those display-specific parameters have been derived and visually verified.
 
 The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. It hides immediately when the selected game loses focus. Use **Hide overlay** / **Show overlay** in the Workbench at any time; `python -m acquisition.workbench --no-hud` starts with it hidden. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays.
 
@@ -68,6 +76,7 @@ Run 1 becomes the reference demonstration. Later takes are held out for evaluati
 | Windows Raw Keyboard + Mouse | Normal keyboard/mouse play | Raw key transitions, relative mouse motion, buttons, wheel, devices, and event timing |
 | XInput Controller | Xbox-compatible controllers | Sticks, triggers, buttons, magnitudes, and timing |
 | Legacy Keyboard + Mouse | Compatibility fallback only | Polled keys and absolute cursor state; less faithful than Raw Input |
+| Android getevent | Android touchscreen play and exact touch assist | Raw kernel input events mapped to the common PC clock |
 | No input capture | Short timer-start visual segments and frame-only diagnostics | Preserves visual motion but not the human control evidence; unavailable for input-triggered route/full-map stages |
 
 ## What the recorder preserves
