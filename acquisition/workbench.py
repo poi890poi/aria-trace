@@ -58,8 +58,17 @@ def input_packet_is_active(packet) -> bool:
     if not payload.get("foreground", True):
         return False
     if packet.kind == "pc_raw_keyboard":
+        # Raw Input can report injected/synthetic packets with no device and
+        # key-release traffic from switching back to the game. Neither is a
+        # physical press, so do not let it start the recording clock.
+        if not int(payload.get("device_handle") or 0):
+            return False
+        if not payload.get("pressed", False):
+            return False
         return True
     if packet.kind == "pc_raw_mouse":
+        if not int(payload.get("device_handle") or 0):
+            return False
         return bool(
             int(payload.get("delta_x", 0))
             or int(payload.get("delta_y", 0))
@@ -81,6 +90,68 @@ def input_packet_is_active(packet) -> bool:
             or any(abs(float(value)) > 0.08 for value in axes)
         )
     return not packet.kind.endswith("_error")
+
+
+def capture_diagnostic_snapshot(reader, input_health: dict, active: dict) -> dict:
+    """Summarize a capture before a failed session directory is discarded."""
+    manifest = reader.manifest
+    inputs = list(reader.inputs)
+    raw_input = None
+    for source in manifest.get("input_sources") or ():
+        candidate = source.get("raw_input_diagnostics")
+        if candidate is not None:
+            raw_input = dict(candidate)
+            break
+    foreground_events = 0
+    background_events = 0
+    physical_device_handles = set()
+    for event in inputs:
+        payload = event.get("payload") or {}
+        if payload.get("foreground", True):
+            foreground_events += 1
+        else:
+            background_events += 1
+        device_handle = int(payload.get("device_handle") or 0)
+        if device_handle:
+            physical_device_handles.add(device_handle)
+    frames = sum(len(items) for items in reader.frames_by_stream.values())
+    recording_start = manifest.get("recording_start") or {}
+    return {
+        "attempted_utc": datetime.now(timezone.utc).isoformat(),
+        "run_index": int(active["run_index"]),
+        "status": manifest.get("status"),
+        "recording_started": bool(recording_start.get("started")),
+        "first_input_kind": active.get("first_input_kind"),
+        "duration_s": round(float(manifest.get("duration_ns") or 0) / 1.0e9, 3),
+        "frames": frames,
+        "persisted_input_events": len(inputs),
+        "foreground_input_events": foreground_events,
+        "background_input_events": background_events,
+        "physical_device_handles": sorted(physical_device_handles),
+        "raw_input": raw_input,
+        "input_capture": input_health,
+    }
+
+
+def input_failure_message(diagnostics: dict) -> str:
+    """Explain an input failure using measured receiver and event evidence."""
+    health = diagnostics["input_capture"]
+    raw = diagnostics.get("raw_input") or {}
+    evidence = health.get("evidence") or {}
+    missing = ", ".join(health.get("missing") or ()) or "required gameplay input"
+    return (
+        "Input capture failed validation (missing: {}). Raw Input received {}, "
+        "accepted {}, persisted {}, physical {}, meaningful {}, foreground {}. "
+        "The failed session was discarded."
+    ).format(
+        missing,
+        int(raw.get("packets_received") or 0),
+        int(raw.get("packets_accepted") or 0),
+        int(diagnostics.get("persisted_input_events") or 0),
+        int(evidence.get("physical_events") or 0),
+        int(evidence.get("meaningful_events") or 0),
+        int(diagnostics.get("foreground_input_events") or 0),
+    )
 
 
 def automatic_take_bounds(
@@ -353,6 +424,7 @@ class AcquisitionWorkbench:
         self._armed = None
         self._active = None
         self._last_error = None
+        self._last_capture_diagnostics = None
         self._compile_state = "not_ready"
         self._compile_result = None
         self._hud_notice = None
@@ -1409,6 +1481,7 @@ class AcquisitionWorkbench:
                     "stages": "derived_or_annotated_after_recording",
                 },
                 "last_error": self._last_error,
+                "last_capture_diagnostics": self._last_capture_diagnostics,
                 "compile_state": (
                     self._compile_state
                     if all_ready and (self._armed or {}).get("capture_kind") == "route"
@@ -1517,9 +1590,11 @@ class AcquisitionWorkbench:
             self._active = active
             self._hud_notice = None
             self._last_error = None
+            self._last_capture_diagnostics = None
 
         def work() -> None:
             keep_session = False
+            capture_diagnostics = None
             hud_result = {
                 "state": "failed",
                 "run_index": run_index,
@@ -1627,6 +1702,11 @@ class AcquisitionWorkbench:
 
                 reader = SessionReader(active["path"])
                 input_health = input_capture_health(reader.manifest, reader.inputs)
+                capture_diagnostics = capture_diagnostic_snapshot(
+                    reader, input_health, active
+                )
+                with self._lock:
+                    self._last_capture_diagnostics = capture_diagnostics
                 session_started = bool(
                     (manifest.get("recording_start") or {}).get("started")
                 )
@@ -1660,12 +1740,9 @@ class AcquisitionWorkbench:
                         )
                 elif empty_input:
                     with self._lock:
-                        self._last_error = (
-                            "No control input events were recorded by {}. "
-                            "The partial capture was discarded; verify "
-                            "recorder/game privilege levels or try the legacy "
-                            "input adapter."
-                        ).format(input_health["adapter"])
+                        self._last_error = input_failure_message(
+                            capture_diagnostics
+                        )
                 elif active["cancel"].is_set():
                     with self._lock:
                         self._last_error = (
@@ -1691,6 +1768,21 @@ class AcquisitionWorkbench:
                     self._last_error = "{}: {}".format(type(exc).__name__, exc)
             finally:
                 active["stop"].set()
+                if capture_diagnostics is None and active["path"].is_dir():
+                    try:
+                        failed_reader = SessionReader(active["path"])
+                        failed_health = input_capture_health(
+                            failed_reader.manifest, failed_reader.inputs
+                        )
+                        capture_diagnostics = capture_diagnostic_snapshot(
+                            failed_reader, failed_health, active
+                        )
+                        with self._lock:
+                            self._last_capture_diagnostics = capture_diagnostics
+                    except Exception:
+                        # The original recorder error remains authoritative when
+                        # no readable manifest was produced.
+                        pass
                 if not keep_session:
                     try:
                         if active["path"].exists():

@@ -271,16 +271,97 @@ class WorkbenchTests(unittest.TestCase):
             "pc-raw-input",
             "pc_raw_keyboard",
             time.perf_counter_ns(),
-            {"foreground": False, "key_name": "W", "pressed": True},
+            {
+                "foreground": False,
+                "device_handle": 55,
+                "key_name": "W",
+                "pressed": True,
+            },
         )
         foreground = InputPacket(
             "pc-raw-input",
             "pc_raw_keyboard",
             time.perf_counter_ns(),
-            {"foreground": True, "key_name": "W", "pressed": True},
+            {
+                "foreground": True,
+                "device_handle": 55,
+                "key_name": "W",
+                "pressed": True,
+            },
         )
         self.assertFalse(input_packet_is_active(background))
         self.assertTrue(input_packet_is_active(foreground))
+
+    def test_first_input_trigger_requires_physical_pressed_gameplay_input(self):
+        def packet(kind, **payload):
+            return InputPacket("pc-raw-input", kind, time.perf_counter_ns(), payload)
+
+        self.assertFalse(
+            input_packet_is_active(
+                packet(
+                    "pc_raw_keyboard",
+                    foreground=True,
+                    device_handle=0,
+                    key_name="W",
+                    pressed=True,
+                )
+            )
+        )
+        self.assertFalse(
+            input_packet_is_active(
+                packet(
+                    "pc_raw_keyboard",
+                    foreground=True,
+                    device_handle=55,
+                    key_name="W",
+                    pressed=False,
+                )
+            )
+        )
+        self.assertTrue(
+            input_packet_is_active(
+                packet(
+                    "pc_raw_keyboard",
+                    foreground=True,
+                    device_handle=55,
+                    key_name="Tab",
+                    pressed=True,
+                )
+            )
+        )
+        self.assertFalse(
+            input_packet_is_active(
+                packet(
+                    "pc_raw_mouse",
+                    foreground=True,
+                    device_handle=0,
+                    delta_x=8,
+                )
+            )
+        )
+
+    def test_required_raw_input_accepts_any_physical_user_action(self):
+        manifest = {
+            "context": {
+                "input_adapter": "windows_raw_keyboard_mouse",
+                "input_requirement": "required",
+                "capture_kind": "game_profile",
+            },
+            "input_counts": {"pc-raw-input:pc_raw_mouse": 1},
+        }
+        mouse_only = [
+            {
+                "kind": "pc_raw_mouse",
+                "payload": {
+                    "device_handle": 65616,
+                    "delta_x": 1,
+                    "delta_y": 0,
+                },
+            }
+        ]
+        health = input_capture_health(manifest, mouse_only)
+        self.assertTrue(health["healthy"])
+        self.assertEqual(health["missing"], [])
 
     def test_simple_input_recording_arms_for_first_game_input(self):
         with tempfile.TemporaryDirectory() as temporary:

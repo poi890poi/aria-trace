@@ -35,7 +35,6 @@ INPUT_ERROR_KINDS = {
     "pc_raw_input_error",
 }
 
-_RAW_SWITCH_KEYS = {"alt", "tab", "shift", "ctrl", "windows", "left_windows", "right_windows"}
 _DEFAULT_MOVEMENT_KEYS = {"W", "A", "S", "D"}
 
 
@@ -46,7 +45,7 @@ def _input_event_parts(event):
 
 
 def summarize_input_evidence(events: Iterable[object]) -> dict:
-    """Classify persisted input without letting switch or injected input pass."""
+    """Classify persisted input while rejecting synthetic device-less packets."""
     summary = {
         "event_count": 0,
         "error_events": 0,
@@ -81,8 +80,7 @@ def summarize_input_evidence(events: Iterable[object]) -> dict:
                 key_names.add(name)
             if name.upper() in _DEFAULT_MOVEMENT_KEYS:
                 summary["movement_key_events"] += 1
-                summary["meaningful_events"] += 1
-            elif name.casefold() not in _RAW_SWITCH_KEYS:
+            if payload.get("pressed", False):
                 summary["meaningful_events"] += 1
         elif kind == "pc_raw_mouse":
             summary["raw_mouse_events"] += 1
@@ -135,7 +133,7 @@ def summarize_input_evidence(events: Iterable[object]) -> dict:
 
 
 def input_capture_health(manifest: dict, inputs: Optional[Iterable[object]] = None) -> dict:
-    """Require physical, stage-appropriate controls rather than any packet."""
+    """Require at least one physical user action when input is required."""
     context = manifest.get("context") or {}
     adapter = context.get("input_adapter")
     input_requirement = context.get("input_requirement")
@@ -159,7 +157,6 @@ def input_capture_health(manifest: dict, inputs: Optional[Iterable[object]] = No
     )
     evidence = summarize_input_evidence(inputs) if inputs is not None else None
     missing = []
-    capture_kind = context.get("capture_kind")
     if required and evidence is None:
         missing.append("detailed_input_evidence")
     elif required and adapter == "windows_raw_keyboard_mouse":
@@ -167,10 +164,6 @@ def input_capture_health(manifest: dict, inputs: Optional[Iterable[object]] = No
             missing.append("physical_keyboard_or_mouse")
         if not evidence["meaningful_events"]:
             missing.append("gameplay_control")
-        if capture_kind in ("game_profile", "route") and not evidence["movement_key_events"]:
-            missing.append("movement_key")
-        if capture_kind == "game_profile" and not evidence["relative_mouse_events"]:
-            missing.append("relative_mouse_motion")
     elif required and adapter == "windows_xinput":
         if not evidence["xinput_active_events"]:
             missing.append("active_controller_control")
