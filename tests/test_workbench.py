@@ -1769,6 +1769,7 @@ class WorkbenchTests(unittest.TestCase):
             rotation = make_session(1, "rotation_only")
             movement = make_session(2, "movement_only")
             forward = make_session(3, "forward_no_turn")
+            scene = make_session(4, "scene_rotation_360")
 
             def fake_calibration(
                 _rotation, _movement, output, _config, progress=None
@@ -1855,6 +1856,48 @@ class WorkbenchTests(unittest.TestCase):
                         "forward_pose_shift.png",
                     ),
                     b"shift",
+                )
+
+                def fake_scene_yaw(_session, output, config=None, progress=None):
+                    output.mkdir(parents=True, exist_ok=True)
+                    (output / "scene_yaw_curve.png").write_bytes(b"yaw")
+                    return {
+                        "schema_version": "1.0",
+                        "generated_utc": "2026-08-27T12:10:00+00:00",
+                        "status": "review_required",
+                        "closure_error_deg": 1.2,
+                        "evidence": [
+                            {
+                                "name": "scene_yaw_curve.png",
+                                "title": "Scene yaw curve",
+                                "category": "yaw",
+                            }
+                        ],
+                    }
+
+                with patch(
+                    "acquisition.workbench.calibrate_scene_yaw_session",
+                    side_effect=fake_scene_yaw,
+                ):
+                    descriptor = state.run_scene_yaw_calibration(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "session_relative_path": "analysis-sources/run_04",
+                        }
+                    )
+                scene_result = descriptor["scene_yaw_calibrations"][
+                    "genshin-impact-pc"
+                ][0]
+                self.assertEqual(
+                    scene_result["source_session_key"], "analysis-sources/run_04"
+                )
+                self.assertEqual(
+                    state.scene_yaw_image(
+                        "genshin-impact-pc",
+                        scene_result["calibration_id"],
+                        "scene_yaw_curve.png",
+                    ),
+                    b"yaw",
                 )
             finally:
                 state.close()

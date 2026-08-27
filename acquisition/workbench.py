@@ -36,6 +36,7 @@ from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
 from .session import SessionReader, input_capture_health
+from .scene_yaw_calibration import calibrate_scene_yaw_session
 from .sources import (
     AdbClockMapper,
     AdbGetEventSource,
@@ -1273,6 +1274,11 @@ class AcquisitionWorkbench:
     def queue_map_stitch(self, value: dict) -> dict:
         return self._queue_analysis("map_stitching", value, self.run_map_stitch)
 
+    def queue_scene_yaw_calibration(self, value: dict) -> dict:
+        return self._queue_analysis(
+            "scene_yaw_calibration", value, self.run_scene_yaw_calibration
+        )
+
     def run_minimap_calibration(self, value: dict, progress=None) -> dict:
         if progress:
             progress("Checking the selected calibration sessions")
@@ -1407,6 +1413,98 @@ class AcquisitionWorkbench:
             _write_json_atomic(output / "calibration.json", result)
             self._last_error = None
             return self.descriptor()
+
+    def _scene_yaw_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "scene_yaw_calibrations" / safe_id(game_profile_id)
+
+    def _scene_yaw_calibrations(self) -> dict:
+        values = {}
+        root = self.artifact_root / "scene_yaw_calibrations"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/scene_yaw_calibration.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item.pop("focal_search", None)
+                item["calibration_id"] = path.parent.name
+                item["artifact_relative_path"] = str(
+                    path.parent.relative_to(self.artifact_root)
+                )
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append(
+                    {
+                        "calibration_id": path.parent.name,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        for items in values.values():
+            items.sort(key=lambda item: item.get("generated_utc") or "", reverse=True)
+        return values
+
+    def run_scene_yaw_calibration(self, value: dict, progress=None) -> dict:
+        if progress:
+            progress("Checking the selected full-turn scene session")
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            game = self.profiles.game(game_profile_id)
+            config = game.get("scene_yaw_calibration")
+            if not config:
+                raise ValueError("The selected game has no scene-yaw calibration profile")
+            relative = str(value.get("session_relative_path") or "")
+            if not relative:
+                candidates = (
+                    self.analysis_candidates()
+                    .get(game_profile_id, {})
+                    .get("scene_rotation_360", [])
+                )
+                relative = str(candidates[0]["session_key"]) if candidates else ""
+            if not relative:
+                raise ValueError("No ready scene_rotation_360 session is available")
+            path = self._session_path(relative)
+            described = self._describe_session(path)
+            if described.get("game_profile_id") != game_profile_id:
+                raise ValueError("Scene-yaw session belongs to another game")
+            if described.get("label") != "scene_rotation_360":
+                raise ValueError("Expected a scene_rotation_360 session")
+            calibration_id = safe_id(described.get("session_id") or path.name)
+            output = self._scene_yaw_root(game_profile_id) / calibration_id
+
+        result = calibrate_scene_yaw_session(
+            path,
+            output,
+            config=config,
+            progress=progress,
+        )
+        with self._lock:
+            result["source_session_key"] = relative
+            result["calibration_id"] = calibration_id
+            result["artifact_relative_path"] = str(
+                output.relative_to(self.artifact_root)
+            )
+            _write_json_atomic(output / "scene_yaw_calibration.json", result)
+            self._last_error = None
+            return self.descriptor()
+
+    def scene_yaw_image(
+        self, game_profile_id: str, calibration_id: str, name: str
+    ) -> bytes:
+        if Path(name).name != name or not name.lower().endswith(".png"):
+            raise ValueError("Invalid scene-yaw evidence image name")
+        root = self._scene_yaw_root(game_profile_id) / safe_id(calibration_id)
+        descriptor = json.loads(
+            (root / "scene_yaw_calibration.json").read_text(encoding="utf-8")
+        )
+        declared = {item.get("name") for item in descriptor.get("evidence", [])}
+        if name not in declared:
+            raise ValueError("Unknown scene-yaw evidence image")
+        return (root / name).read_bytes()
 
     def minimap_calibration_image(self, game_profile_id: str, calibration_id: str, name: str) -> bytes:
         if Path(name).name != name or not name.lower().endswith(".png"):
@@ -2121,6 +2219,7 @@ class AcquisitionWorkbench:
                 "game_profile_drafts": self._profile_drafts(),
                 "poc_evidence_indexes": self._poc_evidence_indexes(),
                 "minimap_calibrations": self._minimap_calibrations(),
+                "scene_yaw_calibrations": self._scene_yaw_calibrations(),
                 "map_stitches": self._map_stitches(),
                 "analysis_candidates": self.analysis_candidates(),
                 "analysis_jobs": {
@@ -2993,6 +3092,14 @@ def make_handler(state: AcquisitionWorkbench):
                         query.get("name", [""])[0],
                     )
                     self._send(200, "image/png", body)
+                elif path == "/api/scene-yaw/image":
+                    query = parse_qs(parsed.query)
+                    body = state.scene_yaw_image(
+                        query.get("game_id", [""])[0],
+                        query.get("calibration_id", [""])[0],
+                        query.get("name", [""])[0],
+                    )
+                    self._send(200, "image/png", body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
             except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
@@ -3047,6 +3154,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.queue_pose_verification(value)
                 elif path == "/api/map-stitch/run":
                     result = state.queue_map_stitch(value)
+                elif path == "/api/scene-yaw/run":
+                    result = state.queue_scene_yaw_calibration(value)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
                     return
