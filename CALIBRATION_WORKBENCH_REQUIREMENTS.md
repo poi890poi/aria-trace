@@ -33,8 +33,8 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 - A user can run the existing circular mini-map boundary, cursor-center,
   cursor-shape, and cursor-pose calibration from labeled rotation-only and
   movement-only sessions.
-- A labeled straight-forward session is used as an additional heading-to-map-
-  shift reference when available.
+- Straight-forward data is not consumed by this task. It belongs to the
+  separate pose-verification task below.
 - The Workbench displays quality metrics and the existing evidence images,
   including boundary, center, cursor shape, polar response, and pose quality.
 - Calibration results remain reviewable; numerical confidence never silently
@@ -71,6 +71,13 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 
 - Calibration and stitching are available from the same simple session-list
   Workbench; stage-selection recording flow is not reintroduced.
+- Mini-map/cursor calibration, pose verification, and map stitching have
+  separate task tabs. Each tab identifies the exact input role and session.
+- A tab displays a result only when its recorded provenance exactly matches the
+  currently selected sessions. Historical POC artifacts and results from other
+  selections are not mixed into the task view.
+- Each tab shows a small, task-specific evidence set; it does not dump every
+  image present in an artifact directory.
 - Analysis controls show automatic candidates and manual selectors only when
   there is a choice.
 - Long-running analysis reports running, complete, or failed state and does not
