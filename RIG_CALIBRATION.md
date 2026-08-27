@@ -8,7 +8,8 @@ The calibration has five outputs:
 
 1. A geometric measurement of the camera view relative to the phone screen.
 2. Live guidance for positioning, rotation, distance, exposure, and focus.
-3. An end-to-end resolving-power measurement based on image matching rather than nominal camera pixels.
+3. Standard ISO/IEC 15415 Data Matrix Decode grades at declared logical
+   display-pixel module widths.
 4. An end-to-end control-to-perception latency distribution measured with alternating visual signals.
 5. A small, commented YAML contract that other agents can use to normalize frames without understanding the calibration procedure.
 
@@ -115,7 +116,7 @@ Measure screen coverage, camera utilization, IoU, pose, and uncertainty
 Optimize required-ROI framing and perspective
         |
         v
-Inspect raw pixels at 1:1 and optimize end-to-end matchability
+Inspect raw pixels at 1:1 and grade alternating fixed-patch Data Matrix targets
         |
         v
 Measure control-to-perception latency with alternating signals
@@ -263,13 +264,27 @@ The raw tab is authoritative for optical focus because rectification interpolati
 
 If manual focus is used, every settled adjustment becomes one sample on a focus sweep. The UI shows `better`, `worse`, or `unchanged within uncertainty` relative to the best retained sample. If UVC focus control is writable, the wizard may sweep supported values automatically, select the best reviewed e-SFR/MTF result, and then lock focus. Task matching is evaluated separately after optical focus is fixed.
 
-## 8. Standardized Resolution and Established Matching Metrics
+## 8. Standard Data Matrix Decode Grade
 
-There is no ISO, IEEE, or EMVA standard that defines a scalar "smallest
-computer-vision-matchable detail" for a display-camera-matcher pipeline. This
-design therefore does not create or rename such a scalar. It reports the
-standardized image-chain measurement and the established computer-vision
-matching measurements separately.
+The one operator-facing feature-readability measurement is the **Decode
+parameter from ISO/IEC 15415:2024**, applied to an **ISO/IEC 16022:2024 Data
+Matrix**. Its globally defined result is deliberately simple:
+
+- `4.0 / A`: the symbol is readable by the reference decode procedure and its
+  codewords are valid;
+- `0.0 / F`: reference decode fails or the encodation is invalid.
+
+There is no project-defined percentage threshold, weighted score, average
+grade, or renamed resolution unit. The displayed Data Matrix module width is
+recorded as a test condition in logical display pixels per module
+(`dpx/module`), not folded into the grade. The report therefore says, for
+example, `ISO/IEC 15415 Decode grade 4/A at 1 dpx/module`.
+
+The implementation is explicitly the ISO Decode parameter only. It must not
+claim to be a complete ISO/IEC 15415 symbol verifier or emit an ISO overall
+symbol grade; complete verification additionally requires standardized image
+formation/calibration and grading of contrast, modulation, fixed-pattern
+damage, nonuniformity, unused error correction, and other parameters.
 
 The former `MR95-20` name and calculation were project-defined. They are
 deprecated and must not appear as an accepted calibration metric, quality
@@ -277,7 +292,72 @@ gate, UI headline, or newly generated YAML field. Existing artifacts retain
 their original value only as explicitly labeled legacy data; they must not be
 silently translated into MTF, repeatability, matching score, or MMA.
 
-### 8.1 ISO 12233 e-SFR and MTF
+### 8.1 Alternating fixed-patch procedure
+
+Use short, unique, fixed-length payloads that all produce the same square Data
+Matrix dimensions. Render each module as an exact integer square of logical
+display pixels with no interpolation and retain at least the symbology-required
+quiet zone. Only one symbol is shown at a time.
+
+Successive targets reuse the same camera-visible screen patch:
+
+```text
+fixed visible patch
+      |
+      +-- payload A, 1 dpx/module --> capture --> Decode grade 4/A or 0/F
+      +-- payload B, 1 dpx/module --> capture --> Decode grade 4/A or 0/F
+      +-- payload C, 2 dpx/module --> capture --> Decode grade 4/A or 0/F
+      +-- payload D, 2 dpx/module --> capture --> Decode grade 4/A or 0/F
+      +-- ...
+```
+
+Temporal alternation lets a small display or partial camera/display
+intersection test many payloads and module widths without fitting them all at
+once. Use the smallest square symbol version that holds the trial token. If a
+particular symbol/module combination cannot fit the fixed patch, record it as
+`untestable`; it is not a Decode grade 0/F.
+
+The payload is also synchronization evidence. A capture is eligible only
+after the paint acknowledgement for that target revision and configured
+settling. If a different valid payload is decoded, that observed symbol has a
+Decode grade of 4/A but the image is marked `wrong_target_or_stale_frame` and
+excluded from the requested target's evidence. A burst of correlated frames
+from one unchanged presentation must not be represented as independent tests.
+
+The review UI shows one row per observation and groups—not averages—the
+standard grades by module width:
+
+```text
+Module width      ISO/IEC 15415 Decode observations
+1 dpx/module      A, A, F, A, F
+2 dpx/module      A, A, A, A, A
+4 dpx/module      A, A, A, A, A
+```
+
+No automatic boundary is inferred between those rows. If an integrating
+application needs a pass policy, that policy belongs to the application and
+must remain visibly separate from the ISO grade.
+
+The measurement library is image-in/grade-out and keeps its encoder and
+decoder replaceable:
+
+```python
+from acquisition.rig_calibration import grade_data_matrix_decode
+
+result = grade_data_matrix_decode(camera_patch, expected_payload="A7K2")
+print(result["grade"], result["grade_letter"])  # 4.0 A, or 0.0 F
+```
+
+The built-in adapter uses ZXing-C++ for Data Matrix creation and decoding.
+ZXing-C++ is not represented as a certified ISO verifier; the saved result is
+labeled `Decode_parameter_only_not_complete_ISO_IEC_15415_verifier`.
+
+Finder patterns and error correction mean that Decode grade demonstrates
+recovery of structured information, not independent localization of every
+one-pixel game feature. Actual mini-map position and pose error remain a
+separate downstream validation.
+
+### 8.2 Supporting ISO 12233 e-SFR and MTF
 
 Physical imaging resolution is measured using the slanted-edge electronic
 spatial frequency response procedure from **ISO 12233:2024, Digital cameras —
@@ -345,10 +425,11 @@ declared conservative aggregate; one favorable edge or one-pixel raster cannot
 represent the complete mini-map ROI.
 
 Laplacian variance and Tenengrad may remain responsive focus aids, but they are
-relative diagnostics, not standardized resolving-power results and not
-acceptance metrics.
+relative diagnostics. e-SFR/MTF remains supporting engineering evidence when
+Decode grades contradict apparent focus; it is not a second operator-facing
+feature-readability grade.
 
-### 8.2 Established feature-matching measurements
+### 8.3 Task-validation feature-matching measurements
 
 Planar target pairs use the known camera-to-screen homography as ground truth.
 Report established homography-ground-truth measurements without inventing a
@@ -376,7 +457,7 @@ or pose error produced from those correspondences. Report median, P95, and the
 accuracy/AUC curve at declared application thresholds. Matcher confidence or
 correlation response is diagnostic evidence only; it is not ground truth.
 
-### 8.3 References and conditions
+### 8.4 References and conditions
 
 Measure reference modes separately:
 
@@ -394,7 +475,7 @@ display pixels, `cy/dpx`, `cy/cpx`, or measured `cy/mm` is a trial condition—n
 a new metric. Report every condition or a declared worst-case aggregate so a
 single headline number cannot hide a systematic failure.
 
-### 8.4 Ground truth and acceptance
+### 8.5 Ground truth and acceptance
 
 A correct match is determined by homography reprojection error, not by the
 matcher accepting itself. A pose trial is accepted only when the downstream
@@ -403,6 +484,8 @@ Report catastrophic false matches separately from rejected/no-result trials.
 
 Calibration acceptance uses all of the following:
 
+- reviewed ISO/IEC 15415 Decode grades at every declared Data Matrix module
+  width, with wrong/stale targets excluded rather than counted as failures;
 - reviewed ISO 12233 e-SFR curve and derived MTF50/MTF10 for the required ROI;
 - repeatability and matching score;
 - MMA curve at declared normalized-screen-pixel thresholds;
@@ -411,11 +494,12 @@ Calibration acceptance uses all of the following:
 - results stratified by reference mode and capture condition;
 - confidence intervals with the sampling unit and trial count stated.
 
-No threshold in this document is universal. Thresholds come from the
-mini-map estimator's permitted position and direction error and must be
-validated on recorded target-game evidence.
+The Decode grade is standard and has no project threshold. Any application
+policy across repeated grades, plus task matching and pose thresholds, comes
+from the mini-map estimator's permitted position and direction error and must
+be stored separately from the ISO measurement.
 
-### 8.5 Control-to-perception latency
+### 8.6 Control-to-perception latency
 
 Rig calibration also measures the delay from a timestamped control request to the first observation that reliably contains the requested visual state. The physical-camera endpoint is required for the rig result; an ADB/screenshot observation endpoint and device presentation endpoint are retained when available. These are generic display/capture-pipeline baselines and must not be mislabeled as a particular game's complete input-response latency.
 
@@ -488,9 +572,13 @@ The workbench flow contains four pages or progressive panels.
 - Green safe area, amber extrapolated area, and red cropped required area.
 - Coverage, utilization, IoU, roll, pitch/yaw, and positioning guidance.
 
-### Focus, timing, and feature matching
+### Focus, Decode grade, timing, and task validation
 
 - The 1:1 inspector described above.
+- ISO/IEC 15415 Decode grade `4/A` or `0/F` for the current Data Matrix,
+  grouped as unaveraged observations at each declared `dpx/module` condition.
+- Fixed-patch target revision, expected/decoded payload, and an explicit stale
+  target warning when they differ.
 - Current versus best ISO 12233 e-SFR curve and derived MTF50/MTF10.
 - Repeatability, matching score, MMA curves, match counts, spatial coverage,
   and reviewed correct/incorrect match examples.
@@ -519,6 +607,7 @@ artifacts/rig_calibrations/<rig-id>/<calibration-id>/
 |-- screen_overlap.png
 |-- focus_best_raw_1x.png
 |-- focus_best_undistorted_1x.png
+|-- data_matrix_decode_observations.png
 |-- slanted_edge_roi.png
 |-- esfr_mtf_curve.png
 |-- mma_curve.png
@@ -651,6 +740,35 @@ required_roi:
   xywh: [18.0, 42.0, 310.0, 310.0]
   guard_band_px: 31.0
   source: game_profile
+
+data_matrix_decode:
+  standard: "ISO/IEC 15415:2024"
+  symbology_standard: "ISO/IEC 16022:2024"
+  parameter: Decode
+  grade_scale: "4/A or 0/F"
+  meaning: "4/A = reference decode succeeds; 0/F = reference decode fails"
+  implementation: ZXing-C++ Data Matrix decoder
+  implementation_conformance: Decode_parameter_only_not_complete_ISO_IEC_15415_verifier
+  aggregation: none_standard_grades_reported_as_counts
+  fixed_target_rect_screen_xywh: [26, 50, 128, 128]
+  alternating_same_patch: true
+  tested_module_widths_display_px: [1, 2, 4]
+  module_width_results:
+    - module_width_display_px: 1
+      observation_count: 5
+      eligible_observation_count: 5
+      decode_grade_4_A_count: 3
+      decode_grade_0_F_count: 2
+      ineligible_wrong_target_count: 0
+    - module_width_display_px: 2
+      observation_count: 5
+      eligible_observation_count: 5
+      decode_grade_4_A_count: 5
+      decode_grade_0_F_count: 0
+      ineligible_wrong_target_count: 0
+  # Each trial retains the standard grade, module width, expected and decoded
+  # payloads, target revision/paint acknowledgement, and capture timestamp.
+  trials: [] # abbreviated example; no mean or project pass threshold is stored
 
 image_quality:
   standard: "ISO 12233:2024"
@@ -797,6 +915,7 @@ evidence:
   screen_overlap: "screen_overlap.png"
   focus_best_raw_1x: "focus_best_raw_1x.png"
   focus_best_undistorted_1x: "focus_best_undistorted_1x.png"
+  data_matrix_decode_observations: "data_matrix_decode_observations.png"
   slanted_edge_roi: "slanted_edge_roi.png"
   esfr_mtf_curve: "esfr_mtf_curve.png"
   mma_curve: "mma_curve.png"
@@ -833,6 +952,8 @@ Geometry confidence includes:
 
 Image-quality and matching confidence include:
 
+- Data Matrix Decode grade counts per declared module width, rejected stale
+  target count, and exact target/capture provenance (without averaging grades);
 - slanted-edge count, position, angle, channel, phase, and OECF provenance;
 - e-SFR curve stability and derived MTF crossing uncertainty;
 - held-out target count;
@@ -851,6 +972,8 @@ Initial task gates should require:
 - 100% configured guard-band coverage;
 - no required-ROI pixels outside the valid mask;
 - transform uncertainty below the caller-supplied permitted position error;
+- reviewed ISO/IEC 15415 Data Matrix Decode grades in the camera-visible
+  required ROI, with any application policy stated separately;
 - reviewed e-SFR/MTF performance throughout the required ROI;
 - repeatability, matching score, MMA, correct-match count, and feature coverage
   above caller-supplied requirements;
@@ -869,8 +992,9 @@ The implementation should add:
 - a workbench calibration UI with the geometry overlay and 1:1 inspector;
 - a small YAML loader/validator shared by all consumers;
 - evidence rendering and repeatable tests for matrix direction, origin,
-  scaling, partial-screen geometry, ISO 12233 e-SFR/MTF processing, and
-  established feature-matching measurements;
+  scaling, partial-screen geometry, alternating fixed-patch ISO/IEC 15415
+  Decode grading, ISO 12233 e-SFR/MTF processing, and established
+  feature-matching measurements;
 - repeatable timing tests for alternating-signal detection, clock/latency separation, transition rejection, and tail statistics;
 - a dependency-free spatial export adapter conforming to `SPATIAL_UNIFICATION.md`.
 
@@ -880,14 +1004,16 @@ Rig calibration remains separate from game-specific mini-map calibration. Rig ca
 
 ## 15. Current implementation
 
-The independent core is implemented under `acquisition/rig_calibration/`; its API and dependency boundary are documented in `acquisition/rig_calibration/README.md`. Synthetic verification is in `tests/test_rig_calibration.py`. The package includes spatial-fragment export but does not implement the external spatial registry/resolver.
+The independent core is implemented under `acquisition/rig_calibration/`; its API and dependency boundary are documented in `acquisition/rig_calibration/README.md`. It includes exact-pixel Data Matrix target generation, alternating fixed-patch sequencing, image-in/Decode-grade-out evaluation, stale-payload rejection, and unaveraged sweep summaries. Synthetic verification is in `tests/test_rig_calibration.py`. The package includes spatial-fragment export but does not implement the external spatial registry/resolver.
 
 The optional standalone Windows application is implemented under
 `acquisition/rig_calibration/app/`. It provides a PySide6 guided UI, opt-in
 OpenCV camera capture, a fullscreen phone target service, exact-pixel review,
 ChArUco-atlas IoU/coverage fitting, display-referred slanted-edge e-SFR/MTF,
 homography-ground-truth feature matching, alternating-signal camera latency,
-optional ADB reference capture, and reviewed bundle export. Camera, ADB, and phone target
+optional ADB reference capture, and reviewed bundle export. The Data Matrix
+measurement library is implemented but is not yet wired into this GUI workflow.
+Camera, ADB, and phone target
 implementations are public replaceable adapters; hardware-specific controls
 and alternative transports remain outside the calibration algorithms. The
 PyInstaller build is isolated beneath `.tools/` and emits its distribution
@@ -903,6 +1029,8 @@ review; no camera, phone, ADB, or GUI was exercised while implementing it.
 
 ## 16. Normative and Benchmark References
 
+- [ISO/IEC 15415:2024 — Bar code symbol print quality test specification — Two-dimensional symbols](https://www.iso.org/standard/76876.html)
+- [ISO/IEC 16022:2024 — Data Matrix bar code symbology specification](https://www.iso.org/standard/80926.html)
 - [ISO 12233:2024 — Digital cameras — Resolution and spatial frequency responses](https://www.iso.org/standard/88626.html)
 - [Oxford VGG affine-feature detector repeatability protocol](https://www.robots.ox.ac.uk/~vgg/research/affine/evaluation.html)
 - [Oxford VGG region-descriptor matching-score protocol](https://www.robots.ox.ac.uk/~vgg/research/affine/desc_evaluation.html)

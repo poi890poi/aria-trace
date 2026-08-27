@@ -72,6 +72,7 @@ def build_calibration(
     timing: Optional[Mapping[str, Any]] = None,
     status: str = "warning",
     ransac_threshold_screen_px: float = 2.0,
+    data_matrix_decode: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], GeometryEstimate, np.ndarray]:
     """Fit geometry and assemble the complete consumer-facing YAML value."""
 
@@ -170,6 +171,7 @@ def build_calibration(
         "geometry": geometry_value,
         "required_roi": dict(required_roi or {}),
         "image_quality": dict(image_quality or {}),
+        "data_matrix_decode": dict(data_matrix_decode or {}),
         "feature_matching": dict(feature_matching or {}),
         "timing": dict(timing or {}),
         "confidence": confidence,

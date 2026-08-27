@@ -30,6 +30,7 @@ _SECTION_COMMENTS = {
     "geometry": "# Measured overlap, reprojection, pose, and uncertainty evidence.",
     "required_roi": "# Opaque caller-supplied region; the calibration core does not interpret its label.",
     "image_quality": "# Display-referred ISO 12233 e-SFR/MTF evidence from pre-warp camera samples.",
+    "data_matrix_decode": "# ISO/IEC 15415 Decode grades for displayed Data Matrix symbols.",
     "feature_matching": "# Ground-truth repeatability, matching score, MMA, coverage, and pose error.",
     "timing": "# Timestamp coordinates and measured causal delays are separate models.",
     "confidence": "# Quality summaries retain their underlying measurements and warnings.",

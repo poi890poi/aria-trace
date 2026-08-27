@@ -8,6 +8,7 @@ import numpy as np
 from acquisition.rig_calibration import (
     CharucoLayout,
     ControlEvent,
+    DataMatrixObservation,
     FrameNormalizer,
     SignalObservation,
     aggregate_esfr_measurements,
@@ -20,6 +21,7 @@ from acquisition.rig_calibration import (
     evaluate_feature_matching,
     export_spatial_fragment,
     extract_one_to_one_patch,
+    grade_data_matrix_decode,
     generate_charuco_target,
     generate_feature_target,
     generate_slanted_edge_target,
@@ -31,7 +33,9 @@ from acquisition.rig_calibration import (
     render_feature_matching_overlay,
     render_geometry_overlay,
     render_latency_timeline,
+    render_data_matrix_target,
     select_visible_quality_region,
+    summarize_data_matrix_decode_sweep,
     validate_spatial_fragment,
     write_calibration_bundle,
 )
@@ -199,6 +203,68 @@ class RigArtifactTests(unittest.TestCase):
         magnified = nearest_neighbor_magnify(patch, 3)
         self.assertEqual(magnified.shape, (9, 15))
         self.assertTrue(np.all(magnified[0:3, 0:3] == patch[0, 0]))
+
+
+class RigDataMatrixDecodeTests(unittest.TestCase):
+    @staticmethod
+    def decoder(image):
+        marker = int(np.asarray(image).reshape(-1)[0])
+        if marker == 1:
+            return ["A7K2"]
+        if marker == 2:
+            return ["OLD1"]
+        return []
+
+    @staticmethod
+    def encoder(_payload):
+        yy, xx = np.indices((10, 10))
+        return np.where((xx + yy) % 2, 0, 255).astype(np.uint8)
+
+    def test_one_image_returns_standard_binary_decode_grade(self):
+        passed = grade_data_matrix_decode(
+            np.ones((8, 8), dtype=np.uint8), "A7K2", decoder=self.decoder
+        )
+        failed = grade_data_matrix_decode(
+            np.zeros((8, 8), dtype=np.uint8), "A7K2", decoder=self.decoder
+        )
+        stale = grade_data_matrix_decode(
+            np.full((8, 8), 2, dtype=np.uint8), "A7K2", decoder=self.decoder
+        )
+        self.assertEqual((passed["grade"], passed["grade_letter"]), (4.0, "A"))
+        self.assertEqual((failed["grade"], failed["grade_letter"]), (0.0, "F"))
+        self.assertFalse(stale["eligible_for_requested_target"])
+        self.assertEqual(stale["grade"], 4.0)
+
+    def test_sweep_retains_grades_without_an_invented_pass_rate(self):
+        observations = [
+            DataMatrixObservation(np.ones((4, 4), np.uint8), "A7K2", 1, "one-a"),
+            DataMatrixObservation(np.zeros((4, 4), np.uint8), "A7K2", 1, "one-f"),
+            DataMatrixObservation(np.ones((4, 4), np.uint8), "A7K2", 2, "two-a"),
+            DataMatrixObservation(np.full((4, 4), 2, np.uint8), "A7K2", 2, "stale"),
+        ]
+        value = summarize_data_matrix_decode_sweep(observations, decoder=self.decoder)
+        self.assertEqual(value["parameter"], "Decode")
+        self.assertEqual(value["aggregation"], "none_standard_grades_reported_as_counts")
+        self.assertNotIn("score", value)
+        self.assertEqual(value["module_width_results"][0]["decode_grade_4_A_count"], 1)
+        self.assertEqual(value["module_width_results"][0]["decode_grade_0_F_count"], 1)
+        self.assertEqual(
+            value["module_width_results"][1]["ineligible_wrong_target_count"], 1
+        )
+
+    def test_target_uses_integer_modules_in_one_fixed_patch(self):
+        target = render_data_matrix_target(
+            (100, 80), (20, 10, 50, 50), "A7K2", 3, encoder=self.encoder
+        )
+        self.assertEqual(target.symbol_modules_xy, (10, 10))
+        self.assertEqual(target.target_rect_screen_xywh, (20, 10, 50, 50))
+        left, top, width, height = target.symbol_rect_screen_xywh
+        self.assertEqual((width, height), (36, 36))
+        raster = target.image[top : top + height, left : left + width, 0]
+        for row in range(12):
+            for column in range(12):
+                cell = raster[row * 3 : (row + 1) * 3, column * 3 : (column + 1) * 3]
+                self.assertEqual(int(cell.min()), int(cell.max()))
 
 
 class RigLatencyTests(unittest.TestCase):
