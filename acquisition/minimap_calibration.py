@@ -706,6 +706,19 @@ def _color_heatmap(values: np.ndarray) -> np.ndarray:
     return cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
 
 
+def _stacked_difference_heatmap(frames: np.ndarray) -> np.ndarray:
+    """Accumulate actual consecutive-frame differences without a fitted model."""
+    if len(frames) < 2:
+        return np.zeros(frames.shape[1:3], dtype=np.float32)
+    stacked = np.zeros(frames.shape[1:3], dtype=np.float32)
+    previous = frames[0]
+    for current in frames[1:]:
+        difference = cv2.absdiff(previous, current).mean(axis=2)
+        stacked += difference.astype(np.float32)
+        previous = current
+    return stacked / float(len(frames) - 1)
+
+
 def _write_evidence(
     output: Path,
     rotation_frames: np.ndarray,
@@ -727,6 +740,12 @@ def _write_evidence(
     fit = boundary["fit"]
     observation = boundary["observation"]
     average = boundary["average"]
+    save(
+        "minimap_stacked_difference_heatmap.png",
+        _color_heatmap(_stacked_difference_heatmap(rotation_frames)),
+        "Stacked consecutive-frame difference heatmap",
+        "boundary",
+    )
     save(
         "boundary_temporal_heatmap.png",
         _color_heatmap(boundary["temporal_std"]),
@@ -753,6 +772,32 @@ def _write_evidence(
         if accepted:
             cv2.circle(point_binary, tuple(np.round(point).astype(int)), 1, (255,255,255), -1)
     save("boundary_points_binary.png", point_binary, "Accepted boundary points", "boundary")
+
+    fit_overlay = average.copy()
+    fit_center = (round(bmetrics["center_x"]), round(bmetrics["center_y"]))
+    fit_radius = round(bmetrics["radius"])
+    cv2.circle(
+        fit_overlay,
+        fit_center,
+        fit_radius,
+        (255, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.drawMarker(
+        fit_overlay,
+        fit_center,
+        (255, 255, 255),
+        cv2.MARKER_CROSS,
+        9,
+        1,
+    )
+    save(
+        "boundary_fitted_circle.png",
+        fit_overlay,
+        "Complete fitted mini-map boundary",
+        "boundary",
+    )
 
     overlay = average.copy()
     for index in range(0, len(observation["points"]), 4):

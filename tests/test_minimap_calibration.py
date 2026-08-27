@@ -68,6 +68,8 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertTrue((Path(temporary) / "calibration.json").is_file())
             self.assertTrue((Path(temporary) / "model.npz").is_file())
             declared = {item["name"] for item in result["evidence"]}
+            self.assertIn("minimap_stacked_difference_heatmap.png", declared)
+            self.assertIn("boundary_fitted_circle.png", declared)
             self.assertIn("boundary_evidence_overlay.png", declared)
             self.assertIn("cursor_center_orbit.png", declared)
             self.assertIn("cursor_shape_overlay.png", declared)

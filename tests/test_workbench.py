@@ -1614,7 +1614,9 @@ class WorkbenchTests(unittest.TestCase):
             movement = make_session(2, "movement_only")
             forward = make_session(3, "forward_no_turn")
 
-            def fake_calibration(_rotation, _movement, output, _config):
+            def fake_calibration(
+                _rotation, _movement, output, _config, progress=None
+            ):
                 output.mkdir(parents=True, exist_ok=True)
                 (output / "cursor_pose_overlays.png").write_bytes(b"pose")
                 return {
@@ -1655,7 +1657,9 @@ class WorkbenchTests(unittest.TestCase):
                     "analysis-sources/run_02",
                 )
 
-                def fake_verification(_forward, _calibration, output):
+                def fake_verification(
+                    _forward, _calibration, output, progress=None
+                ):
                     (output / "forward_pose_shift.png").write_bytes(b"shift")
                     return {
                         "status": "review_required",
@@ -1711,7 +1715,8 @@ class WorkbenchTests(unittest.TestCase):
             started = threading.Event()
             release = threading.Event()
 
-            def blocked(_value):
+            def blocked(_value, progress):
+                progress("Synthetic long-running phase")
                 started.set()
                 release.wait(2)
 
@@ -1724,6 +1729,10 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertEqual(
                     state.descriptor()["analysis_jobs"]["test"]["status"],
                     "running",
+                )
+                self.assertEqual(
+                    state.descriptor()["analysis_jobs"]["test"]["message"],
+                    "Synthetic long-running phase",
                 )
                 release.set()
                 deadline = time.time() + 2
@@ -1781,7 +1790,7 @@ class WorkbenchTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-                def fake_stitch(_session_path, output):
+                def fake_stitch(_session_path, output, progress=None):
                     output.mkdir(parents=True, exist_ok=True)
                     (output / "mosaic.png").write_bytes(b"png-evidence")
                     return {

@@ -1354,6 +1354,7 @@ class AcquisitionWorkbench:
             forward_names = {
                 "forward_start.png",
                 "forward_end.png",
+                "forward_shift_mask.png",
                 "forward_registration_overlay.png",
                 "forward_pose_shift.png",
             }

@@ -592,17 +592,16 @@ def _pose_overlays(poses, output: Path) -> None:
         pose = detected[pose_index]
         crop = pose["_crop"].copy()
         pivot = np.array([pose["polar_origin_x"], pose["polar_origin_y"]])
-        centroid = np.array([pose["cursor_centroid_x"], pose["cursor_centroid_y"]])
         angle = math.radians(pose["angle_screen_deg"])
-        endpoint = pivot + np.array([math.cos(angle), math.sin(angle)]) * 28.0
-        polygon_points = np.round(pose["_polygon_points_crop"]).astype(np.int32)
-        cv2.polylines(
-            crop, [polygon_points], True, (0,255,0), 2, cv2.LINE_AA
-        )
-        cv2.drawMarker(crop, tuple(np.round(pivot).astype(int)), (255,255,255), cv2.MARKER_CROSS, 13, 1)
-        cv2.circle(crop, tuple(np.round(centroid).astype(int)), 2, (255,255,0), -1)
+        direction = np.array([math.cos(angle), math.sin(angle)])
+        # Keep all annotation outside the cursor so the source pixels remain
+        # directly reviewable. The fitted polygon has its own evidence image.
+        arrow_start = pivot + direction * 16.0
+        arrow_end = pivot + direction * 38.0
         cv2.arrowedLine(
-            crop, tuple(np.round(pivot).astype(int)), tuple(np.round(endpoint).astype(int)),
+            crop,
+            tuple(np.round(arrow_start).astype(int)),
+            tuple(np.round(arrow_end).astype(int)),
             (0,255,255), 2, cv2.LINE_AA, tipLength=0.25
         )
         cv2.putText(
@@ -763,7 +762,7 @@ def estimate_cursor_pose_frames(
             },
             {
                 "name": "cursor_pose_overlays.png",
-                "title": "Cursor pose overlay samples",
+                "title": "Raw cursor samples with exterior direction arrows",
                 "category": "cursor_pose",
             },
         ],

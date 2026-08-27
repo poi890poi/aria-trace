@@ -71,21 +71,42 @@ def _verification_graphic(
     graphic[: map_image.shape[0]] = map_image
     pivot = tuple(int(round(value * 2.0)) for value in pivot_xy)
     scale = 3.0
+    shift_vector = np.asarray(content_shift_xy, dtype=np.float64) * scale
+    shift_length = float(np.linalg.norm(shift_vector))
+    shift_start = np.asarray(pivot, dtype=np.float64)
+    if shift_length > 1.0e-6:
+        shift_start += shift_vector / shift_length * 26.0
     content_end = (
-        int(round(pivot[0] + content_shift_xy[0] * scale)),
-        int(round(pivot[1] + content_shift_xy[1] * scale)),
+        int(round(shift_start[0] + shift_vector[0])),
+        int(round(shift_start[1] + shift_vector[1])),
     )
-    cv2.arrowedLine(graphic, pivot, content_end, (0, 220, 255), 2, cv2.LINE_AA)
+    cv2.arrowedLine(
+        graphic,
+        tuple(np.round(shift_start).astype(int)),
+        content_end,
+        (0, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
     for angle, color in (
         (cursor_angle_deg, (255, 100, 40)),
         (travel_angle_deg, (70, 255, 100)),
     ):
         radians = math.radians(angle)
+        direction = np.array([math.cos(radians), math.sin(radians)])
+        start = np.asarray(pivot, dtype=np.float64) + direction * 26.0
         end = (
-            int(round(pivot[0] + math.cos(radians) * 80)),
-            int(round(pivot[1] + math.sin(radians) * 80)),
+            int(round(pivot[0] + direction[0] * 80)),
+            int(round(pivot[1] + direction[1] * 80)),
         )
-        cv2.arrowedLine(graphic, pivot, end, color, 2, cv2.LINE_AA)
+        cv2.arrowedLine(
+            graphic,
+            tuple(np.round(start).astype(int)),
+            end,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
     cv2.putText(
         graphic,
         "map shift ({:.2f}, {:.2f}) px  response {:.3f}".format(
@@ -198,8 +219,6 @@ def verify_forward_session(
         if detected_angles
         else None
     )
-    masked_first = cv2.bitwise_and(first_crop, first_crop, mask=mask)
-    masked_last = cv2.bitwise_and(last_crop, last_crop, mask=mask)
     aligned_last = cv2.warpAffine(
         last_crop,
         np.float32([[1, 0, -shift[0]], [0, 1, -shift[1]]]),
@@ -227,20 +246,22 @@ def verify_forward_session(
         ]
     )
     evidence = [
-        {"name": "forward_start.png", "title": "Forward start observation", "category": "shift"},
-        {"name": "forward_end.png", "title": "Forward end observation", "category": "shift"},
+        {"name": "forward_start.png", "title": "Raw forward start observation", "category": "shift"},
+        {"name": "forward_end.png", "title": "Raw forward end observation", "category": "shift"},
+        {"name": "forward_shift_mask.png", "title": "Exact shift-estimation mask (white used, black excluded)", "category": "shift"},
         {"name": "forward_registration_overlay.png", "title": "Aligned overlay and registration residual", "category": "shift"},
         {"name": "forward_pose_shift.png", "title": "Cursor pose and map-shift relationship", "category": "pose_verification"},
     ]
     if progress:
         progress("Rendering shift, correlation, and pose evidence")
-    _write_image(output_path / "forward_start.png", masked_first)
-    _write_image(output_path / "forward_end.png", masked_last)
+    _write_image(output_path / "forward_start.png", first_crop)
+    _write_image(output_path / "forward_end.png", last_crop)
+    _write_image(output_path / "forward_shift_mask.png", mask)
     _write_image(output_path / "forward_registration_overlay.png", registration_review)
     _write_image(
         output_path / "forward_pose_shift.png",
         _verification_graphic(
-            masked_last,
+            last_crop,
             estimator.pivot,
             shift,
             cursor_angle if detected_angles else 0.0,
