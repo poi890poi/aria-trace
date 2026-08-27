@@ -408,6 +408,7 @@ class AcquisitionWorkbench:
         desktop_api=None,
         xinput_api=None,
         raw_input_api=None,
+        folder_opener=None,
     ) -> None:
         self.session_root = Path(session_root)
         self.artifact_root = Path(artifact_root)
@@ -415,6 +416,7 @@ class AcquisitionWorkbench:
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         self.profiles = profiles or ProfileCatalog()
         self.desktop_api = desktop_api
+        self._folder_opener = folder_opener
         self.sources = SourceFactory(
             desktop_api=desktop_api,
             xinput_api=xinput_api,
@@ -1918,6 +1920,17 @@ class AcquisitionWorkbench:
             self._last_error = None
         return self.descriptor()
 
+    def open_session_folder(self, session_key: str) -> dict:
+        """Open one validated retained-session directory in the OS file manager."""
+        path = self._session_path(session_key)
+        if self._folder_opener is not None:
+            self._folder_opener(str(path))
+        elif os.name == "nt" and hasattr(os, "startfile"):
+            os.startfile(str(path))
+        else:
+            raise RuntimeError("Opening session folders is unavailable on this platform")
+        return self.descriptor()
+
     @staticmethod
     def _finalize_take(
         path: Path,
@@ -2158,6 +2171,10 @@ def make_handler(state: AcquisitionWorkbench):
                     )
                 elif path == "/api/session/delete":
                     result = state.delete_session(
+                        str(value.get("session_key") or "")
+                    )
+                elif path == "/api/session/open-folder":
+                    result = state.open_session_folder(
                         str(value.get("session_key") or "")
                     )
                 elif path == "/api/hud/toggle":

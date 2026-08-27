@@ -66,7 +66,8 @@ function renderSessions(){
     const stats=document.createElement('div');stats.className='meta';stats.innerHTML='<span class="status '+escapeHtml(item.status)+'">'+escapeHtml(statusText(item.status))+'</span><br>'+escapeHtml(fmtDuration(item.duration_s))+' / '+escapeHtml(item.frames==null?'-':item.frames)+' frames / '+escapeHtml(item.input_events==null?'-':item.input_events)+' inputs';
     const controls=document.createElement('div');controls.className='session-controls';const label=document.createElement('label');label.textContent='Label';const select=document.createElement('select');
     (state.session_labels||[]).forEach(option=>select.add(new Option(option.label,option.value)));if(!Array.from(select.options).some(option=>option.value===item.label)&&item.label)select.add(new Option(item.label,item.label));select.value=item.label||'';select.disabled=busy||active;select.onchange=()=>changeLabel(item.session_key,select.value);label.append(select);
-    const remove=document.createElement('button');remove.className='delete danger';remove.textContent='Delete';remove.title='Move session to recoverable trash';remove.disabled=busy||active;remove.onclick=()=>deleteSession(item.session_key);controls.append(label,remove);card.append(identity,when,stats,controls);ui.sessions.append(card);
+    const open=document.createElement('button');open.textContent='Open folder';open.title='Open this session in the file manager';open.disabled=busy||active;open.onclick=()=>openSessionFolder(item.session_key);
+    const remove=document.createElement('button');remove.className='delete danger';remove.textContent='Delete';remove.title='Move session to recoverable trash';remove.disabled=busy||active;remove.onclick=()=>deleteSession(item.session_key);controls.append(label,open,remove);card.append(identity,when,stats,controls);ui.sessions.append(card);
   });
 }
 function render(){
@@ -76,6 +77,7 @@ function render(){
 async function act(work,success){if(busy)return;busy=true;actionError='';render();try{state=await work();showMessage(success||'Done','ok')}catch(error){actionError=error.message||String(error)}finally{busy=false;render()}}
 async function startRecording(){await act(()=>post('/api/session/start',{game_profile_id:ui.game.value||null,window_title:ui.window.value,input_adapter:ui.inputAdapter.value,capture_duration_s:Number(ui.duration.value),start_delay_s:3}),'Recording queued. Switch to the game now.')}
 async function changeLabel(sessionKey,label){await act(()=>post('/api/session/label',{session_key:sessionKey,label}),'Session label saved.')}
+async function openSessionFolder(sessionKey){await act(()=>post('/api/session/open-folder',{session_key:sessionKey}),'Session folder opened.')}
 async function deleteSession(sessionKey){if(!confirm('Delete this session? It will be moved to recoverable trash.'))return;await act(()=>post('/api/session/delete',{session_key:sessionKey}),'Session moved to trash.')}
 async function toggleHud(){const enabled=!(state.hud_runtime||{}).enabled;await act(()=>post('/api/hud/toggle',{enabled}),enabled?'Overlay shown.':'Overlay hidden.')}
 async function refresh(){if(busy||refreshing||labelMenuActive())return;refreshing=true;try{const response=await fetch('/api/state');if(!response.ok)throw new Error(await response.text());const nextState=await response.json();if(labelMenuActive())return;state=nextState;render()}catch(error){showMessage(error.message||String(error),'error')}finally{refreshing=false}}

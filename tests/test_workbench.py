@@ -1470,6 +1470,13 @@ class WorkbenchTests(unittest.TestCase):
                 )
                 self.assertEqual(state._next_run_index(), 2)
 
+                opened = []
+                state._folder_opener = opened.append
+                state.open_session_folder("managed-sessions/run_01")
+                self.assertEqual(opened, [str(path.resolve())])
+                with self.assertRaisesRegex(ValueError, "Invalid session"):
+                    state.open_session_folder("../outside/run_01")
+
                 deleted = state.delete_session("managed-sessions/run_01")
                 self.assertEqual(deleted["sessions"], [])
                 self.assertFalse(path.exists())
