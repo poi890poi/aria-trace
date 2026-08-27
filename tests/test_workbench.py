@@ -4,8 +4,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,10 +18,14 @@ from acquisition.session import SessionReader, SessionWriter, input_capture_heal
 from acquisition.workbench import (
     AcquisitionWorkbench,
     SourceFactory,
+    WorkbenchHttpServer,
     automatic_take_bounds,
+    discover_workbench_instance,
     input_packet_is_active,
+    is_client_disconnect,
     make_handler,
     nearest_frame_index,
+    occupied_port_message,
     safe_id,
 )
 from acquisition.windows import (
@@ -246,6 +250,46 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_client_disconnects_are_not_server_failures(self):
+        self.assertTrue(is_client_disconnect(BrokenPipeError()))
+        self.assertTrue(is_client_disconnect(ConnectionResetError()))
+        self.assertTrue(is_client_disconnect(ConnectionAbortedError(10053, "aborted")))
+        self.assertFalse(is_client_disconnect(ValueError("bad request")))
+
+        class AbortedWriter:
+            def write(self, body):
+                raise ConnectionAbortedError(10053, "aborted")
+
+        handler = object.__new__(make_handler(None))
+        handler.requestline = "GET /api/hud HTTP/1.1"
+        handler.request_version = "HTTP/1.1"
+        handler.command = "GET"
+        handler.wfile = AbortedWriter()
+        handler.close_connection = False
+        handler._send(200, "application/json", b"{}")
+        self.assertTrue(handler.close_connection)
+
+    def test_instance_discovery_recognizes_older_workbench_shell(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self, limit=-1):
+                return b"<title>AriaTrace Recorder</title>"
+
+        not_found = urllib.error.HTTPError(
+            "http://127.0.0.1:8080/api/instance", 404, "Not found", {}, None
+        )
+        with patch(
+            "acquisition.workbench.urlopen", side_effect=[not_found, Response()]
+        ):
+            instance = discover_workbench_instance("127.0.0.1", 8080)
+        self.assertTrue(instance["legacy"])
+        self.assertEqual(instance["url"], "http://127.0.0.1:8080/")
+
     def test_hud_visibility_requires_exact_target_foreground(self):
         class FakeUser32:
             foreground = 17
@@ -1075,13 +1119,19 @@ class WorkbenchTests(unittest.TestCase):
                     descriptor["capture_policy"]["in_game_controls"], "none"
                 )
 
-                server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+                server = WorkbenchHttpServer(("127.0.0.1", 0), make_handler(state))
+                state.configure_server_endpoint(
+                    "127.0.0.1", server.server_address[1]
+                )
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 try:
                     base = "http://127.0.0.1:{}".format(server.server_address[1])
                     html = urllib.request.urlopen(base + "/").read().decode("utf-8")
                     api = json.loads(urllib.request.urlopen(base + "/api/state").read())
+                    instance_api = json.loads(
+                        urllib.request.urlopen(base + "/api/instance").read()
+                    )
                     hud_api = json.loads(
                         urllib.request.urlopen(base + "/api/hud").read()
                     )
@@ -1100,6 +1150,22 @@ class WorkbenchTests(unittest.TestCase):
                     self.assertNotIn("F9", html)
                     self.assertNotIn("Combat Master", html)
                     self.assertEqual(api["armed"]["game_profile_id"], "game-a")
+                    self.assertEqual(
+                        instance_api["service"], "aria-trace-workbench"
+                    )
+                    self.assertEqual(instance_api, api["instance"])
+                    self.assertEqual(instance_api["port"], server.server_address[1])
+                    discovered = discover_workbench_instance(
+                        "127.0.0.1", server.server_address[1]
+                    )
+                    self.assertEqual(
+                        discovered["instance_id"], instance_api["instance_id"]
+                    )
+                    message = occupied_port_message(
+                        "127.0.0.1", server.server_address[1], discovered
+                    )
+                    self.assertIn("PID {}".format(instance_api["process_id"]), message)
+                    self.assertIn("did not replace or stop it", message)
                     self.assertFalse(hud_api["visible"])
                 finally:
                     server.shutdown()

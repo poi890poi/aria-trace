@@ -14,6 +14,10 @@ The Acquisition Workbench is the normal way to record a route. It uses the canon
 
 There are no required command-line parameters. The default output locations are `sessions/workbench/` for recordings and `artifacts/workbench/` for compiled results.
 
+Each listening address has one terminal-owned Workbench instance. Startup prints its instance ID, PID, URL, and shutdown instruction; the page header shows its PID, port, and start time. Starting another copy on the same port never replaces or stops the first one. It identifies the existing Workbench (including older builds) and tells you to use Ctrl+C in the terminal that owns it. `GET /api/instance` returns the same identity plus the absolute session and artifact roots, which makes it possible to verify exactly which process and data directories a browser tab is using.
+
+A browser may cancel a polling or image request when a tab reloads, navigates, or supersedes an earlier request. This is an ordinary client disconnect, not a recording or calibration failure, and the Workbench suppresses the corresponding `BrokenPipeError`, `ConnectionResetError`, and Windows `ConnectionAbortedError` request-thread tracebacks.
+
 When the selected game runs as administrator, the Workbench process serving port 8765 must also run as administrator. Stop any existing non-elevated Workbench first: launching a second elevated copy cannot take over a port that the first copy still owns. The Start action checks this before it creates a session and reports the mismatch on the page.
 
 ## Record and organize sessions

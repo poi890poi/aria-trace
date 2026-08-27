@@ -6,13 +6,17 @@ import math
 import os
 import re
 import shutil
+import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import List, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 from replay.alignment import align_session
 from replay.package import compile_replay_package
@@ -34,6 +38,104 @@ from .windows import (
     WindowsXInputSource,
     select_window,
 )
+
+
+WORKBENCH_SERVICE = "aria-trace-workbench"
+
+
+def is_client_disconnect(exc: BaseException) -> bool:
+    """Return whether a request ended because the HTTP client went away."""
+    return isinstance(
+        exc,
+        (BrokenPipeError, ConnectionAbortedError, ConnectionResetError),
+    )
+
+
+class WorkbenchHttpServer(ThreadingHTTPServer):
+    """Threaded HTTP server that treats browser disconnects as routine."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:
+        if is_client_disconnect(sys.exc_info()[1]):
+            return
+        super().handle_error(request, client_address)
+
+
+def _connect_host(host: str) -> str:
+    return "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+
+
+def discover_workbench_instance(host: str, port: int, timeout: float = 0.75):
+    """Identify a Workbench already listening on host/port, including old builds."""
+    base = "http://{}:{}".format(_connect_host(host), int(port))
+    try:
+        with urlopen(base + "/api/instance", timeout=timeout) as response:
+            value = json.loads(response.read().decode("utf-8"))
+        if value.get("service") == WORKBENCH_SERVICE:
+            return value
+    except HTTPError as exc:
+        if exc.code != 404:
+            return None
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return None
+
+    # Workbench builds predating /api/instance can still be distinguished from
+    # unrelated services so a duplicate launch produces useful guidance. Check
+    # the static shell before the more expensive full-state descriptor.
+    try:
+        with urlopen(base + "/", timeout=timeout) as response:
+            body = response.read(16384).decode("utf-8", errors="replace")
+        if "<title>AriaTrace Recorder</title>" in body:
+            return {
+                "service": WORKBENCH_SERVICE,
+                "legacy": True,
+                "url": base + "/",
+            }
+    except (OSError, URLError, ValueError):
+        return None
+
+    try:
+        with urlopen(base + "/api/state", timeout=timeout) as response:
+            value = json.loads(response.read().decode("utf-8"))
+        if "session_labels" in value and "sources" in value:
+            return {
+                "service": WORKBENCH_SERVICE,
+                "legacy": True,
+                "url": base + "/",
+            }
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def occupied_port_message(host: str, port: int, existing) -> str:
+    endpoint = "http://{}:{}/".format(_connect_host(host), int(port))
+    if not existing:
+        return (
+            "Cannot start the Workbench at {} because the address is already in "
+            "use by another process. This command did not replace or stop it."
+        ).format(endpoint)
+    if existing.get("legacy"):
+        return (
+            "An older AriaTrace Workbench is already running at {}. Stop it with "
+            "Ctrl+C in the terminal that started it, then launch this version. "
+            "This command did not replace or stop it."
+        ).format(endpoint)
+    details = ["PID {}".format(existing.get("process_id", "unknown"))]
+    if existing.get("started_utc"):
+        details.append("started {}".format(existing["started_utc"]))
+    if existing.get("session_root"):
+        details.append("sessions {}".format(existing["session_root"]))
+    return (
+        "AriaTrace Workbench instance {instance_id} is already running at {url} "
+        "({details}). Stop it with Ctrl+C in its owning terminal if you intend to "
+        "restart it. This command did not replace or stop it."
+    ).format(
+        instance_id=existing.get("instance_id", "unknown"),
+        url=existing.get("url") or endpoint,
+        details=", ".join(details),
+    )
 
 
 def safe_id(value: str) -> str:
@@ -434,6 +536,20 @@ class AcquisitionWorkbench:
         self._analysis_jobs = {}
         self._hud_notice = None
         self._session_summary_cache = {}
+        self._instance = {
+            "service": WORKBENCH_SERVICE,
+            "schema_version": "1.0",
+            "instance_id": uuid.uuid4().hex[:12],
+            "process_id": os.getpid(),
+            "started_utc": datetime.now(timezone.utc).isoformat(),
+            "workspace_root": str(Path(__file__).resolve().parents[1]),
+            "session_root": str(self.session_root.resolve()),
+            "artifact_root": str(self.artifact_root.resolve()),
+            "host": None,
+            "port": None,
+            "url": None,
+            "lifecycle_owner": "terminal",
+        }
         self._hud_runtime = {
             "available": False,
             "enabled": False,
@@ -448,6 +564,21 @@ class AcquisitionWorkbench:
         for game_profile_id, game in self.profiles.games.items():
             if game.get("poc_workflow"):
                 self._refresh_poc_evidence_index(game_profile_id)
+
+    def configure_server_endpoint(self, host: str, port: int) -> None:
+        """Publish the bound endpoint without transferring lifecycle ownership."""
+        with self._lock:
+            self._instance.update(
+                {
+                    "host": host,
+                    "port": int(port),
+                    "url": "http://{}:{}/".format(_connect_host(host), int(port)),
+                }
+            )
+
+    def instance_descriptor(self) -> dict:
+        with self._lock:
+            return dict(self._instance)
 
     def _state_path(self) -> Path:
         return self.artifact_root / "workbench_state.json"
@@ -1807,6 +1938,7 @@ class AcquisitionWorkbench:
             all_ready = bool(runs) and all(run["status"] == "ready" for run in runs)
             return {
                 "schema_version": "1.2",
+                "instance": dict(self._instance),
                 "profiles": self.profiles.descriptor(),
                 "game_profile_drafts": self._profile_drafts(),
                 "poc_evidence_indexes": self._poc_evidence_indexes(),
@@ -2452,12 +2584,18 @@ def make_handler(state: AcquisitionWorkbench):
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, content_type: str, body: bytes) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                # Browsers routinely cancel obsolete polling and image requests.
+                # The response no longer has a recipient, so there is nothing to
+                # retry or report as a Workbench failure.
+                self.close_connection = True
 
         def _json(self, status: int, value: object) -> None:
             self._send(
@@ -2488,6 +2626,8 @@ def make_handler(state: AcquisitionWorkbench):
                     )
                 elif path == "/api/state":
                     self._json(200, state.descriptor())
+                elif path == "/api/instance":
+                    self._json(200, state.instance_descriptor())
                 elif path == "/api/hud":
                     self._json(200, state.hud_descriptor())
                 elif path == "/api/minimap-calibration/image":
@@ -2604,7 +2744,15 @@ def main() -> None:
         args.artifact_root,
         profiles=catalog,
     )
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(state))
+    try:
+        server = WorkbenchHttpServer((args.host, args.port), make_handler(state))
+    except OSError:
+        existing = discover_workbench_instance(args.host, args.port)
+        state.close()
+        raise SystemExit(
+            occupied_port_message(args.host, args.port, existing)
+        ) from None
+    state.configure_server_endpoint(args.host, server.server_address[1])
     hud = None
     hud_error = None
     if os.name == "nt":
@@ -2653,7 +2801,10 @@ def main() -> None:
                 available=hud is not None,
             )
     print("AriaTrace Acquisition Workbench")
-    print("Open http://{}:{}/".format(args.host, server.server_address[1]))
+    instance = state.instance_descriptor()
+    print("Instance {} (PID {})".format(instance["instance_id"], instance["process_id"]))
+    print("Open {}".format(instance["url"]))
+    print("Stop this instance with Ctrl+C in this terminal")
     if state.descriptor()["hud_runtime"]["enabled"]:
         print("In-game HUD enabled (click-through and excluded from capture)")
     elif hud_error:
