@@ -3,12 +3,17 @@
 import json
 import math
 import os
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from .cursor_pose import CursorPoseEstimator, circular_difference_degrees
+from .cursor_pose import (
+    CursorPoseEstimator,
+    circular_difference_degrees,
+    timing_summary_ms,
+)
 from .session import SessionReader
 
 
@@ -30,6 +35,35 @@ def estimate_masked_shift(first: np.ndarray, last: np.ndarray, mask: np.ndarray)
     )
     shift, response = cv2.phaseCorrelate(first_gray, last_gray, window * weight)
     return (float(shift[0]), float(shift[1])), float(response)
+
+
+def benchmark_masked_shift(
+    first: np.ndarray,
+    last: np.ndarray,
+    mask: np.ndarray,
+    repeat_count: int = 20,
+):
+    """Return the normal shift result plus warm-cache wall-time statistics."""
+    if repeat_count < 1:
+        raise ValueError("Shift benchmark repeat count must be positive")
+    estimate_masked_shift(first, last, mask)
+    durations_ns = []
+    shift = response = None
+    for _ in range(repeat_count):
+        started_ns = time.perf_counter_ns()
+        shift, response = estimate_masked_shift(first, last, mask)
+        durations_ns.append(time.perf_counter_ns() - started_ns)
+    benchmark = timing_summary_ms(
+        durations_ns,
+        "one warm-up then repeated complete masked-shift wall time",
+    )
+    benchmark.update(
+        {
+            "warmup_count": 1,
+            "image_size_wh": [int(first.shape[1]), int(first.shape[0])],
+        }
+    )
+    return shift, response, benchmark
 
 
 def _write_image(path: Path, image: np.ndarray) -> None:
@@ -192,8 +226,12 @@ def verify_forward_session(
     )
     mask[cursor_hole] = 0
     if progress:
-        progress("Estimating the start-to-end mini-map shift")
-    shift, response = estimate_masked_shift(first_crop, last_crop, mask)
+        progress("Benchmarking masked shift estimation (20 repeats)")
+    shift, response, shift_benchmark = benchmark_masked_shift(
+        first_crop,
+        last_crop,
+        mask,
+    )
     if progress:
         progress("Estimating cursor pose at the start and end frames")
     poses = [
@@ -283,6 +321,7 @@ def verify_forward_session(
         "map_content_shift_angle_screen_deg": shift_angle,
         "inferred_travel_angle_screen_deg": travel_angle,
         "phase_correlation_response": response,
+        "shift_estimation_benchmark": shift_benchmark,
         "cursor_angle_screen_deg": cursor_angle if detected_angles else None,
         "cursor_pose_start": poses[0],
         "cursor_pose_end": poses[1],

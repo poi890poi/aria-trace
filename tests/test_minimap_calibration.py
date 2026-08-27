@@ -77,6 +77,12 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertIn("cursor_pose_gaussian_fits.png", declared)
             self.assertIn("cursor_pose_polar_samples.png", declared)
             pose = result["cursor_pose_validation"]
+            pose_benchmark = pose["pose_estimation_benchmark"]
+            self.assertEqual(pose_benchmark["sample_count"], len(movement))
+            self.assertGreater(pose_benchmark["median_ms"], 0.0)
+            self.assertGreaterEqual(
+                pose_benchmark["p95_ms"], pose_benchmark["median_ms"]
+            )
             self.assertEqual(pose["polar_origin"], "fitted_cursor_rotation_center")
             self.assertGreater(pose["detection_rate"], 0.98)
             self.assertEqual(

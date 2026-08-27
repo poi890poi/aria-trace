@@ -3,7 +3,10 @@ import unittest
 import cv2
 import numpy as np
 
-from acquisition.minimap_verification import estimate_masked_shift
+from acquisition.minimap_verification import (
+    benchmark_masked_shift,
+    estimate_masked_shift,
+)
 
 
 class MinimapVerificationTests(unittest.TestCase):
@@ -23,6 +26,18 @@ class MinimapVerificationTests(unittest.TestCase):
         self.assertAlmostEqual(shift[0], 7.0, delta=0.6)
         self.assertAlmostEqual(shift[1], -4.0, delta=0.6)
         self.assertGreater(response, 0.20)
+
+        measured_shift, measured_response, benchmark = benchmark_masked_shift(
+            first, last, mask, repeat_count=3
+        )
+        self.assertAlmostEqual(measured_shift[0], shift[0], places=6)
+        self.assertAlmostEqual(measured_shift[1], shift[1], places=6)
+        self.assertAlmostEqual(measured_response, response, places=6)
+        self.assertEqual(benchmark["sample_count"], 3)
+        self.assertEqual(benchmark["warmup_count"], 1)
+        self.assertEqual(benchmark["image_size_wh"], [140, 120])
+        self.assertGreater(benchmark["median_ms"], 0.0)
+        self.assertGreaterEqual(benchmark["p95_ms"], benchmark["median_ms"])
 
 
 if __name__ == "__main__":

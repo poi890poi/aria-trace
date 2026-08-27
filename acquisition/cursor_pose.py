@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
@@ -15,6 +16,23 @@ from .session import SessionReader
 
 
 SCHEMA_VERSION = "1.0"
+
+
+def timing_summary_ms(durations_ns, method: str) -> dict:
+    values = np.asarray(durations_ns, dtype=np.float64) / 1.0e6
+    if not len(values):
+        raise ValueError("At least one timing sample is required")
+    return {
+        "method": method,
+        "clock": "time.perf_counter_ns",
+        "sample_count": int(len(values)),
+        "total_ms": float(values.sum()),
+        "mean_ms": float(values.mean()),
+        "median_ms": float(np.median(values)),
+        "p95_ms": float(np.percentile(values, 95)),
+        "min_ms": float(values.min()),
+        "max_ms": float(values.max()),
+    }
 
 
 def wrap_signed_degrees(value):
@@ -628,12 +646,19 @@ def estimate_cursor_pose_frames(
         frame_indices = list(range(len(frames)))
     if session_times_ns is None:
         session_times_ns = [int(index * 1e9 / 30.0) for index in range(len(frames))]
-    poses = [
-        estimator.estimate(frame, int(frame_index), int(session_time_ns))
-        for frame, frame_index, session_time_ns in zip(
-            frames, frame_indices, session_times_ns
+    poses = []
+    pose_durations_ns = []
+    for frame, frame_index, session_time_ns in zip(
+        frames, frame_indices, session_times_ns
+    ):
+        started_ns = time.perf_counter_ns()
+        pose = estimator.estimate(
+            frame,
+            int(frame_index),
+            int(session_time_ns),
         )
-    ]
+        pose_durations_ns.append(time.perf_counter_ns() - started_ns)
+        poses.append(pose)
     public = [estimator.public_result(pose) for pose in poses]
     with (output_path / "cursor_poses.jsonl").open("w", encoding="utf-8") as stream:
         for pose in public:
@@ -697,6 +722,10 @@ def estimate_cursor_pose_frames(
         "p10_confidence": float(np.percentile(confidence, 10)),
         "confidence_level": _confidence_level(float(np.median(confidence))),
         "pose_model": "symmetry_constrained_rigid_polygon",
+        "pose_estimation_benchmark": timing_summary_ms(
+            pose_durations_ns,
+            "observed per-frame estimator wall time; model load and evidence excluded",
+        ),
         "median_angular_likelihood_peak": float(np.median(peak)),
         "median_polygon_symmetric_chamfer_px": float(np.median(polygon_chamfer)),
         "p90_polygon_symmetric_chamfer_px": float(np.percentile(polygon_chamfer, 90)),
