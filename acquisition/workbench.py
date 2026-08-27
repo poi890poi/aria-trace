@@ -431,6 +431,7 @@ class AcquisitionWorkbench:
         self._last_capture_diagnostics = None
         self._compile_state = "not_ready"
         self._compile_result = None
+        self._analysis_jobs = {}
         self._hud_notice = None
         self._session_summary_cache = {}
         self._hud_runtime = {
@@ -919,6 +920,82 @@ class AcquisitionWorkbench:
                     candidate["recommended"] = index == 0
         return values
 
+    def _queue_analysis(self, kind: str, value: dict, runner) -> dict:
+        """Start one observable analysis job without blocking the HTTP request."""
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            if any(
+                item.get("status") in {"queued", "running"}
+                for item in self._analysis_jobs.values()
+            ):
+                raise RuntimeError("Wait for the active analysis task to finish")
+            job_id = "{}-{}".format(kind, time.time_ns())
+            request = {
+                key: item
+                for key, item in dict(value).items()
+                if isinstance(item, (str, int, float, bool)) or item is None
+            }
+            self._analysis_jobs[kind] = {
+                "job_id": job_id,
+                "kind": kind,
+                "status": "queued",
+                "queued_utc": datetime.now(timezone.utc).isoformat(),
+                "started_utc": None,
+                "finished_utc": None,
+                "request": request,
+                "error": None,
+            }
+
+        def work() -> None:
+            with self._lock:
+                job = self._analysis_jobs.get(kind)
+                if not job or job.get("job_id") != job_id:
+                    return
+                job["status"] = "running"
+                job["started_utc"] = datetime.now(timezone.utc).isoformat()
+            try:
+                runner(dict(value))
+            except Exception as exc:
+                with self._lock:
+                    job = self._analysis_jobs.get(kind)
+                    if job and job.get("job_id") == job_id:
+                        job["status"] = "failed"
+                        job["error"] = "{}: {}".format(
+                            type(exc).__name__, exc
+                        )
+                        job["finished_utc"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
+            else:
+                with self._lock:
+                    job = self._analysis_jobs.get(kind)
+                    if job and job.get("job_id") == job_id:
+                        job["status"] = "complete"
+                        job["finished_utc"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
+
+        threading.Thread(
+            target=work,
+            name="acquisition-workbench-{}".format(kind),
+            daemon=True,
+        ).start()
+        return self.descriptor()
+
+    def queue_minimap_calibration(self, value: dict) -> dict:
+        return self._queue_analysis(
+            "minimap_calibration", value, self.run_minimap_calibration
+        )
+
+    def queue_pose_verification(self, value: dict) -> dict:
+        return self._queue_analysis(
+            "pose_verification", value, self.run_pose_verification
+        )
+
+    def queue_map_stitch(self, value: dict) -> dict:
+        return self._queue_analysis("map_stitching", value, self.run_map_stitch)
+
     def run_minimap_calibration(self, value: dict) -> dict:
         with self._lock:
             if self._active is not None:
@@ -949,20 +1026,19 @@ class AcquisitionWorkbench:
                     raise ValueError("Calibration session belongs to another game")
                 return path, manifest, context
 
-            if not value.get("session_relative_path"):
+            legacy = bool(value.get("session_relative_path"))
+            if not legacy:
                 candidates = self.analysis_candidates().get(game_profile_id, {})
 
-                def choose(role: str, field: str, required: bool = True):
+                def choose(role: str, field: str):
                     relative = str(value.get(field) or "")
                     if not relative:
                         ranked = candidates.get(role) or []
                         relative = str(ranked[0]["session_key"]) if ranked else ""
                     if not relative:
-                        if required:
-                            raise ValueError(
-                                "No ready {} session is available".format(role)
-                            )
-                        return None, None, None
+                        raise ValueError(
+                            "No ready {} session is available".format(role)
+                        )
                     path, manifest, context = checked_session(relative)
                     metadata = self._session_metadata(path)
                     actual_role = metadata.get("label") or context.get(
@@ -974,47 +1050,34 @@ class AcquisitionWorkbench:
                                 role, actual_role or "unlabeled"
                             )
                         )
-                    return path, manifest, context
+                    return relative, path, manifest, context
 
-                rotation_path, _, _ = choose(
+                rotation_key, rotation_path, rotation_manifest, _ = choose(
                     "rotation_only", "rotation_session_relative_path"
                 )
-                movement_path, movement_manifest, _ = choose(
+                movement_key, movement_path, movement_manifest, _ = choose(
                     "movement_only", "movement_session_relative_path"
                 )
-                forward_path, _, _ = choose(
-                    "forward_no_turn",
-                    "forward_session_relative_path",
-                    required=False,
-                )
-                context = movement_manifest.get("context") or {}
                 calibration_id = safe_id(
-                    "{}-segmented-run{:02d}".format(
-                        context.get("experiment_id")
-                        or movement_manifest.get("session_id"),
-                        int(context.get("run_index") or 1),
+                    "segments-{}-{}".format(
+                        str(rotation_manifest.get("session_id") or "rotation")[:12],
+                        str(movement_manifest.get("session_id") or "movement")[:12],
                     )
                 )
                 output = self._minimap_calibration_root(game_profile_id) / calibration_id
-                result = calibrate_segment_sessions(
-                    rotation_path,
-                    movement_path,
-                    output,
-                    calibration_config,
-                    forward_session_path=forward_path,
-                )
-                if forward_path is not None:
-                    verification = verify_forward_session(
-                        forward_path, output, output
-                    )
-                    result["forward_verification"] = verification
-                    result.setdefault("evidence", []).extend(
-                        verification.get("evidence") or []
-                    )
+                source_sessions = {
+                    "rotation_only": {
+                        "session_key": rotation_key,
+                        "session_id": rotation_manifest.get("session_id"),
+                    },
+                    "movement_only": {
+                        "session_key": movement_key,
+                        "session_id": movement_manifest.get("session_id"),
+                    },
+                }
             else:
-                session_path, manifest, context = checked_session(
-                    str(value.get("session_relative_path") or "")
-                )
+                session_key = str(value.get("session_relative_path") or "")
+                session_path, manifest, context = checked_session(session_key)
                 if context.get("workflow_stage_id") != "game-profile":
                     raise ValueError("Legacy calibration requires a basic gameplay sample")
                 try:
@@ -1032,14 +1095,32 @@ class AcquisitionWorkbench:
                     raise ValueError("Enter all four segment boundaries in seconds")
                 calibration_id = safe_id("{}-run{:02d}".format(context.get("experiment_id") or manifest.get("session_id"), int(context.get("run_index") or 1)))
                 output = self._minimap_calibration_root(game_profile_id) / calibration_id
-                result = calibrate_session(
-                    session_path, output, segments, calibration_config
-                )
+                source_sessions = {
+                    "legacy_segmented_session": {
+                        "session_key": session_key,
+                        "session_id": manifest.get("session_id"),
+                    }
+                }
+
+        if legacy:
+            result = calibrate_session(
+                session_path, output, segments, calibration_config
+            )
+        else:
+            result = calibrate_segment_sessions(
+                rotation_path,
+                movement_path,
+                output,
+                calibration_config,
+            )
+
+        with self._lock:
+            result["source_sessions"] = source_sessions
             result["calibration_id"] = calibration_id
             result["artifact_relative_path"] = str(output.relative_to(self.artifact_root))
             _write_json_atomic(output / "calibration.json", result)
             self._last_error = None
-        return self.descriptor()
+            return self.descriptor()
 
     def minimap_calibration_image(self, game_profile_id: str, calibration_id: str, name: str) -> bytes:
         if Path(name).name != name or not name.lower().endswith(".png"):
@@ -1050,6 +1131,80 @@ class AcquisitionWorkbench:
         if name not in declared:
             raise ValueError("Unknown calibration evidence image")
         return (root / name).read_bytes()
+
+    def run_pose_verification(self, value: dict) -> dict:
+        """Cross-check the existing pose model against one forward session."""
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            self.profiles.game(game_profile_id)
+            calibration_id = str(value.get("calibration_id") or "")
+            if not calibration_id or safe_id(calibration_id) != calibration_id:
+                raise ValueError("Choose a calibration for the selected sessions")
+            calibration_root = (
+                self._minimap_calibration_root(game_profile_id) / calibration_id
+            )
+            calibration_file = calibration_root / "calibration.json"
+            if not calibration_file.is_file():
+                raise ValueError("Calibration artifact does not exist")
+            calibration = json.loads(calibration_file.read_text(encoding="utf-8"))
+            source_sessions = calibration.get("source_sessions") or {}
+            expected_rotation = str(value.get("rotation_session_relative_path") or "")
+            expected_movement = str(value.get("movement_session_relative_path") or "")
+            if expected_rotation and (
+                (source_sessions.get("rotation_only") or {}).get("session_key")
+                != expected_rotation
+            ):
+                raise ValueError("Calibration does not use the selected rotation session")
+            if expected_movement and (
+                (source_sessions.get("movement_only") or {}).get("session_key")
+                != expected_movement
+            ):
+                raise ValueError("Calibration does not use the selected movement session")
+            forward_key = str(value.get("forward_session_relative_path") or "")
+            if not forward_key:
+                candidates = (
+                    self.analysis_candidates()
+                    .get(game_profile_id, {})
+                    .get("forward_no_turn", [])
+                )
+                forward_key = str(candidates[0]["session_key"]) if candidates else ""
+            if not forward_key:
+                raise ValueError("No ready forward_no_turn session is available")
+            forward_path = self._session_path(forward_key)
+            forward = self._describe_session(forward_path)
+            if forward.get("game_profile_id") != game_profile_id:
+                raise ValueError("Forward session belongs to another game")
+            if forward.get("label") != "forward_no_turn":
+                raise ValueError("Expected a forward_no_turn session")
+
+        verification = verify_forward_session(
+            forward_path, calibration_root, calibration_root
+        )
+
+        with self._lock:
+            verification["calibration_id"] = calibration_id
+            verification["source_session_key"] = forward_key
+            calibration = json.loads(calibration_file.read_text(encoding="utf-8"))
+            forward_names = {
+                "forward_start.png",
+                "forward_end.png",
+                "forward_registration_overlay.png",
+                "forward_pose_shift.png",
+            }
+            calibration["evidence"] = [
+                item
+                for item in calibration.get("evidence") or []
+                if item.get("name") not in forward_names
+            ]
+            calibration["evidence"].extend(verification.get("evidence") or [])
+            calibration["forward_verification"] = verification
+            _write_json_atomic(calibration_file, calibration)
+            self._last_error = None
+            return self.descriptor()
 
     def _map_stitch_root(self, game_profile_id: str) -> Path:
         return self.artifact_root / "map_stitches" / safe_id(game_profile_id)
@@ -1112,14 +1267,18 @@ class AcquisitionWorkbench:
                 raise ValueError("Expected a full_map session")
             stitch_id = safe_id(described.get("session_id") or path.name)
             output = self._map_stitch_root(game_profile_id) / stitch_id
-            result = stitch_map_session(path, output)
+
+        result = stitch_map_session(path, output)
+
+        with self._lock:
+            result["source_session_key"] = relative
             result["stitch_id"] = stitch_id
             result["artifact_relative_path"] = str(
                 output.relative_to(self.artifact_root)
             )
             _write_json_atomic(output / "map_stitch.json", result)
             self._last_error = None
-        return self.descriptor()
+            return self.descriptor()
 
     def map_stitch_image(
         self, game_profile_id: str, stitch_id: str, name: str
@@ -1654,6 +1813,9 @@ class AcquisitionWorkbench:
                 "minimap_calibrations": self._minimap_calibrations(),
                 "map_stitches": self._map_stitches(),
                 "analysis_candidates": self.analysis_candidates(),
+                "analysis_jobs": {
+                    key: dict(value) for key, value in self._analysis_jobs.items()
+                },
                 "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
                 "visible_windows": self._windows(),
@@ -2387,9 +2549,11 @@ def make_handler(state: AcquisitionWorkbench):
                 elif path == "/api/profile/draft":
                     result = state.save_profile_draft(value)
                 elif path == "/api/minimap-calibration/run":
-                    result = state.run_minimap_calibration(value)
+                    result = state.queue_minimap_calibration(value)
+                elif path == "/api/pose-verification/run":
+                    result = state.queue_pose_verification(value)
                 elif path == "/api/map-stitch/run":
-                    result = state.run_map_stitch(value)
+                    result = state.queue_map_stitch(value)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
                     return

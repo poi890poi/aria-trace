@@ -1496,6 +1496,183 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_calibration_and_pose_results_keep_exact_session_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+
+            def make_session(run_index, label):
+                path = (
+                    root
+                    / "sessions"
+                    / "analysis-sources"
+                    / "run_{:02d}".format(run_index)
+                )
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                    session_context={
+                        "experiment_id": "analysis-sources",
+                        "game_profile_id": "genshin-impact-pc",
+                        "capture_kind": "game_profile",
+                        "capture_id": label,
+                        "run_index": run_index,
+                        "input_adapter": "none",
+                        "input_requirement": "none",
+                    },
+                )
+                timestamp = writer.origin_ns
+                writer.write_frame(
+                    FramePacket(
+                        "main",
+                        np.full((32, 32, 3), run_index, dtype=np.uint8),
+                        timestamp,
+                        timestamp,
+                    )
+                )
+                writer.close()
+                (path / "session_metadata.json").write_text(
+                    json.dumps({"label": label, "status": "ready"}),
+                    encoding="utf-8",
+                )
+                return path
+
+            rotation = make_session(1, "rotation_only")
+            movement = make_session(2, "movement_only")
+            forward = make_session(3, "forward_no_turn")
+
+            def fake_calibration(_rotation, _movement, output, _config):
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "cursor_pose_overlays.png").write_bytes(b"pose")
+                return {
+                    "schema_version": "1.0",
+                    "generated_utc": "2026-08-27T12:00:00+00:00",
+                    "status": "review_required",
+                    "evidence": [
+                        {
+                            "name": "cursor_pose_overlays.png",
+                            "title": "Cursor pose overlays",
+                            "category": "pose",
+                        }
+                    ],
+                }
+
+            try:
+                with patch(
+                    "acquisition.workbench.calibrate_segment_sessions",
+                    side_effect=fake_calibration,
+                ), patch("acquisition.workbench.verify_forward_session") as verify:
+                    descriptor = state.run_minimap_calibration(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "rotation_session_relative_path": "analysis-sources/run_01",
+                            "movement_session_relative_path": "analysis-sources/run_02",
+                        }
+                    )
+                verify.assert_not_called()
+                calibration = descriptor["minimap_calibrations"][
+                    "genshin-impact-pc"
+                ][0]
+                self.assertEqual(
+                    calibration["source_sessions"]["rotation_only"]["session_key"],
+                    "analysis-sources/run_01",
+                )
+                self.assertEqual(
+                    calibration["source_sessions"]["movement_only"]["session_key"],
+                    "analysis-sources/run_02",
+                )
+
+                def fake_verification(_forward, _calibration, output):
+                    (output / "forward_pose_shift.png").write_bytes(b"shift")
+                    return {
+                        "status": "review_required",
+                        "evidence": [
+                            {
+                                "name": "forward_pose_shift.png",
+                                "title": "Cursor pose and map-shift relationship",
+                                "category": "pose_verification",
+                            }
+                        ],
+                    }
+
+                with patch(
+                    "acquisition.workbench.verify_forward_session",
+                    side_effect=fake_verification,
+                ):
+                    descriptor = state.run_pose_verification(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "calibration_id": calibration["calibration_id"],
+                            "rotation_session_relative_path": "analysis-sources/run_01",
+                            "movement_session_relative_path": "analysis-sources/run_02",
+                            "forward_session_relative_path": "analysis-sources/run_03",
+                        }
+                    )
+                updated = descriptor["minimap_calibrations"][
+                    "genshin-impact-pc"
+                ][0]
+                self.assertEqual(
+                    updated["forward_verification"]["source_session_key"],
+                    "analysis-sources/run_03",
+                )
+                self.assertEqual(
+                    state.minimap_calibration_image(
+                        "genshin-impact-pc",
+                        calibration["calibration_id"],
+                        "forward_pose_shift.png",
+                    ),
+                    b"shift",
+                )
+            finally:
+                state.close()
+
+    def test_analysis_job_returns_immediately_and_reports_progress(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            started = threading.Event()
+            release = threading.Event()
+
+            def blocked(_value):
+                started.set()
+                release.wait(2)
+
+            try:
+                before = time.perf_counter()
+                descriptor = state._queue_analysis("test", {}, blocked)
+                self.assertLess(time.perf_counter() - before, 1.0)
+                self.assertIn(descriptor["analysis_jobs"]["test"]["status"], {"queued", "running"})
+                self.assertTrue(started.wait(1))
+                self.assertEqual(
+                    state.descriptor()["analysis_jobs"]["test"]["status"],
+                    "running",
+                )
+                release.set()
+                deadline = time.time() + 2
+                while time.time() < deadline:
+                    if state.descriptor()["analysis_jobs"]["test"]["status"] == "complete":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(
+                    state.descriptor()["analysis_jobs"]["test"]["status"],
+                    "complete",
+                )
+            finally:
+                release.set()
+                state.close()
+
     def test_map_stitch_uses_ready_full_map_session_and_serves_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1568,6 +1745,9 @@ class WorkbenchTests(unittest.TestCase):
                     )
                 stitch = descriptor["map_stitches"]["genshin-impact-pc"][0]
                 self.assertEqual(stitch["status"], "review_required")
+                self.assertEqual(
+                    stitch["source_session_key"], "map-captures/run_01"
+                )
                 self.assertNotIn("registrations", stitch)
                 self.assertNotIn("source_frame_records", stitch["provenance"])
                 self.assertEqual(
