@@ -651,8 +651,83 @@ def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.n
     width, height = int(size[0]), int(size[1])
     canvas = np.full((height, width, 3), 12, np.uint8)
     pose = state.get("pose") or {}
+    global_fix = state.get("global_fix") or {}
+    panel_y = height - 80
     if not pose:
-        cv2.putText(canvas, "LOCALIZING...", (22, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (80, 220, 230), 2, cv2.LINE_AA)
+        map_h, map_w = mosaic.shape[:2]
+        scale = min(width / float(map_w), panel_y / float(map_h))
+        scaled_size = (
+            max(1, int(round(map_w * scale))),
+            max(1, int(round(map_h * scale))),
+        )
+        overview = cv2.resize(mosaic, scaled_size, interpolation=cv2.INTER_AREA)
+        offset_x = (width - scaled_size[0]) // 2
+        offset_y = (panel_y - scaled_size[1]) // 2
+        canvas[
+            offset_y : offset_y + scaled_size[1],
+            offset_x : offset_x + scaled_size[0],
+        ] = overview
+        decision = str(global_fix.get("decision") or "waiting-for-first-candidate")
+        if global_fix and global_fix.get("x") is not None:
+            candidate = (
+                offset_x + int(round(float(global_fix["x"]) * scale)),
+                offset_y + int(round(float(global_fix["y"]) * scale)),
+            )
+            if decision.startswith("rejected"):
+                cv2.line(
+                    canvas,
+                    (candidate[0] - 8, candidate[1] - 8),
+                    (candidate[0] + 8, candidate[1] + 8),
+                    (70, 70, 255),
+                    3,
+                    cv2.LINE_AA,
+                )
+                cv2.line(
+                    canvas,
+                    (candidate[0] - 8, candidate[1] + 8),
+                    (candidate[0] + 8, candidate[1] - 8),
+                    (70, 70, 255),
+                    3,
+                    cv2.LINE_AA,
+                )
+            else:
+                cv2.circle(canvas, candidate, 8, (80, 205, 245), 2, cv2.LINE_AA)
+        cv2.rectangle(canvas, (0, panel_y), (width, height), (8, 16, 24), -1)
+        cv2.putText(
+            canvas,
+            "LOCALIZING - no accepted pose",
+            (10, panel_y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.50,
+            (80, 220, 230),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            decision[:72],
+            (10, panel_y + 42),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (80, 80, 255) if decision.startswith("rejected") else (225, 235, 245),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            "score {:.3f}  margin {:.3f}  inliers {}/{}".format(
+                float(global_fix.get("score") or 0.0),
+                float(global_fix.get("margin") or 0.0),
+                int(global_fix.get("inlier_count") or 0),
+                int(global_fix.get("ratio_match_count") or 0),
+            ),
+            (10, panel_y + 64),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (225, 235, 245),
+            1,
+            cv2.LINE_AA,
+        )
         return canvas
     x, y = float(pose["x"]), float(pose["y"])
     map_h, map_w = mosaic.shape[:2]
@@ -667,6 +742,29 @@ def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.n
         point = (int(round(tx - left)), int(round(ty - top)))
         if 0 <= point[0] < view_w and 0 <= point[1] < view_h:
             cv2.circle(canvas, point, 1, (80, 210, 240), -1)
+    global_decision = str(global_fix.get("decision") or "")
+    if global_decision.startswith("rejected"):
+        candidate = (
+            int(round(float(global_fix.get("x") or 0.0) - left)),
+            int(round(float(global_fix.get("y") or 0.0) - top)),
+        )
+        if 0 <= candidate[0] < view_w and 0 <= candidate[1] < view_h:
+            cv2.line(
+                canvas,
+                (candidate[0] - 7, candidate[1] - 7),
+                (candidate[0] + 7, candidate[1] + 7),
+                (70, 70, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.line(
+                canvas,
+                (candidate[0] - 7, candidate[1] + 7),
+                (candidate[0] + 7, candidate[1] - 7),
+                (70, 70, 255),
+                2,
+                cv2.LINE_AA,
+            )
     center = (int(round(x - left)), int(round(y - top)))
     player_heading = pose.get("player_heading_map_deg", pose.get("yaw_deg"))
     cv2.circle(canvas, center, 8, (245, 205, 60), 2, cv2.LINE_AA)
@@ -679,9 +777,7 @@ def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.n
         cv2.arrowedLine(
             canvas, center, tip, (245, 205, 60), 3, cv2.LINE_AA, tipLength=0.35
         )
-    panel_y = height - 80
     cv2.rectangle(canvas, (0, panel_y), (width, height), (8, 16, 24), -1)
-    global_fix = state.get("global_fix") or {}
     local = state.get("local_motion") or {}
     scene = state.get("scene_yaw") or {}
     map_alignment = pose.get("map_alignment_deg", pose.get("yaw_deg"))

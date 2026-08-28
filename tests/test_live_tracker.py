@@ -237,6 +237,27 @@ class TwoRateTrackerTests(unittest.TestCase):
         self.assertEqual(image.shape, (360, 520, 3))
         self.assertGreater(int(np.max(image[:, :, 1])), 200)
 
+    def test_renders_rejected_global_candidate_without_claiming_pose(self):
+        mosaic = np.full((420, 620, 3), (35, 45, 55), np.uint8)
+        image = render_map_overlay(
+            mosaic,
+            {
+                "mode": "INITIALIZING",
+                "pose": None,
+                "global_fix": {
+                    "x": 300.0,
+                    "y": 200.0,
+                    "score": 0.42,
+                    "margin": 0.01,
+                    "inlier_count": 3,
+                    "ratio_match_count": 8,
+                    "decision": "rejected-quality:ambiguous-correlation",
+                },
+            },
+        )
+        self.assertEqual(image.shape, (360, 520, 3))
+        self.assertGreater(int(np.max(image[:, :, 2])), 240)
+
 
 class FakeLiveFrameSource:
     def __init__(self):
