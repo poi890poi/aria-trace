@@ -32,7 +32,7 @@ from .android_capture import (
     find_scrcpy_server,
 )
 from .map_stitching import stitch_map_session
-from .live_tracker import TwoRateRealtimeTracker, render_map_overlay
+from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
 from .minimap_calibration import calibrate_segment_sessions, calibrate_session
 from .minimap_verification import verify_forward_session
 from .poc_evidence import build_poc_evidence_index
@@ -1835,6 +1835,40 @@ class AcquisitionWorkbench:
             mosaic = cv2.imread(str(mosaic_path), cv2.IMREAD_COLOR)
             if mosaic is None:
                 raise ValueError("Could not decode the selected map mosaic")
+            localization = stitch.get("localization") or {}
+            if localization.get("status") != "ready":
+                raise ValueError(
+                    "Rebuild and review this full-map artifact with the selected "
+                    "mini-map calibration before starting live tracking"
+                )
+            if localization.get("source_minimap_calibration_id") != calibration_id:
+                raise ValueError(
+                    "The selected map localization raster was built for another "
+                    "mini-map calibration; rebuild the full map"
+                )
+            localization_names = {
+                localization.get("mosaic_file"), localization.get("coverage_file")
+            }
+            if not localization_names.issubset(declared):
+                raise ValueError(
+                    "Map localization raster files are not declared as review evidence"
+                )
+            localization_root = stitch_root / stitch_id
+            localization_mosaic = cv2.imread(
+                str(localization_root / localization["mosaic_file"]),
+                cv2.IMREAD_COLOR,
+            )
+            localization_coverage = cv2.imread(
+                str(localization_root / localization["coverage_file"]),
+                cv2.IMREAD_GRAYSCALE,
+            )
+            if localization_mosaic is None or localization_coverage is None:
+                raise ValueError("Could not decode the map localization raster")
+            localizer = GlobalMapLocalizer(
+                localization_mosaic,
+                localization_coverage,
+                localization.get("localization_to_original_map_3x3"),
+            )
             frame_config = dict(value.get("frame_source") or {})
             adapter = frame_config.get("adapter")
             if adapter not in ("windows_window", "android_scrcpy"):
@@ -1855,6 +1889,7 @@ class AcquisitionWorkbench:
                 minimap,
                 scene_yaw,
                 global_interval_s=global_interval_s,
+                localizer=localizer,
             )
             stop = threading.Event()
             runtime = {

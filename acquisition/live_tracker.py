@@ -24,6 +24,15 @@ def _gradient(image: np.ndarray) -> np.ndarray:
     return cv2.magnitude(gx, gy)
 
 
+def _angle_difference_deg(first: float, second: float) -> float:
+    return ((float(first) - float(second) + 180.0) % 360.0) - 180.0
+
+
+def _circular_mean_deg(values) -> float:
+    radians = np.radians(np.asarray(values, dtype=np.float64))
+    return math.degrees(math.atan2(float(np.mean(np.sin(radians))), float(np.mean(np.cos(radians)))))
+
+
 @dataclass
 class GlobalFix:
     x: float
@@ -33,25 +42,51 @@ class GlobalFix:
     score: float
     margin: float
     elapsed_ms: float
+    valid: bool = True
+    rejection_reasons: tuple = ()
+    ratio_match_count: int = 0
+    inlier_count: int = 0
+    inlier_ratio: float = 0.0
+    reprojection_p95_px: float = float("inf")
+    center_agreement_px: float = float("inf")
+    alternatives: tuple = ()
 
 
 class GlobalMapLocalizer:
-    """High-cost exhaustive masked template localization against a map mosaic."""
+    """Feature-proposed, correlation-verified localization on a normalized map."""
 
     def __init__(
         self,
         mosaic: np.ndarray,
-        scales=(0.65, 0.8, 1.0, 1.2, 1.45),
-        coarse_angle_step_deg: float = 15.0,
-        refine_angle_step_deg: float = 2.0,
+        coverage: Optional[np.ndarray] = None,
+        localization_to_original_3x3=None,
     ) -> None:
         if mosaic is None or mosaic.size == 0:
             raise ValueError("Global map mosaic is empty")
         self.mosaic = mosaic.copy()
         self.map_gradient = _gradient(mosaic)
-        self.scales = tuple(float(value) for value in scales)
-        self.coarse_angle_step_deg = float(coarse_angle_step_deg)
-        self.refine_angle_step_deg = float(refine_angle_step_deg)
+        if coverage is None:
+            coverage = np.full(mosaic.shape[:2], 255, np.uint8)
+        if coverage.shape[:2] != mosaic.shape[:2]:
+            raise ValueError("Localization coverage and mosaic dimensions differ")
+        self.coverage = np.uint8(coverage > 0) * 255
+        self.localization_to_original = np.asarray(
+            localization_to_original_3x3
+            if localization_to_original_3x3 is not None
+            else np.eye(3),
+            dtype=np.float64,
+        )
+        if self.localization_to_original.shape != (3, 3):
+            raise ValueError("Localization-to-original transform must be 3x3")
+        self.sift = cv2.SIFT_create(
+            nfeatures=8000, contrastThreshold=0.005, edgeThreshold=15
+        )
+        map_mask = cv2.erode(self.coverage, np.ones((5, 5), np.uint8))
+        self.map_points, self.map_descriptors = self.sift.detectAndCompute(
+            cv2.cvtColor(self.mosaic, cv2.COLOR_BGR2GRAY), map_mask
+        )
+        if self.map_descriptors is None or len(self.map_points) < 6:
+            raise ValueError("Localization mosaic has too few usable SIFT features")
         self._cancel = threading.Event()
 
     def close(self) -> None:
@@ -72,33 +107,28 @@ class GlobalMapLocalizer:
         rotated_mask = cv2.warpAffine(scaled_mask, matrix, (sw, sh), flags=cv2.INTER_NEAREST)
         return rotated, rotated_mask
 
-    def _evaluate(self, template, mask, scale: float, angle: float):
-        transformed, transformed_mask = self._transform(template, mask, scale, angle)
-        height, width = transformed.shape[:2]
-        if height >= self.map_gradient.shape[0] or width >= self.map_gradient.shape[1]:
-            return None
-        if np.count_nonzero(transformed_mask) < 64:
-            return None
-        result = cv2.matchTemplate(
-            self.map_gradient,
-            transformed,
-            cv2.TM_CCORR_NORMED,
-            mask=transformed_mask,
+    def _original_xy(self, point_xy):
+        point = np.asarray([float(point_xy[0]), float(point_xy[1]), 1.0])
+        mapped = self.localization_to_original.dot(point)
+        return float(mapped[0] / mapped[2]), float(mapped[1] / mapped[2])
+
+    def _invalid(self, started, reasons, **metrics):
+        return GlobalFix(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            float(metrics.get("score", 0.0)),
+            float(metrics.get("margin", 0.0)),
+            (time.perf_counter() - started) * 1000.0,
+            valid=False,
+            rejection_reasons=tuple(reasons),
+            ratio_match_count=int(metrics.get("ratio_match_count", 0)),
+            inlier_count=int(metrics.get("inlier_count", 0)),
+            inlier_ratio=float(metrics.get("inlier_ratio", 0.0)),
+            reprojection_p95_px=float(metrics.get("reprojection_p95_px", float("inf"))),
+            center_agreement_px=float(metrics.get("center_agreement_px", float("inf"))),
         )
-        result = np.nan_to_num(result, nan=-1.0, posinf=-1.0, neginf=-1.0)
-        _, score, _, location = cv2.minMaxLoc(result)
-        suppressed = result.copy()
-        radius = max(8, min(width, height) // 3)
-        cv2.circle(suppressed, location, radius, -1.0, -1)
-        _, second, _, _ = cv2.minMaxLoc(suppressed)
-        return {
-            "x": float(location[0] + width / 2.0),
-            "y": float(location[1] + height / 2.0),
-            "scale": scale,
-            "angle": angle,
-            "score": float(score),
-            "margin": float(score - second),
-        }
 
     def localize(
         self,
@@ -107,53 +137,143 @@ class GlobalMapLocalizer:
         yaw_prior_deg: Optional[float] = None,
     ) -> GlobalFix:
         started = time.perf_counter()
-        template = _gradient(observation)
-        if yaw_prior_deg is None:
-            angles = np.arange(-180.0, 180.0, self.coarse_angle_step_deg)
-        else:
-            angles = np.arange(
-                yaw_prior_deg - 30.0,
-                yaw_prior_deg + 30.0 + 0.1,
-                self.coarse_angle_step_deg,
-            )
-        candidates = []
-        for scale in self.scales:
-            for angle in angles:
-                if self._cancel.is_set():
-                    raise RuntimeError("Global localization canceled")
-                value = self._evaluate(template, mask, scale, float(angle))
-                if value is not None:
-                    candidates.append(value)
-        if not candidates:
-            raise RuntimeError("No global localization template fits the map mosaic")
-        coarse = max(candidates, key=lambda item: item["score"])
-        scale_values = sorted(
-            set(
-                max(0.1, coarse["scale"] * factor)
-                for factor in (0.92, 0.96, 1.0, 1.04, 1.08)
-            )
+        if self._cancel.is_set():
+            raise RuntimeError("Global localization canceled")
+        observation_gray = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
+        points, descriptors = self.sift.detectAndCompute(observation_gray, mask)
+        if descriptors is None or len(points) < 6:
+            return self._invalid(started, ("too-few-observation-features",))
+        pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(
+            descriptors, self.map_descriptors, k=2
         )
-        refined = []
-        for scale in scale_values:
-            for angle in np.arange(
-                coarse["angle"] - self.coarse_angle_step_deg,
-                coarse["angle"] + self.coarse_angle_step_deg + 0.1,
-                self.refine_angle_step_deg,
-            ):
-                if self._cancel.is_set():
-                    raise RuntimeError("Global localization canceled")
-                value = self._evaluate(template, mask, scale, float(angle))
-                if value is not None:
-                    refined.append(value)
-        best = max(refined or candidates, key=lambda item: item["score"])
+        matches = [
+            first
+            for pair in pairs
+            if len(pair) == 2
+            for first, second in [pair]
+            if first.distance < 0.80 * second.distance
+        ]
+        ratio_count = len(matches)
+        if ratio_count < 6:
+            return self._invalid(
+                started,
+                ("too-few-ratio-matches",),
+                ratio_match_count=ratio_count,
+            )
+        source = np.float32([points[item.queryIdx].pt for item in matches])
+        target = np.float32([self.map_points[item.trainIdx].pt for item in matches])
+        affine, inlier_mask = cv2.estimateAffinePartial2D(
+            source,
+            target,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=3.0,
+            maxIters=20000,
+            confidence=0.999,
+        )
+        if affine is None or inlier_mask is None:
+            return self._invalid(
+                started,
+                ("no-consistent-similarity",),
+                ratio_match_count=ratio_count,
+            )
+        inliers = inlier_mask.ravel().astype(bool)
+        inlier_count = int(np.count_nonzero(inliers))
+        inlier_ratio = float(np.mean(inliers))
+        if inlier_count:
+            predicted = cv2.transform(source.reshape((-1, 1, 2)), affine).reshape((-1, 2))
+            errors = np.linalg.norm(predicted - target, axis=1)
+            reprojection_p95 = float(np.percentile(errors[inliers], 95))
+        else:
+            reprojection_p95 = float("inf")
+        scale = math.hypot(float(affine[0, 0]), float(affine[0, 1]))
+        angle = math.degrees(math.atan2(float(affine[1, 0]), float(affine[0, 0])))
+        angle = ((angle + 180.0) % 360.0) - 180.0
+        center = cv2.transform(
+            np.float32([[[observation.shape[1] / 2.0, observation.shape[0] / 2.0]]]),
+            affine,
+        ).reshape(2)
+
+        transformed, transformed_mask = self._transform(
+            _gradient(observation), mask, scale, angle
+        )
+        height, width = transformed.shape[:2]
+        if height >= self.map_gradient.shape[0] or width >= self.map_gradient.shape[1]:
+            return self._invalid(
+                started,
+                ("transformed-observation-exceeds-map",),
+                ratio_match_count=ratio_count,
+                inlier_count=inlier_count,
+                inlier_ratio=inlier_ratio,
+                reprojection_p95_px=reprojection_p95,
+            )
+        response = cv2.matchTemplate(
+            self.map_gradient,
+            transformed,
+            cv2.TM_CCORR_NORMED,
+            mask=transformed_mask,
+        )
+        response = np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        peaks = []
+        suppressed = response.copy()
+        suppression_radius = max(8, min(width, height) // 3)
+        for _ in range(3):
+            _, peak_score, _, location = cv2.minMaxLoc(suppressed)
+            peak_center = (location[0] + width / 2.0, location[1] + height / 2.0)
+            peaks.append((float(peak_score), peak_center))
+            cv2.circle(suppressed, location, suppression_radius, -1.0, -1)
+        score = peaks[0][0]
+        margin = score - peaks[1][0]
+        correlation_center = np.asarray(peaks[0][1], dtype=np.float64)
+        center_agreement = float(np.linalg.norm(correlation_center - center))
+        center_x = int(np.clip(round(correlation_center[0]), 0, self.coverage.shape[1] - 1))
+        center_y = int(np.clip(round(correlation_center[1]), 0, self.coverage.shape[0] - 1))
+        reasons = []
+        if inlier_count < 6:
+            reasons.append("too-few-geometric-inliers")
+        if inlier_ratio < 0.60:
+            reasons.append("low-inlier-ratio")
+        if reprojection_p95 > 3.0:
+            reasons.append("high-reprojection-error")
+        if not 0.75 <= scale <= 1.30:
+            reasons.append("scale-out-of-range")
+        if score < 0.55:
+            reasons.append("low-correlation")
+        if margin < 0.06:
+            reasons.append("ambiguous-correlation")
+        if center_agreement > 8.0:
+            reasons.append("feature-correlation-disagreement")
+        if not self.coverage[center_y, center_x]:
+            reasons.append("outside-observed-coverage")
+        alternatives = []
+        for peak_score, peak_center in peaks:
+            original_x, original_y = self._original_xy(peak_center)
+            alternatives.append(
+                {"x": original_x, "y": original_y, "score": peak_score}
+            )
+        original_x, original_y = self._original_xy(correlation_center)
+        map_scale_x = math.hypot(
+            self.localization_to_original[0, 0], self.localization_to_original[1, 0]
+        )
+        map_scale_y = math.hypot(
+            self.localization_to_original[0, 1], self.localization_to_original[1, 1]
+        )
+        original_scale = scale * (map_scale_x + map_scale_y) / 2.0
         return GlobalFix(
-            best["x"],
-            best["y"],
-            ((best["angle"] + 180.0) % 360.0) - 180.0,
-            best["scale"],
-            best["score"],
-            best["margin"],
+            original_x,
+            original_y,
+            angle,
+            original_scale,
+            score,
+            margin,
             (time.perf_counter() - started) * 1000.0,
+            valid=not reasons,
+            rejection_reasons=tuple(reasons),
+            ratio_match_count=ratio_count,
+            inlier_count=inlier_count,
+            inlier_ratio=inlier_ratio,
+            reprojection_p95_px=reprojection_p95,
+            center_agreement_px=center_agreement,
+            alternatives=tuple(alternatives),
         )
 
 
@@ -197,6 +317,7 @@ class TwoRateRealtimeTracker:
         scene_yaw_calibration: dict,
         global_interval_s: float = 1.0,
         localizer: Optional[GlobalMapLocalizer] = None,
+        initial_consensus_count: int = 2,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -235,6 +356,8 @@ class TwoRateRealtimeTracker:
         self._global_future = None
         self._last_global_fix = None
         self._global_error = None
+        self.initial_consensus_count = max(1, int(initial_consensus_count))
+        self._initial_hypotheses = []
 
     def close(self) -> None:
         close_localizer = getattr(self.localizer, "close", None)
@@ -295,14 +418,57 @@ class TwoRateRealtimeTracker:
                 self._global_error = "{}: {}".format(type(exc).__name__, exc)
             self._global_future = None
         if global_fix is not None:
-            self.map_scale = global_fix.scale
-            hypothesis = Pose2D(global_fix.x, global_fix.y, global_fix.yaw_deg)
-            if self.fusion._state is None:
-                self.fusion.initialize(hypothesis)
-                decision = "initialized"
+            if not global_fix.valid:
+                self._initial_hypotheses = []
+                decision = "rejected-quality:" + ",".join(
+                    global_fix.rejection_reasons
+                )
             else:
-                correction = self.fusion.consider_absolute(hypothesis)
-                decision = correction.reason if correction.accepted else "rejected:" + correction.reason
+                hypothesis = Pose2D(global_fix.x, global_fix.y, global_fix.yaw_deg)
+                if self.fusion._state is None:
+                    if self._initial_hypotheses:
+                        previous = self._initial_hypotheses[-1]
+                        position_delta = math.hypot(
+                            global_fix.x - previous.x, global_fix.y - previous.y
+                        )
+                        yaw_delta = abs(
+                            _angle_difference_deg(global_fix.yaw_deg, previous.yaw_deg)
+                        )
+                        scale_delta = abs(global_fix.scale - previous.scale) / max(
+                            previous.scale, 1.0e-6
+                        )
+                        if (
+                            position_delta > 30.0
+                            or yaw_delta > 15.0
+                            or scale_delta > 0.12
+                        ):
+                            self._initial_hypotheses = []
+                    self._initial_hypotheses.append(global_fix)
+                    count = len(self._initial_hypotheses)
+                    if count >= self.initial_consensus_count:
+                        rows = self._initial_hypotheses[-self.initial_consensus_count :]
+                        initialized = Pose2D(
+                            float(np.mean([item.x for item in rows])),
+                            float(np.mean([item.y for item in rows])),
+                            _circular_mean_deg([item.yaw_deg for item in rows]),
+                        )
+                        self.map_scale = float(np.mean([item.scale for item in rows]))
+                        self.fusion.initialize(initialized)
+                        self._initial_hypotheses = []
+                        decision = "initialized-consensus"
+                    else:
+                        decision = "awaiting-consensus:{}/{}".format(
+                            count, self.initial_consensus_count
+                        )
+                else:
+                    correction = self.fusion.consider_absolute(hypothesis)
+                    decision = (
+                        correction.reason
+                        if correction.accepted
+                        else "rejected:" + correction.reason
+                    )
+                    if correction.accepted:
+                        self.map_scale = global_fix.scale
             self._last_global_fix = {
                 "x": global_fix.x,
                 "y": global_fix.y,
@@ -312,6 +478,14 @@ class TwoRateRealtimeTracker:
                 "margin": global_fix.margin,
                 "elapsed_ms": global_fix.elapsed_ms,
                 "decision": decision,
+                "valid": global_fix.valid,
+                "rejection_reasons": list(global_fix.rejection_reasons),
+                "ratio_match_count": global_fix.ratio_match_count,
+                "inlier_count": global_fix.inlier_count,
+                "inlier_ratio": global_fix.inlier_ratio,
+                "reprojection_p95_localization_px": global_fix.reprojection_p95_px,
+                "feature_correlation_center_agreement_px": global_fix.center_agreement_px,
+                "alternatives": list(global_fix.alternatives),
                 "host_time_ns": timestamp_ns,
             }
         due = self.last_global_ns is None or timestamp_ns - self.last_global_ns >= self.global_interval_ns

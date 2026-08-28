@@ -23,16 +23,13 @@ from acquisition.workbench import AcquisitionWorkbench
 class GlobalMapLocalizerTests(unittest.TestCase):
     def test_localizes_exact_observed_patch_on_mosaic(self):
         random = np.random.RandomState(42)
-        mosaic = random.randint(0, 256, (180, 220, 3), dtype=np.uint8)
-        center_x, center_y = 137, 104
-        observation = mosaic[74:134, 107:167].copy()
-        mask = np.zeros((60, 60), np.uint8)
-        cv2.circle(mask, (30, 30), 27, 255, -1)
+        mosaic = random.randint(0, 256, (300, 360, 3), dtype=np.uint8)
+        center_x, center_y = 220, 150
+        observation = mosaic[100:200, 170:270].copy()
+        mask = np.zeros((100, 100), np.uint8)
+        cv2.circle(mask, (50, 50), 47, 255, -1)
         localizer = GlobalMapLocalizer(
             mosaic,
-            scales=(1.0,),
-            coarse_angle_step_deg=30.0,
-            refine_angle_step_deg=2.0,
         )
 
         fix = localizer.localize(observation, mask, yaw_prior_deg=0.0)
@@ -41,6 +38,9 @@ class GlobalMapLocalizerTests(unittest.TestCase):
         self.assertAlmostEqual(fix.y, center_y, delta=2.0)
         self.assertAlmostEqual(fix.yaw_deg, 0.0, delta=2.1)
         self.assertGreater(fix.score, 0.90)
+        self.assertTrue(fix.valid)
+        self.assertGreaterEqual(fix.inlier_count, 6)
+        self.assertLess(fix.elapsed_ms, 1000.0)
 
 
 class BlockingLocalizer:
@@ -55,9 +55,19 @@ class BlockingLocalizer:
         return GlobalFix(80.0, 70.0, 15.0, 1.0, 0.91, 0.12, 123.0)
 
 
+class ImmediateLocalizer:
+    def __init__(self):
+        self.calls = 0
+
+    def localize(self, observation, mask, yaw_prior_deg=None):
+        self.calls += 1
+        offset = 0.5 * (self.calls - 1)
+        return GlobalFix(80.0 + offset, 70.0, 15.0, 1.0, 0.91, 0.12, 8.0)
+
+
 class TwoRateTrackerTests(unittest.TestCase):
     @staticmethod
-    def _tracker(localizer):
+    def _tracker(localizer, initial_consensus_count=1, global_interval_s=10.0):
         mosaic = np.full((160, 180, 3), 40, np.uint8)
         minimap_config = {"crop_xywh": [0, 0, 80, 80]}
         minimap_calibration = {
@@ -73,9 +83,34 @@ class TwoRateTrackerTests(unittest.TestCase):
             minimap_config,
             minimap_calibration,
             scene_yaw,
-            global_interval_s=10.0,
+            global_interval_s=global_interval_s,
             localizer=localizer,
+            initial_consensus_count=initial_consensus_count,
         )
+
+    def test_initial_pose_requires_two_agreeing_global_fixes(self):
+        localizer = ImmediateLocalizer()
+        tracker = self._tracker(
+            localizer, initial_consensus_count=2, global_interval_s=0.001
+        )
+        frame = np.zeros((100, 100, 3), np.uint8)
+        decisions = []
+        result = None
+        try:
+            for index in range(100):
+                result = tracker.update(frame, index * 2_000_000 + 1)
+                decision = (result.get("global_fix") or {}).get("decision")
+                if decision and (not decisions or decisions[-1] != decision):
+                    decisions.append(decision)
+                if result["pose"] is not None:
+                    break
+                time.sleep(0.002)
+            self.assertIn("awaiting-consensus:1/2", decisions)
+            self.assertEqual(decisions[-1], "initialized-consensus")
+            self.assertIsNotNone(result["pose"])
+            self.assertGreaterEqual(localizer.calls, 2)
+        finally:
+            tracker.close()
 
     def test_global_search_does_not_block_high_rate_update(self):
         localizer = BlockingLocalizer()
@@ -99,7 +134,9 @@ class TwoRateTrackerTests(unittest.TestCase):
                     break
                 time.sleep(0.005)
             self.assertTrue(result["global_fix_fresh"])
-            self.assertEqual(result["global_fix"]["decision"], "initialized")
+            self.assertEqual(
+                result["global_fix"]["decision"], "initialized-consensus"
+            )
             self.assertAlmostEqual(result["pose"]["x"], 80.0)
             self.assertAlmostEqual(result["pose"]["y"], 70.0)
         finally:
@@ -193,12 +230,39 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (stitch_root / "map_stitch.json").write_text(
-                json.dumps({"evidence": [{"name": "mosaic.png"}]}),
+                json.dumps(
+                    {
+                        "evidence": [
+                            {"name": "mosaic.png"},
+                            {"name": "localization_mosaic.png"},
+                            {"name": "localization_coverage.png"},
+                        ],
+                        "localization": {
+                            "status": "ready",
+                            "source_minimap_calibration_id": "mini-a",
+                            "mosaic_file": "localization_mosaic.png",
+                            "coverage_file": "localization_coverage.png",
+                            "localization_to_original_map_3x3": [
+                                [1, 0, 0],
+                                [0, 1, 0],
+                                [0, 0, 1],
+                            ],
+                        },
+                    }
+                ),
                 encoding="utf-8",
             )
+            tracker_map = np.random.RandomState(17).randint(
+                0, 255, (180, 220, 3), dtype=np.uint8
+            )
+            cv2.imwrite(str(stitch_root / "mosaic.png"), tracker_map)
             cv2.imwrite(
-                str(stitch_root / "mosaic.png"),
-                np.full((180, 220, 3), 40, np.uint8),
+                str(stitch_root / "localization_mosaic.png"),
+                tracker_map,
+            )
+            cv2.imwrite(
+                str(stitch_root / "localization_coverage.png"),
+                np.full((180, 220), 255, np.uint8),
             )
             state = AcquisitionWorkbench(
                 root / "sessions", artifact_root, profiles=ProfileCatalog()
