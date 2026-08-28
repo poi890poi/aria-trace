@@ -323,6 +323,39 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
             decoded = decode_data_matrix_payloads(np.zeros((12, 12), np.uint8))
         self.assertEqual(decoded, ["A7K2"])
 
+    def test_decoder_falls_back_to_thresholded_image_after_native_misses(self):
+        class Result:
+            text = "A7K2"
+
+        class Zxing:
+            class BarcodeFormat:
+                DataMatrix = object()
+
+            class Binarizer:
+                GlobalHistogram = object()
+
+            @staticmethod
+            def read_barcodes(
+                image,
+                formats=None,
+                try_rotate=True,
+                try_downscale=True,
+                try_invert=False,
+                binarizer=None,
+                return_errors=False,
+            ):
+                is_binary = image.ndim == 2 and set(np.unique(image)) <= {0, 255}
+                return [Result()] if is_binary and not try_downscale else []
+
+        gradient = np.tile(np.arange(32, dtype=np.uint8), (32, 1)) * 8
+        image = cv2.cvtColor(gradient, cv2.COLOR_GRAY2BGR)
+        with mock.patch(
+            "acquisition.rig_calibration.data_matrix_readability._zxing_module",
+            return_value=Zxing,
+        ):
+            decoded = decode_data_matrix_payloads(image)
+        self.assertEqual(decoded, ["A7K2"])
+
 
 class RigLatencyTests(unittest.TestCase):
     @staticmethod

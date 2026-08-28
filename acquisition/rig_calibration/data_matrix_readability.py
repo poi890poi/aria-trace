@@ -99,36 +99,57 @@ def encode_data_matrix_modules(payload: str) -> np.ndarray:
 
 
 def decode_data_matrix_payloads(image: np.ndarray) -> List[str]:
-    """Decode Data Matrix symbols using the replaceable ZXing-C++ adapter."""
+    """Decode Data Matrix symbols using measured, bounded ZXing-C++ fallbacks."""
 
     if image is None or image.size == 0:
         raise ValueError("Data Matrix image must be non-empty")
     zxingcpp = _zxing_module()
-    contiguous = np.ascontiguousarray(image)
-    try:
-        values = zxingcpp.read_barcodes(
-            contiguous,
-            formats=zxingcpp.BarcodeFormat.DataMatrix,
-            try_rotate=True,
-            try_downscale=False,
-            try_invert=False,
-            return_errors=False,
-        )
-    except TypeError:
-        # zxing-cpp 2.x has the same decoder but no ``try_invert`` keyword.
+    def read(value: np.ndarray, *, downscale: bool, binarizer: Any = None):
+        arguments = {
+            "formats": zxingcpp.BarcodeFormat.DataMatrix,
+            "try_rotate": True,
+            "try_downscale": bool(downscale),
+            "return_errors": False,
+        }
+        if binarizer is not None:
+            arguments["binarizer"] = binarizer
         try:
-            values = zxingcpp.read_barcodes(
-                contiguous,
-                formats=zxingcpp.BarcodeFormat.DataMatrix,
-                try_rotate=True,
-                try_downscale=False,
-                return_errors=False,
+            return zxingcpp.read_barcodes(
+                np.ascontiguousarray(value), try_invert=False, **arguments
             )
-        except (AttributeError, TypeError) as exc:
-            raise RuntimeError(
-                "The installed zxing-cpp lacks a compatible Data Matrix decoder API"
-            ) from exc
-    return [str(value.text) for value in values]
+        except TypeError:
+            # zxing-cpp 2.x has the same decoder but no ``try_invert`` keyword.
+            return zxingcpp.read_barcodes(np.ascontiguousarray(value), **arguments)
+
+    contiguous = np.ascontiguousarray(image)
+    gray = (
+        cv2.cvtColor(contiguous, cv2.COLOR_BGR2GRAY)
+        if contiguous.ndim == 3
+        else contiguous
+    )
+    _, thresholded = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    global_histogram = getattr(
+        getattr(zxingcpp, "Binarizer", None), "GlobalHistogram", None
+    )
+    attempts = [
+        (contiguous, True, None),
+        (gray, True, global_histogram),
+        (thresholded, False, None),
+    ]
+    decoded: List[str] = []
+    try:
+        for candidate, downscale, binarizer in attempts:
+            for result in read(candidate, downscale=downscale, binarizer=binarizer):
+                text = str(result.text)
+                if text and text not in decoded:
+                    decoded.append(text)
+    except (AttributeError, TypeError) as exc:
+        raise RuntimeError(
+            "The installed zxing-cpp lacks a compatible Data Matrix decoder API"
+        ) from exc
+    return decoded
 
 
 def grade_data_matrix_decode(

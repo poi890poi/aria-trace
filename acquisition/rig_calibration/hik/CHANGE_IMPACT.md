@@ -52,6 +52,12 @@ changes invalidate calibration.
 - ZXing 2.x and 3.x writer/decoder signatures are supported. A runtime error in
   optional Data Matrix grading produces an unavailable result and returns control
   to calibration; it cannot discard an otherwise usable rig session.
+- Built-in Decode grading drains buffered frames after every phone target change,
+  rectifies and crops to the transformed symbol bounds with a four-module quiet
+  margin, then uses a
+  bounded ZXing downscale/global-threshold/Otsu fallback sequence measured on the
+  connected rig. ZXing 2.3.0 decoded real 2 px/module crops and full-frame targets
+  from 4 px/module, so no decoder replacement is required.
 - Calibration files bind applicability to camera identity/mode, phone identity,
   orientation, screen size, and refresh rate. Another mode or device must not
   silently reuse the result.
@@ -106,6 +112,8 @@ changes invalidate calibration.
   uses thresholding, contour geometry, orthogonal vanishing points,
   and known Android physical pixel pitch. It does not call or change game-content
   pose estimation. Absolute distance is withheld until focal length is observable.
+- The same detected rectangle reports phone in-plane rotation clockwise from
+  camera-up during focusing, alongside pitch, yaw, and distance.
 - The focus UI combines a complete uncropped fit overview for positioning with
   the existing four native 1:1 optical evidence crops; metric computation is unchanged.
 - Unit tests use fake HIK and ADB backends to verify control quantization,

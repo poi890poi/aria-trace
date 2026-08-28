@@ -551,6 +551,12 @@ def estimate_focus_target_pose(
             math.sqrt(float(normal[0] ** 2 + normal[2] ** 2)),
         )
     )
+    top_midpoint = (points[0] + points[1]) * 0.5
+    bottom_midpoint = (points[2] + points[3]) * 0.5
+    app_up = top_midpoint - bottom_midpoint
+    phone_rotation = math.degrees(
+        math.atan2(float(app_up[0]), float(-app_up[1]))
+    )
     projected, _ = cv2.projectPoints(
         objects, rotation_vector, translation, camera_matrix, np.zeros(5, dtype=np.float64)
     )
@@ -558,6 +564,7 @@ def estimate_focus_target_pose(
     return {
         "pitch_deg": float(pitch),
         "yaw_deg": float(yaw),
+        "phone_rotation_clockwise_from_camera_up_deg": float(phone_rotation),
         "lens_to_panel_distance_mm": abs(float(np.dot(normal, translation_xyz))),
         "optical_axis_depth_mm": abs(float(translation_xyz[2])),
         "focal_length_px": focal,

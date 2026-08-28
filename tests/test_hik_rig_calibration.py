@@ -70,6 +70,38 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertTrue(cannot_qualify(0, 2, 1000, 0.999))
         self.assertFalse(cannot_qualify(999, 1000, 1000, 0.999))
 
+    def test_data_matrix_capture_drains_target_change_backlog(self):
+        session = HikRigCalibrationSession(
+            HikCalibrationOptions("fake", "phone", Path("unused")),
+            camera=mock.Mock(),
+            progress=lambda _message: None,
+        )
+        session.camera.read.side_effect = [
+            FrameSample(
+                np.full((2, 2, 3), index, np.uint8),
+                index,
+                receive_time_ns=index,
+                source_id="fake",
+                metadata={"frame_number": index},
+            )
+            for index in range(8)
+        ]
+        expected = np.full((2, 2, 3), 99, np.uint8)
+        session._capture_settled = lambda: expected
+        session._preview_update = lambda *_args, **_kwargs: None
+        self.assertIs(session._capture_data_matrix_frame(), expected)
+        self.assertEqual(session.camera.read.call_count, 8)
+
+    def test_data_matrix_crop_tracks_rotation_and_keeps_quiet_margin(self):
+        unrotated = HikRigCalibrationSession._data_matrix_screen_crop(
+            [40, 45, 20, 10], [10, 10, 80, 80], 0.0, 2, [100, 100]
+        )
+        rotated = HikRigCalibrationSession._data_matrix_screen_crop(
+            [40, 45, 20, 10], [10, 10, 80, 80], 90.0, 2, [100, 100]
+        )
+        self.assertEqual(unrotated, [32, 37, 36, 26])
+        self.assertEqual(rotated, [36, 32, 27, 36])
+
     def test_focus_metric_formatter_accepts_partial_esfr_results(self):
         self.assertEqual(HikRigCalibrationSession._format_metric(None), "n/a")
         self.assertEqual(HikRigCalibrationSession._format_metric(float("nan")), "n/a")
@@ -375,11 +407,20 @@ class HikAlgorithmTests(unittest.TestCase):
         expected_pitch = np.degrees(
             np.arctan2(-normal[1], np.sqrt(normal[0] ** 2 + normal[2] ** 2))
         )
+        top_midpoint = np.mean(projected.reshape((4, 2))[:2], axis=0)
+        bottom_midpoint = np.mean(projected.reshape((4, 2))[2:], axis=0)
+        app_up = top_midpoint - bottom_midpoint
+        expected_rotation = np.degrees(np.arctan2(app_up[0], -app_up[1]))
         self.assertAlmostEqual(
             pose["lens_to_panel_distance_mm"], expected_distance, delta=1.0
         )
         self.assertAlmostEqual(pose["pitch_deg"], expected_pitch, delta=0.2)
         self.assertAlmostEqual(pose["yaw_deg"], expected_yaw, delta=0.2)
+        self.assertAlmostEqual(
+            pose["phone_rotation_clockwise_from_camera_up_deg"],
+            expected_rotation,
+            delta=0.2,
+        )
         inferred = estimate_focus_target_pose(
             projected.reshape((4, 2)), target_size, camera_size
         )
@@ -711,11 +752,13 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
             session.visible_region = {"xywh": [10, 10, 80, 80]}
+            session.geometry = mock.Mock(matrix_3x3=np.eye(3).tolist())
             session._wait_painted = lambda _shown: None
-            session._capture_settled = lambda: np.zeros((80, 80, 3), np.uint8)
+            session._capture_data_matrix_frame = lambda: np.zeros((100, 100, 3), np.uint8)
             rendered = mock.Mock(
                 image=np.zeros((100, 100, 3), np.uint8),
                 trial_id="dm-test",
+                symbol_rect_screen_xywh=[40, 40, 20, 20],
             )
             failed_grade = {
                 "grade": 0.0,
@@ -755,11 +798,13 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
             session.visible_region = {"xywh": [10, 10, 80, 80]}
+            session.geometry = mock.Mock(matrix_3x3=np.eye(3).tolist())
             session._wait_painted = lambda _shown: None
-            session._capture_settled = lambda: np.zeros((80, 80, 3), np.uint8)
+            session._capture_data_matrix_frame = lambda: np.zeros((100, 100, 3), np.uint8)
             rendered = mock.Mock(
                 image=np.zeros((100, 100, 3), np.uint8),
                 trial_id="dm-test",
+                symbol_rect_screen_xywh=[40, 40, 20, 20],
             )
             with mock.patch(
                 "acquisition.rig_calibration.hik.workflow.render_data_matrix_target",

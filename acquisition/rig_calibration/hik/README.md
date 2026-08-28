@@ -129,6 +129,8 @@ game image or game-pose estimator participates. A focal estimate is retained
 once observable because an almost front-on rectangle has vanishing points too
 far away for stable focal recovery. The UI reports that case as unavailable
 instead of fabricating a distance.
+The same primitive rectangle reports phone in-plane rotation clockwise from
+camera-up so roll can be adjusted without invoking game pose estimation.
 The phone target contains four ISO 12233-style slanted edges distributed across
 the visible field: two near-horizontal and two near-vertical. It reports the
 conservative four-edge current/history maximum for Laplacian sharpness and
@@ -163,6 +165,10 @@ ZXing 2.x and 3.x encoder/decoder signatures are both supported. If an optional
 decoder or external grader still fails, grading is marked unavailable and the
 calibrator returns to the interactive session instead of discarding the camera
 calibration.
+Built-in grading drains buffered camera frames after each target change and
+decodes the rectified, rotation-aware symbol crop with a four-module margin. It uses a bounded set of ZXing
+downscale and threshold fallbacks; this avoids treating one binarizer's miss as a
+camera failure while retaining the exact-payload synchronization check.
 
 ## Saved result and stream
 

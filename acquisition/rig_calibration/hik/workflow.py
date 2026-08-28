@@ -550,6 +550,52 @@ class HikRigCalibrationSession:
             .format(self.options.operation_timeout_seconds, window)
         )
 
+    def _capture_data_matrix_frame(self) -> np.ndarray:
+        """Drain target-change backlog before accepting a settled grading frame."""
+
+        discard_count = max(8, int(self.options.settle_frames) * 2)
+        for _ in range(discard_count):
+            sample = self.camera.read()
+            self._preview_update(sample.image, sample.metadata)
+        return self._capture_settled()
+
+    @staticmethod
+    def _data_matrix_screen_crop(
+        symbol_rect_screen_xywh: Sequence[int],
+        visible_region_xywh: Sequence[int],
+        angle_deg: float,
+        module_width_display_px: int,
+        screen_size_px: Sequence[int],
+    ) -> Sequence[int]:
+        """Bound a rotated symbol with a quiet margin in phone coordinates."""
+
+        x, y, width, height = map(int, symbol_rect_screen_xywh)
+        region_x, region_y, region_width, region_height = map(
+            int, visible_region_xywh
+        )
+        corners = np.asarray(
+            [[x, y], [x + width, y], [x + width, y + height], [x, y + height]],
+            dtype=np.float64,
+        )
+        if float(angle_deg):
+            rotation = cv2.getRotationMatrix2D(
+                (region_x + region_width / 2.0, region_y + region_height / 2.0),
+                float(angle_deg),
+                1.0,
+            )
+            corners = cv2.transform(corners.reshape((-1, 1, 2)), rotation).reshape(
+                (-1, 2)
+            )
+        margin = max(8, int(module_width_display_px) * 4)
+        screen_width, screen_height = map(int, screen_size_px)
+        left = max(0, int(np.floor(np.min(corners[:, 0]))) - margin)
+        top = max(0, int(np.floor(np.min(corners[:, 1]))) - margin)
+        right = min(screen_width, int(np.ceil(np.max(corners[:, 0]))) + margin)
+        bottom = min(screen_height, int(np.ceil(np.max(corners[:, 1]))) + margin)
+        if right <= left or bottom <= top:
+            raise RuntimeError("Rotated Data Matrix crop is empty")
+        return [left, top, right - left, bottom - top]
+
     def _wait_auto_imaging(self) -> Dict[str, Any]:
         """Wait for hardware auto exposure/gain and image brightness to converge."""
 
@@ -1825,6 +1871,13 @@ class HikRigCalibrationSession:
                                 self._format_metric(pose.get("pitch_deg")),
                                 self._format_metric(pose.get("yaw_deg")),
                             ),
+                            "Phone rotation: {} deg clockwise from camera-up".format(
+                                self._format_metric(
+                                    pose.get(
+                                        "phone_rotation_clockwise_from_camera_up_deg"
+                                    )
+                                )
+                            ),
                             "Lens-to-panel perpendicular distance: {} mm".format(
                                 self._format_metric(
                                     pose.get("lens_to_panel_distance_mm"), 1
@@ -1956,6 +2009,7 @@ class HikRigCalibrationSession:
 
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         visible_region = self._required(self.visible_region, "camera-visible screen region")
+        geometry = self._required(self.geometry, "screen geometry")
         complete_grader: Optional[CompleteGrader] = None
         if self.options.complete_grader_plugin:
             complete_grader = _load_callable(self.options.complete_grader_plugin)
@@ -1990,6 +2044,7 @@ class HikRigCalibrationSession:
                         visible_region["xywh"],
                         payload,
                         module_px,
+                        quiet_zone_modules=4,
                         trial_id="dm-m{}-{:04d}".format(module_px, trial),
                     )
                 except ValueError:
@@ -2011,13 +2066,39 @@ class HikRigCalibrationSession:
                     exposure_us=self.exposure.exposure_us if self.exposure else None,
                     gain=self.exposure.gain if self.exposure else None,
                 )
-                frame = self._capture_settled()
-                metadata = {"angle_deg": angle, "color_bgr": list(color), "intensity": intensity}
+                frame = self._capture_data_matrix_frame()
+                screen_frame = cv2.warpPerspective(
+                    frame,
+                    np.asarray(geometry.matrix_3x3, dtype=np.float64),
+                    tuple(phone_metrics.screen_size_px),
+                    flags=cv2.INTER_CUBIC,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=(127, 127, 127),
+                )
+                decode_rect = self._data_matrix_screen_crop(
+                    target.symbol_rect_screen_xywh,
+                    visible_region["xywh"],
+                    angle,
+                    module_px,
+                    phone_metrics.screen_size_px,
+                )
+                x, y, width, height = decode_rect
+                decode_image = screen_frame[y : y + height, x : x + width]
+                metadata = {
+                    "angle_deg": angle,
+                    "color_bgr": list(color),
+                    "intensity": intensity,
+                    "decode_input": "rectified_rotated_symbol_crop",
+                    "decode_rect_screen_xywh": list(decode_rect),
+                    "discarded_camera_frames_after_target_change": max(
+                        8, int(self.options.settle_frames) * 2
+                    ),
+                }
                 try:
                     grade = dict(
                         complete_grader(frame, payload, metadata)
                         if complete_grader
-                        else grade_data_matrix_decode(frame, payload)
+                        else grade_data_matrix_decode(decode_image, payload)
                     )
                 except Exception as exc:
                     message = (
