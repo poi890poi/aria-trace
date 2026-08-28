@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
+
 from acquisition.annotations import AnnotationStore
 from acquisition.hud import _HudWindow
 from acquisition.models import FramePacket, InputPacket
@@ -1988,8 +1990,44 @@ class WorkbenchTests(unittest.TestCase):
                     json.dumps({"label": "full_map", "status": "ready"}),
                     encoding="utf-8",
                 )
+                calibration_id = "fixture-minimap-calibration"
+                calibration_root = (
+                    root
+                    / "artifacts"
+                    / "minimap_calibrations"
+                    / "genshin-impact-pc"
+                    / calibration_id
+                )
+                calibration_root.mkdir(parents=True)
+                cv2.imwrite(
+                    str(calibration_root / "forward_start.png"),
+                    np.full((80, 120, 3), 127, dtype=np.uint8),
+                )
+                (calibration_root / "calibration.json").write_text(
+                    json.dumps(
+                        {
+                            "outer_boundary": {
+                                "center_x": 60,
+                                "center_y": 40,
+                                "radius": 30,
+                            },
+                            "forward_verification": {
+                                "evidence": [{"name": "forward_start.png"}]
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
 
-                def fake_stitch(_session_path, output, progress=None):
+                def fake_stitch(
+                    _session_path,
+                    output,
+                    progress=None,
+                    localization_reference=None,
+                ):
+                    self.assertEqual(
+                        localization_reference["calibration_id"], calibration_id
+                    )
                     output.mkdir(parents=True, exist_ok=True)
                     (output / "mosaic.png").write_bytes(b"png-evidence")
                     return {
@@ -2015,12 +2053,16 @@ class WorkbenchTests(unittest.TestCase):
                         {
                             "game_profile_id": "genshin-impact-pc",
                             "session_relative_path": "map-captures/run_01",
+                            "minimap_calibration_id": calibration_id,
                         }
                     )
                 stitch = descriptor["map_stitches"]["genshin-impact-pc"][0]
                 self.assertEqual(stitch["status"], "review_required")
                 self.assertEqual(
                     stitch["source_session_key"], "map-captures/run_01"
+                )
+                self.assertEqual(
+                    stitch["source_minimap_calibration_id"], calibration_id
                 )
                 self.assertNotIn("registrations", stitch)
                 self.assertNotIn("source_frame_records", stitch["provenance"])

@@ -1698,15 +1698,51 @@ class AcquisitionWorkbench:
                 raise ValueError("Map session belongs to another game")
             if described.get("label") != "full_map":
                 raise ValueError("Expected a full_map session")
+            calibration_id = str(value.get("minimap_calibration_id") or "")
+            if not calibration_id or safe_id(calibration_id) != calibration_id:
+                raise ValueError(
+                    "Choose a reviewed mini-map calibration before rebuilding the map"
+                )
+            calibration_root = (
+                self._minimap_calibration_root(game_profile_id) / calibration_id
+            )
+            calibration_file = calibration_root / "calibration.json"
+            if not calibration_file.is_file():
+                raise ValueError("Mini-map calibration artifact does not exist")
+            calibration = json.loads(calibration_file.read_text(encoding="utf-8"))
+            verification = calibration.get("forward_verification") or {}
+            declared_evidence = {
+                item.get("name") for item in verification.get("evidence") or []
+            }
+            if "forward_start.png" not in declared_evidence:
+                raise ValueError(
+                    "Run and review forward pose verification before rebuilding the map"
+                )
+            reference_path = calibration_root / "forward_start.png"
+            reference_image = cv2.imread(str(reference_path), cv2.IMREAD_COLOR)
+            if reference_image is None:
+                raise ValueError("Forward scale-reference image cannot be decoded")
+            localization_reference = {
+                "image": reference_image,
+                "calibration": calibration,
+                "calibration_id": calibration_id,
+                "source_image_name": "forward_start.png",
+            }
             stitch_id = safe_id(described.get("session_id") or path.name)
             output = self._map_stitch_root(game_profile_id) / stitch_id
 
-        result = stitch_map_session(path, output, progress=progress)
+        result = stitch_map_session(
+            path,
+            output,
+            progress=progress,
+            localization_reference=localization_reference,
+        )
 
         if progress:
             progress("Saving the stitched-map result and evidence index")
         with self._lock:
             result["source_session_key"] = relative
+            result["source_minimap_calibration_id"] = calibration_id
             result["stitch_id"] = stitch_id
             result["artifact_relative_path"] = str(
                 output.relative_to(self.artifact_root)
