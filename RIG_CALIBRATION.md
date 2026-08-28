@@ -1,5 +1,8 @@
 # AriaTrace Camera-to-Phone Rig Calibration
 
+The standalone HIK MVS camera/Android-display workflow and rectified stream are
+documented in [`acquisition/rig_calibration/hik/README.md`](acquisition/rig_calibration/hik/README.md).
+
 ## 1. Purpose
 
 This document specifies how AriaTrace calibrates a fixed USB camera that observes an Android phone screen. The process must work when the camera sees the entire display, only the task-relevant part of the display, or additional area outside the display.

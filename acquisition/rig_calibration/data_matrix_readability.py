@@ -69,17 +69,29 @@ def encode_data_matrix_modules(payload: str) -> np.ndarray:
         raise ValueError("Data Matrix payload is required")
     zxingcpp = _zxing_module()
     try:
-        barcode = zxingcpp.create_barcode(
-            payload,
-            zxingcpp.BarcodeFormat.DataMatrix,
-            force_square=True,
-        )
-        image = np.asarray(
-            barcode.to_image(scale=1, add_hrt=False, add_quiet_zones=False)
-        )
+        try:
+            barcode = zxingcpp.create_barcode(
+                payload,
+                zxingcpp.BarcodeFormat.DataMatrix,
+                force_square=True,
+            )
+        except TypeError:
+            # zxing-cpp 2.x exposes the writer, but not its optional shape
+            # keyword.  The default Data Matrix writer is square for the
+            # payloads used by this calibration sweep.
+            barcode = zxingcpp.create_barcode(
+                payload,
+                zxingcpp.BarcodeFormat.DataMatrix,
+            )
+        try:
+            image = np.asarray(
+                barcode.to_image(scale=1, add_hrt=False, add_quiet_zones=False)
+            )
+        except TypeError:
+            image = np.asarray(barcode.to_image())
     except (AttributeError, TypeError) as exc:
         raise RuntimeError(
-            "The installed zxing-cpp lacks the Data Matrix writer API; version 3.x is required"
+            "The installed zxing-cpp lacks a compatible Data Matrix writer API"
         ) from exc
     if image.ndim != 2 or min(image.shape) < 8:
         raise RuntimeError("Data Matrix encoder returned an invalid module bitmap")
@@ -92,14 +104,30 @@ def decode_data_matrix_payloads(image: np.ndarray) -> List[str]:
     if image is None or image.size == 0:
         raise ValueError("Data Matrix image must be non-empty")
     zxingcpp = _zxing_module()
-    values = zxingcpp.read_barcodes(
-        np.ascontiguousarray(image),
-        formats=zxingcpp.BarcodeFormat.DataMatrix,
-        try_rotate=True,
-        try_downscale=False,
-        try_invert=False,
-        return_errors=False,
-    )
+    contiguous = np.ascontiguousarray(image)
+    try:
+        values = zxingcpp.read_barcodes(
+            contiguous,
+            formats=zxingcpp.BarcodeFormat.DataMatrix,
+            try_rotate=True,
+            try_downscale=False,
+            try_invert=False,
+            return_errors=False,
+        )
+    except TypeError:
+        # zxing-cpp 2.x has the same decoder but no ``try_invert`` keyword.
+        try:
+            values = zxingcpp.read_barcodes(
+                contiguous,
+                formats=zxingcpp.BarcodeFormat.DataMatrix,
+                try_rotate=True,
+                try_downscale=False,
+                return_errors=False,
+            )
+        except (AttributeError, TypeError) as exc:
+            raise RuntimeError(
+                "The installed zxing-cpp lacks a compatible Data Matrix decoder API"
+            ) from exc
     return [str(value.text) for value in values]
 
 

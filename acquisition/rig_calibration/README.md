@@ -49,7 +49,8 @@ Resolution frequencies retain their sampling domain. The primary
 display-referred e-SFR/MTF result uses cycles per display pixel (`cy/dpx`), while
 cycles per camera pixel (`cy/cpx`) is retained as the native analysis/audit
 axis. Cycles per millimetre (`cy/mm` or `lp/mm`) is emitted only when physical
-display pitch is measured. One-pixel-wide alternating phone lines are
+display pitch is measured or explicitly reported with provenance; logical UI
+density is never treated as physical pitch. One-pixel-wide alternating phone lines are
 `0.5 cy/dpx`, not an unqualified `1 line/pixel`; they are a Nyquist stress
 target rather than a standalone resolution result. Samples are measured before
 homography normalization and their frequency axis is transformed using the
@@ -65,7 +66,7 @@ prevents calibration acceptance.
 
 ## Dependency boundary
 
-Ordinary geometry, normalization, e-SFR, feature matching, latency, YAML, and spatial export require NumPy, OpenCV, and PyYAML. Live ChArUco functions require the ArUco module from `opencv-contrib-python-headless`. The built-in Data Matrix encoder/decoder requires optional ZXing-C++ 3.x; callers can inject another compatible encoder/decoder. Importing the package requires neither optional component. [`requirements-rig-calibration.txt`](../../requirements-rig-calibration.txt) describes an isolated environment with them enabled on supported Python versions.
+Ordinary geometry, normalization, e-SFR, feature matching, latency, YAML, and spatial export require NumPy, OpenCV, and PyYAML. Live ChArUco functions require the ArUco module from `opencv-contrib-python-headless`. The built-in Data Matrix encoder/decoder requires optional ZXing-C++; both current APIs and the legacy 2.x writer/decoder signatures are supported. Callers can inject another compatible encoder/decoder. Importing the package requires neither optional component. [`requirements-rig-calibration.txt`](../../requirements-rig-calibration.txt) describes an isolated environment with them enabled on supported Python versions.
 
 ## Grade Data Matrix Decode
 

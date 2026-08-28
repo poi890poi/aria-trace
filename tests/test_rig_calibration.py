@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -15,9 +16,11 @@ from acquisition.rig_calibration import (
     aggregate_feature_matching,
     build_calibration,
     detect_charuco_correspondences,
+    decode_data_matrix_payloads,
     estimate_latency,
     estimate_paired_delay,
     estimate_screen_geometry,
+    encode_data_matrix_modules,
     evaluate_feature_matching,
     export_spatial_fragment,
     extract_one_to_one_patch,
@@ -266,6 +269,60 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
                 cell = raster[row * 3 : (row + 1) * 3, column * 3 : (column + 1) * 3]
                 self.assertEqual(int(cell.min()), int(cell.max()))
 
+    def test_encoder_supports_legacy_zxing_writer_signature(self):
+        class LegacyBarcode:
+            @staticmethod
+            def to_image():
+                yy, xx = np.indices((12, 12))
+                return np.where((xx + yy) % 2, 0, 255).astype(np.uint8)
+
+        class LegacyZxing:
+            class BarcodeFormat:
+                DataMatrix = object()
+
+            @staticmethod
+            def create_barcode(payload, barcode_format):
+                if payload != "A7K2":
+                    raise AssertionError("unexpected payload")
+                if barcode_format is not LegacyZxing.BarcodeFormat.DataMatrix:
+                    raise AssertionError("unexpected barcode format")
+                return LegacyBarcode()
+
+        with mock.patch(
+            "acquisition.rig_calibration.data_matrix_readability._zxing_module",
+            return_value=LegacyZxing,
+        ):
+            modules = encode_data_matrix_modules("A7K2")
+        self.assertEqual(modules.shape, (12, 12))
+        self.assertEqual(set(np.unique(modules)), {0, 255})
+
+    def test_decoder_supports_legacy_zxing_without_try_invert(self):
+        class Result:
+            text = "A7K2"
+
+        class LegacyZxing:
+            class BarcodeFormat:
+                DataMatrix = object()
+
+            @staticmethod
+            def read_barcodes(
+                image,
+                formats=None,
+                try_rotate=True,
+                try_downscale=True,
+                return_errors=False,
+            ):
+                if image.shape != (12, 12):
+                    raise AssertionError("unexpected image")
+                return [Result()]
+
+        with mock.patch(
+            "acquisition.rig_calibration.data_matrix_readability._zxing_module",
+            return_value=LegacyZxing,
+        ):
+            decoded = decode_data_matrix_payloads(np.zeros((12, 12), np.uint8))
+        self.assertEqual(decoded, ["A7K2"])
+
 
 class RigLatencyTests(unittest.TestCase):
     @staticmethod
@@ -335,6 +392,7 @@ class RigImageQualityTests(unittest.TestCase):
             rect,
             edge_angle_deg=5.0,
             channel="luminance",
+            display_pixel_pitch_mm_xy=(0.0625, 0.0625),
         )
         display = result["display_referred"]
         self.assertEqual(result["measurement_input_space"], "camera_pre_homography_px")
@@ -345,6 +403,13 @@ class RigImageQualityTests(unittest.TestCase):
             places=2,
         )
         self.assertIsNotNone(display["mtf50"])
+        self.assertAlmostEqual(
+            result["display_physical"]["mtf50"], display["mtf50"] / 0.0625
+        )
+        self.assertEqual(
+            result["display_physical"]["spatial_frequency_unit"],
+            "line_pairs_per_mm",
+        )
         self.assertLessEqual(max(display["frequency"]), 0.5)
         self.assertGreater(evidence.size, 0)
         aggregate = aggregate_esfr_measurements([result, result])

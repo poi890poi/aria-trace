@@ -73,19 +73,30 @@ button{font:600 20px system-ui;padding:18px 28px;border:0;border-radius:10px}
 Enter fullscreen calibration</button></div><div id="note">Waiting for target</div><script>
 const canvas=document.querySelector('#target'),ctx=canvas.getContext('2d');
 const note=document.querySelector('#note'),gate=document.querySelector('#gate');
+const autoStart=new URLSearchParams(location.search).get('autostart')==='1';
 let revision=-1,lastMode='',image=null;
 function size(){const d=window.devicePixelRatio||1; canvas.width=Math.round(innerWidth*d);
  canvas.height=Math.round(innerHeight*d); report();}
 function report(){fetch('/telemetry',{method:'POST',headers:{'content-type':'application/json'},
  body:JSON.stringify({inner_width:innerWidth,inner_height:innerHeight,
  pixel_ratio:devicePixelRatio||1,canvas_width:canvas.width,canvas_height:canvas.height,
- screen_width:screen.width,screen_height:screen.height,orientation:screen.orientation?.type||''})}).catch(()=>{});}
+ screen_width:screen.width,screen_height:screen.height,
+ screen_orientation_type:screen.orientation?.type||'',screen_orientation_angle:screen.orientation?.angle||0,
+ window_orientation:window.orientation||0,fullscreen:!!document.fullscreenElement,
+ visual_viewport_width:visualViewport?.width||innerWidth,
+ visual_viewport_height:visualViewport?.height||innerHeight,
+ user_agent:navigator.userAgent})}).catch(()=>{});}
+function drawImage(){ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,canvas.width,canvas.height);
+ ctx.drawImage(image,0,0,canvas.width,canvas.height);}
 function draw(mode){if(mode==='black'||mode==='white'){ctx.fillStyle=mode;ctx.fillRect(0,0,canvas.width,canvas.height);}
- else if(image){ctx.imageSmoothingEnabled=false;ctx.drawImage(image,0,0,canvas.width,canvas.height);}}
+ else if(image){ctx.imageSmoothingEnabled=false;drawImage();}}
 function afterPaint(s){requestAnimationFrame(()=>requestAnimationFrame(()=>fetch('/ack',
  {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(
  {revision:s.revision,token:s.token,client_time_ms:performance.now(),painted:true,
- canvas_width:canvas.width,canvas_height:canvas.height})}).catch(()=>{})));}
+ canvas_width:canvas.width,canvas_height:canvas.height,
+ screen_orientation_type:screen.orientation?.type||'',screen_orientation_angle:screen.orientation?.angle||0,
+ fullscreen:!!document.fullscreenElement,
+ image_natural_width:image?.naturalWidth||0,image_natural_height:image?.naturalHeight||0})}).catch(()=>{})));}
 async function poll(){try{const s=await (await fetch('/state.json',{cache:'no-store'})).json();
  note.textContent=s.label+' · '+canvas.width+'×'+canvas.height;
  if(s.revision!==revision){revision=s.revision;lastMode=s.mode;
@@ -93,8 +104,10 @@ async function poll(){try{const s=await (await fetch('/state.json',{cache:'no-st
    next.src='/image.png?v='+revision;}else{draw(s.mode);afterPaint(s);}
  }else draw(lastMode);}catch(e){note.textContent='PC target service disconnected';}
  setTimeout(poll,40);}
+if(autoStart){note.textContent='ADB will activate fullscreen calibration';}
 document.querySelector('#go').onclick=async()=>{try{await document.documentElement.requestFullscreen();}catch(e){}
- gate.style.display='none';note.style.display='none';size();}; addEventListener('resize',size);size();poll();
+ gate.style.display='none';note.style.display='none';size();}; addEventListener('resize',size);
+document.addEventListener('fullscreenchange',size);size();poll();
 </script></body></html>"""
 
 
@@ -226,6 +239,14 @@ class LocalPhoneTargetServer(PhoneTargetAdapter):
             return next(address for address in addresses if not address.startswith("127."))
         except Exception:
             return "127.0.0.1"
+
+    @property
+    def bound_port(self) -> int:
+        """Return the actual listening port after ``start``."""
+
+        if self._server is None:
+            raise RuntimeError("Phone target service is not running")
+        return int(self._server.server_address[1])
 
     def start(self, layout: CharucoLayout) -> str:
         if self._server is not None:

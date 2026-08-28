@@ -188,6 +188,7 @@ def measure_slanted_edge_esfr(
     oversampling: int = 4,
     oecf_lut: Optional[Sequence[float]] = None,
     geometry_confidence: float = 1.0,
+    display_pixel_pitch_mm_xy: Optional[Sequence[float]] = None,
 ) -> Tuple[Dict[str, Any], np.ndarray]:
     """Measure one edge directly from native camera samples in display units.
 
@@ -386,6 +387,24 @@ def measure_slanted_edge_esfr(
             ["measured_oecf_missing"] if oecf_lut is None else []
         ),
     }
+    if display_pixel_pitch_mm_xy is not None:
+        pitch = np.asarray(display_pixel_pitch_mm_xy, dtype=np.float64).reshape(-1)
+        if len(pitch) != 2 or not np.all(np.isfinite(pitch)) or np.any(pitch <= 0):
+            raise ValueError("Display pixel pitch must contain two positive mm values")
+        normal_pitch_mm = float(np.linalg.norm(normal * pitch))
+        result["display_physical"] = {
+            "spatial_frequency_unit": "line_pairs_per_mm",
+            "equivalent_unit": "cycles_per_mm",
+            "pixel_pitch_mm_xy": pitch.tolist(),
+            "pixel_pitch_mm_along_edge_normal": normal_pitch_mm,
+            "frequency": (frequencies / normal_pitch_mm).tolist(),
+            "mtf50": (
+                float(mtf50 / normal_pitch_mm) if mtf50 is not None else None
+            ),
+            "mtf10": (
+                float(mtf10 / normal_pitch_mm) if mtf10 is not None else None
+            ),
+        }
     return result, evidence
 
 

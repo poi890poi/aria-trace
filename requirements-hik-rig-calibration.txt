@@ -1,0 +1,6 @@
+# Interactive HIK focus inspection requires Win32 HighGUI; do not substitute
+# opencv-contrib-python-headless in this isolated launcher environment.
+opencv-contrib-python==4.6.0.66; python_version < "3.8"
+opencv-contrib-python>=4.8; python_version >= "3.8"
+zxing-cpp>=2,<3; python_version < "3.9"
+zxing-cpp>=3,<4; python_version >= "3.9"
