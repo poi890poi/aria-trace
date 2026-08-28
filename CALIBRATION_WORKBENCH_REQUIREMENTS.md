@@ -84,12 +84,37 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 - Automatic stitching does not by itself certify that every game region or
   layer was recorded; coverage claims are limited to observed frames.
 
+## Two-rate live tracking
+
+- Live tracking consumes three explicit, same-game artifacts: a reviewed
+  mini-map/cursor calibration, a scene-relative-yaw calibration, and an
+  observed full-map mosaic. The Workbench shows all three artifact IDs before
+  capture starts and never substitutes another platform's geometry.
+- A high-cost masked, multi-scale, multi-angle mini-map-to-mosaic search runs at
+  a configurable low rate and supplies absolute position, rotation, scale,
+  score, margin, and wall time. It runs off the frame-processing thread.
+- At capture rate, the existing calibrated scene-yaw estimator measures
+  relative rotation and masked mini-map registration measures relative shift.
+  These updates continue while an absolute search is in flight.
+- Absolute fixes are fused through the existing pose correction gate. The
+  output retains whether each fix initialized, corrected, or was rejected;
+  uncertainty and degraded/relocalizing modes remain visible.
+- A compact overlay draws the fused pose, heading, recent trail, mode, absolute
+  and relative confidence, update time, global-search time, and uncertainty on
+  the selected observed mosaic. It hides when the target game loses focus and
+  remains user-closeable through the existing Workbench overlay control.
+- Tracker coordinates are pixels in the observed stitched mosaic. They are not
+  world coordinates and do not imply coverage beyond recorded map frames.
+- Live tracking and session recording are mutually exclusive because both own
+  the selected capture source. Starting either while the other is active is
+  rejected with a visible explanation.
+
 ## Workbench interaction
 
 - Calibration and stitching are available from the same simple session-list
   Workbench; stage-selection recording flow is not reintroduced.
-- Mini-map/cursor calibration, pose verification, and map stitching have
-  separate task tabs, as does scene-relative yaw calibration. Each tab
+- Mini-map/cursor calibration, pose verification, map stitching, and live
+  tracking have separate task tabs, as does scene-relative yaw calibration. Each tab
   identifies the exact input role and session.
 - A tab displays a result only when its recorded provenance exactly matches the
   currently selected sessions. Historical POC artifacts and results from other

@@ -19,6 +19,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
+import cv2
+
 from replay.alignment import align_session
 from replay.package import compile_replay_package
 
@@ -30,6 +32,7 @@ from .android_capture import (
     find_scrcpy_server,
 )
 from .map_stitching import stitch_map_session
+from .live_tracker import TwoRateRealtimeTracker, render_map_overlay
 from .minimap_calibration import calibrate_segment_sessions, calibrate_session
 from .minimap_verification import verify_forward_session
 from .poc_evidence import build_poc_evidence_index
@@ -661,6 +664,9 @@ class AcquisitionWorkbench:
         self._compile_state = "not_ready"
         self._compile_result = None
         self._analysis_jobs = {}
+        self._live_tracker = None
+        self._live_tracker_engine = None
+        self._live_tracker_mosaic = None
         self._android_control = None
         self._hud_notice = None
         self._session_summary_cache = {}
@@ -922,6 +928,37 @@ class AcquisitionWorkbench:
             armed = self._armed
             active = self._active
             notice = self._hud_notice
+            tracker = self._live_tracker
+            if tracker and tracker.get("status") in ("starting", "running"):
+                latest = tracker.get("latest") or {}
+                pose = latest.get("pose") or {}
+                global_fix = latest.get("global_fix") or {}
+                detail = "Searching the observed map for the first absolute fix."
+                if pose:
+                    detail = (
+                        "x {x:.1f} · y {y:.1f} · yaw {yaw:+.1f}° · "
+                        "global {global_score:.3f} · local {local_score:.3f}"
+                    ).format(
+                        x=float(pose.get("x") or 0),
+                        y=float(pose.get("y") or 0),
+                        yaw=float(pose.get("yaw_deg") or 0),
+                        global_score=float(global_fix.get("score") or 0),
+                        local_score=float(
+                            (latest.get("local_motion") or {}).get("response") or 0
+                        ),
+                    )
+                return {
+                    "visible": True,
+                    "title": "ARIATRACE LIVE TRACKER",
+                    "window_title": (tracker.get("frame_source") or {}).get(
+                        "window_title"
+                    ),
+                    "state": "live_tracker",
+                    "status": str(latest.get("mode") or "LOCALIZING"),
+                    "detail": detail,
+                    "color": "#72dfa3" if pose else "#ffd166",
+                    "map_overlay_url": "/api/tracker/overlay",
+                }
             if armed is None:
                 return {"visible": False}
             stage = armed.get("workflow_stage") or {}
@@ -1188,6 +1225,8 @@ class AcquisitionWorkbench:
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("Wait for the active take to finish")
+            if self._tracker_running():
+                raise RuntimeError("Stop live tracking before running analysis")
             if any(
                 item.get("status") in {"queued", "running"}
                 for item in self._analysis_jobs.values()
@@ -1689,6 +1728,198 @@ class AcquisitionWorkbench:
         if name not in declared:
             raise ValueError("Unknown map-stitch evidence image")
         return (root / name).read_bytes()
+
+    def _live_tracker_descriptor(self) -> Optional[dict]:
+        if self._live_tracker is None:
+            return None
+        return {
+            key: value
+            for key, value in self._live_tracker.items()
+            if key not in ("thread", "stop")
+        }
+
+    def _tracker_running(self) -> bool:
+        return bool(
+            self._live_tracker
+            and self._live_tracker.get("status") in ("starting", "running")
+        )
+
+    @staticmethod
+    def _read_tracker_artifact(root: Path, filename: str, artifact_id: str) -> dict:
+        if not artifact_id or safe_id(artifact_id) != artifact_id:
+            raise ValueError("Choose a valid {} artifact".format(filename))
+        path = root / artifact_id / filename
+        if not path.is_file():
+            raise ValueError("Tracker artifact does not exist: {}".format(path))
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def start_live_tracker(self, value: dict) -> dict:
+        """Start user-controlled live capture with asynchronous absolute fixes."""
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Stop the active recording before live tracking")
+            if self._tracker_running():
+                raise RuntimeError("The live tracker is already running")
+            if any(
+                job.get("status") in ("queued", "running")
+                for job in self._analysis_jobs.values()
+            ):
+                raise RuntimeError("Wait for background analysis to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            game = self.profiles.game(game_profile_id)
+            minimap_config = game.get("minimap_calibration")
+            if not minimap_config:
+                raise ValueError(
+                    "This game profile has no verified mini-map geometry; "
+                    "live tracking cannot substitute another platform's calibration"
+                )
+            calibration_id = str(value.get("minimap_calibration_id") or "")
+            scene_yaw_id = str(value.get("scene_yaw_calibration_id") or "")
+            stitch_id = str(value.get("map_stitch_id") or "")
+            minimap = self._read_tracker_artifact(
+                self._minimap_calibration_root(game_profile_id),
+                "calibration.json",
+                calibration_id,
+            )
+            scene_yaw = self._read_tracker_artifact(
+                self._scene_yaw_root(game_profile_id),
+                "scene_yaw_calibration.json",
+                scene_yaw_id,
+            )
+            stitch_root = self._map_stitch_root(game_profile_id)
+            stitch = self._read_tracker_artifact(
+                stitch_root, "map_stitch.json", stitch_id
+            )
+            mosaic_path = stitch_root / stitch_id / "mosaic.png"
+            declared = {item.get("name") for item in stitch.get("evidence") or []}
+            if "mosaic.png" not in declared or not mosaic_path.is_file():
+                raise ValueError("The selected map stitch has no declared mosaic image")
+            mosaic = cv2.imread(str(mosaic_path), cv2.IMREAD_COLOR)
+            if mosaic is None:
+                raise ValueError("Could not decode the selected map mosaic")
+            frame_config = dict(value.get("frame_source") or {})
+            adapter = frame_config.get("adapter")
+            if adapter not in ("windows_window", "android_scrcpy"):
+                raise ValueError("Choose a Windows game window or Android capture source")
+            if adapter == "windows_window" and not frame_config.get("window_title"):
+                raise ValueError("Choose the exact game window for live tracking")
+            if adapter == "android_scrcpy" and not frame_config.get("serial"):
+                raise ValueError("Choose an Android device for live tracking")
+            global_interval_s = float(value.get("global_interval_s") or 1.5)
+            if global_interval_s < 0.5 or global_interval_s > 30.0:
+                raise ValueError("Global localization interval must be 0.5–30 seconds")
+            frame_source, _ = self.sources.capture_sources(
+                frame_config, {"adapter": "none"}
+            )
+            engine = TwoRateRealtimeTracker(
+                mosaic,
+                minimap_config,
+                minimap,
+                scene_yaw,
+                global_interval_s=global_interval_s,
+            )
+            stop = threading.Event()
+            runtime = {
+                "status": "starting",
+                "detail": "Starting the selected capture source.",
+                "game_profile_id": game_profile_id,
+                "minimap_calibration_id": calibration_id,
+                "scene_yaw_calibration_id": scene_yaw_id,
+                "map_stitch_id": stitch_id,
+                "frame_source": frame_config,
+                "global_interval_s": global_interval_s,
+                "started_utc": datetime.now(timezone.utc).isoformat(),
+                "latest": None,
+                "high_rate_fps": 0.0,
+                "processed_frames": 0,
+                "error": None,
+                "stop": stop,
+                "thread": None,
+            }
+            self._live_tracker = runtime
+            self._live_tracker_engine = engine
+            self._live_tracker_mosaic = mosaic
+            self._last_error = None
+
+        def work() -> None:
+            recent_times = []
+            try:
+                frame_source.start()
+                with self._lock:
+                    runtime["status"] = "running"
+                    runtime["detail"] = (
+                        "High-rate visual tracking is active; absolute map searches "
+                        "run independently at low rate."
+                    )
+                while not stop.is_set():
+                    packet = frame_source.read()
+                    if packet is None:
+                        stop.wait(0.01)
+                        continue
+                    latest = engine.update(
+                        packet.image, packet.host_capture_time_ns
+                    )
+                    now = time.perf_counter()
+                    recent_times.append(now)
+                    recent_times = [item for item in recent_times if now - item <= 2.0]
+                    high_rate_fps = (
+                        (len(recent_times) - 1) / (recent_times[-1] - recent_times[0])
+                        if len(recent_times) >= 2
+                        and recent_times[-1] > recent_times[0]
+                        else 0.0
+                    )
+                    with self._lock:
+                        runtime["latest"] = latest
+                        runtime["processed_frames"] = latest["sequence"]
+                        runtime["high_rate_fps"] = high_rate_fps
+                with self._lock:
+                    runtime["status"] = "stopped"
+                    runtime["detail"] = "Live tracking stopped by the user."
+            except Exception as exc:
+                error = "{}: {}".format(type(exc).__name__, exc)
+                with self._lock:
+                    runtime["status"] = "failed"
+                    runtime["detail"] = error
+                    runtime["error"] = error
+                    self._last_error = "Live tracker failed: {}".format(error)
+            finally:
+                stop.set()
+                try:
+                    frame_source.stop()
+                except Exception:
+                    pass
+                engine.close()
+
+        thread = threading.Thread(
+            target=work, name="acquisition-live-tracker", daemon=True
+        )
+        with self._lock:
+            runtime["thread"] = thread
+        thread.start()
+        return self.descriptor()
+
+    def stop_live_tracker(self) -> dict:
+        with self._lock:
+            runtime = self._live_tracker
+            if not runtime or runtime.get("status") not in ("starting", "running"):
+                raise RuntimeError("The live tracker is not running")
+            runtime["detail"] = "Stopping live capture and tracker."
+            runtime["stop"].set()
+        return self.descriptor()
+
+    def live_tracker_overlay_image(self) -> bytes:
+        with self._lock:
+            if self._live_tracker_mosaic is None or self._live_tracker is None:
+                raise ValueError("No live tracker overlay is available")
+            latest = dict(self._live_tracker.get("latest") or {})
+            mosaic = self._live_tracker_mosaic.copy()
+        image = render_map_overlay(mosaic, latest)
+        ok, encoded = cv2.imencode(".png", image)
+        if not ok:
+            raise RuntimeError("Could not encode the live tracker overlay")
+        return encoded.tobytes()
 
     def _profile_drafts(self) -> dict:
         values = {}
@@ -2225,6 +2456,7 @@ class AcquisitionWorkbench:
                 "analysis_jobs": {
                     key: dict(value) for key, value in self._analysis_jobs.items()
                 },
+                "live_tracker": self._live_tracker_descriptor(),
                 "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
                 "visible_windows": self._windows(),
@@ -2382,6 +2614,9 @@ class AcquisitionWorkbench:
 
     def start_session(self, value: dict) -> dict:
         """Apply the simple recorder settings and append one new session."""
+        with self._lock:
+            if self._tracker_running():
+                raise RuntimeError("Stop live tracking before recording a session")
         game_id = value.get("game_profile_id") or None
         experiment_id = value.get("experiment_id") or "recordings-{}".format(
             game_id or "custom"
@@ -2456,6 +2691,8 @@ class AcquisitionWorkbench:
                 raise RuntimeError("Configure and arm an experiment first")
             if self._active is not None:
                 raise RuntimeError("A take is already active")
+            if self._tracker_running():
+                raise RuntimeError("Stop live tracking before recording a session")
             if run_index < 1:
                 raise ValueError("Run index must be positive")
             if run_index > int(self._armed.get("target_runs") or 1):
@@ -3021,10 +3258,16 @@ class AcquisitionWorkbench:
     def close(self) -> None:
         with self._lock:
             active = self._active
+            tracker = self._live_tracker
         if active is not None:
             active["cancel"].set()
             active["stop"].set()
             active["thread"].join(timeout=5)
+        if tracker and tracker.get("status") in ("starting", "running"):
+            tracker["stop"].set()
+            thread = tracker.get("thread")
+            if thread is not None:
+                thread.join(timeout=5)
 
 
 def make_handler(state: AcquisitionWorkbench):
@@ -3100,6 +3343,12 @@ def make_handler(state: AcquisitionWorkbench):
                         query.get("name", [""])[0],
                     )
                     self._send(200, "image/png", body)
+                elif path == "/api/tracker/overlay":
+                    self._send(
+                        200,
+                        "image/png",
+                        state.live_tracker_overlay_image(),
+                    )
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
             except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
@@ -3156,6 +3405,10 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.queue_map_stitch(value)
                 elif path == "/api/scene-yaw/run":
                     result = state.queue_scene_yaw_calibration(value)
+                elif path == "/api/tracker/start":
+                    result = state.start_live_tracker(value)
+                elif path == "/api/tracker/stop":
+                    result = state.stop_live_tracker()
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
                     return

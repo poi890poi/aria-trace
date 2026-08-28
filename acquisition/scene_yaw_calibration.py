@@ -281,6 +281,13 @@ def calibrate_scene_yaw_frames(frames, output_path: Path, config=None, provenanc
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "status": "review_required" if accepted else "failed",
         "method": "klt_robust_horizontal_angular_flow_with_visual_360_loop_closure",
+        "config": {
+            "sample_fps": config["sample_fps"],
+            "min_tracks": config["min_tracks"],
+            "max_corners": config["max_corners"],
+            "use_essential_gate": bool(config["use_essential_gate"]),
+            "excluded_rects": [list(row) for row in config["excluded_rects"]],
+        },
         "provenance": provenance or {},
         "frame_count": len(frames),
         "focal_ratio": float(best_ratio),

@@ -18,7 +18,7 @@ The **aria** in the name emphasizes that every run is a new performance rather t
 
 This is not timed macro playback. Reliable route completion is the objective; localization is one supporting signal.
 
-Genshin Impact PC is the first POC game. The Acquisition Workbench records an unrestricted number of sessions, then lets the operator classify each one from a short label list: ordinary cruise, rotation-only, movement-only, straight-forward/no-turn, full-map coverage, or route demonstration. The workbench calibrates the circular mini-map from the labeled sessions and preserves the forward segment as the cursor-heading-to-mini-map-shift reference for pose refinement. It persists the masked model, confidence metrics, and boundary, cursor-center, cursor-shape, polar, pose, and quality evidence for review. Automated map traversal and cruise/route estimators remain subsequent work.
+Genshin Impact PC is the first POC game. The Acquisition Workbench records an unrestricted number of sessions, then lets the operator classify each one from a short label list: ordinary cruise, rotation-only, slow horizontal 360° scene turn, movement-only, straight-forward/no-turn, full-map coverage, or route demonstration. The workbench calibrates the circular mini-map and scene-relative yaw, verifies pose and shift evidence, stitches the observed map, and can run a two-rate live tracker using low-rate absolute map fixes plus high-rate relative shift and rotation. It persists selected-source provenance, quality metrics, and task-specific visual evidence for review.
 
 Start the integrated PC acquisition flow from the repository root:
 

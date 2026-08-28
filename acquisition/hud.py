@@ -1,16 +1,20 @@
 """Capture-safe, always-on-top Windows HUD for the acquisition workbench."""
 
 import argparse
+import base64
 import ctypes
 import json
 import os
 import urllib.error
 import urllib.request
+from urllib.parse import urljoin
 from typing import Callable, Optional
 
 
 HUD_WIDTH = 390
 HUD_HEIGHT = 92
+MAP_HUD_WIDTH = 550
+MAP_HUD_HEIGHT = 460
 HUD_MARGIN = 22
 
 GWL_EXSTYLE = -20
@@ -48,7 +52,13 @@ class _HudWindow:
             raise RuntimeError("In-game HUD failed: {}".format(self._error))
 
     @staticmethod
-    def _target_position(user32, root, window_title: Optional[str]):
+    def _target_position(
+        user32,
+        root,
+        window_title: Optional[str],
+        overlay_width: int = HUD_WIDTH,
+        overlay_height: int = HUD_HEIGHT,
+    ):
         if window_title:
             hwnd = user32.FindWindowW(None, str(window_title))
             if hwnd:
@@ -61,13 +71,13 @@ class _HudWindow:
                 ):
                     width = int(rect.right - rect.left)
                     height = int(rect.bottom - rect.top)
-                    if width >= HUD_WIDTH + HUD_MARGIN * 2 and height >= HUD_HEIGHT:
+                    if width >= overlay_width + HUD_MARGIN * 2 and height >= overlay_height:
                         return (
-                            int(origin.x + width - HUD_WIDTH - HUD_MARGIN),
+                            int(origin.x + width - overlay_width - HUD_MARGIN),
                             int(origin.y + HUD_MARGIN),
                         )
         return (
-            max(0, int(root.winfo_screenwidth()) - HUD_WIDTH - HUD_MARGIN),
+            max(0, int(root.winfo_screenwidth()) - overlay_width - HUD_MARGIN),
             HUD_MARGIN,
         )
 
@@ -170,6 +180,12 @@ class _HudWindow:
                 font=("Segoe UI", 9),
             )
             detail.pack(fill="x")
+            map_label = tk.Label(
+                shell,
+                background="#081018",
+                borderwidth=0,
+            )
+            map_photo = None
             root.update_idletasks()
             widget_hwnd = int(root.winfo_id())
             self._hwnd = int(
@@ -203,7 +219,7 @@ class _HudWindow:
             visible = False
 
             def refresh() -> None:
-                nonlocal visible
+                nonlocal visible, map_photo
                 try:
                     value = dict(self.status_provider() or {})
                     if value.get("shutdown"):
@@ -219,11 +235,30 @@ class _HudWindow:
                             foreground=str(value.get("color") or "#59d7e8"),
                         )
                         detail.config(text=str(value.get("detail") or ""))
+                        encoded_map = value.get("map_overlay_png_base64")
+                        if encoded_map:
+                            map_photo = tk.PhotoImage(data=encoded_map)
+                            map_label.config(image=map_photo)
+                            if not map_label.winfo_manager():
+                                map_label.pack(fill="both", expand=True, pady=(8, 0))
+                            overlay_width = MAP_HUD_WIDTH
+                            overlay_height = MAP_HUD_HEIGHT
+                        else:
+                            map_label.pack_forget()
+                            map_photo = None
+                            overlay_width = HUD_WIDTH
+                            overlay_height = HUD_HEIGHT
                         x, y = self._target_position(
-                            user32, root, value.get("window_title")
+                            user32,
+                            root,
+                            value.get("window_title"),
+                            overlay_width,
+                            overlay_height,
                         )
                         root.geometry(
-                            "{}x{}+{}+{}".format(HUD_WIDTH, HUD_HEIGHT, x, y)
+                            "{}x{}+{}+{}".format(
+                                overlay_width, overlay_height, x, y
+                            )
                         )
                         if not visible:
                             root.deiconify()
@@ -271,6 +306,18 @@ class _UrlStatusProvider:
         try:
             with urllib.request.urlopen(self.state_url, timeout=0.5) as response:
                 value = json.loads(response.read().decode("utf-8"))
+            overlay_url = value.get("map_overlay_url")
+            if overlay_url:
+                try:
+                    with urllib.request.urlopen(
+                        urljoin(self.state_url, str(overlay_url)), timeout=0.75
+                    ) as response:
+                        value["map_overlay_png_base64"] = base64.b64encode(
+                            response.read()
+                        ).decode("ascii")
+                except (OSError, ValueError, urllib.error.URLError):
+                    # Keep text status visible if a single overlay frame is missed.
+                    pass
             self.failures = 0
             return value
         except (OSError, ValueError, urllib.error.URLError):

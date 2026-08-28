@@ -42,6 +42,29 @@ For a straight-forward/no-turn sample, expand **Straight-forward touch assist** 
 
 The Android game profile intentionally does not copy PC mini-map crop geometry or cursor thresholds. First record and label Android evidence; enable Android calibration only after those display-specific parameters have been derived and visually verified.
 
+## Calibrate scene yaw and run the live tracker
+
+Record a visual-only session while the character remains stationary and the
+camera turns slowly in one horizontal direction for at least 360 degrees. Label
+it **Slow horizontal scene turn (360°+)**. The **Scene yaw** tab detects the
+visual return to the starting view, fits the existing angular-flow estimator to
+that full-turn closure, and shows the yaw curve, confidence, loop overlay, and
+feature inliers for review.
+
+The **Live tracker** tab becomes usable when the current selectors resolve to
+an exact mini-map calibration, scene-yaw calibration, and observed-map stitch.
+It lists those artifact IDs and the chosen live frame source before starting.
+The high-rate path estimates calibrated scene rotation and masked mini-map
+shift; an independent low-rate worker performs the expensive absolute
+mini-map-to-mosaic search. The dashboard and optional in-game overlay show the
+fused pose, recent trail, confidence, uncertainty, and both update timings.
+Positions are pixels in the selected observed mosaic, not global game-world
+coordinates. Stop tracking from its tab before recording another session.
+
+Android live tracking remains unavailable until Android-specific mini-map crop
+and cursor geometry have been calibrated and visually verified. The Workbench
+does not reuse PC geometry on Android.
+
 The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. It hides immediately when the selected game loses focus. Use **Hide overlay** / **Show overlay** in the Workbench at any time; `python -m acquisition.workbench --no-hud` starts with it hidden. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays.
 
 Label changes refresh `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json`. This index identifies each source session and its selected role, markers, timestamps, frame/input counts, and drops. It is an evidence inventory, not a claim that the captured map or mini-map data has already been modeled successfully.
