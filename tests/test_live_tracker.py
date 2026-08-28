@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
@@ -65,9 +66,28 @@ class ImmediateLocalizer:
         return GlobalFix(80.0 + offset, 70.0, 15.0, 1.0, 0.91, 0.12, 8.0)
 
 
+class FakeCursorPoseEstimator:
+    def estimate(self, frame, frame_index=None, session_time_ns=None):
+        return {
+            "detected": True,
+            "angle_screen_deg": 35.0,
+            "confidence": 0.80,
+            "session_time_ns": session_time_ns,
+        }
+
+    @staticmethod
+    def public_result(value):
+        return dict(value)
+
+
 class TwoRateTrackerTests(unittest.TestCase):
     @staticmethod
-    def _tracker(localizer, initial_consensus_count=1, global_interval_s=10.0):
+    def _tracker(
+        localizer,
+        initial_consensus_count=1,
+        global_interval_s=10.0,
+        cursor_pose_estimator=None,
+    ):
         mosaic = np.full((160, 180, 3), 40, np.uint8)
         minimap_config = {"crop_xywh": [0, 0, 80, 80]}
         minimap_calibration = {
@@ -86,6 +106,7 @@ class TwoRateTrackerTests(unittest.TestCase):
             global_interval_s=global_interval_s,
             localizer=localizer,
             initial_consensus_count=initial_consensus_count,
+            cursor_pose_estimator=cursor_pose_estimator,
         )
 
     def test_initial_pose_requires_two_agreeing_global_fixes(self):
@@ -141,6 +162,62 @@ class TwoRateTrackerTests(unittest.TestCase):
             self.assertAlmostEqual(result["pose"]["y"], 70.0)
         finally:
             localizer.release.set()
+            tracker.close()
+
+    def test_scene_yaw_does_not_force_rotation_of_static_minimap(self):
+        localizer = BlockingLocalizer()
+        tracker = self._tracker(localizer)
+        tracker.scene_estimator = SimpleNamespace(
+            update=lambda _frame: SimpleNamespace(
+                delta_deg=20.0,
+                confidence=1.0,
+                tracks=100,
+                inliers=90,
+                status="ok",
+            )
+        )
+        frame = np.random.RandomState(5).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        try:
+            tracker.update(frame, 1)
+            result = tracker.update(frame, 2)
+            self.assertEqual(
+                result["local_motion"]["rotation_compensation_sign"], 0.0
+            )
+            self.assertEqual(
+                result["local_motion"]["map_alignment_delta_deg"], 0.0
+            )
+        finally:
+            localizer.release.set()
+            tracker.close()
+
+    def test_exposes_player_heading_from_cursor_and_map_alignment(self):
+        tracker = self._tracker(
+            ImmediateLocalizer(), cursor_pose_estimator=FakeCursorPoseEstimator()
+        )
+        tracker.cursor_interval_ns = 1
+        frame = np.zeros((100, 100, 3), np.uint8)
+        result = None
+        try:
+            for index in range(100):
+                result = tracker.update(frame, index * 2_000_000 + 1)
+                if (
+                    result.get("pose")
+                    and result["pose"].get("player_heading_map_deg") is not None
+                ):
+                    break
+                time.sleep(0.002)
+            self.assertAlmostEqual(result["pose"]["map_alignment_deg"], 15.0)
+            self.assertAlmostEqual(result["pose"]["cursor_screen_deg"], 35.0)
+            self.assertAlmostEqual(
+                result["pose"]["player_heading_map_deg"], 50.0
+            )
+            self.assertEqual(
+                result["pose"]["heading_source"],
+                "calibrated_cursor_plus_map_alignment",
+            )
+        finally:
             tracker.close()
 
     def test_renders_pose_and_quality_overlay(self):
@@ -272,6 +349,9 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
             try:
                 with patch(
                     "acquisition.workbench.TwoRateRealtimeTracker", FakeLiveEngine
+                ), patch(
+                    "acquisition.workbench.CursorPoseEstimator",
+                    return_value=object(),
                 ):
                     state.start_live_tracker(
                         {

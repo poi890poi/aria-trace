@@ -13,6 +13,7 @@ import numpy as np
 from poc.pose_fusion import FusionConfig, Pose2D, PoseFusionGate
 from poc.yaw_estimation import KltAngularYawEstimator, camera_matrix
 
+from .cursor_pose import CursorPoseEstimator
 from .minimap_verification import estimate_masked_shift
 
 
@@ -318,6 +319,8 @@ class TwoRateRealtimeTracker:
         global_interval_s: float = 1.0,
         localizer: Optional[GlobalMapLocalizer] = None,
         initial_consensus_count: int = 2,
+        cursor_pose_estimator: Optional[CursorPoseEstimator] = None,
+        cursor_interval_s: float = 0.25,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -358,12 +361,25 @@ class TwoRateRealtimeTracker:
         self._global_error = None
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
+        self.cursor_pose_estimator = cursor_pose_estimator
+        self.cursor_interval_ns = int(float(cursor_interval_s) * 1.0e9)
+        self.last_cursor_ns = None
+        self._cursor_executor = (
+            ThreadPoolExecutor(max_workers=1)
+            if self.cursor_pose_estimator is not None
+            else None
+        )
+        self._cursor_future = None
+        self._last_cursor_pose = None
+        self._cursor_error = None
 
     def close(self) -> None:
         close_localizer = getattr(self.localizer, "close", None)
         if close_localizer is not None:
             close_localizer()
         self._global_executor.shutdown(wait=False)
+        if self._cursor_executor is not None:
+            self._cursor_executor.shutdown(wait=False)
 
     def _ensure_scene_estimator(self, frame):
         if self.scene_estimator is None:
@@ -392,21 +408,70 @@ class TwoRateRealtimeTracker:
         local_response = 0.0
         if self.previous_minimap is not None:
             trials = []
-            for sign in (-1.0, 1.0):
+            signs = (0.0,)
+            if yaw.confidence >= 0.20 and abs(yaw.delta_deg) >= 0.05:
+                signs = (0.0, -1.0, 1.0)
+            for sign in signs:
                 compensated = self._rotate(minimap, sign * yaw.delta_deg)
                 shift, response = estimate_masked_shift(
                     self.previous_minimap, compensated, mask
                 )
                 trials.append((response, shift, sign))
-            local_response, local_shift, compensation_sign = max(trials)
+            best = max(trials)
+            zero = next(item for item in trials if item[2] == 0.0)
+            # Do not turn scene-camera motion into map rotation unless it
+            # materially improves the mini-map registration itself.
+            selected = zero if zero[0] >= best[0] - 0.02 else best
+            local_response, local_shift, compensation_sign = selected
         else:
             compensation_sign = 0.0
         self.previous_minimap = minimap
+        alignment_delta_deg = compensation_sign * yaw.delta_deg
 
         if self.fusion._state is not None and self.sequence:
             shift_x, shift_y = local_shift
             local_motion = (-shift_x * self.map_scale, -shift_y * self.map_scale)
-            self.fusion.predict(local_motion, yaw.delta_deg)
+            self.fusion.predict(local_motion, alignment_delta_deg)
+
+        cursor_pose_fresh = False
+        if self._cursor_future is not None and self._cursor_future.done():
+            try:
+                result = self._cursor_future.result()
+                public_result = getattr(
+                    self.cursor_pose_estimator, "public_result", lambda value: value
+                )(result)
+                accepted = bool(
+                    public_result.get("detected")
+                    and float(public_result.get("confidence") or 0.0) >= 0.45
+                )
+                public_result["accepted"] = accepted
+                public_result["decision"] = (
+                    "accepted"
+                    if accepted
+                    else "rejected:cursor-detection-or-confidence"
+                )
+                self._last_cursor_pose = public_result
+                self._cursor_error = None
+                cursor_pose_fresh = True
+            except Exception as exc:
+                self._cursor_error = "{}: {}".format(type(exc).__name__, exc)
+            self._cursor_future = None
+        cursor_due = (
+            self.last_cursor_ns is None
+            or timestamp_ns - self.last_cursor_ns >= self.cursor_interval_ns
+        )
+        if (
+            cursor_due
+            and self._cursor_future is None
+            and self._cursor_executor is not None
+        ):
+            self._cursor_future = self._cursor_executor.submit(
+                self.cursor_pose_estimator.estimate,
+                frame.copy(),
+                None,
+                timestamp_ns,
+            )
+            self.last_cursor_ns = timestamp_ns
 
         global_fix = None
         decision = None
@@ -499,6 +564,16 @@ class TwoRateRealtimeTracker:
             )
             self.last_global_ns = timestamp_ns
         self.sequence += 1
+        cursor_pose_output = (
+            dict(self._last_cursor_pose) if self._last_cursor_pose else None
+        )
+        cursor_age_ms = None
+        if cursor_pose_output and cursor_pose_output.get("session_time_ns") is not None:
+            cursor_age_ms = max(
+                0.0,
+                (timestamp_ns - int(cursor_pose_output["session_time_ns"])) / 1.0e6,
+            )
+            cursor_pose_output["age_ms"] = cursor_age_ms
         if self.fusion._state is None:
             pose = None
             mode = "INITIALIZING"
@@ -506,7 +581,33 @@ class TwoRateRealtimeTracker:
             yaw_sigma = None
         else:
             state = self.fusion.state
-            pose = {"x": state.pose.x, "y": state.pose.y, "yaw_deg": state.pose.yaw_deg}
+            cursor_screen_deg = None
+            player_heading_deg = None
+            if (
+                self._last_cursor_pose
+                and self._last_cursor_pose.get("accepted")
+                and cursor_age_ms is not None
+                and cursor_age_ms <= 2000.0
+            ):
+                cursor_screen_deg = float(
+                    self._last_cursor_pose["angle_screen_deg"]
+                )
+                player_heading_deg = float(
+                    (state.pose.yaw_deg + cursor_screen_deg) % 360.0
+                )
+            pose = {
+                "x": state.pose.x,
+                "y": state.pose.y,
+                "yaw_deg": player_heading_deg,
+                "player_heading_map_deg": player_heading_deg,
+                "map_alignment_deg": state.pose.yaw_deg,
+                "cursor_screen_deg": cursor_screen_deg,
+                "heading_source": (
+                    "calibrated_cursor_plus_map_alignment"
+                    if player_heading_deg is not None
+                    else "unavailable"
+                ),
+            }
             mode = state.mode
             position_sigma = state.position_sigma_m
             yaw_sigma = state.yaw_sigma_deg
@@ -530,7 +631,12 @@ class TwoRateRealtimeTracker:
                 "map_content_shift_xy_px": list(local_shift),
                 "response": float(local_response),
                 "rotation_compensation_sign": compensation_sign,
+                "map_alignment_delta_deg": alignment_delta_deg,
             },
+            "cursor_pose": cursor_pose_output,
+            "cursor_pose_fresh": cursor_pose_fresh,
+            "cursor_pose_running": self._cursor_future is not None,
+            "cursor_error": self._cursor_error,
             "global_fix": dict(self._last_global_fix) if self._last_global_fix else None,
             "global_fix_fresh": global_fix is not None,
             "global_localization_running": self._global_future is not None,
@@ -562,20 +668,41 @@ def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.n
         if 0 <= point[0] < view_w and 0 <= point[1] < view_h:
             cv2.circle(canvas, point, 1, (80, 210, 240), -1)
     center = (int(round(x - left)), int(round(y - top)))
-    yaw = math.radians(float(pose["yaw_deg"]))
-    tip = (center[0] + int(math.cos(yaw) * 28), center[1] + int(math.sin(yaw) * 28))
-    cv2.circle(canvas, center, 8, (60, 235, 110), 2, cv2.LINE_AA)
-    cv2.arrowedLine(canvas, center, tip, (60, 235, 110), 3, cv2.LINE_AA, tipLength=0.35)
+    player_heading = pose.get("player_heading_map_deg", pose.get("yaw_deg"))
+    cv2.circle(canvas, center, 8, (245, 205, 60), 2, cv2.LINE_AA)
+    if player_heading is not None:
+        yaw = math.radians(float(player_heading))
+        tip = (
+            center[0] + int(math.cos(yaw) * 28),
+            center[1] + int(math.sin(yaw) * 28),
+        )
+        cv2.arrowedLine(
+            canvas, center, tip, (245, 205, 60), 3, cv2.LINE_AA, tipLength=0.35
+        )
     panel_y = height - 80
     cv2.rectangle(canvas, (0, panel_y), (width, height), (8, 16, 24), -1)
     global_fix = state.get("global_fix") or {}
     local = state.get("local_motion") or {}
     scene = state.get("scene_yaw") or {}
+    map_alignment = pose.get("map_alignment_deg", pose.get("yaw_deg"))
+    heading_text = (
+        "{:+.1f}".format(float(player_heading))
+        if player_heading is not None
+        else "unavailable"
+    )
     lines = [
-        "{}  x {:.1f}  y {:.1f}  yaw {:+.1f} deg".format(state.get("mode", "?"), x, y, float(pose["yaw_deg"])),
+        "{}  x {:.1f}  y {:.1f}  player heading {} deg".format(
+            state.get("mode", "?"), x, y, heading_text
+        ),
+        "map alignment {:+.1f} deg  cursor {}".format(
+            float(map_alignment or 0.0),
+            "{:+.1f} deg".format(float(pose["cursor_screen_deg"]))
+            if pose.get("cursor_screen_deg") is not None
+            else "unavailable",
+        ),
         "global {:.3f} margin {:.3f}  local {:.3f}  yaw conf {:.3f}".format(float(global_fix.get("score") or 0), float(global_fix.get("margin") or 0), float(local.get("response") or 0), float(scene.get("confidence") or 0)),
         "update {:.1f} ms  global {:.1f} ms  sigma {:.1f}px / {:.1f}deg".format(float(state.get("update_elapsed_ms") or 0), float(global_fix.get("elapsed_ms") or 0), float(state.get("position_sigma_map_px") or 0), float(state.get("yaw_sigma_deg") or 0)),
     ]
     for index, line in enumerate(lines):
-        cv2.putText(canvas, line, (10, panel_y + 20 + index * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (225, 235, 245), 1, cv2.LINE_AA)
+        cv2.putText(canvas, line, (10, panel_y + 17 + index * 17), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (225, 235, 245), 1, cv2.LINE_AA)
     return canvas

@@ -32,6 +32,7 @@ from .android_capture import (
     find_scrcpy_server,
 )
 from .map_stitching import stitch_map_session
+from .cursor_pose import CursorPoseEstimator
 from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
 from .minimap_calibration import calibrate_segment_sessions, calibrate_session
 from .minimap_verification import verify_forward_session
@@ -1869,6 +1870,9 @@ class AcquisitionWorkbench:
                 localization_coverage,
                 localization.get("localization_to_original_map_3x3"),
             )
+            cursor_pose_estimator = CursorPoseEstimator(
+                self._minimap_calibration_root(game_profile_id) / calibration_id
+            )
             frame_config = dict(value.get("frame_source") or {})
             adapter = frame_config.get("adapter")
             if adapter not in ("windows_window", "android_scrcpy"):
@@ -1890,6 +1894,7 @@ class AcquisitionWorkbench:
                 scene_yaw,
                 global_interval_s=global_interval_s,
                 localizer=localizer,
+                cursor_pose_estimator=cursor_pose_estimator,
             )
             stop = threading.Event()
             runtime = {
