@@ -13,6 +13,7 @@ from .session import SessionReader
 
 
 MAP_ORIENTATION_MODEL = "fixed_north_up"
+MAX_LOCALIZATION_REFERENCE_FRAMES = 9
 
 
 def _gradient(image: np.ndarray) -> np.ndarray:
@@ -42,6 +43,85 @@ def _minimap_reference(image: np.ndarray, calibration: dict):
     cv2.circle(mask, patch_center, usable_radius, 255, -1)
     cv2.circle(mask, patch_center, max(5, int(round(radius * 0.28))), 0, -1)
     return patch, mask
+
+
+def load_localization_reference_candidates(
+    calibration_root: Path,
+    calibration: dict,
+    maximum_frames: int = MAX_LOCALIZATION_REFERENCE_FRAMES,
+):
+    """Load persisted endpoints and evenly spaced observations from forward motion."""
+    calibration_root = Path(calibration_root)
+    references = []
+    seen_indices = set()
+    verification = calibration.get("forward_verification") or {}
+    source_frames = verification.get("source_frames") or {}
+    endpoint_names = {"start": "forward_start.png", "end": "forward_end.png"}
+    for role, name in endpoint_names.items():
+        path = calibration_root / name
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        frame_index = (source_frames.get(role) or {}).get("frame_index")
+        if frame_index is not None:
+            seen_indices.add(int(frame_index))
+        references.append(
+            {
+                "image": image,
+                "source_image_name": name,
+                "source_frame_index": frame_index,
+                "source_kind": "persisted_endpoint",
+            }
+        )
+    session_path = verification.get("source_session_path")
+    start_index = (source_frames.get("start") or {}).get("frame_index")
+    end_index = (source_frames.get("end") or {}).get("frame_index")
+    crop = (calibration.get("config") or {}).get("crop_xywh")
+    if (
+        session_path
+        and start_index is not None
+        and end_index is not None
+        and crop
+        and Path(session_path).is_dir()
+        and maximum_frames > len(references)
+    ):
+        reader = SessionReader(Path(session_path))
+        capture = cv2.VideoCapture(str(reader.video_path("main")))
+        try:
+            sample_count = max(2, int(maximum_frames))
+            indices = np.linspace(
+                int(start_index), int(end_index), sample_count, dtype=np.int32
+            )
+            x, y, width, height = [int(value) for value in crop]
+            for frame_index in indices:
+                frame_index = int(frame_index)
+                if frame_index in seen_indices:
+                    continue
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                ok, frame = capture.read()
+                if not ok:
+                    continue
+                image = frame[y : y + height, x : x + width]
+                if image.shape[:2] != (height, width):
+                    continue
+                references.append(
+                    {
+                        "image": image.copy(),
+                        "source_image_name": "forward_frame_{:06d}".format(frame_index),
+                        "source_frame_index": frame_index,
+                        "source_kind": "sampled_forward_session",
+                    }
+                )
+                seen_indices.add(frame_index)
+        finally:
+            capture.release()
+    references.sort(
+        key=lambda item: (
+            item.get("source_frame_index") is None,
+            item.get("source_frame_index") or 0,
+        )
+    )
+    return references[: max(1, int(maximum_frames))]
 
 
 def _root_sift(descriptors: np.ndarray) -> np.ndarray:
@@ -352,6 +432,11 @@ def _build_localization_derivative(
         "north_normalization_applied": False,
         "source_minimap_calibration_id": reference.get("calibration_id"),
         "source_minimap_image": reference.get("source_image_name"),
+        "reference_candidate_count": len(reference.get("candidates") or [reference]),
+        "reference_candidate_names": [
+            item.get("source_image_name")
+            for item in (reference.get("candidates") or [reference])
+        ],
         "coordinate_space": "derived_localization_map_px",
         "mosaic_file": "localization_mosaic.png",
         "coverage_file": "localization_coverage.png",

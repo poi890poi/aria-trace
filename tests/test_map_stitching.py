@@ -12,11 +12,34 @@ from acquisition.map_stitching import (
     _minimap_reference,
     _prepare_localization_mosaic,
     _root_sift,
+    load_localization_reference_candidates,
     stitch_map_frames,
 )
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_loads_both_persisted_forward_reference_endpoints(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cv2.imwrite(str(root / "forward_start.png"), np.full((20, 30, 3), 40, np.uint8))
+            cv2.imwrite(str(root / "forward_end.png"), np.full((20, 30, 3), 80, np.uint8))
+            calibration = {
+                "forward_verification": {
+                    "source_frames": {
+                        "start": {"frame_index": 5},
+                        "end": {"frame_index": 95},
+                    }
+                }
+            }
+            references = load_localization_reference_candidates(root, calibration)
+            self.assertEqual(
+                [item["source_image_name"] for item in references],
+                ["forward_start.png", "forward_end.png"],
+            )
+            self.assertEqual(
+                [item["source_frame_index"] for item in references], [5, 95]
+            )
+
     def test_fixed_north_up_fit_rejects_outlier_without_rotation(self):
         source = np.asarray(
             [[0, 0], [10, 0], [0, 10], [10, 10], [20, 15]], dtype=np.float32

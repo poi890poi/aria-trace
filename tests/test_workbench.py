@@ -2383,6 +2383,7 @@ class WorkbenchTests(unittest.TestCase):
                     self.assertEqual(
                         localization_reference["calibration_id"], calibration_id
                     )
+                    self.assertEqual(len(localization_reference["candidates"]), 1)
                     output.mkdir(parents=True, exist_ok=True)
                     (output / "mosaic.png").write_bytes(b"png-evidence")
                     return {

@@ -34,7 +34,7 @@ from .android_capture import (
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
-from .map_stitching import stitch_map_session
+from .map_stitching import load_localization_reference_candidates, stitch_map_session
 from .map_layers import LayeredGlobalLocalizer, build_map_atlas
 from .map_layer_references import transition_endpoint_references
 from .minimap_transition_analysis import analyze_transition_session
@@ -1839,15 +1839,18 @@ class AcquisitionWorkbench:
                 raise ValueError(
                     "Run and review forward pose verification before rebuilding the map"
                 )
-            reference_path = calibration_root / "forward_start.png"
-            reference_image = cv2.imread(str(reference_path), cv2.IMREAD_COLOR)
-            if reference_image is None:
-                raise ValueError("Forward scale-reference image cannot be decoded")
+            candidates = load_localization_reference_candidates(
+                calibration_root, calibration
+            )
+            if not candidates:
+                raise ValueError("Forward scale-reference images cannot be decoded")
+            primary = candidates[0]
             localization_reference = {
-                "image": reference_image,
+                "image": primary["image"],
                 "calibration": calibration,
                 "calibration_id": calibration_id,
-                "source_image_name": "forward_start.png",
+                "source_image_name": primary["source_image_name"],
+                "candidates": candidates,
             }
             stitch_id = safe_id(described.get("session_id") or path.name)
             output = self._map_stitch_root(game_profile_id) / stitch_id
