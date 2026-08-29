@@ -653,6 +653,13 @@ class AcquisitionWorkbench:
             "capture_id": "genshin-teleport-behavior",
         },
         {
+            "value": "minimap_transition",
+            "label": "Mini-map scale/detail transition",
+            "capture_kind": "game_behavior",
+            "workflow_stage_id": "minimap-transition",
+            "capture_id": "genshin-minimap-transition",
+        },
+        {
             "value": "route",
             "label": "Route demonstration",
             "capture_kind": "route",
@@ -1217,6 +1224,7 @@ class AcquisitionWorkbench:
             "ordinary_cruise",
             "route",
             "teleportation",
+            "minimap_transition",
         }
         values = {}
         for session in self.sessions():
