@@ -120,6 +120,48 @@ class MapLayerTests(unittest.TestCase):
                 fix.diagnostics["map_layer"]["selected_mode_id"], "town"
             )
 
+    def test_transition_endpoints_normalize_each_layer_independently(self):
+        canonical, layer = self._mosaics()
+        mask = np.full((100, 100), 255, np.uint8)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            world = root / "world-stitch"
+            town = root / "town-stitch"
+            output = root / "atlas"
+            self._write_stitch(world, canonical, "cal-world")
+            self._write_stitch(town, layer, "cal-town")
+
+            manifest = build_map_atlas(
+                [
+                    {
+                        "mode_id": "world",
+                        "stitch_root": world,
+                        "minimap_reference": canonical[80:180, 120:220].copy(),
+                        "minimap_reference_mask": mask,
+                    },
+                    {
+                        "mode_id": "town",
+                        "stitch_root": town,
+                        "minimap_reference": layer[56:156, 84:184].copy(),
+                        "minimap_reference_mask": mask,
+                    },
+                ],
+                output,
+                canonical_mode_id="world",
+            )
+
+            for atlas_layer in manifest["layers"]:
+                self.assertEqual(
+                    atlas_layer["localization_source"],
+                    "transition_endpoint_minimap_reference",
+                )
+                self.assertTrue(
+                    (output / atlas_layer["minimap_reference_file"]).is_file()
+                )
+                self.assertGreater(
+                    atlas_layer["map_pixels_per_minimap_pixel"], 0.0
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

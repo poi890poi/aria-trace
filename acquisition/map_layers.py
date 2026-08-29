@@ -108,12 +108,71 @@ def _load_stitch(stitch_root: Path) -> dict:
     if not manifest_path.is_file():
         raise ValueError("Map stitch manifest does not exist: {}".format(manifest_path))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    localization = manifest.get("localization") or {}
-    if localization.get("status") != "ready":
-        raise ValueError(
-            "Map stitch {} has no ready localization raster".format(stitch_root.name)
-        )
     return manifest
+
+
+def _build_layer_specific_localization(
+    mosaic: np.ndarray,
+    coverage: np.ndarray,
+    reference: np.ndarray,
+    reference_mask: np.ndarray,
+    output_path: Path,
+    mode_id: str,
+):
+    estimate = estimate_map_layer_alignment(
+        mosaic,
+        reference,
+        coverage,
+        reference_mask,
+    )
+    original_per_minimap = float(
+        estimate["quality"]["canonical_pixels_per_layer_pixel"]
+    )
+    if not 0.25 <= original_per_minimap <= 32.0:
+        raise RuntimeError(
+            "Layer {} map/mini-map scale {:.3f} is implausible".format(
+                mode_id, original_per_minimap
+            )
+        )
+    requested_factor = 1.0 / original_per_minimap
+    size = (
+        max(64, int(round(mosaic.shape[1] * requested_factor))),
+        max(64, int(round(mosaic.shape[0] * requested_factor))),
+    )
+    interpolation = cv2.INTER_AREA if requested_factor < 1.0 else cv2.INTER_CUBIC
+    localization_mosaic = cv2.resize(mosaic, size, interpolation=interpolation)
+    localization_coverage = cv2.resize(
+        coverage, size, interpolation=cv2.INTER_NEAREST
+    )
+    factor_x = size[0] / float(mosaic.shape[1])
+    factor_y = size[1] / float(mosaic.shape[0])
+    localization_to_original = np.asarray(
+        [[1.0 / factor_x, 0.0, 0.0], [0.0, 1.0 / factor_y, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    layer_directory = output_path / "layers" / mode_id
+    layer_directory.mkdir(parents=True, exist_ok=True)
+    localization_file = "layers/{}/localization_mosaic.png".format(mode_id)
+    coverage_file = "layers/{}/localization_coverage.png".format(mode_id)
+    reference_file = "minimap_reference_{}.png".format(mode_id)
+    if not cv2.imwrite(str(output_path / localization_file), localization_mosaic):
+        raise RuntimeError("Could not write layer-specific localization mosaic")
+    if not cv2.imwrite(str(output_path / coverage_file), localization_coverage):
+        raise RuntimeError("Could not write layer-specific localization coverage")
+    if not cv2.imwrite(str(output_path / reference_file), reference):
+        raise RuntimeError("Could not write layer-specific mini-map reference")
+    return {
+        "localization_mosaic_file": localization_file,
+        "localization_coverage_file": coverage_file,
+        "localization_to_original_3x3": localization_to_original,
+        "localization_size_wh": list(size),
+        "map_pixels_per_minimap_pixel": original_per_minimap,
+        "minimap_reference_file": reference_file,
+        "minimap_reference_to_original_map_3x3": estimate[
+            "layer_original_to_canonical_3x3"
+        ].tolist(),
+        "minimap_reference_quality": estimate["quality"],
+    }
 
 
 def build_map_atlas(
@@ -200,26 +259,60 @@ def build_map_atlas(
             if not cv2.imwrite(str(output_path / alignment_file), alignment_view):
                 raise RuntimeError("Could not write map-layer alignment evidence")
 
-        localization = stitch["localization"]
-        localization_to_original = np.asarray(
-            localization["localization_to_original_map_3x3"], dtype=np.float64
-        )
+        reference = spec.get("minimap_reference")
+        reference_mask = spec.get("minimap_reference_mask")
+        if reference is not None and reference_mask is not None:
+            layer_localization = _build_layer_specific_localization(
+                mosaic,
+                coverage,
+                reference,
+                reference_mask,
+                output_path,
+                mode_id,
+            )
+            localization_file = layer_localization["localization_mosaic_file"]
+            localization_coverage_file = layer_localization[
+                "localization_coverage_file"
+            ]
+            localization_to_original = layer_localization[
+                "localization_to_original_3x3"
+            ]
+            localization_source = "transition_endpoint_minimap_reference"
+        else:
+            localization = stitch.get("localization") or {}
+            if localization.get("status") != "ready":
+                raise ValueError(
+                    "Map stitch {} needs a ready localization raster or a layer-specific mini-map reference"
+                    .format(stitch_root.name)
+                )
+            localization_to_original = np.asarray(
+                localization["localization_to_original_map_3x3"], dtype=np.float64
+            )
+            layer_directory = output_path / "layers" / mode_id
+            layer_directory.mkdir(parents=True, exist_ok=True)
+            localization_file = "layers/{}/localization_mosaic.png".format(mode_id)
+            localization_coverage_file = "layers/{}/localization_coverage.png".format(
+                mode_id
+            )
+            shutil.copy2(
+                stitch_root / localization["mosaic_file"],
+                output_path / localization_file,
+            )
+            shutil.copy2(
+                stitch_root / localization["coverage_file"],
+                output_path / localization_coverage_file,
+            )
+            layer_localization = {
+                "localization_size_wh": localization.get("size_wh"),
+                "map_pixels_per_minimap_pixel": localization.get(
+                    "map_pixels_per_minimap_pixel"
+                ),
+                "minimap_reference_file": None,
+                "minimap_reference_quality": localization.get("quality"),
+            }
+            localization_source = "source_stitch_localization"
         localization_to_canonical = original_to_canonical.dot(
             localization_to_original
-        )
-        layer_directory = output_path / "layers" / mode_id
-        layer_directory.mkdir(parents=True, exist_ok=True)
-        localization_file = "layers/{}/localization_mosaic.png".format(mode_id)
-        localization_coverage_file = "layers/{}/localization_coverage.png".format(
-            mode_id
-        )
-        shutil.copy2(
-            stitch_root / localization["mosaic_file"],
-            output_path / localization_file,
-        )
-        shutil.copy2(
-            stitch_root / localization["coverage_file"],
-            output_path / localization_coverage_file,
         )
         layers.append(
             {
@@ -232,6 +325,19 @@ def build_map_atlas(
                 "localization_mosaic_file": localization_file,
                 "localization_coverage_file": localization_coverage_file,
                 "localization_to_canonical_3x3": localization_to_canonical.tolist(),
+                "localization_source": localization_source,
+                "localization_size_wh": layer_localization.get(
+                    "localization_size_wh"
+                ),
+                "map_pixels_per_minimap_pixel": layer_localization.get(
+                    "map_pixels_per_minimap_pixel"
+                ),
+                "minimap_reference_file": layer_localization.get(
+                    "minimap_reference_file"
+                ),
+                "minimap_reference_quality": layer_localization.get(
+                    "minimap_reference_quality"
+                ),
                 "original_map_to_canonical_3x3": original_to_canonical.tolist(),
                 "alignment_quality": alignment_quality,
                 "alignment_evidence_file": alignment_file,
