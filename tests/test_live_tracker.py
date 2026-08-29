@@ -406,6 +406,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                             "minimap_calibration_id": "mini-a",
                             "scene_yaw_calibration_id": "yaw-a",
                             "map_stitch_id": "map-a",
+                            "tracking_profile": "real-time",
                             "cursor_pose_method": "fast_grid",
                             "frame_source": {
                                 "adapter": "windows_window",
@@ -421,6 +422,11 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     runtime = descriptor["live_tracker"]
                     self.assertEqual(runtime["status"], "running")
                     self.assertEqual(runtime["cursor_pose_method"], "fast_grid")
+                    self.assertEqual(runtime["tracking_profile"], "real-time")
+                    self.assertEqual(
+                        runtime["resolved_tracking_profile"]["global_interval_s"],
+                        2.0,
+                    )
                     cursor_constructor.assert_called_once_with(
                         calibration_root,
                         gaussian_fit_method="fast_grid",

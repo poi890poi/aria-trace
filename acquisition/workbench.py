@@ -47,6 +47,7 @@ from .sources import (
     AdbScreenshotFrameSource,
     OpenCvCameraFrameSource,
 )
+from .tracking_profiles import resolve_tracking_profile
 from .windows import (
     WindowsDesktopApi,
     WindowsKeyboardMouseSource,
@@ -1898,9 +1899,20 @@ class AcquisitionWorkbench:
                 localization_coverage,
                 localization.get("localization_to_original_map_3x3"),
             )
-            gaussian_fit_method = str(
-                value.get("cursor_pose_method") or "vectorized_grid"
+            tracking_profile_name = str(value.get("tracking_profile") or "real-time")
+            profile_overrides = {}
+            if value.get("cursor_pose_method"):
+                profile_overrides["cursor_pose_method"] = str(
+                    value["cursor_pose_method"]
+                )
+            if value.get("global_interval_s") is not None:
+                profile_overrides["global_interval_s"] = float(
+                    value["global_interval_s"]
+                )
+            resolved_profile = resolve_tracking_profile(
+                tracking_profile_name, profile_overrides
             )
+            gaussian_fit_method = str(resolved_profile["cursor_pose_method"])
             if gaussian_fit_method not in CursorPoseEstimator.GAUSSIAN_FIT_METHODS:
                 raise ValueError(
                     "Cursor pose method must be one of: {}".format(
@@ -1919,9 +1931,7 @@ class AcquisitionWorkbench:
                 raise ValueError("Choose the exact game window for live tracking")
             if adapter == "android_scrcpy" and not frame_config.get("serial"):
                 raise ValueError("Choose an Android device for live tracking")
-            global_interval_s = float(value.get("global_interval_s") or 1.5)
-            if global_interval_s < 0.5 or global_interval_s > 30.0:
-                raise ValueError("Global localization interval must be 0.5–30 seconds")
+            global_interval_s = float(resolved_profile["global_interval_s"])
             frame_source, _ = self.sources.capture_sources(
                 frame_config, {"adapter": "none"}
             )
@@ -1933,6 +1943,7 @@ class AcquisitionWorkbench:
                 global_interval_s=global_interval_s,
                 localizer=localizer,
                 cursor_pose_estimator=cursor_pose_estimator,
+                cursor_interval_s=float(resolved_profile["cursor_interval_s"]),
             )
             stop = threading.Event()
             runtime = {
@@ -1945,6 +1956,8 @@ class AcquisitionWorkbench:
                 "frame_source": frame_config,
                 "global_interval_s": global_interval_s,
                 "cursor_pose_method": gaussian_fit_method,
+                "tracking_profile": tracking_profile_name,
+                "resolved_tracking_profile": resolved_profile,
                 "started_utc": datetime.now(timezone.utc).isoformat(),
                 "latest": None,
                 "high_rate_fps": 0.0,
