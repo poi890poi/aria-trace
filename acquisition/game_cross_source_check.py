@@ -9,8 +9,8 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
-from .hik_capture import rotate_quarter_turns_clockwise
 from .rig_calibration.hik.workflow import cross_source_alignment_evidence
+from .rig_calibration.hik.spaces import RigCalibratedSpaceConverter
 
 
 def natural_crop_to_logical(
@@ -46,22 +46,14 @@ def load_game_alignment_geometry(
     calibration_file = Path(calibration_file)
     config = json.loads(calibration_file.read_text(encoding="utf-8"))
     normalization = config["normalization"]
-    origin_x, origin_y = map(int, normalization["origin_screen_xy"])
     width, height = map(int, normalization["output_size_px"])
-    reported_turns = int(
-        phone_surface_orientation.get(
-            "quarter_turns_clockwise_from_natural", 0
-        )
-    ) % 4
-    # Android Surface rotation describes how the physical display is turned
-    # from its natural posture. Pixel content must be rotated in the opposite
-    # direction to reproduce the logical screencap raster.
-    logical_turns = (-reported_turns) % 4
-    natural_size = phone_surface_orientation.get("natural_size_px")
-    if not isinstance(natural_size, Sequence) or len(natural_size) != 2:
-        natural_size = config["phone"]["natural_screen_size_px"]
-    logical_crop = natural_crop_to_logical(
-        [origin_x, origin_y, width, height], natural_size, logical_turns
+    converter = RigCalibratedSpaceConverter(
+        config,
+        int(
+            phone_surface_orientation.get(
+                "quarter_turns_clockwise_from_natural", 0
+            )
+        ),
     )
     mask_file = normalization.get("valid_mask_file", "valid_screen_mask.png")
     mask = cv2.imread(
@@ -76,11 +68,20 @@ def load_game_alignment_geometry(
             )
         )
     return {
-        "logical_crop_xywh": logical_crop,
-        "natural_crop_xywh": [origin_x, origin_y, width, height],
-        "valid_mask": rotate_quarter_turns_clockwise(mask, logical_turns),
-        "android_surface_quarter_turns_clockwise_from_natural": reported_turns,
-        "output_image_quarter_turns_clockwise_from_phone_natural": logical_turns,
+        "logical_crop_xywh": converter.camera_adapter_bounds_in_adb_xywh(),
+        "natural_crop_xywh": [
+            *map(int, normalization["origin_screen_xy"]),
+            width,
+            height,
+        ],
+        "valid_mask": converter.camera_adapter_image_to_adb_orientation(mask),
+        "android_surface_quarter_turns_clockwise_from_natural": (
+            converter.adb_surface_quarter_turns_clockwise_from_natural
+        ),
+        "output_image_quarter_turns_clockwise_from_phone_natural": (
+            converter.output_image_quarter_turns_clockwise_from_phone_natural
+        ),
+        "space_conversion": converter.describe(),
     }
 
 

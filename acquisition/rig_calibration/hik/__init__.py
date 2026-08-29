@@ -3,6 +3,7 @@
 from .camera import HikCamera
 from .driver import HikMvsCameraAdapter, RectifiedHikCamera
 from .game_camera import HikGameFrameSet, ProfiledHikGameCamera
+from .spaces import RigCalibratedSpaceConverter
 
 __all__ = [
     "HikCamera",
@@ -10,4 +11,5 @@ __all__ = [
     "RectifiedHikCamera",
     "HikGameFrameSet",
     "ProfiledHikGameCamera",
+    "RigCalibratedSpaceConverter",
 ]

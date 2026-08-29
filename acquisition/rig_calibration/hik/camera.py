@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from .driver import HikMvsCameraAdapter, RectifiedHikCamera
+from .spaces import RigCalibratedSpaceConverter
 
 
 CalibrationPath = Union[str, Path]
@@ -117,6 +118,37 @@ class HikCamera:
         """Return the ChArUco orientation evidence applied to every frame."""
 
         return dict(self.calibration.get("normalization", {}).get("orientation", {}))
+
+    def space_converter(
+        self, adb_surface_quarter_turns_clockwise_from_natural: int = 0
+    ) -> RigCalibratedSpaceConverter:
+        """Return coordinate conversion matching this adapter's rectified frames."""
+
+        if not self._rectify_enabled:
+            raise RuntimeError(
+                "Adapter/ADB conversion requires config['rectify'] to be true"
+            )
+        return RigCalibratedSpaceConverter(
+            self.calibration, adb_surface_quarter_turns_clockwise_from_natural
+        )
+
+    def camera_adapter_to_adb_points(
+        self,
+        points_xy: Sequence[Sequence[float]],
+        adb_surface_quarter_turns_clockwise_from_natural: int = 0,
+    ) -> np.ndarray:
+        return self.space_converter(
+            adb_surface_quarter_turns_clockwise_from_natural
+        ).camera_adapter_to_adb_points(points_xy)
+
+    def adb_to_camera_adapter_points(
+        self,
+        points_xy: Sequence[Sequence[float]],
+        adb_surface_quarter_turns_clockwise_from_natural: int = 0,
+    ) -> np.ndarray:
+        return self.space_converter(
+            adb_surface_quarter_turns_clockwise_from_natural
+        ).adb_to_camera_adapter_points(points_xy)
 
     @property
     def ip(self) -> str:

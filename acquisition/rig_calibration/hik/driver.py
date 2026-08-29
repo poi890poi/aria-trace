@@ -18,6 +18,7 @@ import numpy as np
 from ..app.device_adapters import CameraAdapter, CameraConfiguration, CameraDevice
 from ..contracts import FrameSample
 from .algorithms import compose_hardware_roi_homography
+from .spaces import RigCalibratedSpaceConverter
 
 
 def _decode_c_string(value: Any) -> str:
@@ -993,6 +994,37 @@ class RectifiedHikCamera:
     @property
     def orientation(self) -> Mapping[str, Any]:
         return dict(self.config.get("normalization", {}).get("orientation", {}))
+
+    def space_converter(
+        self, adb_surface_quarter_turns_clockwise_from_natural: int = 0
+    ) -> RigCalibratedSpaceConverter:
+        """Return the authoritative adapter/ADB coordinate converter."""
+
+        if not self._rectify_enabled:
+            raise RuntimeError(
+                "Adapter/ADB conversion requires the rig-rectified output space"
+            )
+        return RigCalibratedSpaceConverter(
+            self.config, adb_surface_quarter_turns_clockwise_from_natural
+        )
+
+    def camera_adapter_to_adb_points(
+        self,
+        points_xy: Sequence[Sequence[float]],
+        adb_surface_quarter_turns_clockwise_from_natural: int = 0,
+    ) -> np.ndarray:
+        return self.space_converter(
+            adb_surface_quarter_turns_clockwise_from_natural
+        ).camera_adapter_to_adb_points(points_xy)
+
+    def adb_to_camera_adapter_points(
+        self,
+        points_xy: Sequence[Sequence[float]],
+        adb_surface_quarter_turns_clockwise_from_natural: int = 0,
+    ) -> np.ndarray:
+        return self.space_converter(
+            adb_surface_quarter_turns_clockwise_from_natural
+        ).adb_to_camera_adapter_points(points_xy)
 
     def isOpened(self) -> bool:
         return self._opened

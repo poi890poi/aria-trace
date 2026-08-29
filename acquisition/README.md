@@ -282,6 +282,28 @@ cross-source scorer on synchronized game frames. The summary, side-by-side
 image, edge overlay, valid mask, and difference heatmap are diagnostic only;
 low confidence never rejects or changes a recording.
 
+`coordinate_spaces.yaml` sits beside both videos and is the traceable authority
+for their coordinate relationship. It records the rig revision, device IDs,
+stream and content dimensions, encoder-only padding, Android surface rotation,
+forward/inverse 3x3 matrices, timestamp authorities, and direct HIK-video crop
+placement in the full ADB raster. The explanatory comments make the file usable
+without importing AriaTrace.
+
+The calibrated camera adapter exposes the same base-space conversion without
+opening hardware:
+
+```python
+import acquisition.rig_calibration.hik.camera as hikcam
+
+camera = hikcam.HikCamera(config={"calibration": "hik_camera_calibration.json"})
+adb_xy = camera.camera_adapter_to_adb_points(adapter_xy, surface_quarter_turns)
+adapter_xy = camera.adb_to_camera_adapter_points(adb_xy, surface_quarter_turns)
+matrices = camera.space_converter(surface_quarter_turns).describe()["conversion"]
+```
+
+The quarter-turn value is Android's reported surface rotation from the natural
+phone raster. Points use pixel-center XY: top-left `[0, 0]`, +X right, +Y down.
+
 Game control uses the reusable `ScrcpyTouchController` in
 `acquisition/scrcpy_control.py`. It maintains one pinned scrcpy 4.1 control
 socket for the gesture instead of starting one ADB process per touch event.

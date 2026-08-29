@@ -20,6 +20,7 @@ from .android_capture import (
 )
 from .android_game_launcher import launch_android_game
 from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
+from .dual_source_spaces import write_dual_source_space_yaml
 from .game_cross_source_check import GameCrossSourceEvidenceRecorder
 from .hik_capture import CalibratedHikFrameSource
 from .recorder import AcquisitionRecorder
@@ -564,6 +565,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             or int(counts.get("hik_phone", 0)) <= 0
         ):
             raise RuntimeError("Recording did not complete with both frame streams")
+        write_dual_source_space_yaml(
+            pending_path,
+            rig_calibration,
+            surface,
+            manifest,
+        )
+        manifest["coordinate_spaces"] = "coordinate_spaces.yaml"
+        manifest_path = pending_path / "manifest.json"
+        temporary_manifest = pending_path / "manifest.json.tmp"
+        temporary_manifest.write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+        temporary_manifest.replace(manifest_path)
         pending_path.replace(session_path)
     except Exception:
         if pending_path.is_dir():
