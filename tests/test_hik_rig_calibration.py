@@ -50,12 +50,67 @@ from acquisition.rig_calibration.hik.stream import PhoneDisplayPowerSession
 from acquisition.rig_calibration.hik.workflow import (
     HikCalibrationOptions,
     HikRigCalibrationSession,
+    cross_source_alignment_evidence,
     screen_filling_charuco_layout,
 )
 from acquisition.rig_calibration.geometry import estimate_screen_geometry
 
 
 class HikAlgorithmTests(unittest.TestCase):
+    def test_cross_source_check_scores_already_aligned_images_high(self):
+        image = np.zeros((120, 160, 3), np.uint8)
+        image[10:55, 20:75] = 255
+        image[65:105, 90:145] = 180
+        cv2.line(image, (5, 115), (155, 5), (90, 90, 90), 3)
+        mask = np.full(image.shape[:2], 255, np.uint8)
+        metrics, evidence = cross_source_alignment_evidence(image, image.copy(), mask)
+        self.assertGreater(metrics["confidence"], 0.99)
+        self.assertGreater(metrics["edge_overlap"], 0.99)
+        self.assertIn("edge_overlay_adb_red_hik_cyan.png", evidence)
+
+    def test_cross_source_check_does_not_fit_away_a_bad_shift(self):
+        image = np.zeros((120, 160, 3), np.uint8)
+        image[10:55, 20:75] = 255
+        image[65:105, 90:145] = 180
+        shifted = np.roll(image, 24, axis=1)
+        mask = np.full(image.shape[:2], 255, np.uint8)
+        aligned, _ = cross_source_alignment_evidence(image, image, mask)
+        displaced, _ = cross_source_alignment_evidence(image, shifted, mask)
+        self.assertLess(displaced["confidence"], aligned["confidence"] - 0.25)
+
+    def test_cross_source_check_rectifies_saved_roi_and_writes_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            options = HikCalibrationOptions(
+                "fake", "phone", output / "unused", headless=True, settle_frames=1
+            )
+            screenshot = np.zeros((80, 100, 3), np.uint8)
+            screenshot[20:35, 10:30] = 255
+            screenshot[35:50, 30:50] = 160
+            camera_crop = screenshot[20:50, 10:50].copy()
+            adapter = FakeRectifiedAdapter(camera_crop)
+            target = mock.Mock()
+            target.last_screenshot = screenshot
+            target.present_charuco.return_value = mock.Mock(revision=1)
+            session = HikRigCalibrationSession(
+                options, camera=adapter, target=target, progress=lambda _message: None
+            )
+            session._opened = True
+            session.hardware_roi = [10, 20, 40, 30]
+            session._wait_painted = lambda *_args, **_kwargs: None
+            yy, xx = np.mgrid[20:50, 10:50]
+            maps = (xx.astype(np.float32), yy.astype(np.float32))
+            mask = np.full((30, 40), 255, np.uint8)
+            result = session._save_cross_source_check(
+                output, maps, mask, {"xywh": [10, 20, 40, 30]}
+            )
+            self.assertEqual("measured", result["status"])
+            self.assertGreater(result["confidence"], 0.99)
+            self.assertTrue(
+                (output / "cross_source_check" / "edge_overlay_adb_red_hik_cyan.png")
+                .is_file()
+            )
+
     def test_complete_focus_view_preserves_entire_frame_inside_pane(self):
         image = np.zeros((10, 20, 3), np.uint8)
         image[0, 0] = (1, 2, 255)
@@ -1180,6 +1235,13 @@ class HikRectifiedStreamTests(unittest.TestCase):
             )
             self.assertEqual(config["camera"]["controls"]["gain"]["maximum"], 24.0)
             self.assertEqual(config["imaging"]["black_level"], 240)
+            self.assertTrue(config["results"]["cross_source_check"]["non_gating"])
+            self.assertEqual(
+                config["results"]["cross_source_check"]["status"], "unavailable"
+            )
+            self.assertTrue(
+                (saved / "cross_source_check" / "cross_source_check.json").is_file()
+            )
 
 
 class FakeFacadeAdapter:
