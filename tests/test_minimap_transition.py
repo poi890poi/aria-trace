@@ -53,6 +53,19 @@ class MinimapTransitionTests(unittest.TestCase):
         self.assertEqual(switched["position_delta_xy"], [0.0, 0.0])
         self.assertEqual(switched["active_mode_id"], "town")
 
+    def test_controller_supports_the_reverse_crossing(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        controller = TransitionController(model, confirmation_count=2)
+        controller.update({"world": 0.1, "town": 0.9})
+        to_town = controller.update({"world": 0.1, "town": 0.9})
+        controller.update({"world": 0.9, "town": 0.1})
+        to_world = controller.update({"world": 0.9, "town": 0.1})
+
+        self.assertTrue(to_town["switched"])
+        self.assertEqual(to_town["active_mode_id"], "town")
+        self.assertTrue(to_world["switched"])
+        self.assertEqual(to_world["active_mode_id"], "world")
+
     def test_transition_bounds_exclude_long_stable_endpoints(self):
         observations = []
         scores = [(0.95, 0.05)] * 8 + [

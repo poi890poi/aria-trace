@@ -14,6 +14,7 @@ from poc.pose_fusion import FusionConfig, Pose2D, PoseFusionGate
 from poc.yaw_estimation import KltAngularYawEstimator, camera_matrix
 
 from .cursor_pose import CursorPoseEstimator
+from .minimap_transition import TransitionController
 from .minimap_verification import estimate_masked_shift
 
 
@@ -518,6 +519,20 @@ class TwoRateRealtimeTracker:
         self._recovery_hypotheses = []
         self.route_state_estimator = route_state_estimator
         self._last_route_tracking = None
+        transition_model = getattr(self.localizer, "transition_model", None)
+        runtime_transition = (transition_model or {}).get("runtime") or {}
+        self.transition_controller = (
+            TransitionController(
+                transition_model,
+                confirmation_count=int(
+                    runtime_transition.get("confirmation_count", 2)
+                ),
+            )
+            if transition_model is not None and route_state_estimator is None
+            else None
+        )
+        self._active_map_mode_id = None
+        self._last_map_transition = None
         self.fusion = PoseFusionGate(
             FusionConfig(
                 initial_position_sigma_m=3.0,
@@ -665,10 +680,48 @@ class TwoRateRealtimeTracker:
 
     @staticmethod
     def _fixes_agree(first: GlobalFix, second: GlobalFix) -> bool:
+        first_mode = TwoRateRealtimeTracker._fix_mode(first)
+        second_mode = TwoRateRealtimeTracker._fix_mode(second)
+        if first_mode and second_mode and first_mode != second_mode:
+            return False
         position_delta = math.hypot(second.x - first.x, second.y - first.y)
         yaw_delta = abs(_angle_difference_deg(second.yaw_deg, first.yaw_deg))
         scale_delta = abs(second.scale - first.scale) / max(first.scale, 1.0e-6)
         return position_delta <= 30.0 and yaw_delta <= 15.0 and scale_delta <= 0.12
+
+    @staticmethod
+    def _fix_mode(fix: GlobalFix):
+        return (
+            ((fix.diagnostics or {}).get("map_layer") or {}).get(
+                "selected_mode_id"
+            )
+        )
+
+    @staticmethod
+    def _fix_mode_likelihoods(fix: GlobalFix):
+        return dict(
+            ((fix.diagnostics or {}).get("map_layer") or {}).get(
+                "mode_likelihoods"
+            )
+            or {}
+        )
+
+    def _initialize_map_mode(self, fixes) -> None:
+        modes = [self._fix_mode(item) for item in fixes]
+        modes = [str(item) for item in modes if item]
+        if not modes:
+            return
+        self._active_map_mode_id = modes[-1]
+        if self.transition_controller is not None:
+            self.transition_controller.set_active_mode(self._active_map_mode_id)
+
+    def _observe_map_transition(self, fix: GlobalFix):
+        if self.transition_controller is None or not fix.valid:
+            return None
+        likelihoods = self._fix_mode_likelihoods(fix)
+        if len(likelihoods) < 2:
+            return None
+        return self.transition_controller.update(likelihoods)
 
     @staticmethod
     def _mean_fix(rows) -> Pose2D:
@@ -866,6 +919,7 @@ class TwoRateRealtimeTracker:
             self.last_cursor_ns = timestamp_ns
 
         global_fix = None
+        transition_observation = None
         decision = None
         if self._global_future is not None and self._global_future.done():
             try:
@@ -883,6 +937,7 @@ class TwoRateRealtimeTracker:
                     global_fix.rejection_reasons
                 )
             else:
+                transition_observation = self._observe_map_transition(global_fix)
                 hypothesis = Pose2D(global_fix.x, global_fix.y, global_fix.yaw_deg)
                 if self.fusion._state is None:
                     if self._initial_hypotheses:
@@ -896,6 +951,7 @@ class TwoRateRealtimeTracker:
                         initialized = self._mean_fix(rows)
                         self.map_scale = float(np.mean([item.scale for item in rows]))
                         self.fusion.initialize(initialized)
+                        self._initialize_map_mode(rows)
                         self._initial_hypotheses = []
                         decision = "initialized-consensus"
                         fusion_metrics = {
@@ -943,35 +999,126 @@ class TwoRateRealtimeTracker:
                             rows = self._recovery_hypotheses[
                                 -self.recovery_consensus_count :
                             ]
-                            recovery_pose = self._mean_fix(rows)
-                            correction = self.fusion.consider_absolute(recovery_pose)
-                            decision = (
-                                "recovered-consensus"
-                                if correction.accepted
-                                else "rejected:" + correction.reason
+                            recovery_mode = self._fix_mode(rows[-1])
+                            mode_changed = bool(
+                                recovery_mode
+                                and self._active_map_mode_id
+                                and recovery_mode != self._active_map_mode_id
                             )
-                            if correction.accepted:
+                            transition_confirmed = bool(
+                                transition_observation
+                                and transition_observation.get("active_mode_id")
+                                == recovery_mode
+                            )
+                            transition_pose = self._mean_fix(rows)
+                            current_pose = self.fusion.state.pose
+                            transition_position_error = math.hypot(
+                                transition_pose.x - current_pose.x,
+                                transition_pose.y - current_pose.y,
+                            )
+                            transition_yaw_error = abs(
+                                _angle_difference_deg(
+                                    transition_pose.yaw_deg, current_pose.yaw_deg
+                                )
+                            )
+                            if (
+                                mode_changed
+                                and self.transition_controller is not None
+                                and not transition_confirmed
+                            ):
+                                decision = "awaiting-scale-transition-confirmation"
+                                self._recovery_hypotheses = rows[-1:]
+                                fusion_metrics = {
+                                    "accepted": False,
+                                    "reason": decision,
+                                }
+                                rows = None
+                            elif (
+                                mode_changed
+                                and transition_confirmed
+                                and (
+                                    transition_position_error > 35.0
+                                    or transition_yaw_error > 20.0
+                                )
+                            ):
+                                decision = "rejected:scale-transition-discontinuity"
+                                self.transition_controller.set_active_mode(
+                                    self._active_map_mode_id
+                                )
+                                self._recovery_hypotheses = []
+                                fusion_metrics = {
+                                    "accepted": False,
+                                    "reason": decision,
+                                    "predicted_position_innovation_map_px": (
+                                        transition_position_error
+                                    ),
+                                    "predicted_yaw_innovation_deg": (
+                                        transition_yaw_error
+                                    ),
+                                    "applied_position_change_map_px": 0.0,
+                                    "applied_yaw_change_deg": 0.0,
+                                }
+                                rows = None
+                            elif mode_changed and transition_confirmed:
                                 self.map_scale = float(
                                     np.mean([item.scale for item in rows])
                                 )
                                 self._local_rejections = 0
-                            self._recovery_hypotheses = []
-                            fusion_metrics = {
-                                "accepted": correction.accepted,
-                                "reason": decision,
-                                "predicted_position_innovation_map_px": (
-                                    correction.predicted_position_innovation_m
-                                ),
-                                "predicted_yaw_innovation_deg": (
-                                    correction.predicted_yaw_innovation_deg
-                                ),
-                                "applied_position_change_map_px": (
-                                    correction.applied_position_change_m
-                                ),
-                                "applied_yaw_change_deg": (
-                                    correction.applied_yaw_change_deg
-                                ),
-                            }
+                                previous_mode = self._active_map_mode_id
+                                self._active_map_mode_id = str(recovery_mode)
+                                self.previous_minimap = None
+                                decision = "scale-transition-held-position"
+                                self._last_map_transition = {
+                                    "from_mode_id": previous_mode,
+                                    "to_mode_id": self._active_map_mode_id,
+                                    "host_time_ns": timestamp_ns,
+                                    "position_policy": "held-continuous-pose",
+                                    "reset_local_reference": True,
+                                    "mode_likelihoods": self._fix_mode_likelihoods(
+                                        rows[-1]
+                                    ),
+                                }
+                                self._recovery_hypotheses = []
+                                fusion_metrics = {
+                                    "accepted": True,
+                                    "reason": decision,
+                                    "predicted_position_innovation_map_px": None,
+                                    "predicted_yaw_innovation_deg": None,
+                                    "applied_position_change_map_px": 0.0,
+                                    "applied_yaw_change_deg": 0.0,
+                                }
+                            if rows is not None and not (
+                                mode_changed and transition_confirmed
+                            ):
+                                recovery_pose = self._mean_fix(rows)
+                                correction = self.fusion.consider_absolute(recovery_pose)
+                                decision = (
+                                    "recovered-consensus"
+                                    if correction.accepted
+                                    else "rejected:" + correction.reason
+                                )
+                                if correction.accepted:
+                                    self.map_scale = float(
+                                        np.mean([item.scale for item in rows])
+                                    )
+                                    self._local_rejections = 0
+                                self._recovery_hypotheses = []
+                                fusion_metrics = {
+                                    "accepted": correction.accepted,
+                                    "reason": decision,
+                                    "predicted_position_innovation_map_px": (
+                                        correction.predicted_position_innovation_m
+                                    ),
+                                    "predicted_yaw_innovation_deg": (
+                                        correction.predicted_yaw_innovation_deg
+                                    ),
+                                    "applied_position_change_map_px": (
+                                        correction.applied_position_change_m
+                                    ),
+                                    "applied_yaw_change_deg": (
+                                        correction.applied_yaw_change_deg
+                                    ),
+                                }
             self._last_global_fix = {
                 "x": global_fix.x,
                 "y": global_fix.y,
@@ -994,6 +1141,8 @@ class TwoRateRealtimeTracker:
                 else None,
                 "search_area_fraction": global_fix.search_area_fraction,
                 "fusion": fusion_metrics,
+                "map_mode_id": self._fix_mode(global_fix),
+                "mode_likelihoods": self._fix_mode_likelihoods(global_fix),
                 "host_time_ns": timestamp_ns,
             }
         global_search_needed = self.fusion._state is None or (
@@ -1102,6 +1251,10 @@ class TwoRateRealtimeTracker:
             },
             "route_tracking": dict(self._last_route_tracking)
             if self._last_route_tracking
+            else None,
+            "active_map_mode_id": self._active_map_mode_id,
+            "map_transition": dict(self._last_map_transition)
+            if self._last_map_transition
             else None,
             "cursor_pose": cursor_pose_output,
             "cursor_pose_fresh": cursor_pose_fresh,

@@ -405,6 +405,85 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
+    def test_scale_transition_switches_layer_without_pose_jump(self):
+        class ScaleTransitionLocalizer:
+            transition_model = {
+                "source_mode_id": "world",
+                "target_mode_id": "town",
+                "runtime": {
+                    "confirmation_count": 2,
+                    "minimum_mode_margin": 0.20,
+                },
+            }
+
+            def __init__(self):
+                self.calls = 0
+
+            def localize(self, observation, mask, yaw_prior_deg=None):
+                self.calls += 1
+                world = self.calls == 1
+                mode = "world" if world else "town"
+                likelihoods = (
+                    {"world": 0.92, "town": 0.08}
+                    if world
+                    else {"world": 0.05, "town": 0.95}
+                )
+                return GlobalFix(
+                    80.0 if world else 82.0,
+                    70.0 if world else 71.0,
+                    15.0,
+                    2.64 if world else 0.88,
+                    0.91,
+                    0.12,
+                    8.0,
+                    diagnostics={
+                        "map_layer": {
+                            "selected_mode_id": mode,
+                            "mode_likelihoods": likelihoods,
+                        }
+                    },
+                )
+
+        localizer = ScaleTransitionLocalizer()
+        tracker = TwoRateRealtimeTracker(
+            np.full((160, 180, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+            global_interval_s=0.001,
+            localizer=localizer,
+            initial_consensus_count=1,
+            relocalize_after_rejections=1,
+            recovery_consensus_count=2,
+        )
+        frame = np.random.RandomState(15).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        result = None
+        try:
+            with patch(
+                "acquisition.live_tracker.estimate_masked_shift",
+                return_value=((0.0, 0.0), 0.05),
+            ):
+                for index in range(200):
+                    result = tracker.update(frame, index * 10_000_000 + 1)
+                    if result.get("map_transition"):
+                        break
+                    time.sleep(0.002)
+
+            self.assertIsNotNone(result["map_transition"])
+            self.assertEqual(result["active_map_mode_id"], "town")
+            self.assertEqual(
+                result["map_transition"]["position_policy"],
+                "held-continuous-pose",
+            )
+            self.assertAlmostEqual(result["pose"]["x"], 80.0)
+            self.assertAlmostEqual(result["pose"]["y"], 70.0)
+            self.assertAlmostEqual(tracker.map_scale, 0.88)
+            self.assertIsNone(tracker.previous_minimap)
+        finally:
+            tracker.close()
+
     def test_optional_route_estimator_projects_pose_and_resets_reference(self):
         class RouteEstimator:
             def update(self, observation, mask, predicted_xy, timestamp_ns=None):

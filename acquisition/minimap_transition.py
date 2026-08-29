@@ -208,27 +208,50 @@ class TransitionController:
         self.source_mode_id = str(model["source_mode_id"])
         self.target_mode_id = str(model["target_mode_id"])
         self.confirmation_count = max(2, int(confirmation_count))
+        self.minimum_margin = float(
+            (model.get("runtime") or {}).get("minimum_mode_margin", 0.0)
+        )
         self.active_mode_id = self.source_mode_id
-        self._target_wins = 0
+        self._competing_wins = 0
+
+    def set_active_mode(self, mode_id: str) -> None:
+        value = str(mode_id)
+        if value not in (self.source_mode_id, self.target_mode_id):
+            raise ValueError("Unknown transition mode: {}".format(value))
+        self.active_mode_id = value
+        self._competing_wins = 0
 
     def update(self, likelihoods: Mapping[str, float]) -> dict:
-        source = float(likelihoods.get(self.source_mode_id, 0.0))
-        target = float(likelihoods.get(self.target_mode_id, 0.0))
-        if self.active_mode_id == self.source_mode_id and target > source:
-            self._target_wins += 1
+        competing_mode_id = (
+            self.target_mode_id
+            if self.active_mode_id == self.source_mode_id
+            else self.source_mode_id
+        )
+        active = float(likelihoods.get(self.active_mode_id, 0.0))
+        competing = float(likelihoods.get(competing_mode_id, 0.0))
+        if competing - active >= self.minimum_margin:
+            self._competing_wins += 1
         else:
-            self._target_wins = 0
-        switched = self._target_wins >= self.confirmation_count
+            self._competing_wins = 0
+        switched = self._competing_wins >= self.confirmation_count
         if switched:
-            self.active_mode_id = self.target_mode_id
-            self._target_wins = 0
+            self.active_mode_id = competing_mode_id
+            self._competing_wins = 0
         return {
             "active_mode_id": self.active_mode_id,
-            "state": "target_locked"
-            if self.active_mode_id == self.target_mode_id
-            else ("transitioning" if self._target_wins else "source_locked"),
+            "state": (
+                "transitioning"
+                if self._competing_wins
+                else (
+                    "target_locked"
+                    if self.active_mode_id == self.target_mode_id
+                    else "source_locked"
+                )
+            ),
             "switched": switched,
             "reset_local_reference": switched,
             "position_delta_xy": [0.0, 0.0],
-            "target_confirmation_count": self._target_wins,
+            "target_confirmation_count": self._competing_wins,
+            "competing_mode_id": competing_mode_id,
+            "mode_margin": competing - active,
         }

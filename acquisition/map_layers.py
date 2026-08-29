@@ -377,6 +377,7 @@ class LayeredGlobalLocalizer:
         self.manifest = json.loads(
             (self.atlas_path / "map_atlas.json").read_text(encoding="utf-8")
         )
+        self.transition_model = self.manifest.get("transition_model")
         self.localizers = {}
         for layer in self.manifest["layers"]:
             mode_id = str(layer["mode_id"])
