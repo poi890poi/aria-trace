@@ -101,6 +101,7 @@ class CursorPoseEstimator:
             self.y_map,
             cv2.INTER_LINEAR,
         )
+        self.template_polar_fft = np.fft.fft(self.template_polar, axis=0)
         self.template_energy = (
             math.sqrt(float(np.sum(self.template_polar ** 2))) + 1.0e-6
         )
@@ -272,12 +273,10 @@ class CursorPoseEstimator:
             self.y_map,
             cv2.INTER_LINEAR,
         )
-        correlation = np.zeros(360, dtype=np.float32)
-        for radius_index in range(polar.shape[1]):
-            correlation += np.fft.ifft(
-                np.fft.fft(polar[:, radius_index])
-                * np.conj(np.fft.fft(self.template_polar[:, radius_index]))
-            ).real.astype(np.float32)
+        correlation = np.fft.ifft(
+            np.fft.fft(polar, axis=0) * np.conj(self.template_polar_fft),
+            axis=0,
+        ).real.sum(axis=1).astype(np.float32)
         energy = math.sqrt(float(np.sum(polar ** 2))) * self.template_energy
         correlation /= energy + 1.0e-6
         gaussian_fit = self._fit_circular_gaussian(correlation)
