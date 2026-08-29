@@ -19,6 +19,15 @@ class YawEstimate:
     status: str
 
 
+@dataclass
+class KltTrackMeasurement:
+    points0: Optional[np.ndarray]
+    points1: Optional[np.ndarray]
+    tracks: int
+    status: str
+    elapsed_ms: float
+
+
 def _track_klt(
     previous_gray: np.ndarray,
     gray: np.ndarray,
@@ -107,11 +116,15 @@ class KltAngularYawEstimator:
         return mask
 
     def update(self, frame: np.ndarray) -> YawEstimate:
+        return self.update_measurement(self.measure(frame))
+
+    def measure(self, frame: np.ndarray) -> KltTrackMeasurement:
+        """Track one frame without applying camera intrinsics."""
         started = perf_counter()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if self.previous_gray is None:
             self.previous_gray = gray
-            return YawEstimate(0.0, 0.0, 0, 0, 0.0, 0.0, "initializing")
+            return KltTrackMeasurement(None, None, 0, "initializing", 0.0)
 
         p0, p1, tracks, status = _track_klt(
             self.previous_gray,
@@ -121,8 +134,27 @@ class KltAngularYawEstimator:
             self.min_tracks,
         )
         self.previous_gray = gray
+        return KltTrackMeasurement(
+            p0,
+            p1,
+            tracks,
+            status,
+            (perf_counter() - started) * 1000.0,
+        )
+
+    def update_measurement(
+        self, measurement: KltTrackMeasurement
+    ) -> YawEstimate:
+        """Apply camera intrinsics to a reusable optical-flow measurement."""
+        started = perf_counter()
+        tracks = measurement.tracks
+        status = measurement.status
+        if status == "initializing":
+            return YawEstimate(0.0, self.total_deg, 0, 0, 0.0, 0.0, status)
         if status != "ok":
-            return self._failure(started, tracks, status)
+            return self._failure_elapsed(measurement.elapsed_ms, tracks, status)
+
+        p0, p1 = measurement.points0, measurement.points1
 
         if self.use_essential_gate and tracks >= 8:
             _, essential_mask = cv2.findEssentialMat(
@@ -149,7 +181,11 @@ class KltAngularYawEstimator:
         angular_inliers = deviations <= cutoff
         inliers = int(angular_inliers.sum())
         if inliers < self.min_tracks:
-            return self._failure(started, tracks, "too_few_inliers")
+            return self._failure_elapsed(
+                measurement.elapsed_ms + (perf_counter() - started) * 1000.0,
+                tracks,
+                "too_few_inliers",
+            )
 
         delta_deg = float(np.degrees(np.median(deltas[angular_inliers])))
         self.total_deg += delta_deg
@@ -161,18 +197,25 @@ class KltAngularYawEstimator:
             tracks,
             inliers,
             confidence,
-            (perf_counter() - started) * 1000.0,
+            measurement.elapsed_ms + (perf_counter() - started) * 1000.0,
             "ok",
         )
 
     def _failure(self, started: float, tracks: int, status: str) -> YawEstimate:
+        return self._failure_elapsed(
+            (perf_counter() - started) * 1000.0, tracks, status
+        )
+
+    def _failure_elapsed(
+        self, elapsed_ms: float, tracks: int, status: str
+    ) -> YawEstimate:
         return YawEstimate(
             0.0,
             self.total_deg,
             tracks,
             0,
             0.0,
-            (perf_counter() - started) * 1000.0,
+            elapsed_ms,
             status,
         )
 

@@ -136,6 +136,49 @@ def _estimate(frames, focal_ratio: float, config: dict):
     return rows, durations_ns
 
 
+def _measure_tracks(frames, config: dict):
+    """Measure KLT correspondences once; camera intrinsics are not used here."""
+    height, width = frames[0].shape[:2]
+    estimator = KltAngularYawEstimator(
+        camera_matrix(width, height, 0.9),
+        max_corners=config["max_corners"],
+        min_tracks=config["min_tracks"],
+        use_essential_gate=bool(config["use_essential_gate"]),
+        excluded_rects=config["excluded_rects"],
+    )
+    return [estimator.measure(frame) for frame in frames]
+
+
+def _estimate_measurements(measurements, shape, focal_ratio: float, config: dict):
+    """Evaluate reusable KLT correspondences for one candidate camera scale."""
+    height, width = shape[:2]
+    estimator = KltAngularYawEstimator(
+        camera_matrix(width, height, focal_ratio),
+        max_corners=config["max_corners"],
+        min_tracks=config["min_tracks"],
+        use_essential_gate=bool(config["use_essential_gate"]),
+        excluded_rects=config["excluded_rects"],
+    )
+    rows = []
+    durations_ns = []
+    for index, measurement in enumerate(measurements):
+        estimate = estimator.update_measurement(measurement)
+        durations_ns.append(int(round(estimate.elapsed_ms * 1.0e6)))
+        rows.append(
+            {
+                "frame_index": index,
+                "delta_yaw_deg": float(estimate.delta_deg),
+                "relative_yaw_deg": float(estimate.total_deg),
+                "tracks": int(estimate.tracks),
+                "inliers": int(estimate.inliers),
+                "confidence": float(estimate.confidence),
+                "status": estimate.status,
+                "elapsed_ms": float(estimate.elapsed_ms),
+            }
+        )
+    return rows, durations_ns
+
+
 def _curve_image(rows, closure_index: int, target_yaw: float) -> np.ndarray:
     canvas = np.full((500, 1000, 3), 18, np.uint8)
     values = np.asarray([row["relative_yaw_deg"] for row in rows], np.float64)
@@ -179,8 +222,11 @@ def calibrate_scene_yaw_frames(frames, output_path: Path, config=None, provenanc
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     if progress:
-        progress("Estimating coarse scene-relative yaw")
-    coarse_rows, _ = _estimate(frames, 0.9, config)
+        progress("Tracking scene features once for angular-scale fitting")
+    measurements = _measure_tracks(frames, config)
+    coarse_rows, _ = _estimate_measurements(
+        measurements, frames[0].shape, 0.9, config
+    )
     start = max(2, int(math.ceil(len(frames) * config["minimum_closure_fraction"])))
     if progress:
         progress("Searching for the first full-turn visual loop closure")
@@ -196,30 +242,57 @@ def calibrate_scene_yaw_frames(frames, output_path: Path, config=None, provenanc
     coarse_sign = -1.0 if coarse_rows[closure_index]["relative_yaw_deg"] < 0 else 1.0
     target_yaw = coarse_sign * 360.0
 
-    if progress:
-        progress("Fitting camera angular scale to the detected 360-degree closure")
     ratios = np.linspace(
         float(config["focal_ratio_min"]),
         float(config["focal_ratio_max"]),
         int(config["focal_ratio_steps"]),
     )
     searches = []
+    candidate_count = len(ratios) + 9
+    candidate_index = 0
+    closure_measurements = measurements[: closure_index + 1]
+    fit_cache = {}
+
+    def evaluate_ratio(ratio):
+        key = round(float(ratio), 12)
+        if key not in fit_cache:
+            fit_cache[key] = _estimate_measurements(
+                closure_measurements, frames[0].shape, float(ratio), config
+            )
+        return fit_cache[key]
+
     for ratio in ratios:
-        rows, _ = _estimate(frames[: closure_index + 1], float(ratio), config)
+        candidate_index += 1
+        if progress:
+            progress(
+                "Fitting camera angular scale: candidate {} of {}".format(
+                    candidate_index, candidate_count
+                )
+            )
+        rows, _ = evaluate_ratio(ratio)
         final_yaw = float(rows[-1]["relative_yaw_deg"])
         searches.append((abs(final_yaw - target_yaw), float(ratio), final_yaw))
     _, best_ratio, _ = min(searches)
     step = float(ratios[1] - ratios[0])
     refinements = np.linspace(max(0.1, best_ratio - step), best_ratio + step, 9)
     for ratio in refinements:
-        rows, _ = _estimate(frames[: closure_index + 1], float(ratio), config)
+        candidate_index += 1
+        if progress:
+            progress(
+                "Fitting camera angular scale: candidate {} of {}".format(
+                    candidate_index, candidate_count
+                )
+            )
+        rows, _ = evaluate_ratio(ratio)
         final_yaw = float(rows[-1]["relative_yaw_deg"])
         searches.append((abs(final_yaw - target_yaw), float(ratio), final_yaw))
     _, best_ratio, _ = min(searches)
 
     if progress:
-        progress("Running the calibrated scene-yaw estimator across every frame")
-    rows, durations_ns = _estimate(frames, best_ratio, config)
+        progress("Applying the fitted angular scale to cached scene tracks")
+    rows, durations_ns = _estimate_measurements(
+        measurements, frames[0].shape, best_ratio, config
+    )
     closure_yaw = float(rows[closure_index]["relative_yaw_deg"])
     closure_error = abs(closure_yaw - target_yaw)
     valid = [row for row in rows[1:] if row["status"] == "ok"]
