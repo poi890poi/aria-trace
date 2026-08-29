@@ -33,6 +33,7 @@ from .android_capture import (
 )
 from .map_stitching import stitch_map_session
 from .cursor_pose import CursorPoseEstimator
+from .frame_pump import LatestFramePump
 from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
 from .minimap_calibration import calibrate_segment_sessions, calibrate_session
 from .minimap_verification import verify_forward_session
@@ -1982,8 +1983,9 @@ class AcquisitionWorkbench:
 
         def work() -> None:
             recent_times = []
+            frame_pump = LatestFramePump(frame_source)
             try:
-                frame_source.start()
+                frame_pump.start()
                 with self._lock:
                     runtime["status"] = "running"
                     runtime["detail"] = (
@@ -1991,9 +1993,8 @@ class AcquisitionWorkbench:
                         "run independently at low rate."
                     )
                 while not stop.is_set():
-                    packet = frame_source.read()
+                    packet = frame_pump.read_latest(timeout_s=0.25)
                     if packet is None:
-                        stop.wait(0.01)
                         continue
                     latest = engine.update(
                         packet.image, packet.host_capture_time_ns
@@ -2011,6 +2012,9 @@ class AcquisitionWorkbench:
                         runtime["latest"] = latest
                         runtime["processed_frames"] = latest["sequence"]
                         runtime["high_rate_fps"] = high_rate_fps
+                        runtime["capture_dropped_before_processing"] = (
+                            frame_pump.dropped_before_processing
+                        )
                 with self._lock:
                     runtime["status"] = "stopped"
                     runtime["detail"] = "Live tracking stopped by the user."
@@ -2024,7 +2028,7 @@ class AcquisitionWorkbench:
             finally:
                 stop.set()
                 try:
-                    frame_source.stop()
+                    frame_pump.stop()
                 except Exception:
                     pass
                 engine.close()

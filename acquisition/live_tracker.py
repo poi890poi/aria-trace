@@ -451,7 +451,9 @@ class TwoRateRealtimeTracker:
         self.map_scale = 1.0
         self.sequence = 0
         self.trail = []
-        self._global_executor = ThreadPoolExecutor(max_workers=1)
+        self._global_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="aria-global-fix"
+        )
         self._global_future = None
         self._last_global_fix = None
         self._last_global_search = None
@@ -462,7 +464,9 @@ class TwoRateRealtimeTracker:
         self.cursor_interval_ns = int(float(cursor_interval_s) * 1.0e9)
         self.last_cursor_ns = None
         self._cursor_executor = (
-            ThreadPoolExecutor(max_workers=1)
+            ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="aria-cursor-pose"
+            )
             if self.cursor_pose_estimator is not None
             else None
         )

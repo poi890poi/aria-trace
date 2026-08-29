@@ -519,6 +519,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         validation_policy="ambiguous",
                     )
                     self.assertEqual(runtime["latest"]["mode"], "TRACK")
+                    self.assertIn("capture_dropped_before_processing", runtime)
                     json.dumps(descriptor)
                     overlay = cv2.imdecode(
                         np.frombuffer(state.live_tracker_overlay_image(), np.uint8),
