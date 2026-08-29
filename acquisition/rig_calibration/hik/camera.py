@@ -86,6 +86,7 @@ class HikCamera:
         self.last_time_get_frame = 0.0
         self._reader = None
         self._last_frame = None
+        self.last_frame_metadata: Dict[str, Any] = {}
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
         self._rectify_enabled = bool(self.config.get("rectify", True))
         if self._color_order not in ("RGB", "BGR"):
@@ -151,6 +152,17 @@ class HikCamera:
         factory = self.config.get("reader_factory")
         if factory is not None:
             return factory(self.calibration_path)
+        minimap_calibration = self.config.get("minimap_calibration")
+        if minimap_calibration is not None:
+            from .game_camera import ProfiledHikGameCamera
+
+            return ProfiledHikGameCamera(
+                self.calibration_path,
+                minimap_calibration,
+                mode=str(self.config.get("mode", "minimap")),
+                rectify_minimap=bool(self.config.get("rectify", True)),
+                minimap_margin_px=int(self.config.get("minimap_margin_px", 6)),
+            )
         return RectifiedHikCamera(
             self.calibration_path, rectify=self._rectify_enabled
         )
@@ -200,15 +212,47 @@ class HikCamera:
 
     def get_frame(self) -> np.ndarray:
         reader = self._require_reader()
-        ok, bgr = reader.read()
-        if not ok or bgr is None:
-            raise RuntimeError("HIK camera returned no rectified frame")
+        if hasattr(reader, "read_sample"):
+            sample = reader.read_sample()
+            bgr = sample.image
+            self.last_frame_metadata = dict(sample.metadata)
+        else:
+            ok, bgr = reader.read()
+            if not ok or bgr is None:
+                raise RuntimeError("HIK camera returned no rectified frame")
+            self.last_frame_metadata = {}
         frame = self._convert_output(bgr)
         self._last_frame = frame
         self.last_time_get_frame = time.time()
         self.shape = tuple(frame.shape)
         self.bit = int(frame.dtype.itemsize * 8 * (frame.shape[2] if frame.ndim == 3 else 1))
         return frame
+
+    def get_frames(self) -> Dict[str, np.ndarray]:
+        """Return synchronized products when configured for dual streaming."""
+
+        reader = self._require_reader()
+        if not hasattr(reader, "read_streams"):
+            return {"full": self.get_frame()}
+        frame_set = reader.read_streams()
+        self.last_frame_metadata = dict(frame_set.metadata)
+        frames = {
+            name: self._convert_output(frame)
+            for name, frame in frame_set.streams.items()
+        }
+        preferred = frames.get("minimap")
+        if preferred is None:
+            preferred = frames.get("full")
+        if preferred is not None:
+            self._last_frame = preferred
+            self.last_time_get_frame = time.time()
+            self.shape = tuple(preferred.shape)
+            self.bit = int(
+                preferred.dtype.itemsize
+                * 8
+                * (preferred.shape[2] if preferred.ndim == 3 else 1)
+            )
+        return frames
 
     def get_frame_with_config(self) -> None:
         self._last_frame = self.get_frame()
@@ -299,7 +343,7 @@ class HikCamera:
 
     def getitem(self, key: str) -> Any:
         normalized = str(key)
-        width, height = self.calibration["normalization"]["output_size_px"]
+        height, width = self.shape[:2]
         values = {
             "ExposureTime": self.get_exposure(),
             "Gain": self.get_gain(),

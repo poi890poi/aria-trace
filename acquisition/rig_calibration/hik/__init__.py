@@ -2,5 +2,12 @@
 
 from .camera import HikCamera
 from .driver import HikMvsCameraAdapter, RectifiedHikCamera
+from .game_camera import HikGameFrameSet, ProfiledHikGameCamera
 
-__all__ = ["HikCamera", "HikMvsCameraAdapter", "RectifiedHikCamera"]
+__all__ = [
+    "HikCamera",
+    "HikMvsCameraAdapter",
+    "RectifiedHikCamera",
+    "HikGameFrameSet",
+    "ProfiledHikGameCamera",
+]
