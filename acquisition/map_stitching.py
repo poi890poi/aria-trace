@@ -44,20 +44,38 @@ def _minimap_reference(image: np.ndarray, calibration: dict):
     return patch, mask
 
 
+def _prepare_localization_mosaic(mosaic: np.ndarray, coverage: np.ndarray) -> dict:
+    """Compute reusable full-map features once for all mini-map references."""
+    sift = cv2.SIFT_create(nfeatures=8000, contrastThreshold=0.005, edgeThreshold=15)
+    mosaic_gray = cv2.cvtColor(mosaic, cv2.COLOR_BGR2GRAY)
+    map_mask = cv2.erode(coverage, np.ones((5, 5), np.uint8))
+    map_points, map_descriptors = sift.detectAndCompute(mosaic_gray, map_mask)
+    if map_descriptors is None:
+        raise RuntimeError("Mini-map/full-map scale calibration found no map descriptors")
+    return {
+        "sift": sift,
+        "gray": mosaic_gray,
+        "mask": map_mask,
+        "points": map_points,
+        "descriptors": map_descriptors,
+    }
+
+
 def _estimate_minimap_similarity(
     reference: np.ndarray,
     mask: np.ndarray,
     mosaic: np.ndarray,
     coverage: np.ndarray,
+    mosaic_cache=None,
 ):
     """Estimate mini-map pixels to original-mosaic pixels with SIFT geometry."""
-    sift = cv2.SIFT_create(nfeatures=8000, contrastThreshold=0.005, edgeThreshold=15)
+    mosaic_cache = mosaic_cache or _prepare_localization_mosaic(mosaic, coverage)
+    sift = mosaic_cache["sift"]
     reference_gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
-    mosaic_gray = cv2.cvtColor(mosaic, cv2.COLOR_BGR2GRAY)
-    map_mask = cv2.erode(coverage, np.ones((5, 5), np.uint8))
     reference_points, reference_descriptors = sift.detectAndCompute(reference_gray, mask)
-    map_points, map_descriptors = sift.detectAndCompute(mosaic_gray, map_mask)
-    if reference_descriptors is None or map_descriptors is None:
+    map_points = mosaic_cache["points"]
+    map_descriptors = mosaic_cache["descriptors"]
+    if reference_descriptors is None:
         raise RuntimeError("Mini-map/full-map scale calibration found no SIFT descriptors")
     pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(
         reference_descriptors, map_descriptors, k=2
@@ -121,10 +139,14 @@ def _build_localization_derivative(
     coverage: np.ndarray,
     output_path: Path,
     reference: dict,
+    mosaic_cache=None,
 ) -> dict:
     """Create a reversible map raster normalized to calibrated mini-map scale."""
     patch, mask = _minimap_reference(reference["image"], reference["calibration"])
-    estimate = _estimate_minimap_similarity(patch, mask, mosaic, coverage)
+    mosaic_cache = mosaic_cache or _prepare_localization_mosaic(mosaic, coverage)
+    estimate = _estimate_minimap_similarity(
+        patch, mask, mosaic, coverage, mosaic_cache=mosaic_cache
+    )
     scale = estimate["map_pixels_per_minimap_pixel"]
     if not 0.5 <= scale <= 16.0:
         raise RuntimeError("Mini-map/full-map scale {:.3f} is implausible".format(scale))

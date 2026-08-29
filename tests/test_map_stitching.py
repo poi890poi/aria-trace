@@ -7,11 +7,40 @@ import numpy as np
 
 from acquisition.map_stitching import (
     _build_localization_derivative,
+    _estimate_minimap_similarity,
+    _minimap_reference,
+    _prepare_localization_mosaic,
     stitch_map_frames,
 )
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_reuses_precomputed_mosaic_features_without_changing_estimate(self):
+        rng = np.random.RandomState(19)
+        mosaic = rng.randint(0, 255, (420, 610, 3), dtype=np.uint8)
+        reference_image = np.zeros((180, 220, 3), np.uint8)
+        reference_image[34:146, 54:166] = cv2.resize(
+            mosaic[120:400, 210:490], (112, 112), interpolation=cv2.INTER_AREA
+        )
+        calibration = {
+            "outer_boundary": {"center_x": 110, "center_y": 90, "radius": 56}
+        }
+        coverage = np.full(mosaic.shape[:2], 255, np.uint8)
+        patch, mask = _minimap_reference(reference_image, calibration)
+        cache = _prepare_localization_mosaic(mosaic, coverage)
+        first = _estimate_minimap_similarity(
+            patch, mask, mosaic, coverage, mosaic_cache=cache
+        )
+        second = _estimate_minimap_similarity(
+            patch, mask, mosaic, coverage, mosaic_cache=cache
+        )
+        self.assertAlmostEqual(
+            first["map_pixels_per_minimap_pixel"],
+            second["map_pixels_per_minimap_pixel"],
+            places=9,
+        )
+        self.assertEqual(first["inlier_count"], second["inlier_count"])
+
     def test_builds_verified_localization_raster_at_minimap_scale(self):
         rng = np.random.RandomState(29)
         mosaic = rng.randint(0, 255, (640, 920, 3), dtype=np.uint8)
