@@ -1047,6 +1047,9 @@ class TwoRateRealtimeTracker:
                                     "to_mode_id": self._active_map_mode_id,
                                     "host_time_ns": timestamp_ns,
                                     "position_policy": "held-continuous-pose",
+                                    "evidence_source": (
+                                        "live-minimap-layer-likelihoods"
+                                    ),
                                     "reset_local_reference": True,
                                     "mode_likelihoods": self._fix_mode_likelihoods(
                                         rows[-1]
@@ -1225,6 +1228,7 @@ class TwoRateRealtimeTracker:
             },
             "route_tracking": None,
             "active_map_mode_id": self._active_map_mode_id,
+            "map_scale": float(self.map_scale),
             "map_transition": dict(self._last_map_transition)
             if self._last_map_transition
             else None,

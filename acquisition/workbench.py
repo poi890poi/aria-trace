@@ -2426,9 +2426,19 @@ class AcquisitionWorkbench:
             stitch_id = str(value.get("map_stitch_id") or "")
             atlas_id = str(value.get("map_atlas_id") or "")
             route_package_id = str(value.get("route_package_id") or "")
-            tracking_mode = str(value.get("tracking_mode") or "free-roam")
-            if tracking_mode not in ("free-roam", "route-locked"):
-                raise ValueError("Tracking mode must be free-roam or route-locked")
+            requested_tracking_mode = str(
+                value.get("tracking_mode") or "free-roam"
+            )
+            # Preserve old clients and saved requests while making the runtime
+            # contract explicit: a demonstrated route is an acceleration hint,
+            # never a source of pose authority.
+            tracking_mode = (
+                "route-assisted"
+                if requested_tracking_mode == "route-locked"
+                else requested_tracking_mode
+            )
+            if tracking_mode not in ("free-roam", "route-assisted"):
+                raise ValueError("Tracking mode must be free-roam or route-assisted")
             minimap = self._read_tracker_artifact(
                 self._minimap_calibration_root(game_profile_id),
                 "calibration.json",
@@ -2439,8 +2449,8 @@ class AcquisitionWorkbench:
                 "scene_yaw_calibration.json",
                 scene_yaw_id,
             )
-            if atlas_id or tracking_mode == "route-locked":
-                if tracking_mode == "route-locked":
+            if atlas_id or tracking_mode == "route-assisted":
+                if tracking_mode == "route-assisted":
                     package_root = (
                         self._route_tracking_root(game_profile_id) / safe_id(route_package_id)
                     )
@@ -2462,7 +2472,7 @@ class AcquisitionWorkbench:
                 )
                 if mosaic is None:
                     raise ValueError("Could not decode the canonical map-atlas mosaic")
-                if tracking_mode == "route-locked" and (
+                if tracking_mode == "route-assisted" and (
                     route_package.manifest["coordinate_space_id"]
                     != atlas["coordinate_space_id"]
                 ):
@@ -2580,6 +2590,11 @@ class AcquisitionWorkbench:
                 "map_atlas_id": atlas_id or None,
                 "route_package_id": route_package_id or None,
                 "tracking_mode": tracking_mode,
+                "route_policy": (
+                    "candidate-acceleration-only"
+                    if tracking_mode == "route-assisted"
+                    else None
+                ),
                 "frame_source": frame_config,
                 "global_interval_s": global_interval_s,
                 "cursor_pose_method": gaussian_fit_method,
@@ -2609,6 +2624,11 @@ class AcquisitionWorkbench:
                     "map_atlas_id": atlas_id or None,
                     "route_package_id": route_package_id or None,
                     "tracking_mode": tracking_mode,
+                    "route_policy": (
+                        "candidate-acceleration-only"
+                        if tracking_mode == "route-assisted"
+                        else None
+                    ),
                     "tracking_profile": tracking_profile_name,
                     "resolved_tracking_profile": resolved_profile,
                     "frame_source": frame_config,

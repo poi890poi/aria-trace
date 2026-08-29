@@ -478,9 +478,14 @@ class TwoRateTrackerTests(unittest.TestCase):
                 result["map_transition"]["position_policy"],
                 "held-continuous-pose",
             )
+            self.assertEqual(
+                result["map_transition"]["evidence_source"],
+                "live-minimap-layer-likelihoods",
+            )
             self.assertAlmostEqual(result["pose"]["x"], 80.0)
             self.assertAlmostEqual(result["pose"]["y"], 70.0)
             self.assertAlmostEqual(tracker.map_scale, 0.88)
+            self.assertAlmostEqual(result["map_scale"], 0.88)
             self.assertIsNone(tracker.previous_minimap)
         finally:
             tracker.close()
@@ -915,7 +920,10 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         }
                     )
                     runtime = descriptor["live_tracker"]
-                    self.assertEqual(runtime["tracking_mode"], "route-locked")
+                    self.assertEqual(runtime["tracking_mode"], "route-assisted")
+                    self.assertEqual(
+                        runtime["route_policy"], "candidate-acceleration-only"
+                    )
                     self.assertEqual(runtime["map_atlas_id"], "atlas-a")
                     self.assertEqual(runtime["route_package_id"], "route-a")
                     self.assertEqual(runtime["tracking_profile"], "fast")

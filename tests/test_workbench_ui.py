@@ -65,7 +65,7 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
             "ui.startTracker.onclick=()=>startLiveTracker('free-roam')", self.source
         )
         self.assertIn(
-            "ui.startRouteTracker.onclick=()=>startLiveTracker('route-locked')",
+            "ui.startRouteTracker.onclick=()=>startLiveTracker('route-assisted')",
             self.source,
         )
 
