@@ -1101,6 +1101,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     )
                     self.assertNotIn("route_state_estimator", engine.kwargs)
                     with state._lock:
+                        state._live_tracker["status"] = "running"
                         state._live_tracker["latest"] = {
                             "mode": "TRACK",
                             "pose": {

@@ -915,8 +915,6 @@ class AcquisitionWorkbench:
                 "target_runs": target_runs,
                 "capture_duration_s": capture_duration_s,
                 "frame_source": frame_config,
-                "frame_size_wh": None,
-                "minimap_crop_xywh": list(minimap_config["crop_xywh"]),
                 "input_source": input_config,
                 "armed_utc": context.get("created_utc") or manifest.get("created_utc"),
                 "restored_from_session": str(manifest_path.parent),
@@ -2635,6 +2633,8 @@ class AcquisitionWorkbench:
                     else None
                 ),
                 "frame_source": frame_config,
+                "frame_size_wh": None,
+                "minimap_crop_xywh": list(minimap_config["crop_xywh"]),
                 "global_interval_s": global_interval_s,
                 "cursor_pose_method": gaussian_fit_method,
                 "tracking_profile": tracking_profile_name,
