@@ -15,20 +15,23 @@ from .sources import InputSource
 
 @dataclass(frozen=True)
 class ZigzagTouchPlan:
-    """One continuous horizontal sweep with horizon-returning pitch changes.
+    """Long diagonal swipes with horizon-returning pitch changes.
 
-    Vertical commands are ``up, down, down, up, up, ...``.  In absolute touch
-    coordinates this becomes ``horizon, sky, horizon, ground, horizon, ...``.
+    Every stroke moves horizontally in the same direction so yaw accumulates.
+    Vertical commands are ``up, down, down, up, ...`` so the commanded pitch
+    returns to the horizon after every pair. The finger is lifted and
+    re-anchored between strokes, keeping every diagonal movement long.
     """
 
     start_xy: Sequence[int]
     end_x: int
     vertical_amplitude_px: int
-    move_count: int = 24
-    step_seconds: float = 0.12
+    move_count: int = 20
+    step_seconds: float = 0.35
     settle_seconds: float = 1.0
+    reset_seconds: float = 0.10
 
-    def points(self) -> List[List[int]]:
+    def strokes(self) -> List[dict]:
         start_x, horizon_y = map(int, self.start_xy)
         end_x = int(self.end_x)
         count = int(self.move_count)
@@ -36,34 +39,51 @@ class ZigzagTouchPlan:
         if min(start_x, horizon_y, end_x) < 0:
             raise ValueError("Zigzag touch coordinates cannot be negative")
         if start_x == end_x:
-            raise ValueError("Zigzag needs non-zero continuous horizontal motion")
+            raise ValueError("Zigzag needs non-zero horizontal motion")
         if amplitude <= 0:
             raise ValueError("Zigzag vertical amplitude must be positive")
         if count < 4:
-            raise ValueError("Zigzag needs at least four MOVE points")
+            raise ValueError("Zigzag needs at least four strokes")
+        if count % 4:
+            raise ValueError("Zigzag stroke count must be a multiple of four")
         if self.step_seconds < 0.03:
-            raise ValueError("Zigzag step duration must be at least 30 ms")
+            raise ValueError("Zigzag stroke duration must be at least 30 ms")
         if self.settle_seconds < 0.0:
             raise ValueError("Zigzag settle duration cannot be negative")
+        if self.reset_seconds < 0.0:
+            raise ValueError("Zigzag reset duration cannot be negative")
+        if abs(end_x - start_x) != amplitude:
+            raise ValueError("Zigzag strokes must be 45 degrees in display pixels")
 
-        # Increment signs are up, down, down, up, then repeat.  Integrating
-        # those commands guarantees every second point returns to the horizon.
-        level = 0
-        points = []
+        strokes = []
         signs = (-1, 1, 1, -1)
         for index in range(count):
-            level += signs[index % len(signs)]
-            fraction = float(index + 1) / float(count)
-            x = round(start_x + (end_x - start_x) * fraction)
-            y = horizon_y + level * amplitude
-            if y < 0:
-                raise ValueError("Zigzag sky point is above the display")
-            points.append([int(x), int(y)])
-        return points
+            sign = signs[index % len(signs)]
+            end_y = horizon_y + sign * amplitude
+            if end_y < 0:
+                raise ValueError("Zigzag sky endpoint is above the display")
+            strokes.append(
+                {
+                    "index": int(index),
+                    "direction": "up" if sign < 0 else "down",
+                    "start_xy": [int(start_x), int(horizon_y)],
+                    "end_xy": [int(end_x), int(end_y)],
+                }
+            )
+        return strokes
+
+    def points(self) -> List[List[int]]:
+        """Return stroke endpoints for geometry-only callers."""
+        return [stroke["end_xy"] for stroke in self.strokes()]
 
     @property
     def duration_seconds(self) -> float:
-        return float(self.settle_seconds) + len(self.points()) * float(self.step_seconds)
+        count = len(self.strokes())
+        return (
+            float(self.settle_seconds)
+            + count * float(self.step_seconds)
+            + max(0, count - 1) * float(self.reset_seconds)
+        )
 
     def as_dict(self) -> dict:
         return {
@@ -73,7 +93,14 @@ class ZigzagTouchPlan:
             "move_count": int(self.move_count),
             "step_seconds": float(self.step_seconds),
             "settle_seconds": float(self.settle_seconds),
-            "absolute_points_xy": self.points(),
+            "reset_seconds": float(self.reset_seconds),
+            "strokes": self.strokes(),
+            "up_stroke_count": sum(
+                stroke["direction"] == "up" for stroke in self.strokes()
+            ),
+            "down_stroke_count": sum(
+                stroke["direction"] == "down" for stroke in self.strokes()
+            ),
             "vertical_command_pattern": ["up", "down", "down", "up"],
         }
 
@@ -147,23 +174,34 @@ class AndroidZigzagInputSource(InputSource):
     def _run(self) -> None:
         down = False
         last = list(map(int, self.plan.start_xy))
-        completed_moves = 0
+        completed_strokes = 0
+        strokes = self.plan.strokes()
         try:
             if self.ready_event is not None:
                 while not self._stop.is_set() and not self.ready_event.wait(0.1):
                     pass
             if self._stop.wait(float(self.plan.settle_seconds)):
                 return
-            self._motion("DOWN", last[0], last[1])
-            down = True
-            self._record("zigzag_touch", "DOWN", last, -1)
-            for index, point in enumerate(self.plan.points()):
+            for index, stroke in enumerate(strokes):
+                last = stroke["start_xy"]
+                self._motion("DOWN", last[0], last[1])
+                down = True
+                self._record(
+                    "zigzag_touch", "DOWN", last, -1 if index == 0 else index
+                )
                 if self._stop.wait(float(self.plan.step_seconds)):
                     break
-                self._motion("MOVE", point[0], point[1])
-                last = point
-                self._record("zigzag_touch", "MOVE", point, index)
-                completed_moves += 1
+                last = stroke["end_xy"]
+                self._motion("MOVE", last[0], last[1])
+                self._record("zigzag_touch", "MOVE", last, index)
+                self._motion("UP", last[0], last[1])
+                down = False
+                self._record("zigzag_touch", "UP", last, index)
+                completed_strokes += 1
+                if index + 1 < len(strokes) and self._stop.wait(
+                    float(self.plan.reset_seconds)
+                ):
+                    break
         except Exception as exc:
             self._error = "{}: {}".format(type(exc).__name__, exc)
             if self._emit is not None:
@@ -179,12 +217,12 @@ class AndroidZigzagInputSource(InputSource):
             if down:
                 try:
                     self._motion("UP", last[0], last[1])
-                    self._record("zigzag_touch", "UP", last, len(self.plan.points()))
+                    self._record("zigzag_touch", "UP", last, completed_strokes)
                 except Exception as exc:
                     if self._error is None:
                         self._error = "{}: {}".format(type(exc).__name__, exc)
             self._gesture_completed = (
-                self._error is None and completed_moves == len(self.plan.points())
+                self._error is None and completed_strokes == len(strokes)
             )
             self._completed.set()
 
@@ -192,8 +230,8 @@ class AndroidZigzagInputSource(InputSource):
         if self._thread is not None:
             raise RuntimeError("Android zigzag control is already started")
         self._emit = emit
-        # Validate the entire path before issuing DOWN.
-        self.plan.points()
+        # Validate every stroke before issuing the first DOWN.
+        self.plan.strokes()
         if self.controller is not None:
             self.controller.open()
         self._thread = threading.Thread(
@@ -218,7 +256,7 @@ class AndroidZigzagInputSource(InputSource):
 
     @property
     def expected_event_count(self) -> int:
-        return len(self.plan.points()) + 2
+        return len(self.plan.strokes()) * 3
 
     @property
     def events_issued(self) -> int:

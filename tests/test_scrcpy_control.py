@@ -82,11 +82,12 @@ class ScrcpyControlTests(unittest.TestCase):
         controller = FakeController()
         plan = ZigzagTouchPlan(
             start_xy=[90, 50],
-            end_x=10,
+            end_x=80,
             vertical_amplitude_px=10,
             move_count=4,
             step_seconds=0.03,
             settle_seconds=0.0,
+            reset_seconds=0.0,
         )
         source = AndroidZigzagInputSource(
             "adb.exe", "serial", plan, controller=controller
@@ -99,11 +100,38 @@ class ScrcpyControlTests(unittest.TestCase):
         self.assertTrue(source.completed)
         self.assertEqual(source.events_issued, source.expected_event_count)
         self.assertEqual([item[0] for item in controller.actions], [
-            "DOWN", "MOVE", "MOVE", "MOVE", "MOVE", "UP"
+            "DOWN", "MOVE", "UP",
+            "DOWN", "MOVE", "UP",
+            "DOWN", "MOVE", "UP",
+            "DOWN", "MOVE", "UP",
         ])
-        self.assertEqual(len(packets), 6)
+        self.assertEqual(len(packets), 12)
         self.assertTrue(controller.opened)
         self.assertTrue(controller.closed)
+
+    def test_default_zigzag_is_twenty_long_45_degree_strokes(self):
+        plan = ZigzagTouchPlan(
+            start_xy=[1872, 540],
+            end_x=1386,
+            vertical_amplitude_px=486,
+        )
+        strokes = plan.strokes()
+        self.assertEqual(len(strokes), 20)
+        self.assertEqual(
+            [stroke["direction"] for stroke in strokes[:4]],
+            ["up", "down", "down", "up"],
+        )
+        self.assertEqual(
+            sum(stroke["direction"] == "up" for stroke in strokes), 10
+        )
+        self.assertEqual(
+            sum(stroke["direction"] == "down" for stroke in strokes), 10
+        )
+        for stroke in strokes:
+            delta_x = stroke["end_xy"][0] - stroke["start_xy"][0]
+            delta_y = stroke["end_xy"][1] - stroke["start_xy"][1]
+            self.assertEqual(abs(delta_x), 486)
+            self.assertEqual(abs(delta_y), 486)
 
 if __name__ == "__main__":
     unittest.main()

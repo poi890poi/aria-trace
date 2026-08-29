@@ -60,7 +60,9 @@ class GamePhonePreparationTests(unittest.TestCase):
 
     def test_control_geometry_is_reprobed_after_game_launch(self):
         plan = Mock()
-        plan.points.return_value = [[1, 1]] * 24
+        plan.strokes.return_value = [
+            {"start_xy": [1, 1], "end_xy": [2, 2]}
+        ] * 20
         camera = SimpleNamespace(device_id="camera-1", label="camera")
 
         class PreparationCheckpoint(Exception):
@@ -101,12 +103,13 @@ class GamePhonePreparationTests(unittest.TestCase):
 
         self.assertEqual(2, surface.call_count)
         constructor.assert_called_once_with(
-            start_xy=[1968, 540],
-            end_x=432,
-            vertical_amplitude_px=324,
-            move_count=24,
-            step_seconds=0.12,
+            start_xy=[1872, 540],
+            end_x=1386,
+            vertical_amplitude_px=486,
+            move_count=20,
+            step_seconds=0.35,
             settle_seconds=1.5,
+            reset_seconds=0.10,
         )
 
 

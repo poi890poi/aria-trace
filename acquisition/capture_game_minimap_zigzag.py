@@ -169,8 +169,9 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--output-root", type=Path, default=Path("sessions") / "calibration"
     )
-    value.add_argument("--moves", type=int, default=24)
-    value.add_argument("--step-seconds", type=float, default=0.12)
+    value.add_argument("--moves", type=int, default=20)
+    value.add_argument("--step-seconds", type=float, default=0.35)
+    value.add_argument("--reset-seconds", type=float, default=0.10)
     value.add_argument("--settle-seconds", type=float, default=1.5)
     value.add_argument("--tail-seconds", type=float, default=1.5)
     value.add_argument("--yes", action="store_true")
@@ -218,15 +219,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     time.sleep(0.75)
     surface = _phone_surface(adb, serial)
     width, height = surface["logical_size_px"]
+    stroke_distance = round(height * 0.45)
+    start_x = round(width * 0.78)
     plan = ZigzagTouchPlan(
-        start_xy=[round(width * 0.82), round(height * 0.50)],
-        end_x=round(width * 0.18),
-        vertical_amplitude_px=round(height * 0.30),
+        start_xy=[start_x, round(height * 0.50)],
+        end_x=start_x - stroke_distance,
+        vertical_amplitude_px=stroke_distance,
         move_count=arguments.moves,
         step_seconds=arguments.step_seconds,
         settle_seconds=arguments.settle_seconds,
+        reset_seconds=arguments.reset_seconds,
     )
-    plan.points()
+    plan.strokes()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     session_path = arguments.output_root / "{}-{}-zigzag".format(
         arguments.game_id, timestamp
