@@ -25,6 +25,7 @@ from .session import SessionReader
 
 
 SCHEMA_VERSION = "1.0"
+ORDINARY_MOTION_SEGMENT_LABELS = ("ordinary_cruise", "route")
 DEFAULT_CONFIG = {
     "crop_xywh": [0, 0, 220, 180],
     "boundary": {
@@ -1152,7 +1153,11 @@ def calibrate_segment_sessions(
     """Calibrate from short sessions whose capture plan supplies each label."""
     config = _merged_config(config)
 
-    def read_session(path: Path, expected_label: str):
+    def read_session(path: Path, expected_labels):
+        if isinstance(expected_labels, str):
+            expected_labels = (expected_labels,)
+        else:
+            expected_labels = tuple(expected_labels)
         path = Path(path).resolve()
         reader = SessionReader(path)
         context = reader.manifest.get("context") or {}
@@ -1162,10 +1167,12 @@ def calibrate_segment_sessions(
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             if "label" in metadata:
                 actual_label = metadata.get("label") or None
-        if actual_label != expected_label:
+        if actual_label not in expected_labels:
+            expected_text = " or ".join(expected_labels)
+            article = "an" if expected_text[:1].lower() in "aeiou" else "a"
             raise ValueError(
-                "Expected a {} segment, got {} from {}".format(
-                    expected_label, actual_label or "unlabeled", path
+                "Expected {} {} segment, got {} from {}".format(
+                    article, expected_text, actual_label or "unlabeled", path
                 )
             )
         duration_s = float(reader.manifest.get("duration_ns") or 0) / 1.0e9
@@ -1177,7 +1184,7 @@ def calibrate_segment_sessions(
             config["crop_xywh"],
             frame_records=reader.frames_by_stream.get("main", []),
         )
-        return reader, frames, fps
+        return reader, frames, fps, actual_label
 
     ordinary_reader = None
     ordinary_frames = None
@@ -1185,22 +1192,27 @@ def calibrate_segment_sessions(
     if ordinary_session_path is not None:
         if progress:
             progress("Decoding the ordinary-cruise calibration session")
-        ordinary_reader, ordinary_frames, ordinary_fps = read_session(
-            ordinary_session_path, "ordinary_cruise"
+        (
+            ordinary_reader,
+            ordinary_frames,
+            ordinary_fps,
+            ordinary_recorded_label,
+        ) = read_session(
+            ordinary_session_path, ORDINARY_MOTION_SEGMENT_LABELS
         )
     if progress:
         progress("Decoding the rotation-only calibration session")
-    rotation_reader, rotation_frames, rotation_fps = read_session(
+    rotation_reader, rotation_frames, rotation_fps, _ = read_session(
         rotation_session_path, "rotation_only"
     )
     if progress:
         progress("Decoding the movement-only calibration session")
-    movement_reader, movement_frames, movement_fps = read_session(
+    movement_reader, movement_frames, movement_fps, _ = read_session(
         movement_session_path, "movement_only"
     )
     forward_reference = None
     if forward_session_path is not None:
-        forward_reader, _forward_frames, forward_fps = read_session(
+        forward_reader, _forward_frames, forward_fps, _ = read_session(
             forward_session_path, "forward_no_turn"
         )
         forward_reference = {
@@ -1244,6 +1256,7 @@ def calibrate_segment_sessions(
         provenance["segment_sessions"]["ordinary_cruise"] = {
             "session_path": str(Path(ordinary_session_path).resolve()),
             "session_id": ordinary_reader.manifest.get("session_id"),
+            "recorded_label": ordinary_recorded_label,
             "frame_count": len(ordinary_frames),
             "container_fps": ordinary_fps,
         }

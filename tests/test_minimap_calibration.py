@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -175,6 +176,68 @@ class MinimapCalibrationTests(unittest.TestCase):
                     session,
                     Path(temporary) / "output",
                 )
+
+    def test_route_session_is_accepted_as_ordinary_motion_evidence(self):
+        class Source:
+            stream_id = "main"
+
+            def describe(self):
+                return {"type": "test", "stream_id": "main"}
+
+        def make_session(root, name, label):
+            session = root / name
+            writer = SessionWriter(
+                session,
+                [Source()],
+                [],
+                video_encoding="mjpeg",
+                session_context={"segment_label": label},
+            )
+            writer.write_frame(
+                FramePacket(
+                    "main",
+                    np.zeros((32, 32, 3), np.uint8),
+                    writer.origin_ns,
+                    writer.origin_ns,
+                )
+            )
+            writer.close()
+            manifest_path = session / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["duration_ns"] = 1_000_000_000
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (session / "session_metadata.json").write_text(
+                json.dumps({"label": label}), encoding="utf-8"
+            )
+            return session
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rotation = make_session(root, "rotation", "rotation_only")
+            movement = make_session(root, "movement", "movement_only")
+            route = make_session(root, "route", "route")
+            frames = np.zeros((2, 32, 32, 3), np.uint8)
+
+            with patch(
+                "acquisition.minimap_calibration._read_video_segment",
+                return_value=(frames, 30.0),
+            ), patch(
+                "acquisition.minimap_calibration.calibrate_minimap_frames",
+                side_effect=lambda *args, **kwargs: kwargs["provenance"],
+            ):
+                provenance = calibrate_segment_sessions(
+                    rotation,
+                    movement,
+                    root / "output",
+                    ordinary_session_path=route,
+                )
+
+            self.assertEqual(
+                provenance["segment_sessions"]["ordinary_cruise"][
+                    "recorded_label"
+                ],
+                "route",
+            )
 
 
 if __name__ == "__main__":

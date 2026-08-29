@@ -35,7 +35,11 @@ from .map_stitching import stitch_map_session
 from .cursor_pose import CursorPoseEstimator
 from .frame_pump import LatestFramePump
 from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
-from .minimap_calibration import calibrate_segment_sessions, calibrate_session
+from .minimap_calibration import (
+    ORDINARY_MOTION_SEGMENT_LABELS,
+    calibrate_segment_sessions,
+    calibrate_session,
+)
 from .minimap_verification import verify_forward_session
 from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
@@ -1417,10 +1421,11 @@ class AcquisitionWorkbench:
                     actual_role = metadata.get("label") or context.get(
                         "segment_label"
                     )
-                    if actual_role not in {"ordinary_cruise", "route"}:
+                    if actual_role not in ORDINARY_MOTION_SEGMENT_LABELS:
                         raise ValueError(
-                            "Expected an ordinary_cruise or route session, got {}".format(
-                                actual_role or "unlabeled"
+                            "Expected an {} session, got {}".format(
+                                " or ".join(ORDINARY_MOTION_SEGMENT_LABELS),
+                                actual_role or "unlabeled",
                             )
                         )
                     return relative, path, manifest, context, actual_role
