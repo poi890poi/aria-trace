@@ -44,6 +44,13 @@ def _minimap_reference(image: np.ndarray, calibration: dict):
     return patch, mask
 
 
+def _root_sift(descriptors: np.ndarray) -> np.ndarray:
+    """Map SIFT histograms into the Hellinger (RootSIFT) feature space."""
+    descriptors = descriptors.astype(np.float32, copy=False)
+    normalization = np.maximum(np.sum(descriptors, axis=1, keepdims=True), 1.0e-12)
+    return np.sqrt(descriptors / normalization)
+
+
 def _prepare_localization_mosaic(mosaic: np.ndarray, coverage: np.ndarray) -> dict:
     """Compute reusable full-map features once for all mini-map references."""
     sift = cv2.SIFT_create(nfeatures=8000, contrastThreshold=0.005, edgeThreshold=15)
@@ -57,7 +64,7 @@ def _prepare_localization_mosaic(mosaic: np.ndarray, coverage: np.ndarray) -> di
         "gray": mosaic_gray,
         "mask": map_mask,
         "points": map_points,
-        "descriptors": map_descriptors,
+        "descriptors": _root_sift(map_descriptors),
     }
 
 
@@ -77,6 +84,7 @@ def _estimate_minimap_similarity(
     map_descriptors = mosaic_cache["descriptors"]
     if reference_descriptors is None:
         raise RuntimeError("Mini-map/full-map scale calibration found no SIFT descriptors")
+    reference_descriptors = _root_sift(reference_descriptors)
     pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(
         reference_descriptors, map_descriptors, k=2
     )
@@ -268,7 +276,7 @@ def _build_localization_derivative(
     return {
         "schema_version": "1.0",
         "status": "ready" if ready else "review_required",
-        "method": "sift_similarity_with_masked_gradient_verification",
+        "method": "rootsift_similarity_with_masked_gradient_verification",
         "map_orientation_model": MAP_ORIENTATION_MODEL,
         "north_normalization_applied": False,
         "source_minimap_calibration_id": reference.get("calibration_id"),

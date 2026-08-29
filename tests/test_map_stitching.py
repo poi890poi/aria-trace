@@ -10,11 +10,19 @@ from acquisition.map_stitching import (
     _estimate_minimap_similarity,
     _minimap_reference,
     _prepare_localization_mosaic,
+    _root_sift,
     stitch_map_frames,
 )
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_root_sift_descriptors_have_unit_l2_norm(self):
+        descriptors = np.asarray([[1.0, 3.0], [4.0, 0.0]], dtype=np.float32)
+        transformed = _root_sift(descriptors)
+        np.testing.assert_allclose(
+            np.linalg.norm(transformed, axis=1), np.ones(2), atol=1.0e-6
+        )
+
     def test_minimap_reference_masks_calibrated_cursor_and_boundary_ui(self):
         image = np.full((180, 220, 3), (80, 120, 90), np.uint8)
         cv2.circle(image, (110, 90), 56, (100, 140, 110), -1)
@@ -80,6 +88,7 @@ class MapStitchingTests(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             self.assertEqual(result["map_orientation_model"], "fixed_north_up")
             self.assertFalse(result["north_normalization_applied"])
+            self.assertTrue(result["method"].startswith("rootsift_"))
             self.assertEqual(result["applied_map_rotation_deg"], 0.0)
             self.assertEqual(result["minimap_to_map_rotation_deg"], 0.0)
             self.assertIn("diagnostic_residual_rotation_deg", result)
