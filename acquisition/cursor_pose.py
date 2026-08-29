@@ -95,6 +95,15 @@ class CursorPoseEstimator:
         self.pivot = model["rotation_center"].astype(np.float32)
         self.crop_xywh = tuple(map(int, self.calibration["config"]["crop_xywh"]))
         self.cursor_config = self.calibration["config"]["cursor"]
+        self.hsv_lower = np.asarray(
+            self.cursor_config["hsv_lower"], dtype=np.uint8
+        )
+        self.hsv_upper = np.asarray(
+            self.cursor_config["hsv_upper"], dtype=np.uint8
+        )
+        self.component_area_range = tuple(
+            map(int, self.cursor_config["component_area_px"])
+        )
         self.tip_angle_deg = float(
             self.calibration["cursor_shape"]["farthest_contour_point_angle_screen_deg"]
         )
@@ -104,6 +113,14 @@ class CursorPoseEstimator:
         )
         self.patch_size = int(self.template.shape[0])
         self.patch_half = (self.patch_size - 1) / 2.0
+        crop_width, crop_height = self.crop_xywh[2:]
+        yy, xx = np.ogrid[:crop_height, :crop_width]
+        search_radius = float(self.cursor_config["search_radius_px"])
+        self.cursor_search_mask = (
+            (xx - self.pivot[0]) ** 2 + (yy - self.pivot[1]) ** 2
+            <= search_radius ** 2
+        )
+        self.cursor_search_radius = search_radius
         self.theta = np.linspace(0.0, 2.0 * np.pi, 360, endpoint=False)
         self.radii = np.linspace(0.5, 15.0, 36)
         self.x_map = (
@@ -146,24 +163,22 @@ class CursorPoseEstimator:
         return frame[y : y + height, x : x + width]
 
     def _cursor_mask(self, crop: np.ndarray):
-        lower = np.asarray(self.cursor_config["hsv_lower"], dtype=np.uint8)
-        upper = np.asarray(self.cursor_config["hsv_upper"], dtype=np.uint8)
-        binary = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV), lower, upper)
-        height, width = crop.shape[:2]
-        yy, xx = np.ogrid[:height, :width]
-        search_radius = float(self.cursor_config["search_radius_px"])
-        search = (
-            (xx - self.pivot[0]) ** 2 + (yy - self.pivot[1]) ** 2
-            <= search_radius ** 2
+        binary = cv2.inRange(
+            cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
+            self.hsv_lower,
+            self.hsv_upper,
         )
-        binary[~search] = 0
+        binary[~self.cursor_search_mask] = 0
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
-        min_area, max_area = map(int, self.cursor_config["component_area_px"])
+        min_area, max_area = self.component_area_range
         candidates = []
         for index in range(1, count):
             area = int(stats[index, cv2.CC_STAT_AREA])
             distance = float(np.linalg.norm(centroids[index] - self.pivot))
-            if min_area <= area <= max_area and distance < search_radius * 0.5:
+            if (
+                min_area <= area <= max_area
+                and distance < self.cursor_search_radius * 0.5
+            ):
                 candidates.append((distance, index))
         if not candidates:
             return None, None, None

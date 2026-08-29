@@ -361,6 +361,31 @@ class MinimapExtractor:
             float(boundary.get("center_y", self.crop_xywh[3] / 2.0)),
         )
         self.radius = float(boundary.get("radius", min(self.crop_xywh[2:]) * 0.4))
+        _, _, width, height = self.crop_xywh
+        cx, cy = self.center
+        radius = int(round(self.radius))
+        left = max(0, int(round(cx)) - radius)
+        top = max(0, int(round(cy)) - radius)
+        right = min(width, int(round(cx)) + radius)
+        bottom = min(height, int(round(cy)) + radius)
+        self.observation_bounds = (left, top, right, bottom)
+        observation_height = bottom - top
+        observation_width = right - left
+        self.mask = np.zeros((observation_height, observation_width), np.uint8)
+        cv2.circle(
+            self.mask,
+            (observation_width // 2, observation_height // 2),
+            max(1, min(observation_width, observation_height) // 2 - 2),
+            255,
+            -1,
+        )
+        cv2.circle(
+            self.mask,
+            (observation_width // 2, observation_height // 2),
+            max(5, int(round(radius * 0.20))),
+            0,
+            -1,
+        )
 
     def crop(self, frame: np.ndarray) -> np.ndarray:
         x, y, width, height = self.crop_xywh
@@ -371,19 +396,9 @@ class MinimapExtractor:
 
     def extract(self, frame: np.ndarray):
         crop = self.crop(frame)
-        _, _, width, height = self.crop_xywh
-        cx, cy = self.center
-        radius = int(round(self.radius))
-        left = max(0, int(round(cx)) - radius)
-        top = max(0, int(round(cy)) - radius)
-        right = min(width, int(round(cx)) + radius)
-        bottom = min(height, int(round(cy)) + radius)
+        left, top, right, bottom = self.observation_bounds
         observation = crop[top:bottom, left:right].copy()
-        oh, ow = observation.shape[:2]
-        mask = np.zeros((oh, ow), np.uint8)
-        cv2.circle(mask, (ow // 2, oh // 2), max(1, min(ow, oh) // 2 - 2), 255, -1)
-        cv2.circle(mask, (ow // 2, oh // 2), max(5, int(round(radius * 0.20))), 0, -1)
-        return observation, mask
+        return observation, self.mask
 
 
 class TwoRateRealtimeTracker:
