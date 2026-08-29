@@ -143,6 +143,71 @@ def _select_camera(adapter: HikMvsCameraAdapter, configured: Optional[str]):
     raise RuntimeError("Pass --camera-id when multiple HIK cameras are connected")
 
 
+def _game_booster_lock_showing(phone: AdbPhoneSession) -> bool:
+    """Detect Samsung's game touch-protection overlay, not Android keyguard."""
+
+    try:
+        text = str(phone.shell("dumpsys", "window", "windows"))
+    except RuntimeError:
+        return False
+    match = re.search(
+        r"Window #[^\n]*GameBooster Lock Screen[^\n]*\n"
+        r"(?P<window>.*?)(?=\n\s*Window #|\Z)",
+        text,
+        re.DOTALL,
+    )
+    if match is None:
+        return False
+    window = match.group("window")
+    return bool(
+        re.search(r"\bisOnScreen\s*=\s*true\b", window)
+        and re.search(r"\bisVisible\s*=\s*true\b", window)
+    )
+
+
+def _dismiss_game_booster_lock(
+    phone: AdbPhoneSession,
+    adb: Path,
+    server: Path,
+    serial: str,
+    screen_size_px: Sequence[int],
+) -> dict:
+    """Dismiss Samsung Game Booster's visible lock using its center drag."""
+
+    width, height = map(int, screen_size_px)
+    result = {"detected": False, "dismissed": False, "attempts": 0}
+    phone.shell("input", "keyevent", "KEYCODE_WAKEUP")
+    phone.ensure_display_on(timeout_seconds=8.0)
+    for attempt in range(2):
+        if not _game_booster_lock_showing(phone):
+            result["dismissed"] = bool(result["detected"])
+            return result
+        result["detected"] = True
+        result["attempts"] = attempt + 1
+        points = [
+            [round(width * 0.50), round(height * 0.58)],
+            [round(width * 0.50), round(height * 0.46)],
+            [round(width * 0.50), round(height * 0.33)],
+            [round(width * 0.50), round(height * 0.20)],
+        ]
+        with ScrcpyTouchController(
+            adb, server, serial, [width, height]
+        ) as controller:
+            controller.inject_touch("DOWN", points[0])
+            for point in points[1:]:
+                time.sleep(0.12)
+                controller.inject_touch("MOVE", point)
+            time.sleep(0.12)
+            controller.inject_touch("UP", points[-1])
+        time.sleep(0.75)
+    if _game_booster_lock_showing(phone):
+        raise RuntimeError(
+            "Samsung Game Booster touch protection is still covering the game"
+        )
+    result["dismissed"] = True
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
@@ -169,7 +234,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--output-root", type=Path, default=Path("sessions") / "calibration"
     )
-    value.add_argument("--moves", type=int, default=20)
+    value.add_argument("--moves", type=int, default=12)
     value.add_argument("--step-seconds", type=float, default=0.35)
     value.add_argument("--reset-seconds", type=float, default=0.10)
     value.add_argument("--settle-seconds", type=float, default=1.5)
@@ -185,11 +250,127 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--calibration-output", type=Path)
     value.add_argument("--android-crop")
     value.add_argument("--hik-crop")
+    value.add_argument(
+        "--control-only",
+        action="store_true",
+        help="run only the Android camera zigzag; no capture or calibration",
+    )
     return value
+
+
+def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
+    horizontal_distance = round(height * 0.225)
+    vertical_distance = round(height * 0.45)
+    # Start on Genshin's unobstructed look-control surface. The right-side
+    # action cluster can consume DOWN before the camera handler sees it.
+    start_x = round(width * 0.55)
+    plan = ZigzagTouchPlan(
+        start_xy=[start_x, round(height * 0.50)],
+        end_x=start_x - horizontal_distance,
+        vertical_amplitude_px=vertical_distance,
+        move_count=arguments.moves,
+        step_seconds=arguments.step_seconds,
+        settle_seconds=arguments.settle_seconds,
+        reset_seconds=arguments.reset_seconds,
+    )
+    plan.sampled_strokes()
+    return plan
+
+
+def _run_control_only(arguments) -> int:
+    adb = resolve_adb_executable(arguments.adb)
+    serial = _select_phone(adb, arguments.phone_serial)
+    server = find_scrcpy_server(arguments.scrcpy_server)
+    wake_surface = _phone_surface(adb, serial)
+    phone = AdbPhoneSession(serial, adb_executable=adb)
+    preparation = _wake_phone_for_preparation(
+        phone, wake_surface["logical_size_px"]
+    )
+    game_launch = (
+        {
+            "game_id": arguments.game_id,
+            "status": "disabled_by_user",
+            "package": arguments.android_package,
+        }
+        if arguments.no_launch_game
+        else launch_android_game(
+            phone,
+            arguments.game_id,
+            explicit_package=arguments.android_package,
+        )
+    )
+    time.sleep(0.75)
+    surface = _phone_surface(adb, serial)
+    width, height = surface["logical_size_px"]
+    if width <= height:
+        raise RuntimeError(
+            "The game is not landscape yet ({}x{}); prepare it and retry".format(
+                width, height
+            )
+        )
+    plan = _build_zigzag_plan(arguments, width, height)
+    preparation["game_booster_before_prompt"] = _dismiss_game_booster_lock(
+        phone, adb, server, serial, [width, height]
+    )
+
+    print("Phone: {} ({}x{})".format(serial, width, height))
+    if game_launch.get("package"):
+        print("Game: {} ({})".format(game_launch["package"], game_launch["status"]))
+    print("Control-only test: no camera, recording, calibration, or profile output.")
+    if preparation.get("keyguard_after") is True:
+        print("Unlock the phone before continuing.")
+    if preparation["game_booster_before_prompt"]["dismissed"]:
+        print("Samsung Game Booster touch protection dismissed.")
+    if not arguments.yes:
+        input(
+            "Confirm Genshin is visible in touchscreen mode, then press Enter "
+            "to run the zigzag: "
+        )
+    preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
+        phone, adb, server, serial, [width, height]
+    )
+    print(
+        "Running {} long strokes ({} up, {} down)...".format(
+            len(plan.strokes()),
+            sum(stroke["direction"] == "up" for stroke in plan.strokes()),
+            sum(stroke["direction"] == "down" for stroke in plan.strokes()),
+        )
+    )
+
+    controller = ScrcpyTouchController(adb, server, serial, [width, height])
+    control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
+    packets = []
+    try:
+        control.start(packets.append)
+        timeout = max(20.0, plan.duration_seconds + 5.0)
+        if not control.wait_completed(timeout):
+            raise RuntimeError(
+                "Zigzag control did not complete within {:.1f} seconds".format(
+                    timeout
+                )
+            )
+    finally:
+        control.stop()
+    if control.error:
+        raise RuntimeError("Android zigzag control failed: {}".format(control.error))
+    if not control.completed or control.events_issued != control.expected_event_count:
+        raise RuntimeError(
+            "Android zigzag control was incomplete: {}/{} events".format(
+                control.events_issued, control.expected_event_count
+            )
+        )
+    print(
+        "Zigzag control completed: {}/{} touch events.".format(
+            control.events_issued, control.expected_event_count
+        )
+    )
+    return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    if arguments.control_only:
+        return _run_control_only(arguments)
     hik_adapter = HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
     selected_camera = _select_camera(hik_adapter, arguments.camera_id)
     adb = resolve_adb_executable(arguments.adb)
@@ -219,18 +400,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     time.sleep(0.75)
     surface = _phone_surface(adb, serial)
     width, height = surface["logical_size_px"]
-    stroke_distance = round(height * 0.45)
-    start_x = round(width * 0.78)
-    plan = ZigzagTouchPlan(
-        start_xy=[start_x, round(height * 0.50)],
-        end_x=start_x - stroke_distance,
-        vertical_amplitude_px=stroke_distance,
-        move_count=arguments.moves,
-        step_seconds=arguments.step_seconds,
-        settle_seconds=arguments.settle_seconds,
-        reset_seconds=arguments.reset_seconds,
+    preparation["game_booster_before_prompt"] = _dismiss_game_booster_lock(
+        phone, adb, server, serial, [width, height]
     )
-    plan.strokes()
+    plan = _build_zigzag_plan(arguments, width, height)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     session_path = arguments.output_root / "{}-{}-zigzag".format(
         arguments.game_id, timestamp
@@ -241,6 +414,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("Phone display awakened electronically through ADB; the physical power button is not used.")
     if preparation.get("keyguard_after") is True:
         print("The credential keyguard is still present; unlock it without moving the rig.")
+    if preparation["game_booster_before_prompt"]["dismissed"]:
+        print("Samsung Game Booster touch protection dismissed.")
     if game_launch.get("package"):
         print(
             "Game: {} ({})".format(
@@ -253,6 +428,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("This command records data only; it does not calibrate or publish profiles.")
     if not arguments.yes:
         input("Prepare the game, then press Enter when its unobstructed view is ready: ")
+    preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
+        phone, adb, server, serial, [width, height]
+    )
 
     clock = AdbClockMapper(adb, serial)
     hub = ScrcpyCaptureHub(

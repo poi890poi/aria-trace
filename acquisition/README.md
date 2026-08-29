@@ -244,11 +244,13 @@ Android logical display. It does not load a rig calibration or the calibrated
 camera adapter. The continuous gesture sweeps horizontally while alternating
 horizon/sky/horizon/ground returns.
 
-The gesture retains the previously verified one-MOVE-per-leg transport and
-timing. Its only motion change is a larger pitch distance: 30% of the
-post-launch landscape height above and below the horizon instead of 16%. The
-established up/down/down/up pattern still returns to the horizon between sky
-and ground scans.
+Each long diagonal stroke starts on the unobstructed central look-control
+surface, away from the right-side action cluster. It emits progressive MOVE
+events while the pointer remains down, matching the first verified camera-drag
+transport. Twelve strokes use 486 vertical pixels and 243 horizontal pixels
+per stroke. Duplicating each direction from the original pattern produces six
+up and six down strokes, returns pitch to the horizon, and caps the gesture at
+120 touch events.
 
 Before showing the prompt, the command sends Android's non-toggling
 `KEYCODE_WAKEUP` through ADB and dismisses the keyguard. If Android explicitly

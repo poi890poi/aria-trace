@@ -100,38 +100,74 @@ class ScrcpyControlTests(unittest.TestCase):
         self.assertTrue(source.completed)
         self.assertEqual(source.events_issued, source.expected_event_count)
         self.assertEqual([item[0] for item in controller.actions], [
-            "DOWN", "MOVE", "UP",
-            "DOWN", "MOVE", "UP",
-            "DOWN", "MOVE", "UP",
-            "DOWN", "MOVE", "UP",
+            "DOWN", "MOVE", "MOVE", "UP",
+            "DOWN", "MOVE", "MOVE", "UP",
+            "DOWN", "MOVE", "MOVE", "UP",
+            "DOWN", "MOVE", "MOVE", "UP",
         ])
-        self.assertEqual(len(packets), 12)
+        self.assertEqual(len(packets), 16)
         self.assertTrue(controller.opened)
         self.assertTrue(controller.closed)
 
-    def test_default_zigzag_is_twenty_long_45_degree_strokes(self):
+    def test_default_zigzag_splits_motion_into_twelve_balanced_strokes(self):
         plan = ZigzagTouchPlan(
-            start_xy=[1872, 540],
-            end_x=1386,
+            start_xy=[1320, 540],
+            end_x=1077,
             vertical_amplitude_px=486,
         )
         strokes = plan.strokes()
-        self.assertEqual(len(strokes), 20)
+        self.assertEqual(len(strokes), 12)
         self.assertEqual(
-            [stroke["direction"] for stroke in strokes[:4]],
-            ["up", "down", "down", "up"],
+            [stroke["direction"] for stroke in strokes],
+            [
+                "up", "up", "down", "down", "down", "down",
+                "up", "up", "up", "up", "down", "down",
+            ],
         )
         self.assertEqual(
-            sum(stroke["direction"] == "up" for stroke in strokes), 10
+            sum(stroke["direction"] == "up" for stroke in strokes), 6
         )
         self.assertEqual(
-            sum(stroke["direction"] == "down" for stroke in strokes), 10
+            sum(stroke["direction"] == "down" for stroke in strokes), 6
         )
         for stroke in strokes:
             delta_x = stroke["end_xy"][0] - stroke["start_xy"][0]
             delta_y = stroke["end_xy"][1] - stroke["start_xy"][1]
-            self.assertEqual(abs(delta_x), 486)
+            self.assertEqual(abs(delta_x), 243)
             self.assertEqual(abs(delta_y), 486)
+
+    def test_long_swipe_uses_progressive_move_events_before_release(self):
+        plan = ZigzagTouchPlan(
+            start_xy=[1320, 540],
+            end_x=1077,
+            vertical_amplitude_px=486,
+            move_count=12,
+            step_seconds=0.35,
+            move_sample_hz=22.0,
+        )
+        stroke = plan.sampled_strokes()[0]
+        moves = stroke["move_points_xy"]
+
+        self.assertEqual(plan.move_samples_per_stroke, 8)
+        self.assertEqual(len(moves), 8)
+        self.assertNotEqual(moves[0], stroke["end_xy"])
+        self.assertEqual(moves[-1], stroke["end_xy"])
+        self.assertEqual(
+            [point[0] for point in moves],
+            sorted((point[0] for point in moves), reverse=True),
+        )
+        self.assertEqual(
+            [point[1] for point in moves],
+            sorted((point[1] for point in moves), reverse=True),
+        )
+        for point in moves:
+            delta_x = point[0] - stroke["start_xy"][0]
+            delta_y = point[1] - stroke["start_xy"][1]
+            self.assertLessEqual(abs(abs(delta_y) - 2 * abs(delta_x)), 2)
+
+        self.assertEqual(plan.move_samples_per_stroke, 8)
+        self.assertEqual(len(plan.strokes()), 12)
+        self.assertEqual(12 * (8 + 2), 120)
 
 if __name__ == "__main__":
     unittest.main()

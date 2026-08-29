@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from acquisition import capture_game_minimap_zigzag as capture
 from acquisition.capture_game_minimap_zigzag import (
+    _game_booster_lock_showing,
     _keyguard_showing,
     _wake_phone_for_preparation,
 )
@@ -31,6 +32,19 @@ class FakePhone:
 
 
 class GamePhonePreparationTests(unittest.TestCase):
+    def test_visible_game_booster_lock_is_distinct_from_android_keyguard(self):
+        phone = FakePhone(False)
+        phone.shell = Mock(
+            return_value=(
+                "Window #9 Window{x u0 GameBooster Lock Screen}:\n"
+                "  mHasSurface=true isReadyForDisplay()=true\n"
+                "  isOnScreen=true\n"
+                "  isVisible=true\n"
+                "Window #10 Window{y u0 game}:\n"
+            )
+        )
+        self.assertTrue(_game_booster_lock_showing(phone))
+
     def test_keyguard_state_comes_from_android_policy(self):
         self.assertTrue(_keyguard_showing(FakePhone(True)))
         self.assertFalse(_keyguard_showing(FakePhone(False)))
@@ -103,14 +117,73 @@ class GamePhonePreparationTests(unittest.TestCase):
 
         self.assertEqual(2, surface.call_count)
         constructor.assert_called_once_with(
-            start_xy=[1872, 540],
-            end_x=1386,
+            start_xy=[1320, 540],
+            end_x=1077,
             vertical_amplitude_px=486,
-            move_count=20,
+            move_count=12,
             step_seconds=0.35,
             settle_seconds=1.5,
             reset_seconds=0.10,
         )
+
+    def test_control_only_skips_hik_capture_and_calibration(self):
+        plan = Mock()
+        directions = [
+            "up", "up", "down", "down", "down", "down",
+            "up", "up", "up", "up", "down", "down",
+        ]
+        plan.strokes.return_value = [
+            {"direction": direction} for direction in directions
+        ]
+        plan.sampled_strokes.return_value = [{}] * 12
+        plan.duration_seconds = 10.0
+        control = Mock()
+        control.wait_completed.return_value = True
+        control.error = None
+        control.completed = True
+        control.events_issued = 120
+        control.expected_event_count = 120
+
+        with patch.object(capture, "HikMvsCameraAdapter") as hik, patch.object(
+            capture, "resolve_adb_executable", return_value=Path("adb.exe")
+        ), patch.object(
+            capture, "_select_phone", return_value="phone-1"
+        ), patch.object(
+            capture, "find_scrcpy_server", return_value=Path("scrcpy-server")
+        ), patch.object(
+            capture,
+            "_phone_surface",
+            side_effect=[
+                {"logical_size_px": [1080, 2400]},
+                {"logical_size_px": [2400, 1080]},
+            ],
+        ), patch.object(
+            capture, "AdbPhoneSession"
+        ), patch.object(
+            capture, "_wake_phone_for_preparation", return_value={"keyguard_after": False}
+        ), patch.object(
+            capture,
+            "launch_android_game",
+            return_value={"package": "game", "status": "launched"},
+        ), patch.object(
+            capture.time, "sleep"
+        ), patch.object(
+            capture, "ZigzagTouchPlan", return_value=plan
+        ), patch.object(
+            capture, "ScrcpyTouchController"
+        ), patch.object(
+            capture, "AndroidZigzagInputSource", return_value=control
+        ), patch.object(
+            capture,
+            "_dismiss_game_booster_lock",
+            return_value={"detected": False, "dismissed": False, "attempts": 0},
+        ) as dismiss:
+            self.assertEqual(capture.main(["--control-only", "--yes"]), 0)
+
+        hik.assert_not_called()
+        control.start.assert_called_once()
+        control.stop.assert_called_once()
+        self.assertEqual(dismiss.call_count, 2)
 
 
 if __name__ == "__main__":
