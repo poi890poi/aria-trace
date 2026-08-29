@@ -23,6 +23,7 @@ import cv2
 
 from replay.alignment import align_session
 from replay.package import compile_replay_package
+from replay.route_tracking import RouteTrackingPackage
 
 from .annotations import AnnotationStore
 from .android_capture import (
@@ -32,6 +33,7 @@ from .android_capture import (
     find_scrcpy_server,
 )
 from .map_stitching import stitch_map_session
+from .map_layers import LayeredGlobalLocalizer, build_map_atlas
 from .cursor_pose import CursorPoseEstimator
 from .frame_pump import LatestFramePump
 from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
@@ -45,6 +47,8 @@ from .minimap_verification import verify_forward_session
 from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
+from .route_compilation import compile_route_session
+from .route_tracker import RouteGlobalLocalizer, RouteLockedStateEstimator
 from .session import SessionReader, input_capture_health
 from .scene_yaw_calibration import calibrate_scene_yaw_session
 from .sources import (
@@ -1350,6 +1354,14 @@ class AcquisitionWorkbench:
     def queue_map_stitch(self, value: dict) -> dict:
         return self._queue_analysis("map_stitching", value, self.run_map_stitch)
 
+    def queue_map_atlas(self, value: dict) -> dict:
+        return self._queue_analysis("map_atlas", value, self.run_map_atlas)
+
+    def queue_route_tracking_compile(self, value: dict) -> dict:
+        return self._queue_analysis(
+            "route_tracking_compile", value, self.run_route_tracking_compile
+        )
+
     def queue_scene_yaw_calibration(self, value: dict) -> dict:
         return self._queue_analysis(
             "scene_yaw_calibration", value, self.run_scene_yaw_calibration
@@ -1844,6 +1856,227 @@ class AcquisitionWorkbench:
             raise ValueError("Unknown map-stitch evidence image")
         return (root / name).read_bytes()
 
+    def _map_atlas_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "map_atlases" / safe_id(game_profile_id)
+
+    def _map_atlases(self) -> dict:
+        values = {}
+        root = self.artifact_root / "map_atlases"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/map_atlas.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item["atlas_id"] = path.parent.name
+                item["artifact_relative_path"] = str(
+                    path.parent.relative_to(self.artifact_root)
+                )
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append(
+                    {
+                        "atlas_id": path.parent.name,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        for items in values.values():
+            items.sort(
+                key=lambda item: item.get("generated_utc") or "", reverse=True
+            )
+        return values
+
+    def run_map_atlas(self, value: dict, progress=None) -> dict:
+        if progress:
+            progress("Checking the selected rendered map layers")
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            self.profiles.game(game_profile_id)
+            layers = [dict(item) for item in value.get("layers") or ()]
+            if not layers:
+                layers = [
+                    {
+                        "mode_id": "world",
+                        "stitch_id": value.get("world_stitch_id"),
+                        "display_name": "World overview",
+                    },
+                    {
+                        "mode_id": "town",
+                        "stitch_id": value.get("town_stitch_id"),
+                        "display_name": "Town detail",
+                    },
+                ]
+            stitch_root = self._map_stitch_root(game_profile_id)
+            resolved_layers = []
+            for layer in layers:
+                stitch_id = str(layer.get("stitch_id") or "")
+                if not stitch_id or safe_id(stitch_id) != stitch_id:
+                    raise ValueError("Choose a valid stitched map for every atlas layer")
+                source = stitch_root / stitch_id
+                if not (source / "map_stitch.json").is_file():
+                    raise ValueError("Map stitch does not exist: {}".format(stitch_id))
+                resolved = dict(layer)
+                resolved["stitch_root"] = source
+                resolved_layers.append(resolved)
+            canonical_mode_id = str(value.get("canonical_mode_id") or "world")
+            atlas_id = safe_id(
+                str(value.get("atlas_id") or uuid.uuid4())
+            )
+            output = self._map_atlas_root(game_profile_id) / atlas_id
+
+        result = build_map_atlas(
+            resolved_layers,
+            output,
+            canonical_mode_id=canonical_mode_id,
+            atlas_id=atlas_id,
+        )
+        with self._lock:
+            result["game_profile_id"] = game_profile_id
+            result["source_layers"] = [
+                {
+                    "mode_id": item["mode_id"],
+                    "stitch_id": item["stitch_id"],
+                }
+                for item in layers
+            ]
+            result["artifact_relative_path"] = str(
+                output.relative_to(self.artifact_root)
+            )
+            _write_json_atomic(output / "map_atlas.json", result)
+            self._last_error = None
+            return self.descriptor()
+
+    def map_atlas_image(
+        self, game_profile_id: str, atlas_id: str, name: str
+    ) -> bytes:
+        if Path(name).name != name or not name.lower().endswith(".png"):
+            raise ValueError("Invalid map-atlas evidence image name")
+        root = self._map_atlas_root(game_profile_id) / safe_id(atlas_id)
+        descriptor = json.loads(
+            (root / "map_atlas.json").read_text(encoding="utf-8")
+        )
+        declared = {
+            descriptor.get("canonical_mosaic_file"),
+            descriptor.get("canonical_coverage_file"),
+        }
+        declared.update(
+            item.get("alignment_evidence_file")
+            for item in descriptor.get("layers") or []
+        )
+        if name not in declared:
+            raise ValueError("Unknown map-atlas evidence image")
+        return (root / name).read_bytes()
+
+    def _route_tracking_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "route_tracking" / safe_id(game_profile_id)
+
+    def _route_tracking_packages(self) -> dict:
+        values = {}
+        root = self.artifact_root / "route_tracking"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/manifest.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item["package_id"] = path.parent.name
+                item["artifact_relative_path"] = str(
+                    path.parent.relative_to(self.artifact_root)
+                )
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append(
+                    {
+                        "package_id": path.parent.name,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        for items in values.values():
+            items.sort(
+                key=lambda item: item.get("generated_utc") or "", reverse=True
+            )
+        return values
+
+    def run_route_tracking_compile(self, value: dict, progress=None) -> dict:
+        if progress:
+            progress("Checking the route, atlas, and mini-map geometry")
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            game = self.profiles.game(game_profile_id)
+            relative = str(value.get("session_relative_path") or "")
+            if not relative:
+                candidates = (
+                    self.analysis_candidates().get(game_profile_id, {}).get("route", [])
+                )
+                relative = str(candidates[0]["session_key"]) if candidates else ""
+            if not relative:
+                raise ValueError("No ready route session is available")
+            session_path = self._session_path(relative)
+            described = self._describe_session(session_path)
+            if described.get("game_profile_id") != game_profile_id:
+                raise ValueError("Route session belongs to another game")
+            if described.get("label") != "route":
+                raise ValueError("Expected a route session")
+            atlas_id = str(value.get("map_atlas_id") or "")
+            atlas_path = self._map_atlas_root(game_profile_id) / safe_id(atlas_id)
+            atlas_manifest = atlas_path / "map_atlas.json"
+            if not atlas_id or not atlas_manifest.is_file():
+                raise ValueError("Choose a ready multi-scale map atlas")
+            calibration_id = str(value.get("minimap_calibration_id") or "")
+            minimap = self._read_tracker_artifact(
+                self._minimap_calibration_root(game_profile_id),
+                "calibration.json",
+                calibration_id,
+            )
+            route_id = str(
+                value.get("route_id")
+                or described.get("route_id")
+                or described.get("capture_id")
+                or session_path.name
+            )
+            package_id = safe_id(
+                "{}-{}".format(
+                    described.get("session_id") or session_path.name,
+                    uuid.uuid4().hex[:8],
+                )
+            )
+            output = self._route_tracking_root(game_profile_id) / package_id
+
+        result = compile_route_session(
+            session_path,
+            output,
+            stream_id=str(value.get("stream_id") or "main"),
+            route_id=route_id,
+            atlas_path=atlas_path,
+            minimap_config=game["minimap_calibration"],
+            minimap_calibration=minimap,
+            reference_rate_hz=float(value.get("reference_rate_hz") or 5.0),
+            max_step_px=float(value.get("max_step_px") or 80.0),
+            corridor_radius_px=float(value.get("corridor_radius_px") or 35.0),
+            progress=progress,
+        )
+        with self._lock:
+            result["package_id"] = package_id
+            result["game_profile_id"] = game_profile_id
+            result["source_session_key"] = relative
+            result["minimap_calibration_id"] = calibration_id
+            result["artifact_relative_path"] = str(
+                output.relative_to(self.artifact_root)
+            )
+            _write_json_atomic(output / "manifest.json", result)
+            self._last_error = None
+            return self.descriptor()
+
     def _teleport_behavior_root(self, game_profile_id: str) -> Path:
         return self.artifact_root / "teleport_behaviors" / safe_id(game_profile_id)
 
@@ -2090,6 +2323,11 @@ class AcquisitionWorkbench:
             calibration_id = str(value.get("minimap_calibration_id") or "")
             scene_yaw_id = str(value.get("scene_yaw_calibration_id") or "")
             stitch_id = str(value.get("map_stitch_id") or "")
+            atlas_id = str(value.get("map_atlas_id") or "")
+            route_package_id = str(value.get("route_package_id") or "")
+            tracking_mode = str(value.get("tracking_mode") or "free-roam")
+            if tracking_mode not in ("free-roam", "route-locked"):
+                raise ValueError("Tracking mode must be free-roam or route-locked")
             minimap = self._read_tracker_artifact(
                 self._minimap_calibration_root(game_profile_id),
                 "calibration.json",
@@ -2100,51 +2338,86 @@ class AcquisitionWorkbench:
                 "scene_yaw_calibration.json",
                 scene_yaw_id,
             )
-            stitch_root = self._map_stitch_root(game_profile_id)
-            stitch = self._read_tracker_artifact(
-                stitch_root, "map_stitch.json", stitch_id
-            )
-            mosaic_path = stitch_root / stitch_id / "mosaic.png"
-            declared = {item.get("name") for item in stitch.get("evidence") or []}
-            if "mosaic.png" not in declared or not mosaic_path.is_file():
-                raise ValueError("The selected map stitch has no declared mosaic image")
-            mosaic = cv2.imread(str(mosaic_path), cv2.IMREAD_COLOR)
-            if mosaic is None:
-                raise ValueError("Could not decode the selected map mosaic")
-            localization = stitch.get("localization") or {}
-            if localization.get("status") != "ready":
-                raise ValueError(
-                    "Rebuild and review this full-map artifact with the selected "
-                    "mini-map calibration before starting live tracking"
+            route_state_estimator = None
+            if atlas_id or tracking_mode == "route-locked":
+                if tracking_mode == "route-locked":
+                    package_root = (
+                        self._route_tracking_root(game_profile_id) / safe_id(route_package_id)
+                    )
+                    if not route_package_id or not (package_root / "manifest.json").is_file():
+                        raise ValueError("Choose a compiled demonstrated route")
+                    route_package = RouteTrackingPackage(package_root)
+                    if atlas_id and atlas_id != route_package.manifest["atlas_id"]:
+                        raise ValueError("Route package and selected map atlas differ")
+                    atlas_id = str(route_package.manifest["atlas_id"])
+                atlas_root = self._map_atlas_root(game_profile_id) / safe_id(atlas_id)
+                atlas = self._read_tracker_artifact(
+                    self._map_atlas_root(game_profile_id),
+                    "map_atlas.json",
+                    atlas_id,
                 )
-            if localization.get("source_minimap_calibration_id") != calibration_id:
-                raise ValueError(
-                    "The selected map localization raster was built for another "
-                    "mini-map calibration; rebuild the full map"
+                mosaic = cv2.imread(
+                    str(atlas_root / atlas["canonical_mosaic_file"]),
+                    cv2.IMREAD_COLOR,
                 )
-            localization_names = {
-                localization.get("mosaic_file"), localization.get("coverage_file")
-            }
-            if not localization_names.issubset(declared):
-                raise ValueError(
-                    "Map localization raster files are not declared as review evidence"
+                if mosaic is None:
+                    raise ValueError("Could not decode the canonical map-atlas mosaic")
+                if tracking_mode == "route-locked":
+                    if (
+                        route_package.manifest["coordinate_space_id"]
+                        != atlas["coordinate_space_id"]
+                    ):
+                        raise ValueError("Route package uses another canonical map space")
+                    localizer = RouteGlobalLocalizer(route_package)
+                    route_state_estimator = RouteLockedStateEstimator(route_package)
+                else:
+                    localizer = LayeredGlobalLocalizer(atlas_root)
+            else:
+                stitch_root = self._map_stitch_root(game_profile_id)
+                stitch = self._read_tracker_artifact(
+                    stitch_root, "map_stitch.json", stitch_id
                 )
-            localization_root = stitch_root / stitch_id
-            localization_mosaic = cv2.imread(
-                str(localization_root / localization["mosaic_file"]),
-                cv2.IMREAD_COLOR,
-            )
-            localization_coverage = cv2.imread(
-                str(localization_root / localization["coverage_file"]),
-                cv2.IMREAD_GRAYSCALE,
-            )
-            if localization_mosaic is None or localization_coverage is None:
-                raise ValueError("Could not decode the map localization raster")
-            localizer = GlobalMapLocalizer(
-                localization_mosaic,
-                localization_coverage,
-                localization.get("localization_to_original_map_3x3"),
-            )
+                mosaic_path = stitch_root / stitch_id / "mosaic.png"
+                declared = {item.get("name") for item in stitch.get("evidence") or []}
+                if "mosaic.png" not in declared or not mosaic_path.is_file():
+                    raise ValueError("The selected map stitch has no declared mosaic image")
+                mosaic = cv2.imread(str(mosaic_path), cv2.IMREAD_COLOR)
+                if mosaic is None:
+                    raise ValueError("Could not decode the selected map mosaic")
+                localization = stitch.get("localization") or {}
+                if localization.get("status") != "ready":
+                    raise ValueError(
+                        "Rebuild and review this full-map artifact with the selected "
+                        "mini-map calibration before starting live tracking"
+                    )
+                if localization.get("source_minimap_calibration_id") != calibration_id:
+                    raise ValueError(
+                        "The selected map localization raster was built for another "
+                        "mini-map calibration; rebuild the full map"
+                    )
+                localization_names = {
+                    localization.get("mosaic_file"), localization.get("coverage_file")
+                }
+                if not localization_names.issubset(declared):
+                    raise ValueError(
+                        "Map localization raster files are not declared as review evidence"
+                    )
+                localization_root = stitch_root / stitch_id
+                localization_mosaic = cv2.imread(
+                    str(localization_root / localization["mosaic_file"]),
+                    cv2.IMREAD_COLOR,
+                )
+                localization_coverage = cv2.imread(
+                    str(localization_root / localization["coverage_file"]),
+                    cv2.IMREAD_GRAYSCALE,
+                )
+                if localization_mosaic is None or localization_coverage is None:
+                    raise ValueError("Could not decode the map localization raster")
+                localizer = GlobalMapLocalizer(
+                    localization_mosaic,
+                    localization_coverage,
+                    localization.get("localization_to_original_map_3x3"),
+                )
             tracking_profile_name = str(value.get("tracking_profile") or "real-time")
             profile_overrides = {}
             if value.get("cursor_pose_method"):
@@ -2199,6 +2472,7 @@ class AcquisitionWorkbench:
                 pose_confidence_min=float(
                     resolved_profile["pose_confidence_min"]
                 ),
+                route_state_estimator=route_state_estimator,
             )
             stop = threading.Event()
             runtime = {
@@ -2208,6 +2482,9 @@ class AcquisitionWorkbench:
                 "minimap_calibration_id": calibration_id,
                 "scene_yaw_calibration_id": scene_yaw_id,
                 "map_stitch_id": stitch_id,
+                "map_atlas_id": atlas_id or None,
+                "route_package_id": route_package_id or None,
+                "tracking_mode": tracking_mode,
                 "frame_source": frame_config,
                 "global_interval_s": global_interval_s,
                 "cursor_pose_method": gaussian_fit_method,
@@ -2234,6 +2511,9 @@ class AcquisitionWorkbench:
                     "minimap_calibration_id": calibration_id,
                     "scene_yaw_calibration_id": scene_yaw_id,
                     "map_stitch_id": stitch_id,
+                    "map_atlas_id": atlas_id or None,
+                    "route_package_id": route_package_id or None,
+                    "tracking_mode": tracking_mode,
                     "tracking_profile": tracking_profile_name,
                     "resolved_tracking_profile": resolved_profile,
                     "frame_source": frame_config,
@@ -2891,6 +3171,8 @@ class AcquisitionWorkbench:
                 "minimap_calibrations": self._minimap_calibrations(),
                 "scene_yaw_calibrations": self._scene_yaw_calibrations(),
                 "map_stitches": self._map_stitches(),
+                "map_atlases": self._map_atlases(),
+                "route_tracking_packages": self._route_tracking_packages(),
                 "teleport_behaviors": self._teleport_behaviors(),
                 "live_tracking_runs": self._live_tracking_runs(),
                 "analysis_candidates": self.analysis_candidates(),
@@ -3786,6 +4068,14 @@ def make_handler(state: AcquisitionWorkbench):
                         query.get("name", [""])[0],
                     )
                     self._send(200, "image/png", body)
+                elif path == "/api/map-atlas/image":
+                    query = parse_qs(parsed.query)
+                    body = state.map_atlas_image(
+                        query.get("game_id", [""])[0],
+                        query.get("atlas_id", [""])[0],
+                        query.get("name", [""])[0],
+                    )
+                    self._send(200, "image/png", body)
                 elif path == "/api/teleport-analysis/image":
                     query = parse_qs(parsed.query)
                     body = state.teleport_behavior_image(
@@ -3863,6 +4153,10 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.queue_pose_verification(value)
                 elif path == "/api/map-stitch/run":
                     result = state.queue_map_stitch(value)
+                elif path == "/api/map-atlas/run":
+                    result = state.queue_map_atlas(value)
+                elif path == "/api/route-tracking/compile":
+                    result = state.queue_route_tracking_compile(value)
                 elif path == "/api/scene-yaw/run":
                     result = state.queue_scene_yaw_calibration(value)
                 elif path == "/api/teleport-analysis/run":

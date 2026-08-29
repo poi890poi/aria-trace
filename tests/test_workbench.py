@@ -2434,6 +2434,129 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_builds_map_atlas_and_compiles_route_tracking_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                stitch_root = (
+                    root / "artifacts" / "map_stitches" / "genshin-impact-pc"
+                )
+                for stitch_id in ("world-stitch", "town-stitch"):
+                    path = stitch_root / stitch_id
+                    path.mkdir(parents=True)
+                    (path / "map_stitch.json").write_text(
+                        json.dumps({"stitch_id": stitch_id}), encoding="utf-8"
+                    )
+
+                def fake_atlas(layers, output, canonical_mode_id, atlas_id):
+                    output.mkdir(parents=True)
+                    (output / "canonical_mosaic.png").write_bytes(b"atlas-image")
+                    (output / "canonical_coverage.png").write_bytes(b"coverage")
+                    result = {
+                        "schema_version": "1.0",
+                        "atlas_id": atlas_id,
+                        "generated_utc": "2026-08-29T12:00:00+00:00",
+                        "status": "ready",
+                        "coordinate_space_id": "map-atlas:{}:canonical-map-px".format(
+                            atlas_id
+                        ),
+                        "canonical_mode_id": canonical_mode_id,
+                        "canonical_mosaic_file": "canonical_mosaic.png",
+                        "canonical_coverage_file": "canonical_coverage.png",
+                        "layers": [],
+                    }
+                    (output / "map_atlas.json").write_text(
+                        json.dumps(result), encoding="utf-8"
+                    )
+                    return result
+
+                with patch(
+                    "acquisition.workbench.build_map_atlas", side_effect=fake_atlas
+                ):
+                    descriptor = state.run_map_atlas(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "atlas_id": "atlas-a",
+                            "world_stitch_id": "world-stitch",
+                            "town_stitch_id": "town-stitch",
+                        }
+                    )
+                atlas = descriptor["map_atlases"]["genshin-impact-pc"][0]
+                self.assertEqual(atlas["atlas_id"], "atlas-a")
+                self.assertEqual(
+                    state.map_atlas_image(
+                        "genshin-impact-pc", "atlas-a", "canonical_mosaic.png"
+                    ),
+                    b"atlas-image",
+                )
+
+                calibration_root = (
+                    root
+                    / "artifacts"
+                    / "minimap_calibrations"
+                    / "genshin-impact-pc"
+                    / "cal-a"
+                )
+                calibration_root.mkdir(parents=True)
+                (calibration_root / "calibration.json").write_text(
+                    json.dumps({"outer_boundary": {}}), encoding="utf-8"
+                )
+                route_session = root / "sessions" / "routes" / "run_01"
+                route_session.mkdir(parents=True)
+
+                def fake_compile(_session, output, **kwargs):
+                    output.mkdir(parents=True)
+                    result = {
+                        "schema_version": "1.0",
+                        "generated_utc": "2026-08-29T12:01:00+00:00",
+                        "route_id": kwargs["route_id"],
+                        "atlas_id": "atlas-a",
+                        "coordinate_space_id": "map-atlas:atlas-a:canonical-map-px",
+                        "state_count": 12,
+                    }
+                    (output / "manifest.json").write_text(
+                        json.dumps(result), encoding="utf-8"
+                    )
+                    return result
+
+                with patch.object(
+                    state, "_session_path", return_value=route_session
+                ), patch.object(
+                    state,
+                    "_describe_session",
+                    return_value={
+                        "session_id": "route-session-a",
+                        "game_profile_id": "genshin-impact-pc",
+                        "label": "route",
+                        "route_id": "route-a",
+                    },
+                ), patch(
+                    "acquisition.workbench.compile_route_session",
+                    side_effect=fake_compile,
+                ):
+                    descriptor = state.run_route_tracking_compile(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "session_relative_path": "routes/run_01",
+                            "map_atlas_id": "atlas-a",
+                            "minimap_calibration_id": "cal-a",
+                        }
+                    )
+                package = descriptor["route_tracking_packages"][
+                    "genshin-impact-pc"
+                ][0]
+                self.assertEqual(package["route_id"], "route-a")
+                self.assertEqual(package["source_session_key"], "routes/run_01")
+                self.assertEqual(package["minimap_calibration_id"], "cal-a")
+            finally:
+                state.close()
+
     def test_helpers_reject_empty_ids_and_map_nearest_frame(self):
         self.assertEqual(safe_id(" Route trial 01 "), "Route-trial-01")
         with self.assertRaises(ValueError):

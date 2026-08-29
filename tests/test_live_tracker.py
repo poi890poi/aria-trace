@@ -20,6 +20,7 @@ from acquisition.models import FramePacket
 from acquisition.profiles import ProfileCatalog
 from acquisition.workbench import AcquisitionWorkbench
 from poc.pose_fusion import Pose2D
+from replay.route_tracking import compile_route_tracking_package
 
 
 class GlobalMapLocalizerTests(unittest.TestCase):
@@ -727,6 +728,111 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     self.assertGreater(len(image), 0)
             finally:
                 source.stop()
+                state.close()
+
+    def test_route_locked_mode_loads_atlas_and_compiled_route(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact_root = root / "artifacts"
+            game_id = "genshin-impact-pc"
+            calibration_root = (
+                artifact_root / "minimap_calibrations" / game_id / "mini-a"
+            )
+            scene_root = artifact_root / "scene_yaw_calibrations" / game_id / "yaw-a"
+            atlas_root = artifact_root / "map_atlases" / game_id / "atlas-a"
+            route_root = artifact_root / "route_tracking" / game_id / "route-a"
+            for path in (calibration_root, scene_root, atlas_root):
+                path.mkdir(parents=True)
+            (calibration_root / "calibration.json").write_text(
+                json.dumps(
+                    {"outer_boundary": {"center_x": 111, "center_y": 83, "radius": 68}}
+                ),
+                encoding="utf-8",
+            )
+            (scene_root / "scene_yaw_calibration.json").write_text(
+                json.dumps({"focal_ratio": 0.9}), encoding="utf-8"
+            )
+            cv2.imwrite(
+                str(atlas_root / "canonical_mosaic.png"),
+                np.full((180, 220, 3), 80, np.uint8),
+            )
+            (atlas_root / "map_atlas.json").write_text(
+                json.dumps(
+                    {
+                        "atlas_id": "atlas-a",
+                        "coordinate_space_id": "map-atlas:atlas-a:canonical-map-px",
+                        "canonical_mosaic_file": "canonical_mosaic.png",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            observations = []
+            for index in range(4):
+                descriptor = np.zeros(16, np.float32)
+                descriptor[index] = 1.0
+                observations.append(
+                    {
+                        "source_frame_index": index,
+                        "session_time_ns": 1_000_000_000 + index * 100_000_000,
+                        "x": index * 10.0,
+                        "y": 0.0,
+                        "mode_id": "world",
+                        "descriptor": descriptor,
+                    }
+                )
+            compile_route_tracking_package(
+                observations,
+                route_root,
+                route_id="route-a",
+                atlas_id="atlas-a",
+                coordinate_space_id="map-atlas:atlas-a:canonical-map-px",
+            )
+            state = AcquisitionWorkbench(
+                root / "sessions", artifact_root, profiles=ProfileCatalog()
+            )
+            source = FakeLiveFrameSource()
+            state.sources.capture_sources = lambda frame, inputs: (source, None)
+            try:
+                with patch(
+                    "acquisition.workbench.TwoRateRealtimeTracker", FakeLiveEngine
+                ), patch(
+                    "acquisition.workbench.CursorPoseEstimator",
+                    return_value=object(),
+                ) as cursor_constructor:
+                    cursor_constructor.GAUSSIAN_FIT_METHODS = (
+                        "vectorized_grid",
+                        "fast_grid",
+                        "legacy_grid",
+                    )
+                    descriptor = state.start_live_tracker(
+                        {
+                            "game_profile_id": game_id,
+                            "minimap_calibration_id": "mini-a",
+                            "scene_yaw_calibration_id": "yaw-a",
+                            "map_atlas_id": "atlas-a",
+                            "route_package_id": "route-a",
+                            "tracking_mode": "route-locked",
+                            "tracking_profile": "fast",
+                            "cursor_pose_method": "fast_grid",
+                            "frame_source": {
+                                "adapter": "windows_window",
+                                "window_title": "Genshin Impact",
+                            },
+                        }
+                    )
+                    runtime = descriptor["live_tracker"]
+                    self.assertEqual(runtime["tracking_mode"], "route-locked")
+                    self.assertEqual(runtime["map_atlas_id"], "atlas-a")
+                    self.assertEqual(runtime["route_package_id"], "route-a")
+                    self.assertEqual(runtime["tracking_profile"], "fast")
+            finally:
+                source.stop()
+                if state._tracker_running():
+                    state.stop_live_tracker()
+                    for _ in range(100):
+                        if state.descriptor()["live_tracker"]["status"] == "stopped":
+                            break
+                        time.sleep(0.005)
                 state.close()
 
 
