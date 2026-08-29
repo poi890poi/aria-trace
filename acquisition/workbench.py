@@ -25,6 +25,7 @@ import cv2
 from replay.alignment import align_session
 from replay.package import compile_replay_package
 from replay.route_tracking import RouteTrackingPackage
+from replay.route_similarity import write_live_route_similarity
 
 from .annotations import AnnotationStore
 from .android_capture import (
@@ -2451,6 +2452,7 @@ class AcquisitionWorkbench:
                 "scene_yaw_calibration.json",
                 scene_yaw_id,
             )
+            route_package = None
             if atlas_id or tracking_mode == "route-assisted":
                 if tracking_mode == "route-assisted":
                     package_root = (
@@ -2619,6 +2621,7 @@ class AcquisitionWorkbench:
                 "high_rate_fps": 0.0,
                 "processed_frames": 0,
                 "error": None,
+                "route_similarity": None,
                 "stop": stop,
                 "thread": None,
             }
@@ -2737,8 +2740,22 @@ class AcquisitionWorkbench:
                     error=run_error,
                     processed_frames=runtime.get("processed_frames"),
                 )
+                route_similarity = None
+                if route_package is not None:
+                    try:
+                        route_similarity = write_live_route_similarity(
+                            evidence_output, route_package
+                        )
+                    except Exception as exc:
+                        route_similarity = {
+                            "status": "failed",
+                            "role": "post-run-review-only",
+                            "feeds_tracker": False,
+                            "error": "{}: {}".format(type(exc).__name__, exc),
+                        }
                 with self._lock:
                     runtime["evidence"] = evidence_summary
+                    runtime["route_similarity"] = route_similarity
 
         thread = threading.Thread(
             target=work, name="acquisition-live-tracker", daemon=True
