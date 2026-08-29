@@ -216,6 +216,84 @@ finalized session, pushes it to the phone, and prints the resulting device path.
 The ZIP contains the videos plus `frames.jsonl`, `inputs.jsonl`, and the clock
 mapping; copying only a video would discard the synchronization authority.
 
+### Synchronized Android + HIK mini-map calibration
+
+If the rig moved slightly, first create a new geometry revision without the
+interactive focus stage:
+
+```powershell
+.\calibrate-hik-rig.bat --headless --save
+```
+
+With the real game open, record the synchronized source data using that saved
+folder. The command waits for Enter before it injects any game input:
+
+```powershell
+.\capture-game-minimap-zigzag.bat ".\artifacts\hik-calibration-YYYYMMDD-HHMMSS"
+```
+
+It records full Android/scrcpy and rectified HIK observations concurrently,
+then issues one continuous horizontal camera sweep with horizon/sky/horizon/
+ground pitch returns. It records source data only and does not run calibration
+or publish a profile. Reviewed source-specific revisions live under
+`profiles/calibrations/<rig>/<game>/<image-source>/revisions`; each profile has
+an atomic `current.json` pointer.
+
+Game control uses the reusable `ScrcpyTouchController` in
+`acquisition/scrcpy_control.py`. It maintains one pinned scrcpy 4.1 control
+socket for the gesture instead of starting one ADB process per touch event.
+Acquisition ends only after the controller reports the complete DOWN/MOVE/UP
+sequence and the configured tail has elapsed; incomplete control is rejected.
+
+Published profile revisions retain the stacked difference heatmap, complete
+fitted boundary, candidate-selection evidence, and exact circular mask used by
+shift estimation. Their status remains `review_required` until the evidence is
+accepted. Cursor and pose evidence remain in their existing, separate
+calibration tasks.
+
+Profile revisions keep Android surface rotation, the ChArUco viewer
+orientation, game-raster orientation, and mini-map north as separate records.
+Existing generated revisions also retain experimental `north_angles.jsonl`
+and marker evidence. Those fields are review evidence; the production adapter
+does not currently rotate from them or treat screen-up as north.
+
+The production HIK adapter can consume the HIK mini-map result without another
+capture path:
+
+```python
+from acquisition.rig_calibration.hik import ProfiledHikGameCamera
+
+with ProfiledHikGameCamera(
+    "artifacts/hik-calibration-...",
+    "profiles/calibrations/<rig>/<game>/hik_mvs/current.json",
+    mode="dual",                 # "minimap", "full", or "dual"
+    rectify_minimap=True,
+) as camera:
+    frame_set = camera.read_streams()
+    full = frame_set.streams["full"]
+    minimap = frame_set.streams["minimap"]
+```
+
+Dual products come from exactly one HIK acquisition and therefore carry the
+same frame number and timestamps. Mini-map-only mode instead applies a small
+hardware ROI before streaming to reduce data throughput.
+
+The existing `import ... as hikcam` facade accepts the same options and keeps
+`get_frame()` as the default single-frame interface; `get_frames()` returns the
+two synchronized products in dual mode:
+
+```python
+import acquisition.rig_calibration.hik.camera as hikcam
+
+with hikcam.HikCamera(config={
+    "calibration": "artifacts/hik-calibration-.../hik_camera_calibration.json",
+    "minimap_calibration": "profiles/calibrations/<rig>/<game>/hik_mvs/current.json",
+    "mode": "dual",
+    "rectify": True,
+}) as camera:
+    streams = camera.get_frames()
+```
+
 ## Inspect
 
 ```powershell

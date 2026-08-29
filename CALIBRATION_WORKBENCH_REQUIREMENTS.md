@@ -140,3 +140,52 @@ selection, full-map stitching, verification, visualization, and UI plumbing.
 - Existing mini-map/cursor tests continue to pass, and new orchestration,
   stitching, verification, folder-opening, API, and UI behavior has focused
   coverage.
+
+## Android + HIK game calibration profiles
+
+- A reusable calibration profile is identified by the exact tuple **rig + game
+  + image source**. Android/scrcpy and HIK observations from the same run are
+  separate profiles and never share raw pixel geometry.
+- Small phone/camera displacement is handled by an optional new headless HIK
+  rig-calibration revision. Older observations remain immutable and the new
+  geometry revision records its source rig calibration.
+- Mini-map calibration records Android/scrcpy and rectified HIK frames in one
+  acquisition session. Android presentation timestamps are mapped from Android
+  `CLOCK_MONOTONIC` to the PC performance counter; HIK receive timestamps use
+  that same host counter and retain the raw device frame counter.
+- Cross-source visual delay is estimated from the shared changing game content
+  and stored as calibration-only timing. It is not a live-tracker dependency
+  and does not collapse the two source profiles into one.
+- The automatic camera-view control is one continuous horizontal sweep. Its
+  vertical increments repeat **up, down, down, up**, producing absolute pitch
+  targets horizon, sky, horizon, ground, horizon. Every issued touch event is
+  stored beside the two streams.
+- This zigzag task calibrates only mini-map isolation: source crop, complete
+  circular boundary, the actual mask used for shift estimation, and the visible
+  game `N` compass marker. It does not fabricate cursor, pose, or global-map
+  evidence; those existing verified tasks remain separate.
+- The current Android surface rotation, saved ChArUco image-viewer orientation,
+  and game-render orientation are three separate observations. Game orientation
+  is represented explicitly. Cross-source alignment is derived from the saved
+  rig geometry, camera-visible phone region, and recorded Android surface
+  rotation; synchronized ADB and HIK pixels verify that alignment rather than
+  inventing a second transform. Neither phone nor viewer orientation is
+  substituted for game orientation.
+  North is measured independently for each image source from the `N` marker
+  using screen-angle convention `0=right,
+  90=down, 180=left, 270=up`; phone rotation is never substituted for map
+  north.
+- Each sampled calibration frame records its detected north angle, confidence,
+  and the OpenCV rotation needed to make north point up. A stable north marker
+  also produces a static 2x3 north-up transform. If the marker moves, the
+  result retains per-frame angles and configures live detection. If it cannot
+  be identified confidently, north remains explicitly unresolved.
+- The production HIK adapter supports `minimap`, `full`, and `dual` modes.
+  Mini-map-only mode applies the smallest aligned hardware ROI for low USB
+  throughput. Dual mode performs one full-camera acquisition and derives the
+  full and mini-map products with the same timestamp and frame number.
+- Mini-map rectification is optional. Disabling it returns the aligned sensor
+  crop for minimum processing latency. A future verified north-up transform
+  applies only to rectified mini-map output; raw sensor crops retain their
+  reported source orientation and avoid the extra processing. The production
+  adapter does not infer north from unreviewed evidence.
