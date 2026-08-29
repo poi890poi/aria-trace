@@ -15,6 +15,7 @@ from acquisition.live_tracker import (
     GlobalMapLocalizer,
     TwoRateRealtimeTracker,
     render_map_overlay,
+    render_minimap_route_overlay,
 )
 from acquisition.map_layers import LayeredGlobalLocalizer
 from acquisition.models import FramePacket
@@ -693,6 +694,33 @@ class TwoRateTrackerTests(unittest.TestCase):
         self.assertEqual(guided.shape, (360, 520, 3))
         self.assertGreater(int(np.count_nonzero(guided != plain)), 100)
 
+    def test_projects_demo_route_into_cursor_centered_minimap_overlay(self):
+        image = render_minimap_route_overlay(
+            [[50.0, 100.0], [100.0, 100.0], [150.0, 100.0]],
+            {
+                "pose": {
+                    "x": 100.0,
+                    "y": 100.0,
+                    "map_alignment_deg": 0.0,
+                },
+                "map_scale": 1.0,
+            },
+            {
+                "rotation_center": {"x": 110.0, "y": 83.0},
+                "outer_boundary": {
+                    "center_x": 111.0,
+                    "center_y": 83.0,
+                    "radius": 69.0,
+                },
+            },
+            [0, 0, 220, 180],
+        )
+
+        self.assertEqual(image.shape, (180, 220, 4))
+        self.assertGreater(int(np.max(image[:, :, 3])), 200)
+        self.assertGreater(int(image[83, 110, 3]), 0)
+        self.assertEqual(int(image[0, 0, 3]), 0)
+
     def test_renders_rejected_global_candidate_without_claiming_pose(self):
         mosaic = np.full((420, 620, 3), (35, 45, 55), np.uint8)
         image = render_map_overlay(
@@ -1072,6 +1100,34 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         1,
                     )
                     self.assertNotIn("route_state_estimator", engine.kwargs)
+                    with state._lock:
+                        state._live_tracker["latest"] = {
+                            "mode": "TRACK",
+                            "pose": {
+                                "x": 10.0,
+                                "y": 0.0,
+                                "yaw_deg": 0.0,
+                                "map_alignment_deg": 0.0,
+                            },
+                            "map_scale": 1.0,
+                        }
+                        state._live_tracker["frame_size_wh"] = [1920, 1080]
+                    hud = state.hud_descriptor()
+                    self.assertEqual(
+                        hud["minimap_route_overlay_url"],
+                        "/api/tracker/minimap-route-overlay",
+                    )
+                    self.assertEqual(
+                        hud["minimap_route_role"], "visual-guidance-only"
+                    )
+                    guide = cv2.imdecode(
+                        np.frombuffer(
+                            state.live_tracker_minimap_route_overlay_image(),
+                            np.uint8,
+                        ),
+                        cv2.IMREAD_UNCHANGED,
+                    )
+                    self.assertEqual(guide.shape[2], 4)
             finally:
                 source.stop()
                 if state._tracker_running():

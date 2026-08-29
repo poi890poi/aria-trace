@@ -45,6 +45,7 @@ from .live_tracker import (
     MinimapExtractor,
     TwoRateRealtimeTracker,
     render_map_overlay,
+    render_minimap_route_overlay,
 )
 from .live_tracking_evidence import LiveTrackingEvidenceRecorder
 from .minimap_calibration import (
@@ -914,6 +915,8 @@ class AcquisitionWorkbench:
                 "target_runs": target_runs,
                 "capture_duration_s": capture_duration_s,
                 "frame_source": frame_config,
+                "frame_size_wh": None,
+                "minimap_crop_xywh": list(minimap_config["crop_xywh"]),
                 "input_source": input_config,
                 "armed_utc": context.get("created_utc") or manifest.get("created_utc"),
                 "restored_from_session": str(manifest_path.parent),
@@ -996,7 +999,7 @@ class AcquisitionWorkbench:
                             (latest.get("local_motion") or {}).get("response") or 0
                         ),
                     )
-                return {
+                descriptor = {
                     "visible": True,
                     "title": "ARIATRACE LIVE TRACKER",
                     "window_title": (tracker.get("frame_source") or {}).get(
@@ -1008,6 +1011,25 @@ class AcquisitionWorkbench:
                     "color": "#72dfa3" if pose else "#ffd166",
                     "map_overlay_url": "/api/tracker/overlay?compact=1",
                 }
+                if (
+                    pose
+                    and self._live_tracker_route_points is not None
+                    and tracker.get("frame_size_wh")
+                    and tracker.get("minimap_crop_xywh")
+                ):
+                    descriptor.update(
+                        {
+                            "minimap_route_overlay_url": (
+                                "/api/tracker/minimap-route-overlay"
+                            ),
+                            "minimap_crop_xywh": list(
+                                tracker["minimap_crop_xywh"]
+                            ),
+                            "frame_size_wh": list(tracker["frame_size_wh"]),
+                            "minimap_route_role": "visual-guidance-only",
+                        }
+                    )
+                return descriptor
             if armed is None:
                 return {"visible": False}
             stage = armed.get("workflow_stage") or {}
@@ -2723,6 +2745,10 @@ class AcquisitionWorkbench:
                         runtime["capture_dropped_before_processing"] = (
                             frame_pump.dropped_before_processing
                         )
+                        runtime["frame_size_wh"] = [
+                            int(packet.image.shape[1]),
+                            int(packet.image.shape[0]),
+                        ]
                         if latest["sequence"] % 30 == 0:
                             runtime["evidence"] = evidence_recorder.summary
                 with self._lock:
@@ -2798,6 +2824,28 @@ class AcquisitionWorkbench:
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
             raise RuntimeError("Could not encode the live tracker overlay")
+        return encoded.tobytes()
+
+    def live_tracker_minimap_route_overlay_image(self) -> bytes:
+        with self._lock:
+            if self._live_tracker is None or self._live_tracker_route_points is None:
+                raise ValueError("No demonstrated route guide is available")
+            latest = dict(self._live_tracker.get("latest") or {})
+            calibration_id = self._live_tracker.get("minimap_calibration_id")
+            game_profile_id = self._live_tracker.get("game_profile_id")
+            crop_xywh = self._live_tracker.get("minimap_crop_xywh")
+            route_points = self._live_tracker_route_points
+        calibration = self._read_tracker_artifact(
+            self._minimap_calibration_root(game_profile_id),
+            "calibration.json",
+            calibration_id,
+        )
+        image = render_minimap_route_overlay(
+            route_points, latest, calibration, crop_xywh
+        )
+        ok, encoded = cv2.imencode(".png", image)
+        if not ok:
+            raise RuntimeError("Could not encode the mini-map route guide")
         return encoded.tobytes()
 
     def _profile_drafts(self) -> dict:
@@ -4252,6 +4300,12 @@ def make_handler(state: AcquisitionWorkbench):
                         state.live_tracker_overlay_image(
                             compact=query.get("compact", [""])[0] == "1"
                         ),
+                    )
+                elif path == "/api/tracker/minimap-route-overlay":
+                    self._send(
+                        200,
+                        "image/png",
+                        state.live_tracker_minimap_route_overlay_image(),
                     )
                 elif path == "/api/live-tracking/image":
                     query = parse_qs(parsed.query)

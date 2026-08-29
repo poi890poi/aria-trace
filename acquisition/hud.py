@@ -16,6 +16,7 @@ HUD_HEIGHT = 92
 MAP_HUD_WIDTH = 390
 MAP_HUD_HEIGHT = 350
 HUD_MARGIN = 22
+TRANSPARENT_KEY = "#ff00ff"
 
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
@@ -89,8 +90,32 @@ class _HudWindow:
         target = user32.FindWindowW(None, str(window_title))
         return bool(target and user32.GetForegroundWindow() == target)
 
+    @staticmethod
+    def _target_client_rect(user32, window_title: Optional[str]):
+        if not window_title:
+            return None
+        hwnd = user32.FindWindowW(None, str(window_title))
+        if not hwnd:
+            return None
+        from ctypes import wintypes
+
+        rect = wintypes.RECT()
+        origin = wintypes.POINT(0, 0)
+        if not (
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            and user32.ClientToScreen(hwnd, ctypes.byref(origin))
+        ):
+            return None
+        return (
+            int(origin.x),
+            int(origin.y),
+            int(rect.right - rect.left),
+            int(rect.bottom - rect.top),
+        )
+
     def _run(self) -> None:
         root = None
+        route_root = None
         try:
             import tkinter as tk
             from ctypes import wintypes
@@ -186,40 +211,58 @@ class _HudWindow:
                 borderwidth=0,
             )
             map_photo = None
-            root.update_idletasks()
-            widget_hwnd = int(root.winfo_id())
-            self._hwnd = int(
-                user32.GetAncestor(widget_hwnd, GA_ROOT) or widget_hwnd
+            route_root = tk.Toplevel(root)
+            route_root.withdraw()
+            route_root.overrideredirect(True)
+            route_root.configure(background=TRANSPARENT_KEY)
+            route_root.attributes("-topmost", True)
+            route_root.attributes("-alpha", 0.88)
+            route_root.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
+            route_label = tk.Label(
+                route_root,
+                background=TRANSPARENT_KEY,
+                borderwidth=0,
+                highlightthickness=0,
             )
+            route_label.pack(fill="both", expand=True)
+            route_photo = None
+            root.update_idletasks()
 
-            style = int(user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE))
-            style |= WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-            user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, style)
-            if not user32.SetWindowDisplayAffinity(
-                self._hwnd, WDA_EXCLUDEFROMCAPTURE
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-            affinity = wintypes.DWORD(0)
-            if not user32.GetWindowDisplayAffinity(
-                self._hwnd, ctypes.byref(affinity)
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-            self.display_affinity = int(affinity.value)
-            if self.display_affinity != WDA_EXCLUDEFROMCAPTURE:
-                raise RuntimeError(
-                    "Windows did not apply capture exclusion (affinity={})".format(
-                        self.display_affinity
+            def configure_capture_safe(window):
+                widget_hwnd = int(window.winfo_id())
+                hwnd = int(user32.GetAncestor(widget_hwnd, GA_ROOT) or widget_hwnd)
+                style = int(user32.GetWindowLongW(hwnd, GWL_EXSTYLE))
+                style |= WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+                if not user32.SetWindowDisplayAffinity(
+                    hwnd, WDA_EXCLUDEFROMCAPTURE
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                affinity = wintypes.DWORD(0)
+                if not user32.GetWindowDisplayAffinity(
+                    hwnd, ctypes.byref(affinity)
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if int(affinity.value) != WDA_EXCLUDEFROMCAPTURE:
+                    raise RuntimeError(
+                        "Windows did not apply capture exclusion (affinity={})".format(
+                            int(affinity.value)
+                        )
                     )
-                )
+                return hwnd, int(affinity.value)
+
+            self._hwnd, self.display_affinity = configure_capture_safe(root)
+            route_hwnd, _ = configure_capture_safe(route_root)
             print(
                 "ARIATRACE_HUD_READY affinity={}".format(self.display_affinity),
                 flush=True,
             )
 
             visible = False
+            route_visible = False
 
             def refresh() -> None:
-                nonlocal visible, map_photo
+                nonlocal visible, map_photo, route_photo, route_visible
                 try:
                     value = dict(self.status_provider() or {})
                     if value.get("shutdown"):
@@ -272,9 +315,67 @@ class _HudWindow:
                             0,
                             SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
                         )
+                        encoded_route = value.get(
+                            "minimap_route_overlay_png_base64"
+                        )
+                        crop = value.get("minimap_crop_xywh") or ()
+                        frame_size = value.get("frame_size_wh") or ()
+                        client = self._target_client_rect(
+                            user32, value.get("window_title")
+                        )
+                        route_ready = bool(
+                            encoded_route
+                            and len(crop) == 4
+                            and len(frame_size) == 2
+                            and client
+                            and frame_size[0]
+                            and frame_size[1]
+                        )
+                        if route_ready:
+                            origin_x, origin_y, client_w, client_h = client
+                            scale_x = client_w / float(frame_size[0])
+                            scale_y = client_h / float(frame_size[1])
+                            # The guide is calibrated in captured-frame pixels.
+                            # Hide rather than misregister it under DPI/letterbox
+                            # scaling that this lightweight HUD cannot resample.
+                            route_ready = (
+                                abs(scale_x - 1.0) <= 0.03
+                                and abs(scale_y - 1.0) <= 0.03
+                            )
+                        if route_ready:
+                            route_photo = tk.PhotoImage(data=encoded_route)
+                            route_label.config(image=route_photo)
+                            route_x = origin_x + int(round(float(crop[0]) * scale_x))
+                            route_y = origin_y + int(round(float(crop[1]) * scale_y))
+                            route_root.geometry(
+                                "{}x{}+{}+{}".format(
+                                    route_photo.width(),
+                                    route_photo.height(),
+                                    route_x,
+                                    route_y,
+                                )
+                            )
+                            if not route_visible:
+                                route_root.deiconify()
+                                route_visible = True
+                            user32.SetWindowPos(
+                                route_hwnd,
+                                HWND_TOPMOST,
+                                route_x,
+                                route_y,
+                                0,
+                                0,
+                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            )
+                        elif route_visible:
+                            route_root.withdraw()
+                            route_visible = False
                     elif visible:
                         root.withdraw()
                         visible = False
+                        if route_visible:
+                            route_root.withdraw()
+                            route_visible = False
                 except Exception as exc:
                     title.config(text="ARIATRACE HUD")
                     status_label.config(text="HUD ERROR", foreground="#ff7b84")
@@ -282,6 +383,9 @@ class _HudWindow:
                     if visible:
                         root.withdraw()
                         visible = False
+                    if route_visible:
+                        route_root.withdraw()
+                        route_visible = False
                 root.after(self.refresh_ms, refresh)
 
             root.after(0, refresh)
@@ -295,6 +399,11 @@ class _HudWindow:
                     root.destroy()
                 except Exception:
                     pass
+            if route_root is not None:
+                try:
+                    route_root.destroy()
+                except Exception:
+                    pass
 
 
 class _UrlStatusProvider:
@@ -306,13 +415,21 @@ class _UrlStatusProvider:
         try:
             with urllib.request.urlopen(self.state_url, timeout=0.5) as response:
                 value = json.loads(response.read().decode("utf-8"))
-            overlay_url = value.get("map_overlay_url")
-            if overlay_url:
+            for url_key, data_key in (
+                ("map_overlay_url", "map_overlay_png_base64"),
+                (
+                    "minimap_route_overlay_url",
+                    "minimap_route_overlay_png_base64",
+                ),
+            ):
+                overlay_url = value.get(url_key)
+                if not overlay_url:
+                    continue
                 try:
                     with urllib.request.urlopen(
                         urljoin(self.state_url, str(overlay_url)), timeout=0.75
                     ) as response:
-                        value["map_overlay_png_base64"] = base64.b64encode(
+                        value[data_key] = base64.b64encode(
                             response.read()
                         ).decode("ascii")
                 except (OSError, ValueError, urllib.error.URLError):

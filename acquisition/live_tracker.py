@@ -1551,3 +1551,80 @@ def render_map_overlay(
     for index, line in enumerate(lines):
         cv2.putText(canvas, line, (10, panel_y + 17 + index * 17), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (225, 235, 245), 1, cv2.LINE_AA)
     return canvas
+
+
+def render_minimap_route_overlay(
+    route_points,
+    state: dict,
+    minimap_calibration: dict,
+    crop_xywh,
+) -> np.ndarray:
+    """Project a demonstrated canonical route into live mini-map pixels."""
+
+    _, _, width, height = tuple(map(int, crop_xywh))
+    overlay = np.zeros((height, width, 4), np.uint8)
+    pose = state.get("pose") or {}
+    if route_points is None or not pose:
+        return overlay
+    scale = float(state.get("map_scale") or 0.0)
+    alignment = pose.get("map_alignment_deg", pose.get("yaw_deg"))
+    if scale <= 0.0 or alignment is None:
+        return overlay
+    points = np.asarray(route_points, dtype=np.float64).reshape((-1, 2))
+    if len(points) < 2 or not np.all(np.isfinite(points)):
+        return overlay
+    center_model = minimap_calibration.get("rotation_center") or {}
+    boundary = minimap_calibration.get("outer_boundary") or {}
+    center = np.asarray(
+        [
+            float(center_model.get("x", boundary.get("center_x", width / 2.0))),
+            float(center_model.get("y", boundary.get("center_y", height / 2.0))),
+        ],
+        dtype=np.float64,
+    )
+    radius = float(boundary.get("radius") or min(width, height) / 2.0)
+    relative = points - np.asarray(
+        [float(pose["x"]), float(pose["y"])], dtype=np.float64
+    )
+    angle = math.radians(float(alignment))
+    cosine, sine = math.cos(angle), math.sin(angle)
+    # Inverse of PoseFusionGate's local-to-canonical rotation.
+    local = np.column_stack(
+        (
+            cosine * relative[:, 0] + sine * relative[:, 1],
+            -sine * relative[:, 0] + cosine * relative[:, 1],
+        )
+    )
+    projected = np.rint(center + local / scale).astype(np.int32)
+    cv2.polylines(
+        overlay,
+        [projected.reshape((-1, 1, 2))],
+        False,
+        (235, 80, 250, 220),
+        3,
+        cv2.LINE_AA,
+    )
+    for index in range(6, len(projected), 10):
+        start = tuple(projected[index - 1])
+        end = tuple(projected[index])
+        if np.linalg.norm(projected[index] - projected[index - 1]) > 1:
+            cv2.arrowedLine(
+                overlay,
+                start,
+                end,
+                (235, 80, 250, 235),
+                2,
+                cv2.LINE_AA,
+                tipLength=0.55,
+            )
+    circular_mask = np.zeros((height, width), np.uint8)
+    cv2.circle(
+        circular_mask,
+        tuple(np.rint(center).astype(int)),
+        max(1, int(round(radius - 2.0))),
+        255,
+        -1,
+        cv2.LINE_AA,
+    )
+    overlay[:, :, 3] = cv2.bitwise_and(overlay[:, :, 3], circular_mask)
+    return overlay
