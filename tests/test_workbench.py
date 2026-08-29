@@ -1975,6 +1975,126 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_minimap_calibration_keeps_ordinary_motion_optional_and_accepts_route(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+
+            def make_session(run_index, label):
+                path = (
+                    root
+                    / "sessions"
+                    / "optional-motion"
+                    / "run_{:02d}".format(run_index)
+                )
+                writer = SessionWriter(
+                    path,
+                    [DescribedSource()],
+                    [],
+                    video_encoding="mjpeg",
+                    session_context={
+                        "experiment_id": "optional-motion",
+                        "game_profile_id": "genshin-impact-pc",
+                        "capture_kind": "game_profile",
+                        "capture_id": label,
+                        "run_index": run_index,
+                        "input_adapter": "none",
+                        "input_requirement": "none",
+                    },
+                )
+                timestamp = writer.origin_ns
+                writer.write_frame(
+                    FramePacket(
+                        "main",
+                        np.full((32, 32, 3), run_index, dtype=np.uint8),
+                        timestamp,
+                        timestamp,
+                    )
+                )
+                writer.close()
+                (path / "session_metadata.json").write_text(
+                    json.dumps({"label": label}), encoding="utf-8"
+                )
+                return path
+
+            rotation = make_session(1, "rotation_only")
+            movement = make_session(2, "movement_only")
+            route = make_session(6, "route")
+            calls = []
+
+            def fake_calibration(
+                _rotation,
+                _movement,
+                output,
+                _config,
+                progress=None,
+                ordinary_session_path=None,
+            ):
+                calls.append((_rotation, _movement, ordinary_session_path))
+                output.mkdir(parents=True, exist_ok=True)
+                return {
+                    "schema_version": "1.0",
+                    "generated_utc": "2026-08-29T12:00:00+00:00",
+                    "status": "review_required",
+                    "evidence": [],
+                }
+
+            try:
+                request = {
+                    "game_profile_id": "genshin-impact-pc",
+                    "rotation_session_relative_path": "optional-motion/run_01",
+                    "movement_session_relative_path": "optional-motion/run_02",
+                }
+                with patch(
+                    "acquisition.workbench.calibrate_segment_sessions",
+                    side_effect=fake_calibration,
+                ):
+                    descriptor = state.run_minimap_calibration(request)
+                    without_motion = descriptor["minimap_calibrations"][
+                        "genshin-impact-pc"
+                    ][0]
+                    descriptor = state.run_minimap_calibration(
+                        dict(
+                            request,
+                            ordinary_session_relative_path="optional-motion/run_06",
+                        )
+                    )
+
+                with_route = descriptor["minimap_calibrations"][
+                    "genshin-impact-pc"
+                ][0]
+                self.assertEqual(
+                    calls,
+                    [
+                        (rotation, movement, None),
+                        (rotation, movement, route),
+                    ],
+                )
+                self.assertNotIn(
+                    "ordinary_cruise", without_motion["source_sessions"]
+                )
+                self.assertEqual(
+                    with_route["source_sessions"]["ordinary_cruise"],
+                    {
+                        "session_key": "optional-motion/run_06",
+                        "session_id": json.loads(
+                            (route / "manifest.json").read_text(encoding="utf-8")
+                        )["session_id"],
+                        "recorded_label": "route",
+                    },
+                )
+                self.assertEqual(
+                    without_motion["calibration_id"], with_route["calibration_id"]
+                )
+                self.assertTrue(with_route["calibration_id"].startswith("segments-"))
+            finally:
+                state.close()
+
     def test_analysis_job_returns_immediately_and_reports_progress(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

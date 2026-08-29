@@ -1398,20 +1398,45 @@ class AcquisitionWorkbench:
                         )
                     return relative, path, manifest, context
 
+                def choose_optional_motion(field: str):
+                    relative = str(value.get(field) or "")
+                    if not relative and field not in value:
+                        ranked = candidates.get("ordinary_cruise") or []
+                        relative = str(ranked[0]["session_key"]) if ranked else ""
+                    if not relative:
+                        return None, None, None, None, None
+                    path, manifest, context = checked_session(relative)
+                    metadata = self._session_metadata(path)
+                    actual_role = metadata.get("label") or context.get(
+                        "segment_label"
+                    )
+                    if actual_role not in {"ordinary_cruise", "route"}:
+                        raise ValueError(
+                            "Expected an ordinary_cruise or route session, got {}".format(
+                                actual_role or "unlabeled"
+                            )
+                        )
+                    return relative, path, manifest, context, actual_role
+
                 rotation_key, rotation_path, rotation_manifest, _ = choose(
                     "rotation_only", "rotation_session_relative_path"
                 )
                 movement_key, movement_path, movement_manifest, _ = choose(
                     "movement_only", "movement_session_relative_path"
                 )
-                ordinary_key, ordinary_path, ordinary_manifest, _ = choose(
-                    "ordinary_cruise", "ordinary_session_relative_path"
+                (
+                    ordinary_key,
+                    ordinary_path,
+                    ordinary_manifest,
+                    _,
+                    ordinary_recorded_label,
+                ) = choose_optional_motion(
+                    "ordinary_session_relative_path"
                 )
                 calibration_id = safe_id(
-                    "segments-{}-{}-{}".format(
+                    "segments-{}-{}".format(
                         str(rotation_manifest.get("session_id") or "rotation")[:12],
                         str(movement_manifest.get("session_id") or "movement")[:12],
-                        str(ordinary_manifest.get("session_id") or "ordinary")[:12],
                     )
                 )
                 output = self._minimap_calibration_root(game_profile_id) / calibration_id
@@ -1424,11 +1449,13 @@ class AcquisitionWorkbench:
                         "session_key": movement_key,
                         "session_id": movement_manifest.get("session_id"),
                     },
-                    "ordinary_cruise": {
+                }
+                if ordinary_manifest is not None:
+                    source_sessions["ordinary_cruise"] = {
                         "session_key": ordinary_key,
                         "session_id": ordinary_manifest.get("session_id"),
-                    },
-                }
+                        "recorded_label": ordinary_recorded_label,
+                    }
             else:
                 session_key = str(value.get("session_relative_path") or "")
                 session_path, manifest, context = checked_session(session_key)
