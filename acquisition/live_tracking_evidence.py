@@ -72,6 +72,7 @@ class LiveTrackingEvidenceRecorder:
         self.output_path.mkdir(parents=True, exist_ok=True)
         (self.output_path / "global_fixes").mkdir(exist_ok=True)
         (self.output_path / "incidents").mkdir(exist_ok=True)
+        (self.output_path / "events").mkdir(exist_ok=True)
         self.frame_sample_interval_ns = int(frame_sample_interval_s * 1.0e9)
         self.incident_pre_ns = int(incident_pre_s * 1.0e9)
         self.incident_post_ns = int(incident_post_s * 1.0e9)
@@ -82,11 +83,13 @@ class LiveTrackingEvidenceRecorder:
         self._dropped_records = 0
         self._error = None
         self._closed = False
+        self._record_signature = None
         self._counts = {
             "telemetry_rows": 0,
             "global_fixes": 0,
             "jump_incidents": 0,
             "sampled_frames": 0,
+            "event_incidents": 0,
         }
         self.manifest = {
             "schema_version": SCHEMA_VERSION,
@@ -99,6 +102,7 @@ class LiveTrackingEvidenceRecorder:
                 "global_fixes": "global_fixes.jsonl",
                 "global_fix_evidence": "global_fixes/",
                 "jump_incidents": "incidents/",
+                "state_events": "events/",
             },
             "capture_policy": {
                 "frame_sample_interval_s": frame_sample_interval_s,
@@ -155,18 +159,34 @@ class LiveTrackingEvidenceRecorder:
         if sample_frame:
             self._last_frame_sample_ns = timestamp_ns
         global_fresh = bool(state.get("global_fix_fresh"))
+        transition = state.get("map_transition") or {}
+        local = state.get("local_motion") or {}
+        signature = (
+            state.get("mode"),
+            state.get("cursor_tracking_state"),
+            bool(local.get("recovery_requested")),
+            transition.get("host_time_ns"),
+            transition.get("to_mode_id"),
+        )
+        event_candidate = (
+            self._record_signature is not None
+            and signature != self._record_signature
+        )
+        capture_frame = sample_frame or global_fresh or event_candidate
         item = {
             "kind": "record",
             "telemetry": self._telemetry(state),
-            "frame": frame.copy() if sample_frame or global_fresh else None,
+            "frame": frame.copy() if capture_frame else None,
             "minimap": minimap.copy()
-            if minimap is not None and (sample_frame or global_fresh)
+            if minimap is not None and capture_frame
             else None,
             "diagnostics": diagnostics if global_fresh else None,
             "sample_frame": sample_frame,
+            "event_candidate": event_candidate,
         }
         try:
             self._queue.put_nowait(item)
+            self._record_signature = signature
             return True
         except queue.Full:
             with self._lock:
@@ -234,6 +254,7 @@ class LiveTrackingEvidenceRecorder:
         ring = deque()
         active_incidents = []
         previous_pose = None
+        previous_event_state = None
         telemetry_path = self.output_path / "telemetry.jsonl"
         global_path = self.output_path / "global_fixes.jsonl"
         try:
@@ -253,7 +274,10 @@ class LiveTrackingEvidenceRecorder:
 
                     timestamp_ns = int(telemetry.get("host_time_ns") or 0)
                     sample = None
-                    if item.get("sample_frame") and item.get("frame") is not None:
+                    if (
+                        (item.get("sample_frame") or item.get("event_candidate"))
+                        and item.get("frame") is not None
+                    ):
                         sample = {
                             "sequence": int(telemetry.get("sequence") or 0),
                             "host_time_ns": timestamp_ns,
@@ -309,6 +333,44 @@ class LiveTrackingEvidenceRecorder:
                         active_incidents.append(
                             (incident_root, timestamp_ns + self.incident_post_ns)
                         )
+                    current_event_state = {
+                        "mode": telemetry.get("mode"),
+                        "cursor_tracking_state": telemetry.get(
+                            "cursor_tracking_state"
+                        ),
+                        "recovery_requested": bool(
+                            (telemetry.get("local_motion") or {}).get(
+                                "recovery_requested"
+                            )
+                        ),
+                        "map_transition": telemetry.get("map_transition"),
+                    }
+                    events = self._state_events(
+                        previous_event_state, current_event_state
+                    )
+                    for event in events:
+                        self._counts["event_incidents"] += 1
+                        event_index = self._counts["event_incidents"]
+                        event_root = self.output_path / "events" / (
+                            "event_{:06d}_{}".format(event_index, event["kind"])
+                        )
+                        event_root.mkdir(parents=True, exist_ok=True)
+                        _atomic_json(
+                            event_root / "event.json",
+                            {
+                                "event_index": event_index,
+                                "sequence": telemetry.get("sequence"),
+                                "host_time_ns": timestamp_ns,
+                                "pre_s": self.incident_pre_ns / 1.0e9,
+                                "post_s": self.incident_post_ns / 1.0e9,
+                                **event,
+                            },
+                        )
+                        for buffered in ring:
+                            self._write_incident_sample(event_root, buffered)
+                        active_incidents.append(
+                            (event_root, timestamp_ns + self.incident_post_ns)
+                        )
                     if sample is not None:
                         remaining = []
                         for incident_root, end_ns in active_incidents:
@@ -318,6 +380,7 @@ class LiveTrackingEvidenceRecorder:
                         active_incidents = remaining
                     if pose:
                         previous_pose = dict(pose)
+                    previous_event_state = current_event_state
                 telemetry_stream.flush()
                 global_stream.flush()
         except Exception as exc:
@@ -335,3 +398,55 @@ class LiveTrackingEvidenceRecorder:
             (root / (stem + ".jpg")).write_bytes(frame)
         if minimap is not None:
             (root / (stem + "_minimap.jpg")).write_bytes(minimap)
+
+    @staticmethod
+    def _state_events(previous, current):
+        if previous is None:
+            return []
+        events = []
+        if current["mode"] != previous["mode"]:
+            events.append(
+                {
+                    "kind": "tracker-mode",
+                    "from": previous["mode"],
+                    "to": current["mode"],
+                }
+            )
+        cursor_before = previous["cursor_tracking_state"]
+        cursor_after = current["cursor_tracking_state"]
+        if cursor_before is not None and cursor_after != cursor_before:
+            events.append(
+                {
+                    "kind": "cursor-state",
+                    "from": cursor_before,
+                    "to": cursor_after,
+                }
+            )
+        if current["recovery_requested"] != previous["recovery_requested"]:
+            events.append(
+                {
+                    "kind": "recovery",
+                    "from": previous["recovery_requested"],
+                    "to": current["recovery_requested"],
+                }
+            )
+        transition = current.get("map_transition") or {}
+        prior_transition = previous.get("map_transition") or {}
+        transition_key = (
+            transition.get("host_time_ns"),
+            transition.get("to_mode_id"),
+        )
+        prior_key = (
+            prior_transition.get("host_time_ns"),
+            prior_transition.get("to_mode_id"),
+        )
+        if transition.get("to_mode_id") and transition_key != prior_key:
+            events.append(
+                {
+                    "kind": "map-scale-transition",
+                    "from": transition.get("from_mode_id"),
+                    "to": transition.get("to_mode_id"),
+                    "evidence_source": transition.get("evidence_source"),
+                }
+            )
+        return events

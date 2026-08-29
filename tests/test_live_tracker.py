@@ -615,6 +615,52 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
+    def test_route_assistance_cannot_change_verified_pose(self):
+        class Advisor:
+            def propose(self, observation, mask):
+                return {"center_xy": [40.0, 50.0], "radius_px": 60.0,
+                        "policy": "candidate-window-only"}
+
+        class DeterministicVerifier:
+            supports_bounded_search = True
+
+            def localize(self, observation, mask, yaw_prior_deg=None,
+                         search_center_xy=None, search_radius_px=None):
+                return GlobalFix(42.0, 24.0, 13.0, 0.88, 0.91, 0.12, 3.0)
+
+        arguments = (
+            np.full((100, 100, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+        )
+        free = TwoRateRealtimeTracker(
+            *arguments, localizer=DeterministicVerifier()
+        )
+        assisted = TwoRateRealtimeTracker(
+            *arguments,
+            localizer=DeterministicVerifier(),
+            global_candidate_advisor=Advisor(),
+        )
+        observation = np.zeros((68, 68, 3), np.uint8)
+        mask = np.full((68, 68), 255, np.uint8)
+        try:
+            free_fix = free._localize_global(
+                observation, mask, None, None, None
+            )
+            assisted_fix = assisted._localize_global(
+                observation, mask, None, None, None
+            )
+            self.assertEqual(
+                (assisted_fix.x, assisted_fix.y, assisted_fix.yaw_deg,
+                 assisted_fix.scale, assisted_fix.valid),
+                (free_fix.x, free_fix.y, free_fix.yaw_deg,
+                 free_fix.scale, free_fix.valid),
+            )
+        finally:
+            free.close()
+            assisted.close()
+
     def test_renders_pose_and_quality_overlay(self):
         mosaic = np.full((420, 620, 3), (35, 45, 55), np.uint8)
         state = {

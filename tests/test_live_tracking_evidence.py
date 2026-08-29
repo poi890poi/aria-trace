@@ -108,6 +108,71 @@ class LiveTrackingEvidenceTests(unittest.TestCase):
             self.assertTrue((incident_root / "incident.json").is_file())
             self.assertGreater(len(list(incident_root.glob("frame_*.jpg"))), 0)
 
+    def test_captures_cursor_recovery_and_scale_transition_events(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "tracking-run"
+            recorder = LiveTrackingEvidenceRecorder(
+                root,
+                {"tracking_id": "event-run"},
+                frame_sample_interval_s=10.0,
+                incident_pre_s=1.0,
+                incident_post_s=1.0,
+            )
+            frame = np.full((32, 32, 3), 90, np.uint8)
+            base = {
+                "pose": {"x": 1.0, "y": 2.0, "yaw_deg": 0.0},
+                "global_fix_fresh": False,
+                "trail": [],
+            }
+            recorder.record(
+                frame,
+                frame,
+                dict(
+                    base,
+                    sequence=1,
+                    host_time_ns=1_000_000_000,
+                    mode="TRACK",
+                    cursor_tracking_state="stable",
+                    local_motion={"recovery_requested": False},
+                ),
+            )
+            recorder.record(
+                frame,
+                frame,
+                dict(
+                    base,
+                    sequence=2,
+                    host_time_ns=2_000_000_000,
+                    mode="RELOCALIZING",
+                    cursor_tracking_state="recovering",
+                    local_motion={"recovery_requested": True},
+                    map_transition={
+                        "host_time_ns": 2_000_000_000,
+                        "from_mode_id": "world",
+                        "to_mode_id": "town",
+                        "evidence_source": "live-minimap-layer-likelihoods",
+                    },
+                ),
+            )
+            recorder.close(status="stopped", processed_frames=2)
+
+            manifest = json.loads(
+                (root / "live_tracking.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["counts"]["event_incidents"], 4)
+            events = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in sorted((root / "events").glob("*/event.json"))
+            ]
+            self.assertEqual(
+                {event["kind"] for event in events},
+                {"tracker-mode", "cursor-state", "recovery", "map-scale-transition"},
+            )
+            self.assertTrue(
+                all(list(path.parent.glob("frame_*.jpg")) for path in
+                    sorted((root / "events").glob("*/event.json")))
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
