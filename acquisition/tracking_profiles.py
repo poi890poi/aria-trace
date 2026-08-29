@@ -12,9 +12,6 @@ TRACKING_PROFILES = {
         "global_interval_s": 2.0,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.45,
-        "local_xy_stride": 1,
-        "diagnostics_stride": 10,
-        "quality_policy": "adaptive_fallback",
     },
     "fast": {
         "cursor_pose_method": "cascade",
@@ -23,9 +20,6 @@ TRACKING_PROFILES = {
         "global_interval_s": 3.0,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.50,
-        "local_xy_stride": 1,
-        "diagnostics_stride": 20,
-        "quality_policy": "early_exit",
     },
     "accurate": {
         "cursor_pose_method": "vectorized_grid",
@@ -34,9 +28,6 @@ TRACKING_PROFILES = {
         "global_interval_s": 1.5,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.40,
-        "local_xy_stride": 1,
-        "diagnostics_stride": 5,
-        "quality_policy": "validate_ambiguous",
     },
     "offline": {
         "cursor_pose_method": "vectorized_grid",
@@ -45,9 +36,6 @@ TRACKING_PROFILES = {
         "global_interval_s": 0.5,
         "temporal_pose_search": False,
         "pose_confidence_min": 0.0,
-        "local_xy_stride": 1,
-        "diagnostics_stride": 1,
-        "quality_policy": "full_evidence",
     },
 }
 

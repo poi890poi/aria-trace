@@ -15,7 +15,7 @@ class TrackingProfileTests(unittest.TestCase):
             resolve_tracking_profile("fast")["cursor_validation_policy"],
             "minimal",
         )
-        self.assertEqual(offline["diagnostics_stride"], 1)
+        self.assertEqual(offline["cursor_interval_s"], 0.0)
 
     def test_explicit_developer_override_is_visible(self):
         value = resolve_tracking_profile(
