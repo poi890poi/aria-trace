@@ -30,8 +30,10 @@ def make_teleport_behavior_sample(
     destination_global_xy: Sequence[float],
     evidence: Mapping,
     provenance: Mapping,
-    origin_global_xy: Optional[Sequence[float]] = None,
     portal_id: Optional[str] = None,
+    phases: Sequence[Mapping] = (),
+    behavior_model: Optional[Mapping] = None,
+    arrival_model: Optional[Mapping] = None,
     quality: Optional[Mapping] = None,
 ) -> TeleportBehaviorSample:
     """Build a sample only when its coordinate system and evidence are reusable."""
@@ -56,8 +58,10 @@ def make_teleport_behavior_sample(
         destination_global_xy=_xy(
             "destination_global_xy", destination_global_xy, True
         ),
-        origin_global_xy=_xy("origin_global_xy", origin_global_xy, False),
         portal_id=str(portal_id) if portal_id else None,
+        phases=tuple(dict(item) for item in phases),
+        behavior_model=dict(behavior_model or {}),
+        arrival_model=dict(arrival_model or {}),
         evidence=dict(evidence),
         provenance=dict(provenance),
         quality=dict(quality or {}),

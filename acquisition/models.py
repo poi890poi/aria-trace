@@ -26,7 +26,7 @@ class InputPacket:
 
 @dataclass(frozen=True)
 class TeleportBehaviorSample:
-    """Reusable evidence linking a selected teleport target to its destination."""
+    """Destination-oriented evidence for one visually guarded teleport episode."""
 
     game_profile_id: str
     session_id: str
@@ -35,25 +35,25 @@ class TeleportBehaviorSample:
     destination_global_xy: Tuple[float, float]
     evidence: Dict[str, Any]
     provenance: Dict[str, Any]
-    origin_global_xy: Optional[Tuple[float, float]] = None
     portal_id: Optional[str] = None
+    phases: Tuple[Dict[str, Any], ...] = ()
+    behavior_model: Dict[str, Any] = field(default_factory=dict)
+    arrival_model: Dict[str, Any] = field(default_factory=dict)
     quality: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "behavior_type": "teleportation",
             "game_profile_id": self.game_profile_id,
             "session_id": self.session_id,
             "coordinate_space_id": self.coordinate_space_id,
             "teleport_target_global_xy": list(self.teleport_target_global_xy),
             "destination_global_xy": list(self.destination_global_xy),
-            "origin_global_xy": (
-                list(self.origin_global_xy)
-                if self.origin_global_xy is not None
-                else None
-            ),
             "portal_id": self.portal_id,
+            "phases": [dict(item) for item in self.phases],
+            "behavior_model": dict(self.behavior_model),
+            "arrival_model": dict(self.arrival_model),
             "evidence": dict(self.evidence),
             "provenance": dict(self.provenance),
             "quality": dict(self.quality),
