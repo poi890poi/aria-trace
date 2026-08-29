@@ -40,7 +40,7 @@ def _minimap_reference(image: np.ndarray, calibration: dict):
     patch_center = (patch.shape[1] // 2, patch.shape[0] // 2)
     usable_radius = max(8, min(patch.shape[:2]) // 2 - 3)
     cv2.circle(mask, patch_center, usable_radius, 255, -1)
-    cv2.circle(mask, patch_center, max(5, int(round(radius * 0.20))), 0, -1)
+    cv2.circle(mask, patch_center, max(5, int(round(radius * 0.28))), 0, -1)
     return patch, mask
 
 

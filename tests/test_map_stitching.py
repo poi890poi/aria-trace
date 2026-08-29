@@ -15,6 +15,18 @@ from acquisition.map_stitching import (
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_minimap_reference_masks_calibrated_cursor_and_boundary_ui(self):
+        image = np.full((180, 220, 3), (80, 120, 90), np.uint8)
+        cv2.circle(image, (110, 90), 56, (100, 140, 110), -1)
+        calibration = {
+            "outer_boundary": {"center_x": 110, "center_y": 90, "radius": 56}
+        }
+        _, mask = _minimap_reference(image, calibration)
+        self.assertEqual(int(mask[56, 56]), 0)
+        self.assertEqual(int(mask[56, 71]), 0)
+        self.assertEqual(int(mask[56, 76]), 255)
+        self.assertEqual(int(mask[0, 0]), 0)
+
     def test_reuses_precomputed_mosaic_features_without_changing_estimate(self):
         rng = np.random.RandomState(19)
         mosaic = rng.randint(0, 255, (420, 610, 3), dtype=np.uint8)
