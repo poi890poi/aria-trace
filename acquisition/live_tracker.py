@@ -783,8 +783,8 @@ class TwoRateRealtimeTracker:
             }
             self._global_future = self._global_executor.submit(
                 self._localize_global,
-                minimap.copy(),
-                mask.copy(),
+                minimap,
+                mask,
                 yaw_prior,
                 search_center,
                 search_radius,

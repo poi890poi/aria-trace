@@ -2055,7 +2055,7 @@ class AcquisitionWorkbench:
             if self._live_tracker_mosaic is None or self._live_tracker is None:
                 raise ValueError("No live tracker overlay is available")
             latest = dict(self._live_tracker.get("latest") or {})
-            mosaic = self._live_tracker_mosaic.copy()
+            mosaic = self._live_tracker_mosaic
         image = render_map_overlay(mosaic, latest)
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
