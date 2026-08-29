@@ -6,7 +6,7 @@ from typing import Mapping, Optional
 
 TRACKING_PROFILES = {
     "real-time": {
-        "cursor_pose_method": "fast_grid",
+        "cursor_pose_method": "cascade",
         "cursor_interval_s": 0.05,
         "global_interval_s": 2.0,
         "temporal_pose_search": True,
@@ -16,7 +16,7 @@ TRACKING_PROFILES = {
         "quality_policy": "adaptive_fallback",
     },
     "fast": {
-        "cursor_pose_method": "fast_grid",
+        "cursor_pose_method": "cascade",
         "cursor_interval_s": 0.10,
         "global_interval_s": 3.0,
         "temporal_pose_search": True,

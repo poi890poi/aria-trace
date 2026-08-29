@@ -9,7 +9,7 @@ class TrackingProfileTests(unittest.TestCase):
         offline = resolve_tracking_profile("offline")
         self.assertTrue(realtime["temporal_pose_search"])
         self.assertFalse(offline["temporal_pose_search"])
-        self.assertEqual(realtime["cursor_pose_method"], "fast_grid")
+        self.assertEqual(realtime["cursor_pose_method"], "cascade")
         self.assertEqual(offline["diagnostics_stride"], 1)
 
     def test_explicit_developer_override_is_visible(self):

@@ -49,6 +49,44 @@ class CircularGaussianFitTests(unittest.TestCase):
         )
         self.assertGreater(fitted["r_squared"], 0.999)
 
+    def test_analytic_lm_fits_subdegree_center_without_grid_refinement(self):
+        random = np.random.RandomState(41)
+        angles = np.arange(360, dtype=np.float64)
+        distance = circular_difference_degrees(angles, 43.25)
+        response = (
+            0.11
+            + 0.77 * np.exp(-0.5 * (distance / 11.5) ** 2)
+            + random.normal(0.0, 0.004, len(angles))
+        ).astype(np.float32)
+
+        fitted = CursorPoseEstimator._fit_circular_gaussian_lm(response)
+
+        self.assertLess(
+            abs(float(circular_difference_degrees(fitted["center_deg"], 43.25))),
+            0.25,
+        )
+        self.assertEqual(fitted["fit_method"], "analytic_lm")
+        self.assertGreater(fitted["r_squared"], 0.99)
+
+    def test_temporal_window_selects_the_plausible_lobe(self):
+        angles = np.arange(360, dtype=np.float64)
+        near = circular_difference_degrees(angles, 31.0)
+        far = circular_difference_degrees(angles, 172.0)
+        response = (
+            0.1
+            + 0.60 * np.exp(-0.5 * (near / 9.0) ** 2)
+            + 0.80 * np.exp(-0.5 * (far / 9.0) ** 2)
+        ).astype(np.float32)
+
+        fitted = CursorPoseEstimator._fit_circular_gaussian_cascade(
+            response, center_prior_deg=30.0, search_half_width_deg=20.0
+        )
+
+        self.assertLess(
+            abs(float(circular_difference_degrees(fitted["center_deg"], 31.0))),
+            0.5,
+        )
+
     def test_batched_symmetric_chamfer_matches_angle_loop(self):
         random = np.random.RandomState(23)
         polygon_edges = random.rand(9, 11, 11) > 0.88

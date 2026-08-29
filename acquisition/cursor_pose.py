@@ -59,7 +59,13 @@ def _color_heatmap(values: np.ndarray) -> np.ndarray:
 class CursorPoseEstimator:
     """Estimate one screen-space cursor angle without temporal assumptions."""
 
-    GAUSSIAN_FIT_METHODS = ("vectorized_grid", "fast_grid", "legacy_grid")
+    GAUSSIAN_FIT_METHODS = (
+        "cascade",
+        "analytic_lm",
+        "vectorized_grid",
+        "fast_grid",
+        "legacy_grid",
+    )
 
     def __init__(
         self,
@@ -169,13 +175,27 @@ class CursorPoseEstimator:
         )
 
     @staticmethod
-    def _gaussian_fit_candidates(correlation: np.ndarray) -> list:
+    def _gaussian_fit_candidates(
+        correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ) -> list:
         """Return separated response maxima in descending smoothed height."""
         kernel_x = np.arange(-6, 7, dtype=np.float64)
         kernel = np.exp(-0.5 * (kernel_x / 2.0) ** 2)
         kernel /= kernel.sum()
         padded = np.concatenate([correlation[-6:], correlation, correlation[:6]])
         smoothed = np.convolve(padded, kernel, mode="valid")
+        if center_prior_deg is not None and search_half_width_deg is not None:
+            allowed = np.abs(
+                circular_difference_degrees(
+                    np.arange(360, dtype=np.float64), center_prior_deg
+                )
+            ) <= float(search_half_width_deg)
+            smoothed = smoothed.copy()
+            smoothed[~allowed] = -np.inf
+            if not np.any(np.isfinite(smoothed)):
+                return []
         candidates = np.argsort(smoothed)[-12:]
         candidate_centers = []
         for candidate in candidates[np.argsort(smoothed[candidates])[::-1]]:
@@ -189,10 +209,16 @@ class CursorPoseEstimator:
         return candidate_centers
 
     @staticmethod
-    def _fit_circular_gaussian_legacy(correlation: np.ndarray) -> dict:
+    def _fit_circular_gaussian_legacy(
+        correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ) -> dict:
         """Fit a Gaussian lobe on the circular angular-correlation response."""
         angles = np.arange(360, dtype=np.float64)
-        candidate_centers = CursorPoseEstimator._gaussian_fit_candidates(correlation)
+        candidate_centers = CursorPoseEstimator._gaussian_fit_candidates(
+            correlation, center_prior_deg, search_half_width_deg
+        )
 
         best = None
         sigma_grid = np.linspace(2.0, 50.0, 17)
@@ -283,6 +309,7 @@ class CursorPoseEstimator:
             "second_peak": float(np.max(excluded)),
             "peak_margin": fitted_peak - float(np.max(excluded)),
             "raw_peak_deg": float(wrap_signed_degrees(int(np.argmax(correlation)))),
+            "fit_method": "legacy_grid",
         }
 
     @staticmethod
@@ -407,8 +434,12 @@ class CursorPoseEstimator:
     def _fit_circular_gaussian_vectorized(
         cls,
         correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
     ) -> dict:
-        candidate_centers = cls._gaussian_fit_candidates(correlation)
+        candidate_centers = cls._gaussian_fit_candidates(
+            correlation, center_prior_deg, search_half_width_deg
+        )
         if not candidate_centers:
             raise RuntimeError("Circular Gaussian correlation fit failed")
         center_offsets = np.arange(-8.0, 8.01, 0.5)
@@ -431,12 +462,21 @@ class CursorPoseEstimator:
         )
         if refined is None or not math.isfinite(refined[0]):
             raise RuntimeError("Circular Gaussian refinement failed")
-        return cls._finalize_circular_gaussian_fit(correlation, *refined)
+        result = cls._finalize_circular_gaussian_fit(correlation, *refined)
+        result["fit_method"] = "vectorized_grid"
+        return result
 
     @classmethod
-    def _fit_circular_gaussian_fast(cls, correlation: np.ndarray) -> dict:
+    def _fit_circular_gaussian_fast(
+        cls,
+        correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ) -> dict:
         """Fit the same model on a reduced grid for latency-sensitive tracking."""
-        candidate_centers = cls._gaussian_fit_candidates(correlation)
+        candidate_centers = cls._gaussian_fit_candidates(
+            correlation, center_prior_deg, search_half_width_deg
+        )
         if not candidate_centers:
             raise RuntimeError("Circular Gaussian correlation fit failed")
         coarse_centers = (
@@ -458,16 +498,155 @@ class CursorPoseEstimator:
         )
         if refined is None or not math.isfinite(refined[0]):
             raise RuntimeError("Circular Gaussian refinement failed")
-        return cls._finalize_circular_gaussian_fit(correlation, *refined)
+        result = cls._finalize_circular_gaussian_fit(correlation, *refined)
+        result["fit_method"] = "fast_grid"
+        return result
 
-    def _fit_circular_gaussian(self, correlation: np.ndarray) -> dict:
+    @classmethod
+    def _fit_circular_gaussian_lm(
+        cls,
+        correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+        iterations: int = 8,
+    ) -> dict:
+        """Fit the Gaussian lobe with a small bounded analytic LM solve."""
+        candidate_centers = cls._gaussian_fit_candidates(
+            correlation, center_prior_deg, search_half_width_deg
+        )
+        if not candidate_centers:
+            raise RuntimeError("Circular Gaussian correlation fit failed")
+        angles = np.arange(360, dtype=np.float64)
+        y_all = correlation.astype(np.float64, copy=False)
+        best = None
+        for seed in candidate_centers:
+            center = float(seed)
+            sigma = 15.0
+            damping = 1.0e-2
+            for _ in range(max(1, int(iterations))):
+                distance = wrap_signed_degrees(angles - center)
+                window = np.abs(distance) <= 70.0
+                distance_window = distance[window]
+                y = y_all[window]
+                gaussian = np.exp(-0.5 * (distance_window / sigma) ** 2)
+                design = np.column_stack([np.ones_like(gaussian), gaussian])
+                baseline, amplitude = np.linalg.lstsq(design, y, rcond=None)[0]
+                if amplitude <= 1.0e-8:
+                    break
+                fitted = baseline + amplitude * gaussian
+                residual = y - fitted
+                jacobian = np.column_stack(
+                    [
+                        amplitude
+                        * gaussian
+                        * distance_window
+                        / (sigma ** 2),
+                        amplitude
+                        * gaussian
+                        * (distance_window ** 2)
+                        / (sigma ** 2),
+                    ]
+                )
+                normal = jacobian.T @ jacobian
+                gradient = jacobian.T @ residual
+                diagonal = np.maximum(np.diag(normal), 1.0e-9)
+                try:
+                    step = np.linalg.solve(
+                        normal + damping * np.diag(diagonal), gradient
+                    )
+                except np.linalg.LinAlgError:
+                    break
+                candidate_center = float(center + np.clip(step[0], -8.0, 8.0))
+                candidate_sigma = float(
+                    np.clip(sigma * math.exp(np.clip(step[1], -0.5, 0.5)), 1.0, 60.0)
+                )
+                candidate = cls._score_gaussian_grid(
+                    correlation,
+                    np.asarray([candidate_center]),
+                    np.asarray([candidate_sigma]),
+                )
+                current = cls._score_gaussian_grid(
+                    correlation,
+                    np.asarray([center]),
+                    np.asarray([sigma]),
+                )
+                if candidate is not None and current is not None and candidate[0] < current[0]:
+                    center, sigma = candidate_center, candidate_sigma
+                    damping = max(1.0e-6, damping * 0.35)
+                else:
+                    damping = min(1.0e6, damping * 4.0)
+            fitted = cls._score_gaussian_grid(
+                correlation,
+                np.asarray([center]),
+                np.asarray([sigma]),
+            )
+            if fitted is not None and math.isfinite(fitted[0]):
+                if best is None or fitted[0] < best[0]:
+                    best = fitted
+        if best is None:
+            raise RuntimeError("Circular Gaussian analytic fit failed")
+        result = cls._finalize_circular_gaussian_fit(correlation, *best)
+        result["fit_method"] = "analytic_lm"
+        return result
+
+    @classmethod
+    def _fit_circular_gaussian_cascade(
+        cls,
+        correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ) -> dict:
+        """Use analytic LM normally and the reduced grid for ambiguous fits."""
+        fallback_reason = None
+        try:
+            result = cls._fit_circular_gaussian_lm(
+                correlation, center_prior_deg, search_half_width_deg
+            )
+            if result["r_squared"] >= 0.75 and result["center_std_deg"] <= 3.0:
+                result["fallback_used"] = False
+                return result
+            fallback_reason = "analytic-fit-quality"
+        except RuntimeError:
+            fallback_reason = "analytic-fit-failed"
+        result = cls._fit_circular_gaussian_fast(
+            correlation, center_prior_deg, search_half_width_deg
+        )
+        result["fallback_used"] = True
+        result["fallback_reason"] = fallback_reason
+        return result
+
+    def _fit_circular_gaussian(
+        self,
+        correlation: np.ndarray,
+        center_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ) -> dict:
         if self.gaussian_fit_method == "legacy_grid":
-            return self._fit_circular_gaussian_legacy(correlation)
+            return self._fit_circular_gaussian_legacy(
+                correlation, center_prior_deg, search_half_width_deg
+            )
         if self.gaussian_fit_method == "fast_grid":
-            return self._fit_circular_gaussian_fast(correlation)
-        return self._fit_circular_gaussian_vectorized(correlation)
+            return self._fit_circular_gaussian_fast(
+                correlation, center_prior_deg, search_half_width_deg
+            )
+        if self.gaussian_fit_method == "analytic_lm":
+            return self._fit_circular_gaussian_lm(
+                correlation, center_prior_deg, search_half_width_deg
+            )
+        if self.gaussian_fit_method == "cascade":
+            return self._fit_circular_gaussian_cascade(
+                correlation, center_prior_deg, search_half_width_deg
+            )
+        return self._fit_circular_gaussian_vectorized(
+            correlation, center_prior_deg, search_half_width_deg
+        )
 
-    def _pixel_correlate(self, patch: np.ndarray):
+    def _pixel_correlate(
+        self,
+        patch: np.ndarray,
+        relative_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ):
         polar = cv2.remap(
             patch,
             self.x_map,
@@ -480,7 +659,9 @@ class CursorPoseEstimator:
         ).real.sum(axis=1).astype(np.float32)
         energy = math.sqrt(float(np.sum(polar ** 2))) * self.template_energy
         correlation /= energy + 1.0e-6
-        gaussian_fit = self._fit_circular_gaussian(correlation)
+        gaussian_fit = self._fit_circular_gaussian(
+            correlation, relative_prior_deg, search_half_width_deg
+        )
         return gaussian_fit, correlation, polar
 
     @staticmethod
@@ -502,7 +683,12 @@ class CursorPoseEstimator:
         )
         return 0.5 * (model_to_observed + observed_to_model)
 
-    def _polygon_likelihood(self, patch: np.ndarray):
+    def _polygon_likelihood(
+        self,
+        patch: np.ndarray,
+        relative_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
+    ):
         observed = patch >= 0.5
         observed_edge = polygon_edge(observed)
         if not np.any(observed_edge):
@@ -516,7 +702,9 @@ class CursorPoseEstimator:
         )
         scale = max(float(np.percentile(chamfer, 20)), 0.75)
         likelihood = np.exp(-0.5 * (chamfer / scale) ** 2).astype(np.float32)
-        gaussian_fit = self._fit_circular_gaussian(likelihood)
+        gaussian_fit = self._fit_circular_gaussian(
+            likelihood, relative_prior_deg, search_half_width_deg
+        )
         return gaussian_fit, likelihood, chamfer, observed_edge
 
     def estimate(
@@ -524,6 +712,8 @@ class CursorPoseEstimator:
         frame: np.ndarray,
         frame_index: Optional[int] = None,
         session_time_ns: Optional[int] = None,
+        angle_prior_deg: Optional[float] = None,
+        search_half_width_deg: Optional[float] = None,
     ) -> dict:
         crop = self._crop(frame)
         mask, centroid, area = self._cursor_mask(crop)
@@ -537,6 +727,14 @@ class CursorPoseEstimator:
             "polar_origin": "fitted_cursor_rotation_center",
             "polar_origin_x": float(self.pivot[0]),
             "polar_origin_y": float(self.pivot[1]),
+            "temporal_prior_angle_screen_deg": (
+                float(angle_prior_deg) if angle_prior_deg is not None else None
+            ),
+            "temporal_search_half_width_deg": (
+                float(search_half_width_deg)
+                if search_half_width_deg is not None
+                else None
+            ),
         }
         if mask is None:
             common.update(
@@ -552,9 +750,16 @@ class CursorPoseEstimator:
             (self.patch_size, self.patch_size),
             tuple(self.pivot),
         )
-        pixel_fit, pixel_correlation, polar = self._pixel_correlate(patch)
+        relative_prior = (
+            float(wrap_signed_degrees(angle_prior_deg - self.symmetry_axis_deg))
+            if angle_prior_deg is not None
+            else None
+        )
+        pixel_fit, pixel_correlation, polar = self._pixel_correlate(
+            patch, relative_prior, search_half_width_deg
+        )
         gaussian_fit, correlation, chamfer_curve, observed_edge = (
-            self._polygon_likelihood(patch)
+            self._polygon_likelihood(patch, relative_prior, search_half_width_deg)
         )
         shift = gaussian_fit["center_deg"]
         peak = gaussian_fit["fitted_peak"]
@@ -646,6 +851,10 @@ class CursorPoseEstimator:
                     gaussian_fit["normalized_rmse"]
                 ),
                 "gaussian_fit_r_squared": float(gaussian_fit["r_squared"]),
+                "gaussian_fit_method_used": gaussian_fit.get("fit_method"),
+                "gaussian_fallback_used": bool(
+                    gaussian_fit.get("fallback_used", False)
+                ),
                 "raw_angular_likelihood_peak_deg": float(gaussian_fit["raw_peak_deg"]),
                 "raw_correlation_peak_deg": float(pixel_fit["raw_peak_deg"]),
                 "template_aligned_iou": aligned_iou,
