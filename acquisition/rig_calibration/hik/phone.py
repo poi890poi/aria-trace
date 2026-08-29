@@ -255,6 +255,30 @@ class AdbPhoneSession:
             "declared_maximum": 255,
         }
 
+    @staticmethod
+    def _orientation_from_dumpsys(input_text: str, display_text: str) -> int:
+        orientation_match = re.search(r"SurfaceOrientation:\s*([0-3])", input_text)
+        if orientation_match is None:
+            orientation_match = re.search(
+                r"mCurrentOrientation=([0-3])", display_text
+            )
+        if orientation_match is None:
+            orientation_match = re.search(r"\brotation\s+([0-3])\b", display_text)
+        return int(orientation_match.group(1)) if orientation_match else 0
+
+    def display_orientation_quarter_turns(self) -> int:
+        """Return the current logical display rotation from the natural panel raster."""
+
+        try:
+            input_text = self.shell("dumpsys", "input")
+        except RuntimeError:
+            input_text = ""
+        try:
+            display_text = self.shell("dumpsys", "display")
+        except RuntimeError:
+            display_text = ""
+        return self._orientation_from_dumpsys(input_text, display_text)
+
     def metrics(self, refresh_hz_override: Optional[float] = None) -> PhoneMetrics:
         size_text = self.shell("wm", "size")
         override_size = re.search(r"Override size:\s*(\d+)\s*x\s*(\d+)", size_text, re.IGNORECASE)
@@ -269,12 +293,7 @@ class AdbPhoneSession:
             orientation_text = self.shell("dumpsys", "input")
         except RuntimeError:
             orientation_text = ""
-        orientation_match = re.search(r"SurfaceOrientation:\s*([0-3])", orientation_text)
-        if orientation_match is None:
-            orientation_match = re.search(r"mCurrentOrientation=([0-3])", display_text)
-        if orientation_match is None:
-            orientation_match = re.search(r"\brotation\s+([0-3])\b", display_text)
-        orientation = int(orientation_match.group(1)) if orientation_match else 0
+        orientation = self._orientation_from_dumpsys(orientation_text, display_text)
         size = list(natural_size)
         if orientation % 2:
             size = [size[1], size[0]]

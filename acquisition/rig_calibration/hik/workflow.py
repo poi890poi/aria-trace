@@ -1092,6 +1092,21 @@ class HikRigCalibrationSession:
             .format(self.options.operation_timeout_seconds, rows)
         )
 
+    @staticmethod
+    def _target_canvas_matches(
+        telemetry: Mapping[str, Any], expected_canonical_size: Sequence[int]
+    ) -> bool:
+        canvas = [
+            int(telemetry.get("canvas_width", -1)),
+            int(telemetry.get("canvas_height", -1)),
+        ]
+        canonical = telemetry.get("canonical_target_size_px")
+        logical = telemetry.get("logical_target_size_px")
+        expected = list(map(int, expected_canonical_size))
+        if canonical is None or logical is None:
+            return canvas == expected
+        return list(map(int, canonical)) == expected and list(map(int, logical)) == canvas
+
     def _wait_painted(self, presentation: Presentation, timeout_seconds: float = 5.0) -> None:
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         expected_size = list(map(int, phone_metrics.screen_size_px))
@@ -1102,8 +1117,7 @@ class HikRigCalibrationSession:
                 int(item.get("revision", -1)) == presentation.revision
                 and bool(item.get("painted"))
                 and bool(item.get("fullscreen"))
-                and [int(item.get("canvas_width", -1)), int(item.get("canvas_height", -1))]
-                == expected_size
+                and self._target_canvas_matches(item, expected_size)
                 for item in acknowledgements
             ):
                 return
@@ -1228,9 +1242,8 @@ class HikRigCalibrationSession:
             observed_browser = dict(browser)
             if browser.get("canvas_width") and browser.get("canvas_height"):
                 observed = [int(browser["canvas_width"]), int(browser["canvas_height"])]
-                if (
-                    all(abs(a - b) <= 2 for a, b in zip(observed, expected))
-                    and bool(browser.get("fullscreen"))
+                if self._target_canvas_matches(browser, expected) and bool(
+                    browser.get("fullscreen")
                 ):
                     self.viewer_metrics = {
                         **dict(browser),

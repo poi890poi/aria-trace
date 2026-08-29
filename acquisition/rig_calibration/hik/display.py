@@ -6,7 +6,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -53,6 +53,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._viewer: Dict[str, Any] = {}
         self.last_target: Optional[np.ndarray] = None
         self.last_screenshot: Optional[np.ndarray] = None
+        self._canonical_orientation_quarter_turns = 0
 
     def _resolve_component(self) -> str:
         if self.component:
@@ -136,14 +137,37 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             raise RuntimeError("Android Display screenshot was empty")
         return screenshot
 
-    def _show(self, image: np.ndarray, mode: str, label: str, token: str) -> Presentation:
-        if self._temporary is None or self._layout is None or not self.component:
-            raise RuntimeError("Display target is not started")
-        self._revision += 1
-        revision = self._revision
-        issued = time.monotonic_ns()
-        local = Path(self._temporary.name) / "target_{}.png".format(revision)
-        remote = "/sdcard/Download/aria_trace_calibration_target_{}.png".format(revision)
+    @staticmethod
+    def _rotate_quarter_turns_clockwise(
+        image: np.ndarray, quarter_turns: int
+    ) -> np.ndarray:
+        turns = int(quarter_turns) % 4
+        if turns == 0:
+            return image.copy()
+        if turns == 1:
+            return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        if turns == 2:
+            return cv2.rotate(image, cv2.ROTATE_180)
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    def _logical_target(
+        self, image: np.ndarray, display_orientation_quarter_turns: int
+    ) -> Tuple[np.ndarray, int]:
+        rotation = (
+            int(display_orientation_quarter_turns)
+            - int(self._canonical_orientation_quarter_turns)
+        ) % 4
+        return self._rotate_quarter_turns_clockwise(image, rotation), rotation
+
+    def _launch_target(
+        self, image: np.ndarray, revision: int, orientation_attempt: int
+    ) -> None:
+        local = Path(self._temporary.name) / "target_{}_{}.png".format(
+            revision, orientation_attempt
+        )
+        remote = "/sdcard/Download/aria_trace_calibration_target_{}_{}.png".format(
+            revision, orientation_attempt
+        )
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
             raise RuntimeError("Cannot encode Android Display target")
@@ -163,15 +187,21 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             "-n",
             self.component,
         )
-        self.phone.sleeper(self.settle_seconds)
-        width, height = map(int, self._layout.screen_size_px)
-        self.phone.shell("input", "tap", str(width // 2), str(height // 2))
-        tap_time = time.monotonic()
+
+    def _show(self, image: np.ndarray, mode: str, label: str, token: str) -> Presentation:
+        if self._temporary is None or self._layout is None or not self.component:
+            raise RuntimeError("Display target is not started")
+        self._revision += 1
+        revision = self._revision
+        issued = time.monotonic_ns()
         physical_display = self.phone.ensure_display_on(
             timeout_seconds=self.presentation_timeout_seconds
         )
-        deadline = time.monotonic() + self.presentation_timeout_seconds
         screenshot = None
+        displayed_image = image
+        display_orientation = self.phone.display_orientation_quarter_turns()
+        display_rotation = 0
+        orientation_attempts = []
         match = {
             "correlation": -1.0,
             "viewer_rotation_quarter_turns": 0,
@@ -180,41 +210,90 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         }
         probes = 0
         stable_probes = 0
-        previous_screenshot = None
         stable_frame_fraction = 0.0
-        while time.monotonic() < deadline:
+        orientation_changed = False
+        for orientation_attempt in range(1, 5):
+            intended_orientation = int(display_orientation) % 4
+            displayed_image, display_rotation = self._logical_target(
+                image, intended_orientation
+            )
+            self._launch_target(displayed_image, revision, orientation_attempt)
             self.phone.sleeper(self.settle_seconds)
             screenshot = self._capture_screenshot(revision)
             probes += 1
-            match = self._rotation_match(image, screenshot)
-            if previous_screenshot is not None and previous_screenshot.shape == screenshot.shape:
-                frame_difference = np.max(
-                    np.abs(
-                        previous_screenshot.astype(np.int16)
-                        - screenshot.astype(np.int16)
-                    ),
-                    axis=2,
-                )
-                stable_frame_fraction = float(np.mean(frame_difference <= 2))
-            else:
-                stable_frame_fraction = 0.0
-            previous_screenshot = screenshot.copy()
-            complete = (
-                match["correlation"] >= self.minimum_screenshot_correlation
-                and match["matching_pixel_fraction"] >= self.minimum_matching_pixel_fraction
-                and stable_frame_fraction >= self.minimum_stable_frame_fraction
-                and time.monotonic() - tap_time >= self.minimum_ui_settle_seconds
+            observed_orientation = self.phone.display_orientation_quarter_turns()
+            orientation_attempts.append(
+                {
+                    "attempt": orientation_attempt,
+                    "intended_orientation_quarter_turns": intended_orientation,
+                    "observed_orientation_quarter_turns": observed_orientation,
+                    "logical_target_size_px": [
+                        int(displayed_image.shape[1]),
+                        int(displayed_image.shape[0]),
+                    ],
+                    "screenshot_size_px": [
+                        int(screenshot.shape[1]),
+                        int(screenshot.shape[0]),
+                    ],
+                }
             )
-            stable_probes = stable_probes + 1 if complete else 0
+            if observed_orientation != intended_orientation:
+                display_orientation = observed_orientation
+                continue
+
+            width, height = int(screenshot.shape[1]), int(screenshot.shape[0])
+            self.phone.shell("input", "tap", str(width // 2), str(height // 2))
+            tap_time = time.monotonic()
+            deadline = time.monotonic() + self.presentation_timeout_seconds
+            previous_screenshot = None
+            stable_probes = 0
+            orientation_changed = False
+            while time.monotonic() < deadline:
+                self.phone.sleeper(self.settle_seconds)
+                screenshot = self._capture_screenshot(revision)
+                probes += 1
+                observed_orientation = self.phone.display_orientation_quarter_turns()
+                if observed_orientation != intended_orientation:
+                    display_orientation = observed_orientation
+                    orientation_changed = True
+                    break
+                match = self._rotation_match(displayed_image, screenshot)
+                if (
+                    previous_screenshot is not None
+                    and previous_screenshot.shape == screenshot.shape
+                ):
+                    frame_difference = np.max(
+                        np.abs(
+                            previous_screenshot.astype(np.int16)
+                            - screenshot.astype(np.int16)
+                        ),
+                        axis=2,
+                    )
+                    stable_frame_fraction = float(np.mean(frame_difference <= 2))
+                else:
+                    stable_frame_fraction = 0.0
+                previous_screenshot = screenshot.copy()
+                complete = (
+                    match["correlation"] >= self.minimum_screenshot_correlation
+                    and match["matching_pixel_fraction"]
+                    >= self.minimum_matching_pixel_fraction
+                    and stable_frame_fraction >= self.minimum_stable_frame_fraction
+                    and time.monotonic() - tap_time >= self.minimum_ui_settle_seconds
+                )
+                stable_probes = stable_probes + 1 if complete else 0
+                if stable_probes >= self.stable_probe_count:
+                    break
             if stable_probes >= self.stable_probe_count:
                 break
+            if not orientation_changed:
+                break
         if screenshot is None or stable_probes < self.stable_probe_count:
-            self.last_target = image.copy()
+            self.last_target = displayed_image.copy()
             self.last_screenshot = None if screenshot is None else screenshot.copy()
             raise RuntimeError(
                 "Android Display did not show target {} within {:.1f}s: "
                 "last correlation {:.4f}, matching pixels {:.4%}, stable frame {:.4%}, "
-                "stable probes {}/{}"
+                "stable probes {}/{}, orientation attempts {}"
                 .format(
                     label,
                     self.presentation_timeout_seconds,
@@ -223,9 +302,10 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                     stable_frame_fraction,
                     stable_probes,
                     self.stable_probe_count,
+                    orientation_attempts,
                 )
             )
-        self.last_target = image.copy()
+        self.last_target = displayed_image.copy()
         self.last_screenshot = screenshot.copy()
         for old_remote in self._remote_files[:-1]:
             try:
@@ -248,6 +328,17 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             "stable_frame_fraction": stable_frame_fraction,
             "minimum_ui_settle_seconds": self.minimum_ui_settle_seconds,
             "physical_display": physical_display,
+            "canonical_orientation_quarter_turns": int(
+                self._canonical_orientation_quarter_turns
+            ),
+            "display_orientation_quarter_turns": int(display_orientation),
+            "canonical_to_display_rotation_quarter_turns": int(display_rotation),
+            "canonical_target_size_px": [int(image.shape[1]), int(image.shape[0])],
+            "logical_target_size_px": [
+                int(displayed_image.shape[1]),
+                int(displayed_image.shape[0]),
+            ],
+            "orientation_attempts": orientation_attempts,
             **match,
         }
         self._acknowledgements.append(
@@ -265,6 +356,17 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                 "stable_frame_fraction": stable_frame_fraction,
                 "minimum_ui_settle_seconds": self.minimum_ui_settle_seconds,
                 "physical_display": physical_display,
+                "canonical_orientation_quarter_turns": int(
+                    self._canonical_orientation_quarter_turns
+                ),
+                "display_orientation_quarter_turns": int(display_orientation),
+                "canonical_to_display_rotation_quarter_turns": int(display_rotation),
+                "canonical_target_size_px": [int(image.shape[1]), int(image.shape[0])],
+                "logical_target_size_px": [
+                    int(displayed_image.shape[1]),
+                    int(displayed_image.shape[0]),
+                ],
+                "orientation_attempts": orientation_attempts,
                 "server_receive_time_ns": time.monotonic_ns(),
                 **match,
             }
@@ -278,6 +380,9 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._charuco = generate_charuco_target(layout)
         self.component = self._resolve_component()
         self._temporary = tempfile.TemporaryDirectory(prefix="aria-hik-display-")
+        self._canonical_orientation_quarter_turns = (
+            self.phone.display_orientation_quarter_turns()
+        )
         self._show(self._charuco, "image", "ChArUco screen atlas", "charuco-initial")
         return self.component
 
@@ -315,3 +420,4 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             self._temporary = None
         self._layout = None
         self._charuco = None
+        self._canonical_orientation_quarter_turns = 0
