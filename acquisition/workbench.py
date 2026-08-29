@@ -34,9 +34,15 @@ from .android_capture import (
 )
 from .map_stitching import stitch_map_session
 from .map_layers import LayeredGlobalLocalizer, build_map_atlas
+from .map_layer_references import transition_endpoint_references
 from .cursor_pose import CursorPoseEstimator
 from .frame_pump import LatestFramePump
-from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
+from .live_tracker import (
+    GlobalMapLocalizer,
+    MinimapExtractor,
+    TwoRateRealtimeTracker,
+    render_map_overlay,
+)
 from .live_tracking_evidence import LiveTrackingEvidenceRecorder
 from .minimap_calibration import (
     ORDINARY_MOTION_SEGMENT_LABELS,
@@ -1896,7 +1902,7 @@ class AcquisitionWorkbench:
             game_profile_id = str(value.get("game_profile_id") or "")
             if not game_profile_id:
                 raise ValueError("Choose a game profile")
-            self.profiles.game(game_profile_id)
+            game = self.profiles.game(game_profile_id)
             layers = [dict(item) for item in value.get("layers") or ()]
             if not layers:
                 layers = [
@@ -1928,7 +1934,60 @@ class AcquisitionWorkbench:
                 str(value.get("atlas_id") or uuid.uuid4())
             )
             output = self._map_atlas_root(game_profile_id) / atlas_id
+            transition_relative = str(
+                value.get("transition_session_relative_path") or ""
+            )
+            transition_path = None
+            transition_extractor = None
+            if transition_relative:
+                transition_path = self._session_path(transition_relative)
+                described = self._describe_session(transition_path)
+                if described.get("game_profile_id") != game_profile_id:
+                    raise ValueError("Transition session belongs to another game")
+                if described.get("label") != "minimap_transition":
+                    raise ValueError("Expected a minimap_transition session")
+                calibration_id = str(value.get("minimap_calibration_id") or "")
+                calibration = self._read_tracker_artifact(
+                    self._minimap_calibration_root(game_profile_id),
+                    "calibration.json",
+                    calibration_id,
+                )
+                transition_extractor = MinimapExtractor(
+                    game["minimap_calibration"]["crop_xywh"], calibration
+                )
 
+        endpoint_provenance = None
+        if transition_path is not None:
+            if progress:
+                progress("Selecting stable mini-map references at both transition ends")
+            endpoints = transition_endpoint_references(
+                transition_path, transition_extractor
+            )
+            source_mode_id = str(value.get("source_mode_id") or "world")
+            target_mode_id = str(value.get("target_mode_id") or "town")
+            references = {
+                source_mode_id: endpoints["source"],
+                target_mode_id: endpoints["target"],
+            }
+            for layer in resolved_layers:
+                reference = references.get(str(layer["mode_id"]))
+                if reference is None:
+                    continue
+                layer["minimap_reference"] = reference["image"]
+                layer["minimap_reference_mask"] = reference["mask"]
+            endpoint_provenance = {
+                "source_session_key": transition_relative,
+                "source_mode_id": source_mode_id,
+                "target_mode_id": target_mode_id,
+                "source_frame_index": endpoints["source"]["source_frame_index"],
+                "target_frame_index": endpoints["target"]["source_frame_index"],
+                "source_laplacian_variance": endpoints["source"][
+                    "laplacian_variance"
+                ],
+                "target_laplacian_variance": endpoints["target"][
+                    "laplacian_variance"
+                ],
+            }
         result = build_map_atlas(
             resolved_layers,
             output,
@@ -1944,6 +2003,7 @@ class AcquisitionWorkbench:
                 }
                 for item in layers
             ]
+            result["transition_reference"] = endpoint_provenance
             result["artifact_relative_path"] = str(
                 output.relative_to(self.artifact_root)
             )
@@ -1966,6 +2026,10 @@ class AcquisitionWorkbench:
         }
         declared.update(
             item.get("alignment_evidence_file")
+            for item in descriptor.get("layers") or []
+        )
+        declared.update(
+            item.get("minimap_reference_file")
             for item in descriptor.get("layers") or []
         )
         if name not in declared:

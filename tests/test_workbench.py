@@ -2557,6 +2557,116 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_map_atlas_uses_transition_endpoints_for_independent_layer_scales(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                stitch_root = (
+                    root / "artifacts" / "map_stitches" / "genshin-impact-pc"
+                )
+                for stitch_id in ("world-stitch", "town-stitch"):
+                    path = stitch_root / stitch_id
+                    path.mkdir(parents=True)
+                    (path / "map_stitch.json").write_text(
+                        json.dumps({"stitch_id": stitch_id}), encoding="utf-8"
+                    )
+                calibration_root = (
+                    root
+                    / "artifacts"
+                    / "minimap_calibrations"
+                    / "genshin-impact-pc"
+                    / "cal-a"
+                )
+                calibration_root.mkdir(parents=True)
+                (calibration_root / "calibration.json").write_text(
+                    json.dumps(
+                        {
+                            "outer_boundary": {
+                                "center_xy": [64.0, 64.0],
+                                "radius": 60.0,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                transition_session = root / "sessions" / "transitions" / "run_01"
+                transition_session.mkdir(parents=True)
+                source = {
+                    "image": np.full((64, 64, 3), 40, np.uint8),
+                    "mask": np.full((64, 64), 255, np.uint8),
+                    "source_frame_index": 2,
+                    "laplacian_variance": 18.0,
+                }
+                target = {
+                    "image": np.full((64, 64, 3), 80, np.uint8),
+                    "mask": np.full((64, 64), 255, np.uint8),
+                    "source_frame_index": 58,
+                    "laplacian_variance": 22.0,
+                }
+
+                def fake_atlas(layers, output, canonical_mode_id, atlas_id):
+                    self.assertIs(layers[0]["minimap_reference"], source["image"])
+                    self.assertIs(layers[1]["minimap_reference"], target["image"])
+                    output.mkdir(parents=True)
+                    result = {
+                        "schema_version": "1.0",
+                        "atlas_id": atlas_id,
+                        "status": "ready",
+                        "canonical_mode_id": canonical_mode_id,
+                        "canonical_mosaic_file": "canonical_mosaic.png",
+                        "canonical_coverage_file": "canonical_coverage.png",
+                        "layers": [],
+                    }
+                    (output / "canonical_mosaic.png").write_bytes(b"image")
+                    (output / "canonical_coverage.png").write_bytes(b"mask")
+                    return result
+
+                with patch.object(
+                    state, "_session_path", return_value=transition_session
+                ), patch.object(
+                    state,
+                    "_describe_session",
+                    return_value={
+                        "game_profile_id": "genshin-impact-pc",
+                        "label": "minimap_transition",
+                    },
+                ), patch(
+                    "acquisition.workbench.transition_endpoint_references",
+                    return_value={"source": source, "target": target},
+                ), patch(
+                    "acquisition.workbench.build_map_atlas", side_effect=fake_atlas
+                ):
+                    descriptor = state.run_map_atlas(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "atlas_id": "atlas-transition",
+                            "world_stitch_id": "world-stitch",
+                            "town_stitch_id": "town-stitch",
+                            "transition_session_relative_path": "transitions/run_01",
+                            "minimap_calibration_id": "cal-a",
+                        }
+                    )
+
+                atlas = descriptor["map_atlases"]["genshin-impact-pc"][0]
+                self.assertEqual(
+                    atlas["transition_reference"]["source_session_key"],
+                    "transitions/run_01",
+                )
+                self.assertEqual(
+                    atlas["transition_reference"]["source_frame_index"], 2
+                )
+                self.assertEqual(
+                    atlas["transition_reference"]["target_frame_index"], 58
+                )
+            finally:
+                state.close()
+
     def test_helpers_reject_empty_ids_and_map_nearest_frame(self):
         self.assertEqual(safe_id(" Route trial 01 "), "Route-trial-01")
         with self.assertRaises(ValueError):
