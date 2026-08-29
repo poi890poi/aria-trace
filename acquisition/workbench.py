@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import multiprocessing
 import os
 import re
 import shutil
@@ -2545,13 +2546,20 @@ class AcquisitionWorkbench:
                         ", ".join(CursorPoseEstimator.GAUSSIAN_FIT_METHODS)
                     )
                 )
-            cursor_pose_estimator = CursorPoseEstimator(
-                self._minimap_calibration_root(game_profile_id) / calibration_id,
-                gaussian_fit_method=gaussian_fit_method,
-                validation_policy=str(
+            cursor_pose_process_config = {
+                "calibration_path": (
+                    self._minimap_calibration_root(game_profile_id)
+                    / calibration_id
+                ),
+                "gaussian_fit_method": gaussian_fit_method,
+                "validation_policy": str(
                     resolved_profile["cursor_validation_policy"]
                 ),
-            )
+                "opencv_threads": int(
+                    resolved_profile["cursor_opencv_threads"]
+                ),
+                "calibration_metadata": minimap,
+            }
             frame_config = dict(value.get("frame_source") or {})
             adapter = frame_config.get("adapter")
             if adapter not in ("windows_window", "android_scrcpy"):
@@ -2571,7 +2579,7 @@ class AcquisitionWorkbench:
                 scene_yaw,
                 global_interval_s=global_interval_s,
                 localizer=localizer,
-                cursor_pose_estimator=cursor_pose_estimator,
+                cursor_pose_process_config=cursor_pose_process_config,
                 cursor_interval_s=float(resolved_profile["cursor_interval_s"]),
                 temporal_pose_search=bool(
                     resolved_profile["temporal_pose_search"]
@@ -4415,4 +4423,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

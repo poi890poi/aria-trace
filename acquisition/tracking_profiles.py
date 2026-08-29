@@ -12,6 +12,8 @@ TRACKING_PROFILES = {
         "global_interval_s": 2.0,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.45,
+        "cursor_worker_process": True,
+        "cursor_opencv_threads": 1,
     },
     "fast": {
         "cursor_pose_method": "cascade",
@@ -20,6 +22,8 @@ TRACKING_PROFILES = {
         "global_interval_s": 3.0,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.50,
+        "cursor_worker_process": True,
+        "cursor_opencv_threads": 1,
     },
     "accurate": {
         "cursor_pose_method": "vectorized_grid",
@@ -28,6 +32,8 @@ TRACKING_PROFILES = {
         "global_interval_s": 1.5,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.40,
+        "cursor_worker_process": True,
+        "cursor_opencv_threads": 1,
     },
     "offline": {
         "cursor_pose_method": "vectorized_grid",
@@ -36,6 +42,8 @@ TRACKING_PROFILES = {
         "global_interval_s": 0.5,
         "temporal_pose_search": False,
         "pose_confidence_min": 0.0,
+        "cursor_worker_process": True,
+        "cursor_opencv_threads": 2,
     },
 }
 
@@ -63,4 +71,6 @@ def resolve_tracking_profile(
         raise ValueError("global_interval_s must be 0.5–30 seconds")
     if not 0.0 <= float(value["pose_confidence_min"]) <= 1.0:
         raise ValueError("pose_confidence_min must be within 0..1")
+    if int(value["cursor_opencv_threads"]) < 1:
+        raise ValueError("cursor_opencv_threads must be at least one")
     return value

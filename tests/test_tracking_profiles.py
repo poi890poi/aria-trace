@@ -16,6 +16,9 @@ class TrackingProfileTests(unittest.TestCase):
             "minimal",
         )
         self.assertEqual(offline["cursor_interval_s"], 0.0)
+        self.assertTrue(realtime["cursor_worker_process"])
+        self.assertEqual(realtime["cursor_opencv_threads"], 1)
+        self.assertEqual(offline["cursor_opencv_threads"], 2)
 
     def test_explicit_developer_override_is_visible(self):
         value = resolve_tracking_profile(

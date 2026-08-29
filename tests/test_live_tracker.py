@@ -824,11 +824,16 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         runtime["resolved_tracking_profile"]["global_interval_s"],
                         2.0,
                     )
-                    cursor_constructor.assert_called_once_with(
-                        calibration_root,
-                        gaussian_fit_method="fast_grid",
-                        validation_policy="ambiguous",
+                    cursor_constructor.assert_not_called()
+                    engine = state._live_tracker_engine
+                    process_config = engine.kwargs["cursor_pose_process_config"]
+                    self.assertEqual(
+                        process_config["calibration_path"], calibration_root
                     )
+                    self.assertEqual(
+                        process_config["gaussian_fit_method"], "fast_grid"
+                    )
+                    self.assertEqual(process_config["opencv_threads"], 1)
                     self.assertEqual(runtime["latest"]["mode"], "TRACK")
                     self.assertIn("capture_dropped_before_processing", runtime)
                     json.dumps(descriptor)
@@ -998,6 +1003,12 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(
                         engine.kwargs["global_candidate_advisor"]
+                    )
+                    self.assertEqual(
+                        engine.kwargs["cursor_pose_process_config"][
+                            "opencv_threads"
+                        ],
+                        1,
                     )
                     self.assertNotIn("route_state_estimator", engine.kwargs)
             finally:

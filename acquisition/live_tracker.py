@@ -14,6 +14,7 @@ from poc.pose_fusion import FusionConfig, Pose2D, PoseFusionGate
 from poc.yaw_estimation import KltAngularYawEstimator, camera_matrix
 
 from .cursor_pose import CursorPoseEstimator
+from .cursor_worker import CursorPoseProcessExecutor
 from .minimap_transition import TransitionController
 from .minimap_verification import estimate_masked_shift
 
@@ -489,6 +490,7 @@ class TwoRateRealtimeTracker:
         relocalize_after_rejections: int = 6,
         recovery_consensus_count: int = 2,
         global_candidate_advisor=None,
+        cursor_pose_process_config=None,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -562,22 +564,38 @@ class TwoRateRealtimeTracker:
         self._last_route_assistance = None
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
+        if cursor_pose_estimator is not None and cursor_pose_process_config is not None:
+            raise ValueError(
+                "Choose either an in-process cursor estimator or process config"
+            )
         self.cursor_pose_estimator = cursor_pose_estimator
         self.cursor_interval_ns = int(float(cursor_interval_s) * 1.0e9)
         self.last_cursor_ns = None
-        self._cursor_executor = (
-            ThreadPoolExecutor(
+        if cursor_pose_process_config is not None:
+            process_options = dict(cursor_pose_process_config)
+            process_options.pop("calibration_metadata", None)
+            self._cursor_executor = CursorPoseProcessExecutor(
+                **process_options
+            )
+            self._cursor_executor_kind = "process"
+        elif self.cursor_pose_estimator is not None:
+            self._cursor_executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="aria-cursor-pose"
             )
-            if self.cursor_pose_estimator is not None
-            else None
-        )
+            self._cursor_executor_kind = "thread"
+        else:
+            self._cursor_executor = None
+            self._cursor_executor_kind = None
         self._cursor_future = None
         self._last_cursor_pose = None
         self._cursor_error = None
         self.temporal_pose_search = bool(temporal_pose_search)
         self.pose_confidence_min = float(pose_confidence_min)
         calibration = getattr(self.cursor_pose_estimator, "calibration", {}) or {}
+        if cursor_pose_process_config is not None:
+            calibration = dict(
+                cursor_pose_process_config.get("calibration_metadata") or {}
+            )
         dynamics = calibration.get("cursor_temporal_dynamics") or {}
         self.cursor_motion_envelope = dynamics.get(
             "recommended_runtime_envelope", {}
@@ -843,9 +861,15 @@ class TwoRateRealtimeTracker:
         if self._cursor_future is not None and self._cursor_future.done():
             try:
                 result = self._cursor_future.result()
-                public_result = getattr(
-                    self.cursor_pose_estimator, "public_result", lambda value: value
-                )(result)
+                public_result = (
+                    result
+                    if self._cursor_executor_kind == "process"
+                    else getattr(
+                        self.cursor_pose_estimator,
+                        "public_result",
+                        lambda value: value,
+                    )(result)
+                )
                 accepted = bool(
                     public_result.get("detected")
                     and float(public_result.get("confidence") or 0.0)
@@ -932,7 +956,15 @@ class TwoRateRealtimeTracker:
                 "state": self._cursor_tracking_state,
             }
             cursor_crop = self.extractor.crop(frame).copy()
-            if angle_prior is None:
+            if self._cursor_executor_kind == "process":
+                self._cursor_future = self._cursor_executor.submit(
+                    cursor_crop,
+                    None,
+                    timestamp_ns,
+                    angle_prior,
+                    search_half_width,
+                )
+            elif angle_prior is None:
                 self._cursor_future = self._cursor_executor.submit(
                     self.cursor_pose_estimator.estimate,
                     cursor_crop,
@@ -1298,6 +1330,7 @@ class TwoRateRealtimeTracker:
             "cursor_pose": cursor_pose_output,
             "cursor_pose_fresh": cursor_pose_fresh,
             "cursor_pose_running": self._cursor_future is not None,
+            "cursor_executor": self._cursor_executor_kind,
             "cursor_error": self._cursor_error,
             "cursor_temporal_search": dict(self._last_cursor_search)
             if self._last_cursor_search
