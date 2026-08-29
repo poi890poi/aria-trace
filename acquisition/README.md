@@ -235,6 +235,13 @@ Before showing the prompt, the command sends Android's non-toggling
 reports a remaining swipe keyguard, it performs one remote upward swipe. The
 physical power button is never used, so waking the phone cannot move the rig.
 
+For the default `--game-id genshin-impact`, the command resolves the installed
+international or mainland-China Genshin package, launches its Android launcher
+activity, and verifies that the package is foreground before showing the
+prompt. Use `--android-package <package>` for another build or
+`--no-launch-game` to retain a completely manual launch step. Starting the app
+does not inject game input or modify camera/calibration controls.
+
 To record source data without analysis, use:
 
 ```powershell

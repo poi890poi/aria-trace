@@ -23,6 +23,7 @@ from .android_capture import (
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
+from .android_game_launcher import launch_android_game
 from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from .hik_capture import NativeHikFrameSource
 from .recorder import AcquisitionRecorder
@@ -150,6 +151,12 @@ def parser() -> argparse.ArgumentParser:
         )
     )
     value.add_argument("--game-id", default="genshin-impact")
+    value.add_argument("--android-package")
+    value.add_argument(
+        "--no-launch-game",
+        action="store_true",
+        help="wake the phone but leave game launch to the user",
+    )
     value.add_argument("--camera-id")
     value.add_argument("--camera-width", type=int, default=2448)
     value.add_argument("--camera-height", type=int, default=2048)
@@ -191,6 +198,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     width, height = surface["logical_size_px"]
     phone = AdbPhoneSession(serial, adb_executable=adb)
     preparation = _wake_phone_for_preparation(phone, [width, height])
+    game_launch = (
+        {
+            "game_id": arguments.game_id,
+            "status": "disabled_by_user",
+            "package": arguments.android_package,
+            "calibration_controls_changed": False,
+            "game_input_injected": False,
+        }
+        if arguments.no_launch_game
+        else launch_android_game(
+            phone,
+            arguments.game_id,
+            explicit_package=arguments.android_package,
+        )
+    )
     plan = ZigzagTouchPlan(
         start_xy=[round(width * 0.82), round(height * 0.50)],
         end_x=round(width * 0.18),
@@ -210,6 +232,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("Phone display awakened electronically through ADB; the physical power button is not used.")
     if preparation.get("keyguard_after") is True:
         print("The credential keyguard is still present; unlock it without moving the rig.")
+    if game_launch.get("package"):
+        print(
+            "Game: {} ({})".format(
+                game_launch["package"], game_launch["status"]
+            )
+        )
+    elif game_launch["status"] == "manual_unknown_game":
+        print("Game package is unknown; launch it manually before confirming readiness.")
     print("Output session: {}".format(session_path.resolve()))
     print("This command records data only; it does not calibrate or publish profiles.")
     if not arguments.yes:
@@ -254,6 +284,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             },
             "phone_surface_orientation": surface,
             "phone_preparation": preparation,
+            "game_launch": game_launch,
             "zigzag_plan": plan.as_dict(),
             "calibration_status": "not_run",
         },
