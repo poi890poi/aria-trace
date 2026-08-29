@@ -49,6 +49,37 @@ class CircularGaussianFitTests(unittest.TestCase):
         )
         self.assertGreater(fitted["r_squared"], 0.999)
 
+    def test_batched_symmetric_chamfer_matches_angle_loop(self):
+        random = np.random.RandomState(23)
+        polygon_edges = random.rand(9, 11, 11) > 0.88
+        polygon_edges[:, 5, 5] = True
+        polygon_distance_transforms = random.rand(9, 11, 11).astype(np.float32)
+        observed_edge = random.rand(11, 11) > 0.9
+        observed_edge[5, 5] = True
+        observed_distance = random.rand(11, 11).astype(np.float32)
+        expected = []
+        for angle in range(len(polygon_edges)):
+            expected.append(
+                0.5
+                * (
+                    float(np.mean(observed_distance[polygon_edges[angle]]))
+                    + float(
+                        np.mean(
+                            polygon_distance_transforms[angle][observed_edge]
+                        )
+                    )
+                )
+            )
+
+        actual = CursorPoseEstimator._symmetric_chamfer_curve(
+            observed_edge,
+            observed_distance,
+            polygon_edges,
+            polygon_distance_transforms,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1.0e-7, atol=1.0e-7)
+
 
 if __name__ == "__main__":
     unittest.main()

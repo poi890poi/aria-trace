@@ -483,20 +483,37 @@ class CursorPoseEstimator:
         gaussian_fit = self._fit_circular_gaussian(correlation)
         return gaussian_fit, correlation, polar
 
+    @staticmethod
+    def _symmetric_chamfer_curve(
+        observed_edge: np.ndarray,
+        observed_distance: np.ndarray,
+        polygon_edges: np.ndarray,
+        polygon_distance_transforms: np.ndarray,
+    ) -> np.ndarray:
+        edge_counts = np.maximum(
+            polygon_edges.sum(axis=(1, 2), dtype=np.float64), 1.0
+        )
+        model_to_observed = (
+            polygon_edges * observed_distance[None, :, :]
+        ).sum(axis=(1, 2), dtype=np.float64) / edge_counts
+        observed_to_model = polygon_distance_transforms[:, observed_edge].mean(
+            axis=1,
+            dtype=np.float64,
+        )
+        return 0.5 * (model_to_observed + observed_to_model)
+
     def _polygon_likelihood(self, patch: np.ndarray):
         observed = patch >= 0.5
         observed_edge = polygon_edge(observed)
         if not np.any(observed_edge):
             raise RuntimeError("Observed cursor polygon has no edge")
         observed_distance = edge_distance_transform(observed_edge)
-        chamfer = np.empty(360, dtype=np.float64)
-        for angle in range(360):
-            model_edge = self.polygon_edges[angle]
-            model_to_observed = float(np.mean(observed_distance[model_edge]))
-            observed_to_model = float(
-                np.mean(self.polygon_distance_transforms[angle][observed_edge])
-            )
-            chamfer[angle] = 0.5 * (model_to_observed + observed_to_model)
+        chamfer = self._symmetric_chamfer_curve(
+            observed_edge,
+            observed_distance,
+            self.polygon_edges,
+            self.polygon_distance_transforms,
+        )
         scale = max(float(np.percentile(chamfer, 20)), 0.75)
         likelihood = np.exp(-0.5 * (chamfer / scale) ** 2).astype(np.float32)
         gaussian_fit = self._fit_circular_gaussian(likelihood)
