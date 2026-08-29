@@ -1831,10 +1831,17 @@ class WorkbenchTests(unittest.TestCase):
             movement = make_session(2, "movement_only")
             forward = make_session(3, "forward_no_turn")
             scene = make_session(4, "scene_rotation_360")
+            ordinary = make_session(5, "ordinary_cruise")
 
             def fake_calibration(
-                _rotation, _movement, output, _config, progress=None
+                _rotation,
+                _movement,
+                output,
+                _config,
+                progress=None,
+                ordinary_session_path=None,
             ):
+                self.assertEqual(ordinary_session_path, ordinary)
                 output.mkdir(parents=True, exist_ok=True)
                 (output / "cursor_pose_overlays.png").write_bytes(b"pose")
                 return {
@@ -1860,6 +1867,7 @@ class WorkbenchTests(unittest.TestCase):
                             "game_profile_id": "genshin-impact-pc",
                             "rotation_session_relative_path": "analysis-sources/run_01",
                             "movement_session_relative_path": "analysis-sources/run_02",
+                            "ordinary_session_relative_path": "analysis-sources/run_05",
                         }
                     )
                 verify.assert_not_called()
@@ -1873,6 +1881,10 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertEqual(
                     calibration["source_sessions"]["movement_only"]["session_key"],
                     "analysis-sources/run_02",
+                )
+                self.assertEqual(
+                    calibration["source_sessions"]["ordinary_cruise"]["session_key"],
+                    "analysis-sources/run_05",
                 )
 
                 def fake_verification(

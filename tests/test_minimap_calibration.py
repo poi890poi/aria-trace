@@ -49,7 +49,25 @@ class MinimapCalibrationTests(unittest.TestCase):
     def test_recovers_boundary_pivot_shape_and_evidence(self):
         rotation, movement, boundary_center, pivot, radius = synthetic_frames()
         with tempfile.TemporaryDirectory() as temporary:
-            result = calibrate_minimap_frames(rotation, movement, Path(temporary), provenance={"fixture": "synthetic_rotating_map"})
+            result = calibrate_minimap_frames(
+                rotation,
+                movement,
+                Path(temporary),
+                provenance={
+                    "fixture": "synthetic_rotating_map",
+                    "segment_sessions": {
+                        "ordinary_cruise": {
+                            "session_id": "synthetic-ordinary",
+                            "container_fps": 30.0,
+                        },
+                        "movement_only": {
+                            "session_id": "synthetic-movement",
+                            "container_fps": 30.0,
+                        },
+                    },
+                },
+                ordinary_frames=movement,
+            )
             boundary = result["outer_boundary"]
             center = result["rotation_center"]
             self.assertLess(np.linalg.norm(np.array([boundary["center_x"], boundary["center_y"]]) - boundary_center), 2.0)
@@ -92,6 +110,19 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertLess(pose["median_polygon_symmetric_chamfer_px"], 1.0)
             self.assertLess(pose["median_polygon_pixel_agreement_abs_deg"], 5.0)
             self.assertLess(pose["median_gaussian_center_std_deg"], 1.0)
+            dynamics = result["cursor_temporal_dynamics"]
+            self.assertEqual(
+                dynamics["sources"]["ordinary_cruise"]["provenance"][
+                    "session_id"
+                ],
+                "synthetic-ordinary",
+            )
+            self.assertGreater(
+                dynamics["recommended_runtime_envelope"][
+                    "calibrated_turn_rate_p99_deg_s"
+                ],
+                0.0,
+            )
             measurements = [
                 json.loads(line)
                 for line in (Path(temporary) / "cursor_poses.jsonl")

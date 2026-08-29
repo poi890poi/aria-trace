@@ -1402,10 +1402,14 @@ class AcquisitionWorkbench:
                 movement_key, movement_path, movement_manifest, _ = choose(
                     "movement_only", "movement_session_relative_path"
                 )
+                ordinary_key, ordinary_path, ordinary_manifest, _ = choose(
+                    "ordinary_cruise", "ordinary_session_relative_path"
+                )
                 calibration_id = safe_id(
-                    "segments-{}-{}".format(
+                    "segments-{}-{}-{}".format(
                         str(rotation_manifest.get("session_id") or "rotation")[:12],
                         str(movement_manifest.get("session_id") or "movement")[:12],
+                        str(ordinary_manifest.get("session_id") or "ordinary")[:12],
                     )
                 )
                 output = self._minimap_calibration_root(game_profile_id) / calibration_id
@@ -1417,6 +1421,10 @@ class AcquisitionWorkbench:
                     "movement_only": {
                         "session_key": movement_key,
                         "session_id": movement_manifest.get("session_id"),
+                    },
+                    "ordinary_cruise": {
+                        "session_key": ordinary_key,
+                        "session_id": ordinary_manifest.get("session_id"),
                     },
                 }
             else:
@@ -1461,6 +1469,7 @@ class AcquisitionWorkbench:
                 output,
                 calibration_config,
                 progress=progress,
+                ordinary_session_path=ordinary_path,
             )
 
         if progress:

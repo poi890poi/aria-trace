@@ -847,6 +847,33 @@ def _pose_overlays(poses, output: Path) -> None:
         rows.append(crop)
     cv2.imwrite(str(output), np.vstack(rows))
 
+
+def estimate_cursor_pose_sequence(
+    estimator: CursorPoseEstimator,
+    frames: np.ndarray,
+    frame_indices: Optional[Sequence[int]] = None,
+    session_times_ns: Optional[Sequence[int]] = None,
+):
+    """Estimate a sequence without writing review artifacts."""
+    if frame_indices is None:
+        frame_indices = list(range(len(frames)))
+    if session_times_ns is None:
+        session_times_ns = [int(index * 1e9 / 30.0) for index in range(len(frames))]
+    poses = []
+    pose_durations_ns = []
+    for frame, frame_index, session_time_ns in zip(
+        frames, frame_indices, session_times_ns
+    ):
+        started_ns = time.perf_counter_ns()
+        pose = estimator.estimate(
+            frame,
+            int(frame_index),
+            int(session_time_ns),
+        )
+        pose_durations_ns.append(time.perf_counter_ns() - started_ns)
+        poses.append(pose)
+    return poses, pose_durations_ns
+
 def estimate_cursor_pose_frames(
     calibration_path: Path,
     frames: np.ndarray,
@@ -867,19 +894,12 @@ def estimate_cursor_pose_frames(
         frame_indices = list(range(len(frames)))
     if session_times_ns is None:
         session_times_ns = [int(index * 1e9 / 30.0) for index in range(len(frames))]
-    poses = []
-    pose_durations_ns = []
-    for frame, frame_index, session_time_ns in zip(
-        frames, frame_indices, session_times_ns
-    ):
-        started_ns = time.perf_counter_ns()
-        pose = estimator.estimate(
-            frame,
-            int(frame_index),
-            int(session_time_ns),
-        )
-        pose_durations_ns.append(time.perf_counter_ns() - started_ns)
-        poses.append(pose)
+    poses, pose_durations_ns = estimate_cursor_pose_sequence(
+        estimator,
+        frames,
+        frame_indices=frame_indices,
+        session_times_ns=session_times_ns,
+    )
     public = [estimator.public_result(pose) for pose in poses]
     with (output_path / "cursor_poses.jsonl").open("w", encoding="utf-8") as stream:
         for pose in public:

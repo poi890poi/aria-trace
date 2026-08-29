@@ -938,6 +938,7 @@ def calibrate_minimap_frames(
     config: Optional[dict] = None,
     provenance: Optional[dict] = None,
     progress=None,
+    ordinary_frames: Optional[np.ndarray] = None,
 ) -> dict:
     """Calibrate from already labeled frame arrays and persist review evidence."""
     config = _merged_config(config)
@@ -1017,6 +1018,70 @@ def calibrate_minimap_frames(
     )
     result["cursor_pose_validation"] = pose_summary
     result["evidence"].extend(pose_summary["evidence"])
+    if ordinary_frames is not None:
+        if progress:
+            progress("Measuring cursor turning dynamics from standard sessions")
+        from .cursor_dynamics import summarize_cursor_dynamics
+        from .cursor_pose import (
+            CursorPoseEstimator,
+            estimate_cursor_pose_sequence,
+            timing_summary_ms,
+        )
+
+        movement_poses = [
+            json.loads(line)
+            for line in (output_path / "cursor_poses.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        ordinary_source = (
+            ((provenance or {}).get("segment_sessions") or {}).get(
+                "ordinary_cruise", {}
+            )
+        )
+        ordinary_fps = float(ordinary_source.get("container_fps") or pose_fps)
+        ordinary_times_ns = [
+            int(index * 1.0e9 / ordinary_fps)
+            for index in range(len(ordinary_frames))
+        ]
+        dynamics_estimator = CursorPoseEstimator(output_path / "calibration.json")
+        ordinary_private, ordinary_durations_ns = estimate_cursor_pose_sequence(
+            dynamics_estimator,
+            ordinary_frames,
+            frame_indices=list(range(len(ordinary_frames))),
+            session_times_ns=ordinary_times_ns,
+        )
+        ordinary_poses = [
+            dynamics_estimator.public_result(item) for item in ordinary_private
+        ]
+        dynamics = summarize_cursor_dynamics(
+            {
+                "ordinary_cruise": ordinary_poses,
+                "movement_only": movement_poses,
+            },
+            source_provenance={
+                role: dict(value)
+                for role, value in (
+                    ((provenance or {}).get("segment_sessions") or {}).items()
+                )
+                if role in ("ordinary_cruise", "movement_only")
+            },
+        )
+        dynamics["ordinary_pose_estimation_benchmark"] = timing_summary_ms(
+            ordinary_durations_ns,
+            "standard ordinary-cruise cursor pose measurements",
+        )
+        dynamics["measurement_files"] = {
+            "ordinary_cruise": "cursor_dynamics_ordinary_poses.jsonl",
+            "movement_only": "cursor_poses.jsonl",
+        }
+        with (output_path / "cursor_dynamics_ordinary_poses.jsonl").open(
+            "w", encoding="utf-8"
+        ) as stream:
+            for pose in ordinary_poses:
+                stream.write(json.dumps(pose, separators=(",", ":")) + "\n")
+        result["cursor_temporal_dynamics"] = dynamics
     if progress:
         progress("Writing the calibrated model and pose evidence")
     _atomic_json(output_path / "calibration.json", result)
@@ -1082,6 +1147,7 @@ def calibrate_segment_sessions(
     config: Optional[dict] = None,
     forward_session_path: Optional[Path] = None,
     progress=None,
+    ordinary_session_path: Optional[Path] = None,
 ) -> dict:
     """Calibrate from short sessions whose capture plan supplies each label."""
     config = _merged_config(config)
@@ -1113,6 +1179,15 @@ def calibrate_segment_sessions(
         )
         return reader, frames, fps
 
+    ordinary_reader = None
+    ordinary_frames = None
+    ordinary_fps = None
+    if ordinary_session_path is not None:
+        if progress:
+            progress("Decoding the ordinary-cruise calibration session")
+        ordinary_reader, ordinary_frames, ordinary_fps = read_session(
+            ordinary_session_path, "ordinary_cruise"
+        )
     if progress:
         progress("Decoding the rotation-only calibration session")
     rotation_reader, rotation_frames, rotation_fps = read_session(
@@ -1161,6 +1236,17 @@ def calibrate_segment_sessions(
         },
         "forward_heading_motion_reference": forward_reference,
     }
+    if ordinary_reader is not None:
+        provenance["segments"]["ordinary_cruise"] = [
+            0.0,
+            float(ordinary_reader.manifest.get("duration_ns") or 0) / 1.0e9,
+        ]
+        provenance["segment_sessions"]["ordinary_cruise"] = {
+            "session_path": str(Path(ordinary_session_path).resolve()),
+            "session_id": ordinary_reader.manifest.get("session_id"),
+            "frame_count": len(ordinary_frames),
+            "container_fps": ordinary_fps,
+        }
     return calibrate_minimap_frames(
         rotation_frames,
         movement_frames,
@@ -1168,6 +1254,7 @@ def calibrate_segment_sessions(
         config=config,
         provenance=provenance,
         progress=progress,
+        ordinary_frames=ordinary_frames,
     )
 
 
