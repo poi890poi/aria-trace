@@ -64,6 +64,7 @@ def rig_document():
         "camera": {
             "device_id": "camera-1",
             "full_sensor_mode": {"width_px": 100, "height_px": 80, "fps": 30.0},
+            "hardware_roi_xywh": [0, 0, 100, 80],
             "controls": {
                 "genicam": {
                     "SensorWidth": {"value": 100},
@@ -86,7 +87,12 @@ def rig_document():
             "screen_to_full_sensor_camera_3x3": np.eye(3).tolist(),
             "full_sensor_camera_to_screen_3x3": np.eye(3).tolist(),
         },
-        "normalization": {"output_size_px": [100, 80]},
+        "normalization": {
+            "output_size_px": [100, 80],
+            "origin_screen_xy": [0, 0],
+            "screen_units_per_output_pixel_xy": [1, 1],
+            "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
+        },
     }
 
 
@@ -137,13 +143,34 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(42, frame_set.frame_number)
         self.assertEqual(1234, frame_set.time_ns)
         self.assertTrue(frame_set.metadata["one_acquisition_for_all_streams"])
+        self.assertTrue(frame_set.metadata["full_output_normalized_by_base_rig"])
 
-    def test_full_mode_returns_only_full_sensor_stream(self):
+    def test_full_mode_returns_only_normalized_visible_phone_stream(self):
         adapter = FakeAdapter()
         camera = self.camera("full", False, adapter).open()
         frame_set = camera.read_streams()
         self.assertEqual(["full"], list(frame_set.streams))
         self.assertEqual([0, 0, 100, 80], adapter.roi)
+
+    def test_full_mode_uses_base_rig_hardware_roi_and_output_mapping(self):
+        document = rig_document()
+        document["camera"]["hardware_roi_xywh"] = [10, 5, 80, 60]
+        document["normalization"].update(
+            {
+                "output_size_px": [80, 60],
+                "origin_screen_xy": [10, 5],
+                "full_sensor_camera_to_output_3x3": [
+                    [1, 0, -10], [0, 1, -5], [0, 0, 1]
+                ],
+            }
+        )
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        adapter = FakeAdapter()
+        frame_set = self.camera("full", False, adapter).open().read_streams()
+        self.assertEqual([10, 5, 80, 60], adapter.roi)
+        self.assertEqual((60, 80, 3), frame_set.streams["full"].shape)
+        self.assertEqual(10, int(frame_set.streams["full"][0, 0, 0]))
+        self.assertEqual(5, int(frame_set.streams["full"][0, 0, 1]))
 
     def test_android_logical_crop_can_be_resolved_without_image_matching(self):
         crop = _source_crop_to_canonical_phone(

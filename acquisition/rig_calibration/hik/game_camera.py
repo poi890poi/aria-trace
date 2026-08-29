@@ -166,7 +166,7 @@ class ProfiledHikGameCamera:
         )
         self.minimap_path, self.minimap = _load_json(
             minimap_calibration,
-            ("minimap_calibration.json", "calibration.json"),
+            ("profile.json", "minimap_calibration.json", "calibration.json"),
         )
         self.mode = mode
         self.rectify_minimap = bool(rectify_minimap)
@@ -179,6 +179,11 @@ class ProfiledHikGameCamera:
         self._minimap_sensor_roi: Optional[list[int]] = None
         self._minimap_matrix: Optional[np.ndarray] = None
         self._minimap_size: Optional[tuple[int, int]] = None
+        self._full_matrix: Optional[np.ndarray] = None
+        self._full_size: Optional[tuple[int, int]] = None
+        self._full_map_x: Optional[np.ndarray] = None
+        self._full_map_y: Optional[np.ndarray] = None
+        self._minimap_in_full_xywh: Optional[list[int]] = None
 
     def _screen_crop(self) -> list[int]:
         crop = _source_crop_to_canonical_phone(self.minimap)
@@ -209,8 +214,7 @@ class ProfiledHikGameCamera:
         ]
 
     def _full_mode_roi(self) -> list[int]:
-        width, height = self._sensor_size()
-        return [0, 0, width, height]
+        return list(map(int, self.rig["camera"]["hardware_roi_xywh"]))
 
     def _apply_locked_imaging(self) -> None:
         imaging = self.rig["imaging"]
@@ -267,6 +271,44 @@ class ProfiledHikGameCamera:
                 acquisition_to_screen
             )
             self._minimap_size = (crop_width, crop_height)
+
+            normalization = self.rig["normalization"]
+            full_to_output = np.asarray(
+                normalization.get("full_sensor_camera_to_output_3x3")
+                or _translation(
+                    -float(normalization.get("origin_screen_xy", [0, 0])[0]),
+                    -float(normalization.get("origin_screen_xy", [0, 0])[1]),
+                ).dot(camera_to_screen),
+                dtype=np.float64,
+            )
+            self._full_matrix = compose_hardware_roi_homography(
+                full_to_output, self._effective_roi
+            )
+            self._full_size = tuple(map(int, normalization["output_size_px"]))
+            dense_file = normalization.get("dense_map_file")
+            if dense_file and self.mode != "minimap":
+                dense_path = self.rig_path.parent / str(dense_file)
+                if dense_path.is_file():
+                    with np.load(str(dense_path)) as dense:
+                        self._full_map_x = np.asarray(
+                            dense["map_x"], dtype=np.float32
+                        ) - float(self._effective_roi[0])
+                        self._full_map_y = np.asarray(
+                            dense["map_y"], dtype=np.float32
+                        ) - float(self._effective_roi[1])
+            origin_x, origin_y = map(
+                float, normalization.get("origin_screen_xy", [0, 0])
+            )
+            scale_x, scale_y = map(
+                float,
+                normalization.get("screen_units_per_output_pixel_xy", [1, 1]),
+            )
+            self._minimap_in_full_xywh = [
+                int(round((crop_x - origin_x) / scale_x)),
+                int(round((crop_y - origin_y) / scale_y)),
+                int(round(crop_width / scale_x)),
+                int(round(crop_height / scale_y)),
+            ]
             self._opened = True
         except Exception:
             self.adapter.close()
@@ -294,6 +336,35 @@ class ProfiledHikGameCamera:
         top = mini_y - acquisition_y
         return image[top : top + mini_height, left : left + mini_width].copy()
 
+    def _full_from_acquisition(self, image: np.ndarray) -> np.ndarray:
+        if self._full_map_x is not None and self._full_map_y is not None:
+            return cv2.remap(
+                image,
+                self._full_map_x,
+                self._full_map_y,
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0),
+            )
+        return cv2.warpPerspective(
+            image,
+            self._full_matrix,
+            self._full_size,
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+
+    def _minimap_from_full(self, full: np.ndarray) -> np.ndarray:
+        x, y, width, height = self._minimap_in_full_xywh
+        if x < 0 or y < 0 or x + width > full.shape[1] or y + height > full.shape[0]:
+            raise ValueError(
+                "Mini-map crop {} exceeds normalized full output {}x{}".format(
+                    self._minimap_in_full_xywh, full.shape[1], full.shape[0]
+                )
+            )
+        return full[y : y + height, x : x + width].copy()
+
     def read_streams(self) -> HikGameFrameSet:
         if not self._opened:
             raise RuntimeError("Profiled HIK game camera is not open")
@@ -303,11 +374,12 @@ class ProfiledHikGameCamera:
                 "minimap": self._minimap_from_acquisition(sample.image)
             }
         elif self.mode == "full":
-            streams = {"full": sample.image}
+            streams = {"full": self._full_from_acquisition(sample.image)}
         else:
+            full = self._full_from_acquisition(sample.image)
             streams = {
-                "full": sample.image,
-                "minimap": self._minimap_from_acquisition(sample.image),
+                "full": full,
+                "minimap": self._minimap_from_full(full),
             }
         frame_number = sample.metadata.get("frame_number")
         return HikGameFrameSet(
@@ -321,6 +393,8 @@ class ProfiledHikGameCamera:
                 "rectified_minimap": self.rectify_minimap,
                 "acquisition_roi_xywh": list(self._effective_roi),
                 "minimap_sensor_roi_xywh": list(self._minimap_sensor_roi),
+                "full_output_normalized_by_base_rig": self.mode != "minimap",
+                "minimap_crop_in_full_output_xywh": list(self._minimap_in_full_xywh),
                 "one_acquisition_for_all_streams": True,
             },
         )
