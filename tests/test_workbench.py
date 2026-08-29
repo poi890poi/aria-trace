@@ -1761,6 +1761,17 @@ class WorkbenchTests(unittest.TestCase):
                     scene_candidates[0]["session_key"], "managed-sessions/run_01"
                 )
 
+                teleport_labeled = state.label_session(
+                    "managed-sessions/run_01", "teleportation"
+                )["sessions"][0]
+                self.assertEqual(teleport_labeled["label"], "teleportation")
+                teleport_candidates = state.descriptor()["analysis_candidates"][
+                    "genshin-impact-pc"
+                ]["teleportation"]
+                self.assertEqual(
+                    teleport_candidates[0]["session_key"], "managed-sessions/run_01"
+                )
+
                 opened = []
                 state._folder_opener = opened.append
                 state.open_session_folder("managed-sessions/run_01")
@@ -2092,6 +2103,159 @@ class WorkbenchTests(unittest.TestCase):
                     without_motion["calibration_id"], with_route["calibration_id"]
                 )
                 self.assertTrue(with_route["calibration_id"].startswith("segments-"))
+            finally:
+                state.close()
+
+    def test_teleport_analysis_uses_selected_session_and_spatial_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            session = root / "sessions" / "teleport-sources" / "run_08"
+            writer = SessionWriter(
+                session,
+                [DescribedSource()],
+                [],
+                video_encoding="mjpeg",
+                session_context={
+                    "experiment_id": "teleport-sources",
+                    "game_profile_id": "genshin-impact-pc",
+                    "capture_kind": "game_behavior",
+                    "capture_id": "teleportation",
+                    "run_index": 8,
+                    "input_adapter": "none",
+                    "input_requirement": "none",
+                },
+            )
+            timestamp = writer.origin_ns
+            writer.write_frame(
+                FramePacket(
+                    "main",
+                    np.zeros((32, 32, 3), dtype=np.uint8),
+                    timestamp,
+                    timestamp,
+                )
+            )
+            writer.close()
+            (session / "session_metadata.json").write_text(
+                json.dumps({"label": "teleportation"}), encoding="utf-8"
+            )
+            calibration_id = "calibration-a"
+            calibration_root = (
+                root
+                / "artifacts"
+                / "minimap_calibrations"
+                / "genshin-impact-pc"
+                / calibration_id
+            )
+            calibration_root.mkdir(parents=True)
+            (calibration_root / "calibration.json").write_text(
+                json.dumps({"calibration_id": calibration_id}), encoding="utf-8"
+            )
+            stitch_id = "stitch-a"
+            stitch_root = (
+                root
+                / "artifacts"
+                / "map_stitches"
+                / "genshin-impact-pc"
+                / stitch_id
+            )
+            stitch_root.mkdir(parents=True)
+            (stitch_root / "map_stitch.json").write_text(
+                json.dumps(
+                    {
+                        "stitch_id": stitch_id,
+                        "source_minimap_calibration_id": calibration_id,
+                        "localization": {"status": "ready"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            def fake_analysis(
+                source,
+                output,
+                *,
+                game_profile_id,
+                minimap_config,
+                minimap_calibration,
+                map_stitch,
+                map_stitch_root,
+                progress=None,
+            ):
+                calls.append(
+                    (
+                        source,
+                        game_profile_id,
+                        minimap_calibration["calibration_id"],
+                        map_stitch["stitch_id"],
+                        map_stitch_root,
+                    )
+                )
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "teleport_phase_timeline.png").write_bytes(b"teleport")
+                return {
+                    "schema_version": "2.0",
+                    "status": "review_required",
+                    "coordinate_space_id": "map-stitch:stitch-a:original-map-px",
+                    "teleport_target_global_xy": [10.0, 20.0],
+                    "destination_global_xy": [11.0, 21.0],
+                    "target_to_destination_offset_xy": [1.0, 1.0],
+                    "phases": [],
+                    "arrival_model": {},
+                    "quality": {"generalization_status": "single_observed_episode"},
+                    "provenance": {"generated_utc": "2026-08-29T12:00:00+00:00"},
+                    "evidence_files": [
+                        {
+                            "name": "teleport_phase_timeline.png",
+                            "title": "Teleport phases",
+                            "category": "phases",
+                        }
+                    ],
+                }
+
+            try:
+                with patch(
+                    "acquisition.workbench.analyze_teleport_session",
+                    side_effect=fake_analysis,
+                ):
+                    descriptor = state.run_teleport_analysis(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "session_relative_path": "teleport-sources/run_08",
+                            "minimap_calibration_id": calibration_id,
+                            "map_stitch_id": stitch_id,
+                        }
+                    )
+                behavior = descriptor["teleport_behaviors"]["genshin-impact-pc"][0]
+                self.assertEqual(behavior["source_session_key"], "teleport-sources/run_08")
+                self.assertEqual(behavior["minimap_calibration_id"], calibration_id)
+                self.assertEqual(behavior["map_stitch_id"], stitch_id)
+                self.assertEqual(
+                    calls,
+                    [
+                        (
+                            session,
+                            "genshin-impact-pc",
+                            calibration_id,
+                            stitch_id,
+                            stitch_root,
+                        )
+                    ],
+                )
+                self.assertEqual(
+                    state.teleport_behavior_image(
+                        "genshin-impact-pc",
+                        behavior["behavior_id"],
+                        "teleport_phase_timeline.png",
+                    ),
+                    b"teleport",
+                )
             finally:
                 state.close()
 

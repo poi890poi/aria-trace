@@ -49,6 +49,7 @@ from .sources import (
     OpenCvCameraFrameSource,
 )
 from .tracking_profiles import resolve_tracking_profile
+from .teleport_analysis import analyze_teleport_session
 from .windows import (
     WindowsDesktopApi,
     WindowsKeyboardMouseSource,
@@ -1210,6 +1211,7 @@ class AcquisitionWorkbench:
             "full_map",
             "ordinary_cruise",
             "route",
+            "teleportation",
         }
         values = {}
         for session in self.sessions():
@@ -1338,6 +1340,11 @@ class AcquisitionWorkbench:
     def queue_scene_yaw_calibration(self, value: dict) -> dict:
         return self._queue_analysis(
             "scene_yaw_calibration", value, self.run_scene_yaw_calibration
+        )
+
+    def queue_teleport_analysis(self, value: dict) -> dict:
+        return self._queue_analysis(
+            "teleport_analysis", value, self.run_teleport_analysis
         )
 
     def run_minimap_calibration(self, value: dict, progress=None) -> dict:
@@ -1821,6 +1828,135 @@ class AcquisitionWorkbench:
         declared = {item.get("name") for item in descriptor.get("evidence", [])}
         if name not in declared:
             raise ValueError("Unknown map-stitch evidence image")
+        return (root / name).read_bytes()
+
+    def _teleport_behavior_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "teleport_behaviors" / safe_id(game_profile_id)
+
+    def _teleport_behaviors(self) -> dict:
+        values = {}
+        root = self.artifact_root / "teleport_behaviors"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/teleport.analysis.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item["behavior_id"] = path.parent.name
+                item["artifact_relative_path"] = str(
+                    path.parent.relative_to(self.artifact_root)
+                )
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append(
+                    {
+                        "behavior_id": path.parent.name,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        for items in values.values():
+            items.sort(
+                key=lambda item: (
+                    (item.get("provenance") or {}).get("generated_utc") or ""
+                ),
+                reverse=True,
+            )
+        return values
+
+    def run_teleport_analysis(self, value: dict, progress=None) -> dict:
+        if progress:
+            progress("Checking teleport session and spatial artifacts")
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Wait for the active take to finish")
+            game_profile_id = str(value.get("game_profile_id") or "")
+            if not game_profile_id:
+                raise ValueError("Choose a game profile")
+            game = self.profiles.game(game_profile_id)
+            minimap_config = game.get("minimap_calibration")
+            if not minimap_config:
+                raise ValueError("The selected game has no mini-map profile")
+
+            relative = str(value.get("session_relative_path") or "")
+            if not relative:
+                candidates = (
+                    self.analysis_candidates()
+                    .get(game_profile_id, {})
+                    .get("teleportation", [])
+                )
+                relative = str(candidates[0]["session_key"]) if candidates else ""
+            if not relative:
+                raise ValueError("No ready teleportation session is available")
+            session_path = self._session_path(relative)
+            described = self._describe_session(session_path)
+            if described.get("game_profile_id") != game_profile_id:
+                raise ValueError("Teleport session belongs to another game")
+            if described.get("label") != "teleportation":
+                raise ValueError("Expected a teleportation session")
+
+            calibration_id = str(value.get("minimap_calibration_id") or "")
+            if not calibration_id or safe_id(calibration_id) != calibration_id:
+                raise ValueError("Choose a mini-map calibration")
+            calibration_root = (
+                self._minimap_calibration_root(game_profile_id) / calibration_id
+            )
+            calibration_file = calibration_root / "calibration.json"
+            if not calibration_file.is_file():
+                raise ValueError("Mini-map calibration artifact does not exist")
+            calibration = json.loads(calibration_file.read_text(encoding="utf-8"))
+            calibration["calibration_id"] = calibration_id
+
+            stitch_id = str(value.get("map_stitch_id") or "")
+            if not stitch_id or safe_id(stitch_id) != stitch_id:
+                raise ValueError("Choose a stitched global map")
+            stitch_root = self._map_stitch_root(game_profile_id) / stitch_id
+            stitch_file = stitch_root / "map_stitch.json"
+            if not stitch_file.is_file():
+                raise ValueError("Map-stitch artifact does not exist")
+            stitch = json.loads(stitch_file.read_text(encoding="utf-8"))
+            stitch["stitch_id"] = stitch_id
+            if stitch.get("source_minimap_calibration_id") != calibration_id:
+                raise ValueError(
+                    "Map stitch and teleport destination use different mini-map calibrations"
+                )
+            behavior_id = safe_id(described.get("session_id") or session_path.name)
+            output = self._teleport_behavior_root(game_profile_id) / behavior_id
+
+        result = analyze_teleport_session(
+            session_path,
+            output,
+            game_profile_id=game_profile_id,
+            minimap_config=minimap_config,
+            minimap_calibration=calibration,
+            map_stitch=stitch,
+            map_stitch_root=stitch_root,
+            progress=progress,
+        )
+        with self._lock:
+            result["source_session_key"] = relative
+            result["behavior_id"] = behavior_id
+            result["map_stitch_id"] = stitch_id
+            result["minimap_calibration_id"] = calibration_id
+            result["artifact_relative_path"] = str(
+                output.relative_to(self.artifact_root)
+            )
+            _write_json_atomic(output / "teleport.analysis.json", result)
+            self._last_error = None
+            return self.descriptor()
+
+    def teleport_behavior_image(
+        self, game_profile_id: str, behavior_id: str, name: str
+    ) -> bytes:
+        if Path(name).name != name or not name.lower().endswith(".png"):
+            raise ValueError("Invalid teleport evidence image name")
+        root = self._teleport_behavior_root(game_profile_id) / safe_id(behavior_id)
+        descriptor = json.loads(
+            (root / "teleport.analysis.json").read_text(encoding="utf-8")
+        )
+        declared = {item.get("name") for item in descriptor.get("evidence_files", [])}
+        if name not in declared:
+            raise ValueError("Unknown teleport evidence image")
         return (root / name).read_bytes()
 
     def _live_tracker_descriptor(self) -> Optional[dict]:
@@ -2620,6 +2756,7 @@ class AcquisitionWorkbench:
                 "minimap_calibrations": self._minimap_calibrations(),
                 "scene_yaw_calibrations": self._scene_yaw_calibrations(),
                 "map_stitches": self._map_stitches(),
+                "teleport_behaviors": self._teleport_behaviors(),
                 "analysis_candidates": self.analysis_candidates(),
                 "analysis_jobs": {
                     key: dict(value) for key, value in self._analysis_jobs.items()
@@ -3513,6 +3650,14 @@ def make_handler(state: AcquisitionWorkbench):
                         query.get("name", [""])[0],
                     )
                     self._send(200, "image/png", body)
+                elif path == "/api/teleport-analysis/image":
+                    query = parse_qs(parsed.query)
+                    body = state.teleport_behavior_image(
+                        query.get("game_id", [""])[0],
+                        query.get("behavior_id", [""])[0],
+                        query.get("name", [""])[0],
+                    )
+                    self._send(200, "image/png", body)
                 elif path == "/api/tracker/overlay":
                     self._send(
                         200,
@@ -3575,6 +3720,8 @@ def make_handler(state: AcquisitionWorkbench):
                     result = state.queue_map_stitch(value)
                 elif path == "/api/scene-yaw/run":
                     result = state.queue_scene_yaw_calibration(value)
+                elif path == "/api/teleport-analysis/run":
+                    result = state.queue_teleport_analysis(value)
                 elif path == "/api/tracker/start":
                     result = state.start_live_tracker(value)
                 elif path == "/api/tracker/stop":
