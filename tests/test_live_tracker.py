@@ -404,6 +404,50 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
+    def test_optional_route_estimator_projects_pose_and_resets_reference(self):
+        class RouteEstimator:
+            def update(self, observation, mask, predicted_xy, timestamp_ns=None):
+                return {
+                    "accepted": True,
+                    "canonical_xy": [42.0, 24.0],
+                    "active_mode_id": "town",
+                    "mode_switched": True,
+                    "reset_local_reference": True,
+                    "state": "route_track",
+                }
+
+        class ModeLocalizer(ImmediateLocalizer):
+            def __init__(self):
+                super().__init__()
+                self.active_mode_id = None
+
+            def set_active_mode(self, mode_id):
+                self.active_mode_id = mode_id
+
+        localizer = ModeLocalizer()
+        tracker = TwoRateRealtimeTracker(
+            np.full((160, 180, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+            localizer=localizer,
+            route_state_estimator=RouteEstimator(),
+        )
+        tracker.fusion.initialize(Pose2D(40.0, 20.0, 15.0))
+        frame = np.random.RandomState(12).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        try:
+            result = tracker.update(frame, 1)
+
+            self.assertAlmostEqual(result["pose"]["x"], 42.0)
+            self.assertAlmostEqual(result["pose"]["y"], 24.0)
+            self.assertEqual(result["route_tracking"]["state"], "route_track")
+            self.assertEqual(localizer.active_mode_id, "town")
+            self.assertIsNone(tracker.previous_minimap)
+        finally:
+            tracker.close()
+
     def test_exposes_player_heading_from_cursor_and_map_alignment(self):
         cursor_pose_estimator = FakeCursorPoseEstimator()
         tracker = self._tracker(
