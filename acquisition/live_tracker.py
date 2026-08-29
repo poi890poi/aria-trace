@@ -483,6 +483,10 @@ class TwoRateRealtimeTracker:
         cursor_interval_s: float = 0.25,
         temporal_pose_search: bool = False,
         pose_confidence_min: float = 0.45,
+        local_response_min: float = 0.25,
+        local_shift_max_fraction: float = 0.18,
+        relocalize_after_rejections: int = 6,
+        recovery_consensus_count: int = 2,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -499,6 +503,18 @@ class TwoRateRealtimeTracker:
         self.global_interval_ns = int(float(global_interval_s) * 1.0e9)
         self.last_global_ns = None
         self.previous_minimap = None
+        self.local_response_min = float(local_response_min)
+        self.local_shift_max_px = max(
+            3.0,
+            float(min(self.extractor.mask.shape[:2]))
+            * float(local_shift_max_fraction),
+        )
+        self.relocalize_after_rejections = max(
+            1, int(relocalize_after_rejections)
+        )
+        self.recovery_consensus_count = max(2, int(recovery_consensus_count))
+        self._local_rejections = 0
+        self._recovery_hypotheses = []
         self.fusion = PoseFusionGate(
             FusionConfig(
                 initial_position_sigma_m=3.0,
@@ -644,6 +660,21 @@ class TwoRateRealtimeTracker:
             )
         return self.localizer.localize(minimap, mask, yaw_prior)
 
+    @staticmethod
+    def _fixes_agree(first: GlobalFix, second: GlobalFix) -> bool:
+        position_delta = math.hypot(second.x - first.x, second.y - first.y)
+        yaw_delta = abs(_angle_difference_deg(second.yaw_deg, first.yaw_deg))
+        scale_delta = abs(second.scale - first.scale) / max(first.scale, 1.0e-6)
+        return position_delta <= 30.0 and yaw_delta <= 15.0 and scale_delta <= 0.12
+
+    @staticmethod
+    def _mean_fix(rows) -> Pose2D:
+        return Pose2D(
+            float(np.mean([item.x for item in rows])),
+            float(np.mean([item.y for item in rows])),
+            _circular_mean_deg([item.yaw_deg for item in rows]),
+        )
+
     def update(self, frame: np.ndarray, host_time_ns: Optional[int] = None) -> dict:
         started = time.perf_counter()
         timestamp_ns = int(host_time_ns or time.perf_counter_ns())
@@ -652,6 +683,8 @@ class TwoRateRealtimeTracker:
         minimap, mask = self.extractor.extract(frame)
         local_shift = (0.0, 0.0)
         local_response = 0.0
+        local_accepted = False
+        local_decision = "reference-initialized"
         if self.previous_minimap is not None:
             trials = []
             signs = (0.0,)
@@ -669,15 +702,31 @@ class TwoRateRealtimeTracker:
             # materially improves the mini-map registration itself.
             selected = zero if zero[0] >= best[0] - 0.02 else best
             local_response, local_shift, compensation_sign = selected
+            local_distance = math.hypot(*local_shift)
+            if local_response < self.local_response_min:
+                local_decision = "rejected:weak-correlation"
+            elif local_distance > self.local_shift_max_px:
+                local_decision = "rejected:implausible-displacement"
+            else:
+                local_accepted = True
+                local_decision = "accepted"
         else:
             compensation_sign = 0.0
         self.previous_minimap = minimap
-        alignment_delta_deg = compensation_sign * yaw.delta_deg
+        alignment_delta_deg = (
+            compensation_sign * yaw.delta_deg if local_accepted else 0.0
+        )
 
-        if self.fusion._state is not None and self.sequence:
+        local_motion_applied = False
+        if self.fusion._state is not None and self.sequence and local_accepted:
             shift_x, shift_y = local_shift
             local_motion = (-shift_x * self.map_scale, -shift_y * self.map_scale)
             self.fusion.predict(local_motion, alignment_delta_deg)
+            local_motion_applied = True
+            self._local_rejections = 0
+            self._recovery_hypotheses = []
+        elif self.fusion._state is not None and self.sequence:
+            self._local_rejections += 1
 
         cursor_pose_fresh = False
         if self._cursor_future is not None and self._cursor_future.done():
@@ -812,30 +861,13 @@ class TwoRateRealtimeTracker:
                 if self.fusion._state is None:
                     if self._initial_hypotheses:
                         previous = self._initial_hypotheses[-1]
-                        position_delta = math.hypot(
-                            global_fix.x - previous.x, global_fix.y - previous.y
-                        )
-                        yaw_delta = abs(
-                            _angle_difference_deg(global_fix.yaw_deg, previous.yaw_deg)
-                        )
-                        scale_delta = abs(global_fix.scale - previous.scale) / max(
-                            previous.scale, 1.0e-6
-                        )
-                        if (
-                            position_delta > 30.0
-                            or yaw_delta > 15.0
-                            or scale_delta > 0.12
-                        ):
+                        if not self._fixes_agree(previous, global_fix):
                             self._initial_hypotheses = []
                     self._initial_hypotheses.append(global_fix)
                     count = len(self._initial_hypotheses)
                     if count >= self.initial_consensus_count:
                         rows = self._initial_hypotheses[-self.initial_consensus_count :]
-                        initialized = Pose2D(
-                            float(np.mean([item.x for item in rows])),
-                            float(np.mean([item.y for item in rows])),
-                            _circular_mean_deg([item.yaw_deg for item in rows]),
-                        )
+                        initialized = self._mean_fix(rows)
                         self.map_scale = float(np.mean([item.scale for item in rows]))
                         self.fusion.initialize(initialized)
                         self._initial_hypotheses = []
@@ -857,28 +889,63 @@ class TwoRateRealtimeTracker:
                             "reason": decision,
                         }
                 else:
-                    correction = self.fusion.consider_absolute(hypothesis)
-                    decision = (
-                        correction.reason
-                        if correction.accepted
-                        else "rejected:" + correction.reason
+                    recovery_requested = (
+                        self._local_rejections >= self.relocalize_after_rejections
                     )
-                    if correction.accepted:
-                        self.map_scale = global_fix.scale
-                    fusion_metrics = {
-                        "accepted": correction.accepted,
-                        "reason": correction.reason,
-                        "predicted_position_innovation_map_px": (
-                            correction.predicted_position_innovation_m
-                        ),
-                        "predicted_yaw_innovation_deg": (
-                            correction.predicted_yaw_innovation_deg
-                        ),
-                        "applied_position_change_map_px": (
-                            correction.applied_position_change_m
-                        ),
-                        "applied_yaw_change_deg": correction.applied_yaw_change_deg,
-                    }
+                    if not recovery_requested:
+                        decision = "ignored:locked-continuity"
+                        fusion_metrics = {
+                            "accepted": False,
+                            "reason": decision,
+                        }
+                    else:
+                        if self._recovery_hypotheses and not self._fixes_agree(
+                            self._recovery_hypotheses[-1], global_fix
+                        ):
+                            self._recovery_hypotheses = []
+                        self._recovery_hypotheses.append(global_fix)
+                        count = len(self._recovery_hypotheses)
+                        if count < self.recovery_consensus_count:
+                            decision = "awaiting-recovery-consensus:{}/{}".format(
+                                count, self.recovery_consensus_count
+                            )
+                            fusion_metrics = {
+                                "accepted": False,
+                                "reason": decision,
+                            }
+                        else:
+                            rows = self._recovery_hypotheses[
+                                -self.recovery_consensus_count :
+                            ]
+                            recovery_pose = self._mean_fix(rows)
+                            correction = self.fusion.consider_absolute(recovery_pose)
+                            decision = (
+                                "recovered-consensus"
+                                if correction.accepted
+                                else "rejected:" + correction.reason
+                            )
+                            if correction.accepted:
+                                self.map_scale = float(
+                                    np.mean([item.scale for item in rows])
+                                )
+                                self._local_rejections = 0
+                            self._recovery_hypotheses = []
+                            fusion_metrics = {
+                                "accepted": correction.accepted,
+                                "reason": decision,
+                                "predicted_position_innovation_map_px": (
+                                    correction.predicted_position_innovation_m
+                                ),
+                                "predicted_yaw_innovation_deg": (
+                                    correction.predicted_yaw_innovation_deg
+                                ),
+                                "applied_position_change_map_px": (
+                                    correction.applied_position_change_m
+                                ),
+                                "applied_yaw_change_deg": (
+                                    correction.applied_yaw_change_deg
+                                ),
+                            }
             self._last_global_fix = {
                 "x": global_fix.x,
                 "y": global_fix.y,
@@ -903,8 +970,14 @@ class TwoRateRealtimeTracker:
                 "fusion": fusion_metrics,
                 "host_time_ns": timestamp_ns,
             }
-        due = self.last_global_ns is None or timestamp_ns - self.last_global_ns >= self.global_interval_ns
-        if due and self._global_future is None:
+        global_search_needed = self.fusion._state is None or (
+            self._local_rejections >= self.relocalize_after_rejections
+        )
+        due = (
+            self.last_global_ns is None
+            or timestamp_ns - self.last_global_ns >= self.global_interval_ns
+        )
+        if global_search_needed and due and self._global_future is None:
             yaw_prior = self.fusion.state.pose.yaw_deg if self.fusion._state is not None else None
             search_center, search_radius = self._global_search()
             self._last_global_search = {
@@ -965,7 +1038,12 @@ class TwoRateRealtimeTracker:
                     else "unavailable"
                 ),
             }
-            mode = state.mode
+            if self._local_rejections >= self.relocalize_after_rejections:
+                mode = "RELOCALIZING"
+            elif self._local_rejections:
+                mode = "HOLD"
+            else:
+                mode = state.mode
             position_sigma = state.position_sigma_m
             yaw_sigma = state.yaw_sigma_deg
             self.trail.append((state.pose.x, state.pose.y))
@@ -987,6 +1065,12 @@ class TwoRateRealtimeTracker:
             "local_motion": {
                 "map_content_shift_xy_px": list(local_shift),
                 "response": float(local_response),
+                "accepted": local_accepted,
+                "applied": local_motion_applied,
+                "decision": local_decision,
+                "rejection_streak": self._local_rejections,
+                "response_min": self.local_response_min,
+                "shift_limit_px": self.local_shift_max_px,
                 "rotation_compensation_sign": compensation_sign,
                 "map_alignment_delta_deg": alignment_delta_deg,
             },

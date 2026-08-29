@@ -19,6 +19,7 @@ from acquisition.live_tracker import (
 from acquisition.models import FramePacket
 from acquisition.profiles import ProfileCatalog
 from acquisition.workbench import AcquisitionWorkbench
+from poc.pose_fusion import Pose2D
 
 
 class GlobalMapLocalizerTests(unittest.TestCase):
@@ -316,6 +317,91 @@ class TwoRateTrackerTests(unittest.TestCase):
             )
         finally:
             localizer.release.set()
+            tracker.close()
+
+    def test_implausible_local_shift_holds_the_last_pose(self):
+        tracker = self._tracker(ImmediateLocalizer())
+        tracker.fusion.initialize(Pose2D(80.0, 70.0, 15.0))
+        tracker.scene_estimator = SimpleNamespace(
+            update=lambda _frame: SimpleNamespace(
+                delta_deg=0.0,
+                confidence=1.0,
+                tracks=100,
+                inliers=90,
+                status="ok",
+            )
+        )
+        frame = np.random.RandomState(8).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        try:
+            tracker.update(frame, 1)
+            with patch(
+                "acquisition.live_tracker.estimate_masked_shift",
+                return_value=((50.0, -40.0), 0.95),
+            ):
+                result = tracker.update(frame, 2)
+
+            self.assertEqual(result["mode"], "HOLD")
+            self.assertEqual(
+                result["local_motion"]["decision"],
+                "rejected:implausible-displacement",
+            )
+            self.assertFalse(result["local_motion"]["applied"])
+            self.assertAlmostEqual(result["pose"]["x"], 80.0)
+            self.assertAlmostEqual(result["pose"]["y"], 70.0)
+        finally:
+            tracker.close()
+
+    def test_weak_local_correlation_holds_the_last_pose(self):
+        tracker = self._tracker(ImmediateLocalizer())
+        tracker.fusion.initialize(Pose2D(80.0, 70.0, 15.0))
+        frame = np.random.RandomState(9).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        try:
+            tracker.update(frame, 1)
+            with patch(
+                "acquisition.live_tracker.estimate_masked_shift",
+                return_value=((2.0, 1.0), 0.05),
+            ):
+                result = tracker.update(frame, 2)
+
+            self.assertEqual(result["mode"], "HOLD")
+            self.assertEqual(
+                result["local_motion"]["decision"],
+                "rejected:weak-correlation",
+            )
+            self.assertFalse(result["local_motion"]["applied"])
+            self.assertAlmostEqual(result["pose"]["x"], 80.0)
+            self.assertAlmostEqual(result["pose"]["y"], 70.0)
+        finally:
+            tracker.close()
+
+    def test_global_search_stops_after_initial_lock(self):
+        localizer = ImmediateLocalizer()
+        tracker = self._tracker(
+            localizer, initial_consensus_count=1, global_interval_s=0.001
+        )
+        frame = np.random.RandomState(10).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        try:
+            result = None
+            for index in range(100):
+                result = tracker.update(frame, index * 2_000_000 + 1)
+                if result["pose"] is not None:
+                    break
+                time.sleep(0.002)
+            self.assertIsNotNone(result["pose"])
+            locked_call_count = localizer.calls
+
+            for index in range(20):
+                tracker.update(frame, 1_000_000_000 + index * 10_000_000)
+                time.sleep(0.001)
+
+            self.assertEqual(localizer.calls, locked_call_count)
+        finally:
             tracker.close()
 
     def test_exposes_player_heading_from_cursor_and_map_alignment(self):
