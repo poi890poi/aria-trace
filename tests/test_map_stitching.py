@@ -39,6 +39,9 @@ class MapStitchingTests(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             self.assertEqual(result["map_orientation_model"], "fixed_north_up")
             self.assertFalse(result["north_normalization_applied"])
+            self.assertEqual(result["applied_map_rotation_deg"], 0.0)
+            self.assertEqual(result["minimap_to_map_rotation_deg"], 0.0)
+            self.assertIn("diagnostic_residual_rotation_deg", result)
             self.assertAlmostEqual(
                 result["map_pixels_per_minimap_pixel"], 2.5, delta=0.08
             )

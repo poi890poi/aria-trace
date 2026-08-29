@@ -146,10 +146,11 @@ def _build_localization_derivative(
     )
     localization_to_original = np.linalg.inv(original_to_localization)
 
-    rotation = estimate["minimap_to_map_rotation_deg"]
+    residual_rotation = estimate["minimap_to_map_rotation_deg"]
+    applied_rotation = 0.0
     rotation_matrix = cv2.getRotationMatrix2D(
         ((patch.shape[1] - 1) / 2.0, (patch.shape[0] - 1) / 2.0),
-        rotation,
+        applied_rotation,
         1.0,
     )
     rotated_patch = cv2.warpAffine(
@@ -255,7 +256,9 @@ def _build_localization_derivative(
         "coverage_file": "localization_coverage.png",
         "size_wh": list(localization_size),
         "map_pixels_per_minimap_pixel": scale,
-        "minimap_to_map_rotation_deg": estimate["minimap_to_map_rotation_deg"],
+        "minimap_to_map_rotation_deg": applied_rotation,
+        "applied_map_rotation_deg": applied_rotation,
+        "diagnostic_residual_rotation_deg": residual_rotation,
         "original_map_to_localization_3x3": original_to_localization.tolist(),
         "localization_to_original_map_3x3": localization_to_original.tolist(),
         "reference_center_original_map_xy": estimate["reference_center_map_xy"].tolist(),
