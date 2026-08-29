@@ -352,9 +352,17 @@ def _estimate_minimap_similarity(
 
 
 def _scale_consensus(
-    estimates, relative_tolerance: float = 0.035, preferred_name=None
+    estimates,
+    relative_tolerance: float = 0.035,
+    preferred_name=None,
+    minimum_inliers: int = 2,
 ) -> dict:
     """Choose the largest mutually consistent scale cluster and its best member."""
+    estimates = [
+        item
+        for item in estimates
+        if item["estimate"]["inlier_count"] >= minimum_inliers
+    ]
     if not estimates:
         raise RuntimeError("Mini-map/full-map scale calibration found no usable references")
     scales = np.asarray(
@@ -375,11 +383,27 @@ def _scale_consensus(
         )
     _, _, member_indices = max(clusters, key=lambda item: (item[0], item[1]))
     members = [estimates[int(index)] for index in member_indices]
-    consensus_scale = float(
-        np.median(
-            [item["estimate"]["map_pixels_per_minimap_pixel"] for item in members]
+    for _ in range(3):
+        consensus_scale = float(
+            np.median(
+                [
+                    item["estimate"]["map_pixels_per_minimap_pixel"]
+                    for item in members
+                ]
+            )
         )
-    )
+        tolerance = max(0.02, abs(consensus_scale) * relative_tolerance)
+        refined = [
+            item
+            for item in members
+            if abs(
+                item["estimate"]["map_pixels_per_minimap_pixel"] - consensus_scale
+            )
+            <= tolerance
+        ]
+        if len(refined) == len(members):
+            break
+        members = refined
     preferred = [
         item
         for item in members
@@ -554,7 +578,9 @@ def _build_localization_derivative(
         except RuntimeError as error:
             review_rows.append({"candidate": candidate, "error": str(error)})
     consensus = _scale_consensus(
-        estimate_rows, preferred_name=reference.get("source_image_name")
+        estimate_rows,
+        preferred_name=reference.get("source_image_name"),
+        minimum_inliers=3 if len(candidates) > 1 else 2,
     )
     consensus_names = {
         item["candidate"].get("source_image_name") for item in consensus["members"]

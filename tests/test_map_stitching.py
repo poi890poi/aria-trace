@@ -58,6 +58,9 @@ class MapStitchingTests(unittest.TestCase):
         self.assertEqual(
             preferred["selected"]["candidate"]["source_image_name"], "frame-0"
         )
+        rows[1]["estimate"]["inlier_count"] = 2
+        strict = _scale_consensus(rows, minimum_inliers=3)
+        self.assertEqual(len(strict["members"]), 2)
 
     def test_loads_both_persisted_forward_reference_endpoints(self):
         with tempfile.TemporaryDirectory() as temporary:
