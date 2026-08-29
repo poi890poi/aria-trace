@@ -13,8 +13,8 @@ from typing import Callable, Optional
 
 HUD_WIDTH = 390
 HUD_HEIGHT = 92
-MAP_HUD_WIDTH = 550
-MAP_HUD_HEIGHT = 460
+MAP_HUD_WIDTH = 390
+MAP_HUD_HEIGHT = 350
 HUD_MARGIN = 22
 
 GWL_EXSTYLE = -20
@@ -144,7 +144,7 @@ class _HudWindow:
             root.overrideredirect(True)
             root.configure(background="#081018")
             root.attributes("-topmost", True)
-            root.attributes("-alpha", 0.92)
+            root.attributes("-alpha", 0.78)
             root.geometry("{}x{}+0+0".format(HUD_WIDTH, HUD_HEIGHT))
 
             shell = tk.Frame(

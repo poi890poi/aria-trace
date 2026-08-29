@@ -678,6 +678,21 @@ class TwoRateTrackerTests(unittest.TestCase):
         self.assertEqual(image.shape, (360, 520, 3))
         self.assertGreater(int(np.max(image[:, :, 1])), 200)
 
+    def test_renders_demonstrated_route_without_changing_overlay_contract(self):
+        mosaic = np.full((420, 620, 3), (35, 45, 55), np.uint8)
+        state = {
+            "mode": "TRACK",
+            "pose": {"x": 310.0, "y": 210.0, "yaw_deg": 0.0},
+            "global_fix": {},
+        }
+        route = [[250.0, 210.0], [310.0, 210.0], [370.0, 230.0]]
+
+        plain = render_map_overlay(mosaic, state)
+        guided = render_map_overlay(mosaic, state, route_points=route)
+
+        self.assertEqual(guided.shape, (360, 520, 3))
+        self.assertGreater(int(np.count_nonzero(guided != plain)), 100)
+
     def test_renders_rejected_global_candidate_without_claiming_pose(self):
         mosaic = np.full((420, 620, 3), (35, 45, 55), np.uint8)
         image = render_map_overlay(

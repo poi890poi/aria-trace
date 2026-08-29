@@ -715,6 +715,7 @@ class AcquisitionWorkbench:
         self._live_tracker = None
         self._live_tracker_engine = None
         self._live_tracker_mosaic = None
+        self._live_tracker_route_points = None
         self._android_control = None
         self._hud_notice = None
         self._session_summary_cache = {}
@@ -1005,7 +1006,7 @@ class AcquisitionWorkbench:
                     "status": str(latest.get("mode") or "LOCALIZING"),
                     "detail": detail,
                     "color": "#72dfa3" if pose else "#ffd166",
-                    "map_overlay_url": "/api/tracker/overlay",
+                    "map_overlay_url": "/api/tracker/overlay?compact=1",
                 }
             if armed is None:
                 return {"visible": False}
@@ -2660,6 +2661,11 @@ class AcquisitionWorkbench:
             self._live_tracker = runtime
             self._live_tracker_engine = engine
             self._live_tracker_mosaic = mosaic
+            self._live_tracker_route_points = (
+                [state["canonical_xy"] for state in route_package.states]
+                if route_package is not None
+                else None
+            )
             self._last_error = None
 
         def work() -> None:
@@ -2694,7 +2700,9 @@ class AcquisitionWorkbench:
                     if latest.get("global_fix_fresh"):
                         diagnostics = dict(diagnostics or {})
                         diagnostics["map_overlay"] = render_map_overlay(
-                            mosaic, latest
+                            mosaic,
+                            latest,
+                            route_points=self._live_tracker_route_points,
                         )
                     evidence_recorder.record(
                         packet.image, minimap, latest, diagnostics
@@ -2774,13 +2782,19 @@ class AcquisitionWorkbench:
             runtime["stop"].set()
         return self.descriptor()
 
-    def live_tracker_overlay_image(self) -> bytes:
+    def live_tracker_overlay_image(self, compact: bool = False) -> bytes:
         with self._lock:
             if self._live_tracker_mosaic is None or self._live_tracker is None:
                 raise ValueError("No live tracker overlay is available")
             latest = dict(self._live_tracker.get("latest") or {})
             mosaic = self._live_tracker_mosaic
-        image = render_map_overlay(mosaic, latest)
+            route_points = self._live_tracker_route_points
+        image = render_map_overlay(
+            mosaic,
+            latest,
+            size=(360, 240) if compact else (520, 360),
+            route_points=route_points,
+        )
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
             raise RuntimeError("Could not encode the live tracker overlay")
@@ -4231,10 +4245,13 @@ def make_handler(state: AcquisitionWorkbench):
                     )
                     self._send(200, "image/png", body)
                 elif path == "/api/tracker/overlay":
+                    query = parse_qs(parsed.query)
                     self._send(
                         200,
                         "image/png",
-                        state.live_tracker_overlay_image(),
+                        state.live_tracker_overlay_image(
+                            compact=query.get("compact", [""])[0] == "1"
+                        ),
                     )
                 elif path == "/api/live-tracking/image":
                     query = parse_qs(parsed.query)

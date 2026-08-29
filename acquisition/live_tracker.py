@@ -1345,7 +1345,12 @@ class TwoRateRealtimeTracker:
         }
 
 
-def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.ndarray:
+def render_map_overlay(
+    mosaic: np.ndarray,
+    state: dict,
+    size=(520, 360),
+    route_points=None,
+) -> np.ndarray:
     """Render a local observed-map viewport with pose, heading, trail, and text."""
     width, height = int(size[0]), int(size[1])
     canvas = np.full((height, width, 3), 12, np.uint8)
@@ -1366,6 +1371,20 @@ def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.n
             offset_y : offset_y + scaled_size[1],
             offset_x : offset_x + scaled_size[0],
         ] = overview
+        if route_points is not None:
+            points = np.asarray(route_points, dtype=np.float64).reshape((-1, 2))
+            if len(points) >= 2:
+                projected = np.rint(
+                    points * scale + np.asarray([offset_x, offset_y])
+                ).astype(np.int32)
+                cv2.polylines(
+                    canvas,
+                    [projected.reshape((-1, 1, 2))],
+                    False,
+                    (235, 95, 245),
+                    2,
+                    cv2.LINE_AA,
+                )
         decision = str(global_fix.get("decision") or "waiting-for-first-candidate")
         if global_fix and global_fix.get("x") is not None:
             candidate = (
@@ -1437,6 +1456,37 @@ def render_map_overlay(mosaic: np.ndarray, state: dict, size=(520, 360)) -> np.n
     right, bottom = min(map_w, left + view_w), min(map_h, top + view_h)
     view = mosaic[top:bottom, left:right]
     canvas[: view.shape[0], : view.shape[1]] = view
+    if route_points is not None:
+        points = np.asarray(route_points, dtype=np.float64).reshape((-1, 2))
+        if len(points) >= 2:
+            projected = np.rint(points - np.asarray([left, top])).astype(
+                np.int32
+            )
+            cv2.polylines(
+                canvas,
+                [projected.reshape((-1, 1, 2))],
+                False,
+                (235, 95, 245),
+                3,
+                cv2.LINE_AA,
+            )
+            for index in range(8, len(projected), 12):
+                start = tuple(projected[index - 1])
+                end = tuple(projected[index])
+                if (
+                    0 <= end[0] < view_w
+                    and 0 <= end[1] < view_h
+                    and np.linalg.norm(projected[index] - projected[index - 1]) > 1
+                ):
+                    cv2.arrowedLine(
+                        canvas,
+                        start,
+                        end,
+                        (235, 95, 245),
+                        2,
+                        cv2.LINE_AA,
+                        tipLength=0.45,
+                    )
     for tx, ty in state.get("trail") or ():
         point = (int(round(tx - left)), int(round(ty - top)))
         if 0 <= point[0] < view_w and 0 <= point[1] < view_h:
