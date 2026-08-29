@@ -14,14 +14,71 @@ from .session import SessionReader
 
 MAP_ORIENTATION_MODEL = "fixed_north_up"
 MAX_LOCALIZATION_REFERENCE_FRAMES = 9
+ORIENTED_GRADIENT_MIN_SCORE = 0.35
+ORIENTED_GRADIENT_MIN_MARGIN = 0.10
 
 
-def _gradient(image: np.ndarray) -> np.ndarray:
+def _oriented_gradient_channels(image: np.ndarray):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     gray = gray.astype(np.float32)
     gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    return cv2.magnitude(gx, gy)
+    return (
+        np.maximum(gx, 0.0),
+        np.maximum(-gx, 0.0),
+        np.maximum(gy, 0.0),
+        np.maximum(-gy, 0.0),
+    )
+
+
+def _masked_oriented_gradient_zncc(
+    source: np.ndarray, template: np.ndarray, mask: np.ndarray
+) -> np.ndarray:
+    """Correlate signed edge directions with weighted zero-mean normalization."""
+    source_channels = _oriented_gradient_channels(source)
+    template_channels = _oriented_gradient_channels(template)
+    weights = (mask.astype(np.float32) / 255.0).clip(0.0, 1.0)
+    weight_sum = max(float(np.sum(weights)), 1.0)
+    numerator = None
+    source_energy = None
+    template_energy = 0.0
+    for source_channel, template_channel in zip(
+        source_channels, template_channels
+    ):
+        template_mean = float(np.sum(template_channel * weights) / weight_sum)
+        centered_template = (template_channel - template_mean) * weights
+        channel_numerator = cv2.matchTemplate(
+            source_channel, centered_template, cv2.TM_CCORR
+        )
+        source_sum = cv2.matchTemplate(source_channel, weights, cv2.TM_CCORR)
+        source_square_sum = cv2.matchTemplate(
+            source_channel * source_channel, weights, cv2.TM_CCORR
+        )
+        channel_source_energy = np.maximum(
+            source_square_sum - source_sum * source_sum / weight_sum, 0.0
+        )
+        numerator = (
+            channel_numerator
+            if numerator is None
+            else numerator + channel_numerator
+        )
+        source_energy = (
+            channel_source_energy
+            if source_energy is None
+            else source_energy + channel_source_energy
+        )
+        template_energy += float(np.sum(centered_template * centered_template))
+    denominator = np.sqrt(np.maximum(source_energy * template_energy, 1.0e-12))
+    response = numerator / denominator
+    return np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
+
+
+def _correlation_heatmap(response, best_location, second_location) -> np.ndarray:
+    normalized = cv2.normalize(response, None, 0, 255, cv2.NORM_MINMAX)
+    heatmap = cv2.applyColorMap(normalized.astype(np.uint8), cv2.COLORMAP_TURBO)
+    cv2.circle(heatmap, best_location, 7, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.circle(heatmap, second_location, 7, (30, 30, 30), 2, cv2.LINE_AA)
+    return heatmap
 
 
 def _minimap_reference(image: np.ndarray, calibration: dict):
@@ -538,27 +595,11 @@ def _build_localization_derivative(
 
     residual_rotation = estimate["diagnostic_residual_rotation_deg"]
     applied_rotation = 0.0
-    rotation_matrix = cv2.getRotationMatrix2D(
-        ((patch.shape[1] - 1) / 2.0, (patch.shape[0] - 1) / 2.0),
-        applied_rotation,
-        1.0,
-    )
-    rotated_patch = cv2.warpAffine(
-        _gradient(patch), rotation_matrix, (patch.shape[1], patch.shape[0])
-    )
-    rotated_mask = cv2.warpAffine(
+    response = _masked_oriented_gradient_zncc(
+        localization_mosaic,
+        patch,
         mask,
-        rotation_matrix,
-        (patch.shape[1], patch.shape[0]),
-        flags=cv2.INTER_NEAREST,
     )
-    response = cv2.matchTemplate(
-        _gradient(localization_mosaic),
-        rotated_patch,
-        cv2.TM_CCORR_NORMED,
-        mask=rotated_mask,
-    )
-    response = np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
     _, score, _, location = cv2.minMaxLoc(response)
     suppressed = response.copy()
     cv2.circle(
@@ -568,7 +609,7 @@ def _build_localization_derivative(
         -1.0,
         -1,
     )
-    _, second_score, _, _ = cv2.minMaxLoc(suppressed)
+    _, second_score, _, second_location = cv2.minMaxLoc(suppressed)
     correlation_center = np.asarray(
         [location[0] + patch.shape[1] / 2.0, location[1] + patch.shape[0] / 2.0],
         dtype=np.float64,
@@ -587,8 +628,8 @@ def _build_localization_derivative(
         and estimate["inlier_count"] >= 6
         and estimate["inlier_ratio"] >= 0.60
         and estimate["reprojection_p95_px"] <= 4.0
-        and score >= 0.55
-        and score - second_score >= 0.06
+        and score >= ORIENTED_GRADIENT_MIN_SCORE
+        and score - second_score >= ORIENTED_GRADIENT_MIN_MARGIN
         and center_agreement <= 8.0
     )
 
@@ -635,6 +676,10 @@ def _build_localization_derivative(
     _write_image(output_path / "localization_mosaic.png", localization_mosaic)
     _write_image(output_path / "localization_coverage.png", localization_coverage)
     _write_image(output_path / "localization_scale_evidence.png", evidence)
+    _write_image(
+        output_path / "localization_correlation_heatmap.png",
+        _correlation_heatmap(response, location, second_location),
+    )
     selected_name = selected["candidate"].get("source_image_name")
     _write_image(
         output_path / "localization_reference_consensus.png",
@@ -643,7 +688,7 @@ def _build_localization_derivative(
     return {
         "schema_version": "1.0",
         "status": "ready" if ready else "review_required",
-        "method": "rootsift_fixed_north_up_multi_reference_with_gradient_verification",
+        "method": "rootsift_fixed_north_up_multi_reference_with_oriented_gradient_zncc",
         "map_orientation_model": MAP_ORIENTATION_MODEL,
         "north_normalization_applied": False,
         "source_minimap_calibration_id": reference.get("calibration_id"),
@@ -683,6 +728,9 @@ def _build_localization_derivative(
             "reprojection_p95_original_map_px": estimate["reprojection_p95_px"],
             "gradient_correlation_score": float(score),
             "gradient_correlation_margin": float(score - second_score),
+            "gradient_correlation_method": "masked_oriented_gradient_zero_mean_normalized_cross_correlation",
+            "gradient_correlation_minimum_score": ORIENTED_GRADIENT_MIN_SCORE,
+            "gradient_correlation_minimum_margin": ORIENTED_GRADIENT_MIN_MARGIN,
             "sift_correlation_center_agreement_localization_px": center_agreement,
             "scale_consensus_reference_count": len(consensus["members"]),
         },
@@ -911,6 +959,11 @@ def stitch_map_frames(
                 {
                     "name": "localization_reference_consensus.png",
                     "title": "Independent mini-map scale-reference consensus",
+                    "category": "localization",
+                },
+                {
+                    "name": "localization_correlation_heatmap.png",
+                    "title": "Oriented-gradient correlation response",
                     "category": "localization",
                 },
             ]

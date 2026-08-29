@@ -10,6 +10,7 @@ from acquisition.map_stitching import (
     _estimate_minimap_similarity,
     _fit_fixed_north_up_similarity,
     _minimap_reference,
+    _masked_oriented_gradient_zncc,
     _prepare_localization_mosaic,
     _root_sift,
     _scale_consensus,
@@ -19,6 +20,20 @@ from acquisition.map_stitching import (
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_oriented_gradient_zncc_prefers_matching_edge_polarity(self):
+        template = np.zeros((30, 30, 3), np.uint8)
+        template[:, 15:] = 220
+        source = np.zeros((70, 100, 3), np.uint8)
+        source[20:50, 20:35] = 220
+        source[20:50, 65:80] = 220
+        source[20:50, 80:95] = 0
+        mask = np.full(template.shape[:2], 255, np.uint8)
+        response = _masked_oriented_gradient_zncc(source, template, mask)
+        _, score, _, location = cv2.minMaxLoc(response)
+        self.assertGreater(score, 0.65)
+        self.assertEqual(location, (5, 20))
+        self.assertLess(float(response[20, 65]), 0.0)
+
     def test_scale_consensus_selects_largest_consistent_reference_cluster(self):
         rows = []
         for index, scale in enumerate((3.80, 3.82, 3.81, 7.2)):
@@ -166,6 +181,7 @@ class MapStitchingTests(unittest.TestCase):
                 "localization_coverage.png",
                 "localization_scale_evidence.png",
                 "localization_reference_consensus.png",
+                "localization_correlation_heatmap.png",
             ):
                 self.assertGreater((output / name).stat().st_size, 0)
 
