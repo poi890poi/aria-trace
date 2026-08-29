@@ -51,10 +51,14 @@ class GlobalFix:
     reprojection_p95_px: Optional[float] = None
     center_agreement_px: Optional[float] = None
     alternatives: tuple = ()
+    search_bounds_xyxy: Optional[tuple] = None
+    search_area_fraction: float = 1.0
 
 
 class GlobalMapLocalizer:
     """Feature-proposed, correlation-verified localization on a normalized map."""
+
+    supports_bounded_search = True
 
     def __init__(
         self,
@@ -79,6 +83,7 @@ class GlobalMapLocalizer:
         )
         if self.localization_to_original.shape != (3, 3):
             raise ValueError("Localization-to-original transform must be 3x3")
+        self.original_to_localization = np.linalg.inv(self.localization_to_original)
         self.sift = cv2.SIFT_create(
             nfeatures=8000, contrastThreshold=0.005, edgeThreshold=15
         )
@@ -113,6 +118,11 @@ class GlobalMapLocalizer:
         mapped = self.localization_to_original.dot(point)
         return float(mapped[0] / mapped[2]), float(mapped[1] / mapped[2])
 
+    def _localization_xy(self, point_xy):
+        point = np.asarray([float(point_xy[0]), float(point_xy[1]), 1.0])
+        mapped = self.original_to_localization.dot(point)
+        return float(mapped[0] / mapped[2]), float(mapped[1] / mapped[2])
+
     def _invalid(self, started, reasons, **metrics):
         def finite_or_none(name):
             value = metrics.get(name)
@@ -143,6 +153,8 @@ class GlobalMapLocalizer:
         observation: np.ndarray,
         mask: np.ndarray,
         yaw_prior_deg: Optional[float] = None,
+        search_center_xy=None,
+        search_radius_px: Optional[float] = None,
     ) -> GlobalFix:
         started = time.perf_counter()
         if self._cancel.is_set():
@@ -214,8 +226,49 @@ class GlobalMapLocalizer:
                 inlier_ratio=inlier_ratio,
                 reprojection_p95_px=reprojection_p95,
             )
+        search_left = 0
+        search_top = 0
+        search_right = self.map_gradient.shape[1]
+        search_bottom = self.map_gradient.shape[0]
+        if search_center_xy is not None and search_radius_px is not None:
+            center_x, center_y = self._localization_xy(search_center_xy)
+            scale_x = math.hypot(
+                self.original_to_localization[0, 0],
+                self.original_to_localization[1, 0],
+            )
+            scale_y = math.hypot(
+                self.original_to_localization[0, 1],
+                self.original_to_localization[1, 1],
+            )
+            radius = max(
+                16.0,
+                float(search_radius_px) * (scale_x + scale_y) / 2.0,
+            )
+            search_left = max(0, int(math.floor(center_x - radius - width / 2.0)))
+            search_top = max(0, int(math.floor(center_y - radius - height / 2.0)))
+            search_right = min(
+                self.map_gradient.shape[1],
+                int(math.ceil(center_x + radius + width / 2.0)),
+            )
+            search_bottom = min(
+                self.map_gradient.shape[0],
+                int(math.ceil(center_y + radius + height / 2.0)),
+            )
+        search_gradient = self.map_gradient[
+            search_top:search_bottom, search_left:search_right
+        ]
+        if height >= search_gradient.shape[0] or width >= search_gradient.shape[1]:
+            search_left = search_top = 0
+            search_right = self.map_gradient.shape[1]
+            search_bottom = self.map_gradient.shape[0]
+            search_gradient = self.map_gradient
+        search_area_fraction = float(
+            search_gradient.shape[0]
+            * search_gradient.shape[1]
+            / (self.map_gradient.shape[0] * self.map_gradient.shape[1])
+        )
         response = cv2.matchTemplate(
-            self.map_gradient,
+            search_gradient,
             transformed,
             cv2.TM_CCORR_NORMED,
             mask=transformed_mask,
@@ -226,7 +279,10 @@ class GlobalMapLocalizer:
         suppression_radius = max(8, min(width, height) // 3)
         for _ in range(3):
             _, peak_score, _, location = cv2.minMaxLoc(suppressed)
-            peak_center = (location[0] + width / 2.0, location[1] + height / 2.0)
+            peak_center = (
+                search_left + location[0] + width / 2.0,
+                search_top + location[1] + height / 2.0,
+            )
             peaks.append((float(peak_score), peak_center))
             cv2.circle(suppressed, location, suppression_radius, -1.0, -1)
         score = peaks[0][0]
@@ -286,6 +342,13 @@ class GlobalMapLocalizer:
                 center_agreement if math.isfinite(center_agreement) else None
             ),
             alternatives=tuple(alternatives),
+            search_bounds_xyxy=(
+                int(search_left),
+                int(search_top),
+                int(search_right),
+                int(search_bottom),
+            ),
+            search_area_fraction=search_area_fraction,
         )
 
 
@@ -376,6 +439,7 @@ class TwoRateRealtimeTracker:
         self._global_executor = ThreadPoolExecutor(max_workers=1)
         self._global_future = None
         self._last_global_fix = None
+        self._last_global_search = None
         self._global_error = None
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
@@ -460,6 +524,24 @@ class TwoRateRealtimeTracker:
             + self._cursor_angular_velocity_deg_s * elapsed_s
         ) % 360.0
         return float(predicted), float(half_width)
+
+    def _global_search(self):
+        if self.fusion._state is None:
+            return None, None
+        state = self.fusion.state
+        radius = float(np.clip(state.position_sigma_m * 3.0, 100.0, 1200.0))
+        return (float(state.pose.x), float(state.pose.y)), radius
+
+    def _localize_global(self, minimap, mask, yaw_prior, center, radius):
+        if getattr(self.localizer, "supports_bounded_search", False):
+            return self.localizer.localize(
+                minimap,
+                mask,
+                yaw_prior,
+                search_center_xy=center,
+                search_radius_px=radius,
+            )
+        return self.localizer.localize(minimap, mask, yaw_prior)
 
     def update(self, frame: np.ndarray, host_time_ns: Optional[int] = None) -> dict:
         started = time.perf_counter()
@@ -666,16 +748,27 @@ class TwoRateRealtimeTracker:
                 "reprojection_p95_localization_px": global_fix.reprojection_p95_px,
                 "feature_correlation_center_agreement_px": global_fix.center_agreement_px,
                 "alternatives": list(global_fix.alternatives),
+                "search_bounds_xyxy": list(global_fix.search_bounds_xyxy)
+                if global_fix.search_bounds_xyxy is not None
+                else None,
+                "search_area_fraction": global_fix.search_area_fraction,
                 "host_time_ns": timestamp_ns,
             }
         due = self.last_global_ns is None or timestamp_ns - self.last_global_ns >= self.global_interval_ns
         if due and self._global_future is None:
             yaw_prior = self.fusion.state.pose.yaw_deg if self.fusion._state is not None else None
+            search_center, search_radius = self._global_search()
+            self._last_global_search = {
+                "center_xy": list(search_center) if search_center else None,
+                "radius_px": search_radius,
+            }
             self._global_future = self._global_executor.submit(
-                self.localizer.localize,
+                self._localize_global,
                 minimap.copy(),
                 mask.copy(),
                 yaw_prior,
+                search_center,
+                search_radius,
             )
             self.last_global_ns = timestamp_ns
         self.sequence += 1

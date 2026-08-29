@@ -58,6 +58,35 @@ class GlobalMapLocalizerTests(unittest.TestCase):
         self.assertGreaterEqual(fix.inlier_count, 6)
         self.assertLess(fix.elapsed_ms, 1000.0)
 
+    def test_position_prior_bounds_correlation_without_changing_coordinates(self):
+        random = np.random.RandomState(43)
+        mosaic = random.randint(0, 256, (500, 700, 3), dtype=np.uint8)
+        center_x, center_y = 410, 260
+        observation = mosaic[210:310, 360:460].copy()
+        mask = np.zeros((100, 100), np.uint8)
+        cv2.circle(mask, (50, 50), 47, 255, -1)
+        localizer = GlobalMapLocalizer(
+            mosaic,
+            localization_to_original_3x3=[
+                [2.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        )
+
+        fix = localizer.localize(
+            observation,
+            mask,
+            search_center_xy=(2 * (center_x + 8), 2 * (center_y - 5)),
+            search_radius_px=160,
+        )
+
+        self.assertTrue(fix.valid)
+        self.assertAlmostEqual(fix.x, 2 * center_x, delta=4.0)
+        self.assertAlmostEqual(fix.y, 2 * center_y, delta=4.0)
+        self.assertLess(fix.search_area_fraction, 0.25)
+        self.assertIsNotNone(fix.search_bounds_xyxy)
+
 
 class BlockingLocalizer:
     def __init__(self):
