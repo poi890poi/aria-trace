@@ -8,6 +8,7 @@ import numpy as np
 from acquisition.map_stitching import (
     _build_localization_derivative,
     _estimate_minimap_similarity,
+    _fit_fixed_north_up_similarity,
     _minimap_reference,
     _prepare_localization_mosaic,
     _root_sift,
@@ -16,6 +17,19 @@ from acquisition.map_stitching import (
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_fixed_north_up_fit_rejects_outlier_without_rotation(self):
+        source = np.asarray(
+            [[0, 0], [10, 0], [0, 10], [10, 10], [20, 15]], dtype=np.float32
+        )
+        target = source * 2.5 + np.asarray([40, 70], dtype=np.float32)
+        target[-1] = [300, 12]
+        matrix, inliers = _fit_fixed_north_up_similarity(source, target)
+        self.assertIsNotNone(matrix)
+        self.assertAlmostEqual(float(matrix[0, 0]), 2.5, places=6)
+        self.assertEqual(float(matrix[0, 1]), 0.0)
+        self.assertEqual(float(matrix[1, 0]), 0.0)
+        self.assertEqual(int(np.count_nonzero(inliers)), 4)
+
     def test_root_sift_descriptors_have_unit_l2_norm(self):
         descriptors = np.asarray([[1.0, 3.0], [4.0, 0.0]], dtype=np.float32)
         transformed = _root_sift(descriptors)

@@ -68,6 +68,67 @@ def _prepare_localization_mosaic(mosaic: np.ndarray, coverage: np.ndarray) -> di
     }
 
 
+def _fit_fixed_north_up_similarity(source: np.ndarray, target: np.ndarray):
+    """Robustly fit target = uniform_scale * source + translation."""
+    if len(source) < 2:
+        return None, None
+    best_inliers = None
+    best_error = float("inf")
+    for first in range(len(source) - 1):
+        for second in range(first + 1, len(source)):
+            source_delta = source[second] - source[first]
+            denominator = float(np.dot(source_delta, source_delta))
+            if denominator < 16.0:
+                continue
+            target_delta = target[second] - target[first]
+            scale = float(np.dot(source_delta, target_delta) / denominator)
+            if not 0.5 <= scale <= 16.0:
+                continue
+            translation = np.mean(
+                target[[first, second]] - scale * source[[first, second]], axis=0
+            )
+            errors = np.linalg.norm(source * scale + translation - target, axis=1)
+            inliers = errors <= 6.0
+            count = int(np.count_nonzero(inliers))
+            median = float(np.median(errors[inliers])) if count else float("inf")
+            if best_inliers is None or (count, -median) > (
+                int(np.count_nonzero(best_inliers)),
+                -best_error,
+            ):
+                best_inliers = inliers
+                best_error = median
+    if best_inliers is None or np.count_nonzero(best_inliers) < 2:
+        return None, None
+    inliers = best_inliers
+    for _ in range(2):
+        source_inliers = source[inliers]
+        target_inliers = target[inliers]
+        source_center = np.mean(source_inliers, axis=0)
+        target_center = np.mean(target_inliers, axis=0)
+        centered_source = source_inliers - source_center
+        denominator = float(np.sum(centered_source * centered_source))
+        if denominator <= 1.0e-9:
+            return None, None
+        scale = float(
+            np.sum(centered_source * (target_inliers - target_center)) / denominator
+        )
+        if not 0.5 <= scale <= 16.0:
+            return None, None
+        translation = target_center - scale * source_center
+        errors = np.linalg.norm(source * scale + translation - target, axis=1)
+        updated = errors <= 6.0
+        if np.array_equal(updated, inliers):
+            break
+        if np.count_nonzero(updated) < 2:
+            break
+        inliers = updated
+    matrix = np.asarray(
+        [[scale, 0.0, translation[0]], [0.0, scale, translation[1]]],
+        dtype=np.float64,
+    )
+    return matrix, inliers.astype(np.uint8).reshape((-1, 1))
+
+
 def _estimate_minimap_similarity(
     reference: np.ndarray,
     mask: np.ndarray,
@@ -102,7 +163,7 @@ def _estimate_minimap_similarity(
         )
     source = np.float32([reference_points[item.queryIdx].pt for item in matches])
     target = np.float32([map_points[item.trainIdx].pt for item in matches])
-    matrix, inlier_mask = cv2.estimateAffinePartial2D(
+    diagnostic_matrix, _ = cv2.estimateAffinePartial2D(
         source,
         target,
         method=cv2.RANSAC,
@@ -110,8 +171,11 @@ def _estimate_minimap_similarity(
         maxIters=20000,
         confidence=0.999,
     )
+    matrix, inlier_mask = _fit_fixed_north_up_similarity(source, target)
     if matrix is None or inlier_mask is None:
-        raise RuntimeError("Mini-map/full-map SIFT matches have no consistent similarity")
+        raise RuntimeError(
+            "Mini-map/full-map matches have no fixed-north-up scale and translation"
+        )
     inliers = inlier_mask.ravel().astype(bool)
     inlier_count = int(np.count_nonzero(inliers))
     if inlier_count < 2:
@@ -121,7 +185,13 @@ def _estimate_minimap_similarity(
     predicted = cv2.transform(source.reshape((-1, 1, 2)), matrix).reshape((-1, 2))
     errors = np.linalg.norm(predicted - target, axis=1)
     scale = math.hypot(float(matrix[0, 0]), float(matrix[0, 1]))
-    rotation = math.degrees(math.atan2(float(matrix[1, 0]), float(matrix[0, 0])))
+    residual_rotation = (
+        math.degrees(
+            math.atan2(float(diagnostic_matrix[1, 0]), float(diagnostic_matrix[0, 0]))
+        )
+        if diagnostic_matrix is not None
+        else None
+    )
     center = cv2.transform(
         np.float32([[[reference.shape[1] / 2.0, reference.shape[0] / 2.0]]]),
         matrix,
@@ -137,7 +207,8 @@ def _estimate_minimap_similarity(
         "reprojection_median_px": float(np.median(errors[inliers])),
         "reprojection_p95_px": float(np.percentile(errors[inliers], 95)),
         "map_pixels_per_minimap_pixel": float(scale),
-        "minimap_to_map_rotation_deg": float(rotation),
+        "minimap_to_map_rotation_deg": 0.0,
+        "diagnostic_residual_rotation_deg": residual_rotation,
         "reference_center_map_xy": center,
     }
 
@@ -176,7 +247,7 @@ def _build_localization_derivative(
     )
     localization_to_original = np.linalg.inv(original_to_localization)
 
-    residual_rotation = estimate["minimap_to_map_rotation_deg"]
+    residual_rotation = estimate["diagnostic_residual_rotation_deg"]
     applied_rotation = 0.0
     rotation_matrix = cv2.getRotationMatrix2D(
         ((patch.shape[1] - 1) / 2.0, (patch.shape[0] - 1) / 2.0),
