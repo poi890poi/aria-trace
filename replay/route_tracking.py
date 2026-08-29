@@ -123,7 +123,14 @@ def compile_route_tracking_package(
             "route_distance_px": float(cumulative[index]),
             "canonical_xy": positions[index].tolist(),
             "route_heading_deg": float(headings[index]),
+            "map_alignment_deg": (
+                float(item["map_alignment_deg"])
+                if item.get("map_alignment_deg") is not None
+                else None
+            ),
+            "map_scale": float(item.get("map_scale") or 1.0),
             "mode_id": mode_id,
+            "mode_likelihoods": dict(item.get("mode_likelihoods") or {}),
             "localization_score": float(item.get("localization_score") or 0.0),
             "localization_margin": float(item.get("localization_margin") or 0.0),
             "descriptor_index": index,
