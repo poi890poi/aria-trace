@@ -215,6 +215,7 @@ def _estimate_minimap_similarity(
     mosaic: np.ndarray,
     coverage: np.ndarray,
     mosaic_cache=None,
+    minimum_ratio_matches: int = 6,
 ):
     """Estimate mini-map pixels to original-mosaic pixels with SIFT geometry."""
     mosaic_cache = mosaic_cache or _prepare_localization_mosaic(mosaic, coverage)
@@ -236,10 +237,10 @@ def _estimate_minimap_similarity(
         for first, second in [pair]
         if first.distance < 0.80 * second.distance
     ]
-    if len(matches) < 6:
+    if len(matches) < minimum_ratio_matches:
         raise RuntimeError(
-            "Mini-map/full-map scale calibration needs at least 6 ratio-test matches; got {}"
-            .format(len(matches))
+            "Mini-map/full-map scale calibration needs at least {} ratio-test matches; got {}"
+            .format(minimum_ratio_matches, len(matches))
         )
     source = np.float32([reference_points[item.queryIdx].pt for item in matches])
     target = np.float32([map_points[item.trainIdx].pt for item in matches])
@@ -293,6 +294,174 @@ def _estimate_minimap_similarity(
     }
 
 
+def _scale_consensus(
+    estimates, relative_tolerance: float = 0.035, preferred_name=None
+) -> dict:
+    """Choose the largest mutually consistent scale cluster and its best member."""
+    if not estimates:
+        raise RuntimeError("Mini-map/full-map scale calibration found no usable references")
+    scales = np.asarray(
+        [item["estimate"]["map_pixels_per_minimap_pixel"] for item in estimates],
+        dtype=np.float64,
+    )
+    clusters = []
+    for center in scales:
+        tolerance = max(0.02, abs(float(center)) * relative_tolerance)
+        members = np.flatnonzero(np.abs(scales - center) <= tolerance)
+        member_scales = scales[members]
+        clusters.append(
+            (
+                len(members),
+                -float(np.median(np.abs(member_scales - np.median(member_scales)))),
+                members,
+            )
+        )
+    _, _, member_indices = max(clusters, key=lambda item: (item[0], item[1]))
+    members = [estimates[int(index)] for index in member_indices]
+    consensus_scale = float(
+        np.median(
+            [item["estimate"]["map_pixels_per_minimap_pixel"] for item in members]
+        )
+    )
+    preferred = [
+        item
+        for item in members
+        if item["candidate"].get("source_image_name") == preferred_name
+    ]
+    best = preferred[0] if preferred else max(
+        members,
+        key=lambda item: (
+            item["estimate"]["inlier_count"],
+            item["estimate"]["inlier_ratio"],
+            -item["estimate"]["reprojection_p95_px"],
+        ),
+    )
+    deviations = np.abs(
+        np.asarray(
+            [item["estimate"]["map_pixels_per_minimap_pixel"] for item in members]
+        )
+        - consensus_scale
+    )
+    return {
+        "scale": consensus_scale,
+        "members": members,
+        "selected": best,
+        "median_absolute_deviation": float(np.median(deviations)),
+        "maximum_relative_deviation": float(
+            np.max(deviations) / max(abs(consensus_scale), 1.0e-9)
+        ),
+    }
+
+
+def _apply_consensus_scale(estimate: dict, scale: float, reference_shape) -> dict:
+    """Refit translation and errors for one reference at the agreed scale."""
+    source = estimate["source_points"]
+    target = estimate["target_points"]
+    seed_inliers = estimate["inlier_mask"]
+    translation = np.median(target[seed_inliers] - source[seed_inliers] * scale, axis=0)
+    predicted = source * scale + translation
+    errors = np.linalg.norm(predicted - target, axis=1)
+    inliers = errors <= 6.0
+    if np.count_nonzero(inliers) >= 2:
+        translation = np.median(target[inliers] - source[inliers] * scale, axis=0)
+        predicted = source * scale + translation
+        errors = np.linalg.norm(predicted - target, axis=1)
+        inliers = errors <= 6.0
+    matrix = np.asarray(
+        [[scale, 0.0, translation[0]], [0.0, scale, translation[1]]],
+        dtype=np.float64,
+    )
+    center = cv2.transform(
+        np.float32([[[reference_shape[1] / 2.0, reference_shape[0] / 2.0]]]),
+        matrix,
+    ).reshape(2)
+    updated = dict(estimate)
+    updated.update(
+        {
+            "matrix": matrix,
+            "inlier_mask": inliers,
+            "inlier_count": int(np.count_nonzero(inliers)),
+            "inlier_ratio": float(np.mean(inliers)),
+            "reprojection_median_px": float(np.median(errors[inliers])),
+            "reprojection_p95_px": float(np.percentile(errors[inliers], 95)),
+            "map_pixels_per_minimap_pixel": float(scale),
+            "reference_center_map_xy": center,
+        }
+    )
+    return updated
+
+
+def _render_reference_consensus(rows, selected_name: str) -> np.ndarray:
+    width, height = 250, 190
+    canvas = np.full((height * 3, width * 3, 3), 18, np.uint8)
+    accepted_names = {
+        row["candidate"].get("source_image_name")
+        for row in rows
+        if row.get("consensus_member")
+    }
+    for index, row in enumerate(rows[:9]):
+        x = (index % 3) * width
+        y = (index // 3) * height
+        image = cv2.resize(row["candidate"]["image"], (220, 150))
+        canvas[y + 28 : y + 178, x + 15 : x + 235] = image
+        name = row["candidate"].get("source_image_name") or "reference"
+        estimate = row.get("estimate")
+        if estimate:
+            label = "{}  s={:.3f}  in={}".format(
+                name.replace("forward_frame_", "f"),
+                estimate["map_pixels_per_minimap_pixel"],
+                estimate["inlier_count"],
+            )
+        else:
+            label = "{}  rejected".format(name.replace("forward_frame_", "f"))
+        color = (70, 235, 100) if name in accepted_names else (80, 80, 255)
+        thickness = 3 if name == selected_name else 1
+        cv2.rectangle(canvas, (x + 14, y + 27), (x + 236, y + 179), color, thickness)
+        cv2.putText(
+            canvas,
+            label,
+            (x + 8, y + 19),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            (240, 240, 240),
+            1,
+            cv2.LINE_AA,
+        )
+    return canvas
+
+
+def _reference_consensus_result(row: dict) -> dict:
+    candidate = row["candidate"]
+    estimate = row.get("estimate")
+    result = {
+        "source_image_name": candidate.get("source_image_name"),
+        "source_frame_index": candidate.get("source_frame_index"),
+        "source_kind": candidate.get("source_kind"),
+        "status": "estimated" if estimate else "rejected",
+        "consensus_member": bool(row.get("consensus_member")),
+    }
+    if estimate:
+        result.update(
+            {
+                "map_pixels_per_minimap_pixel": estimate[
+                    "map_pixels_per_minimap_pixel"
+                ],
+                "ratio_match_count": estimate["ratio_match_count"],
+                "inlier_count": estimate["inlier_count"],
+                "inlier_ratio": estimate["inlier_ratio"],
+                "reprojection_p95_original_map_px": estimate[
+                    "reprojection_p95_px"
+                ],
+                "diagnostic_residual_rotation_deg": estimate[
+                    "diagnostic_residual_rotation_deg"
+                ],
+            }
+        )
+    else:
+        result["reason"] = row.get("error")
+    return result
+
+
 def _build_localization_derivative(
     mosaic: np.ndarray,
     coverage: np.ndarray,
@@ -301,10 +470,50 @@ def _build_localization_derivative(
     mosaic_cache=None,
 ) -> dict:
     """Create a reversible map raster normalized to calibrated mini-map scale."""
-    patch, mask = _minimap_reference(reference["image"], reference["calibration"])
     mosaic_cache = mosaic_cache or _prepare_localization_mosaic(mosaic, coverage)
-    estimate = _estimate_minimap_similarity(
-        patch, mask, mosaic, coverage, mosaic_cache=mosaic_cache
+    candidates = reference.get("candidates") or [reference]
+    estimate_rows = []
+    review_rows = []
+    minimum_matches = 3 if len(candidates) > 1 else 6
+    for candidate in candidates:
+        patch, mask = _minimap_reference(candidate["image"], reference["calibration"])
+        try:
+            candidate_estimate = _estimate_minimap_similarity(
+                patch,
+                mask,
+                mosaic,
+                coverage,
+                mosaic_cache=mosaic_cache,
+                minimum_ratio_matches=minimum_matches,
+            )
+            row = {
+                "candidate": candidate,
+                "patch": patch,
+                "mask": mask,
+                "estimate": candidate_estimate,
+            }
+            estimate_rows.append(row)
+            review_rows.append(row)
+        except RuntimeError as error:
+            review_rows.append({"candidate": candidate, "error": str(error)})
+    consensus = _scale_consensus(
+        estimate_rows, preferred_name=reference.get("source_image_name")
+    )
+    consensus_names = {
+        item["candidate"].get("source_image_name") for item in consensus["members"]
+    }
+    for row in review_rows:
+        row["consensus_member"] = (
+            row["candidate"].get("source_image_name") in consensus_names
+        )
+    selected = consensus["selected"]
+    patch, mask = selected["patch"], selected["mask"]
+    estimate = (
+        selected["estimate"]
+        if len(candidates) == 1
+        else _apply_consensus_scale(
+            selected["estimate"], consensus["scale"], patch.shape
+        )
     )
     scale = estimate["map_pixels_per_minimap_pixel"]
     if not 0.5 <= scale <= 16.0:
@@ -372,8 +581,10 @@ def _build_localization_derivative(
         dtype=np.float64,
     )
     center_agreement = float(np.linalg.norm(correlation_center - sift_center))
+    consensus_ready = len(candidates) == 1 or len(consensus["members"]) >= 3
     ready = bool(
-        estimate["inlier_count"] >= 6
+        consensus_ready
+        and estimate["inlier_count"] >= 6
         and estimate["inlier_ratio"] >= 0.60
         and estimate["reprojection_p95_px"] <= 4.0
         and score >= 0.55
@@ -424,18 +635,33 @@ def _build_localization_derivative(
     _write_image(output_path / "localization_mosaic.png", localization_mosaic)
     _write_image(output_path / "localization_coverage.png", localization_coverage)
     _write_image(output_path / "localization_scale_evidence.png", evidence)
+    selected_name = selected["candidate"].get("source_image_name")
+    _write_image(
+        output_path / "localization_reference_consensus.png",
+        _render_reference_consensus(review_rows, selected_name),
+    )
     return {
         "schema_version": "1.0",
         "status": "ready" if ready else "review_required",
-        "method": "rootsift_similarity_with_masked_gradient_verification",
+        "method": "rootsift_fixed_north_up_multi_reference_with_gradient_verification",
         "map_orientation_model": MAP_ORIENTATION_MODEL,
         "north_normalization_applied": False,
         "source_minimap_calibration_id": reference.get("calibration_id"),
-        "source_minimap_image": reference.get("source_image_name"),
+        "source_minimap_image": selected_name,
         "reference_candidate_count": len(reference.get("candidates") or [reference]),
         "reference_candidate_names": [
             item.get("source_image_name")
             for item in (reference.get("candidates") or [reference])
+        ],
+        "scale_consensus": {
+            "required_reference_count": 3 if len(candidates) > 1 else 1,
+            "accepted_reference_count": len(consensus["members"]),
+            "accepted_reference_names": sorted(consensus_names),
+            "median_absolute_deviation": consensus["median_absolute_deviation"],
+            "maximum_relative_deviation": consensus["maximum_relative_deviation"],
+        },
+        "reference_results": [
+            _reference_consensus_result(row) for row in review_rows
         ],
         "coordinate_space": "derived_localization_map_px",
         "mosaic_file": "localization_mosaic.png",
@@ -458,8 +684,10 @@ def _build_localization_derivative(
             "gradient_correlation_score": float(score),
             "gradient_correlation_margin": float(score - second_score),
             "sift_correlation_center_agreement_localization_px": center_agreement,
+            "scale_consensus_reference_count": len(consensus["members"]),
         },
         "evidence_file": "localization_scale_evidence.png",
+        "reference_consensus_evidence_file": "localization_reference_consensus.png",
     }
 
 
@@ -678,6 +906,11 @@ def stitch_map_frames(
                 {
                     "name": "localization_scale_evidence.png",
                     "title": "Mini-map/full-map scale and position verification",
+                    "category": "localization",
+                },
+                {
+                    "name": "localization_reference_consensus.png",
+                    "title": "Independent mini-map scale-reference consensus",
                     "category": "localization",
                 },
             ]

@@ -12,12 +12,38 @@ from acquisition.map_stitching import (
     _minimap_reference,
     _prepare_localization_mosaic,
     _root_sift,
+    _scale_consensus,
     load_localization_reference_candidates,
     stitch_map_frames,
 )
 
 
 class MapStitchingTests(unittest.TestCase):
+    def test_scale_consensus_selects_largest_consistent_reference_cluster(self):
+        rows = []
+        for index, scale in enumerate((3.80, 3.82, 3.81, 7.2)):
+            rows.append(
+                {
+                    "candidate": {"source_image_name": "frame-{}".format(index)},
+                    "estimate": {
+                        "map_pixels_per_minimap_pixel": scale,
+                        "inlier_count": 5 + index,
+                        "inlier_ratio": 0.8,
+                        "reprojection_p95_px": 2.0,
+                    },
+                }
+            )
+        consensus = _scale_consensus(rows)
+        self.assertEqual(len(consensus["members"]), 3)
+        self.assertAlmostEqual(consensus["scale"], 3.81, places=6)
+        self.assertEqual(
+            consensus["selected"]["candidate"]["source_image_name"], "frame-2"
+        )
+        preferred = _scale_consensus(rows, preferred_name="frame-0")
+        self.assertEqual(
+            preferred["selected"]["candidate"]["source_image_name"], "frame-0"
+        )
+
     def test_loads_both_persisted_forward_reference_endpoints(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -139,6 +165,7 @@ class MapStitchingTests(unittest.TestCase):
                 "localization_mosaic.png",
                 "localization_coverage.png",
                 "localization_scale_evidence.png",
+                "localization_reference_consensus.png",
             ):
                 self.assertGreater((output / name).stat().st_size, 0)
 
