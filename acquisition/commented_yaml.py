@@ -86,6 +86,9 @@ PROFILE_HEADER = """# AriaTrace calibration profile.
 
 PROFILE_COMMENTS = {
     "profile": "Stable scope and identity of this reusable profile.",
+    "coordinate_space": "Coordinate authority for every crop and boundary stored by this profile.",
+    "base_rig_calibration": "Existing optical rig geometry referenced by this profile; it is never refitted here.",
+    "composition_rule": "Exact runtime order for composing independent calibration layers.",
     "reuse": "Compatibility and revision rules; evidence is never silently reused across scopes.",
     "artifacts": "Paths to machine-readable results and human-review evidence.",
     "notes": "Human-facing usage constraints not interpreted as runtime parameters.",

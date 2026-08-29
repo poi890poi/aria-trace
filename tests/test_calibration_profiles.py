@@ -5,6 +5,8 @@ from pathlib import Path
 from acquisition.calibration_profiles import (
     CalibrationProfileKey,
     CalibrationProfileStore,
+    ScopedCalibrationProfileStore,
+    ScopedProfileKey,
 )
 
 
@@ -50,6 +52,24 @@ class CalibrationProfileStoreTests(unittest.TestCase):
             store.create_revision_directory(key, "revision-1")
             with self.assertRaises(FileExistsError):
                 store.create_revision_directory(key, "revision-1")
+
+    def test_phone_game_and_rig_game_are_independent_profile_families(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ScopedCalibrationProfileStore(Path(temporary))
+            phone = ScopedProfileKey("phone_game", "phone-1", "game-1")
+            rig = ScopedProfileKey("rig_game", "camera-1--phone-1", "game-1")
+            phone_revision = store.create_revision_directory(phone, "r1")
+            rig_revision = store.create_revision_directory(rig, "r1")
+            store.publish(phone, phone_revision, {"coordinate_space": "phone"})
+            store.publish(rig, rig_revision, {"base_rig_calibration": "rig.json"})
+            self.assertNotEqual(
+                store.profile_directory(phone), store.profile_directory(rig)
+            )
+            self.assertTrue((phone_revision / "profile.yaml").is_file())
+            self.assertIn(
+                "# AriaTrace calibration profile",
+                (rig_revision / "profile.yaml").read_text(encoding="utf-8"),
+            )
 
 
 if __name__ == "__main__":

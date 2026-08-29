@@ -143,3 +143,101 @@ class CalibrationProfileStore:
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+
+@dataclass(frozen=True)
+class ScopedProfileKey:
+    """A decoupled phone-game or rig-game profile identity."""
+
+    scope_kind: str
+    owner_id: str
+    game_id: str
+
+    def __post_init__(self) -> None:
+        kind = _safe_id(self.scope_kind)
+        if kind not in ("phone_game", "rig_game"):
+            raise ValueError("scope_kind must be phone_game or rig_game")
+        object.__setattr__(self, "scope_kind", kind)
+        object.__setattr__(self, "owner_id", _safe_id(self.owner_id))
+        object.__setattr__(self, "game_id", _safe_id(self.game_id))
+
+    @property
+    def profile_id(self) -> str:
+        return "{}--{}--{}".format(
+            self.scope_kind, self.owner_id, self.game_id
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "scope_kind": self.scope_kind,
+            "owner_id": self.owner_id,
+            "game_id": self.game_id,
+            "profile_id": self.profile_id,
+        }
+
+
+class ScopedCalibrationProfileStore:
+    """Publish independent phone-game and rig-game profile revisions."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+
+    def profile_directory(self, key: ScopedProfileKey) -> Path:
+        return self.root / key.scope_kind / key.owner_id / key.game_id
+
+    def create_revision_directory(
+        self, key: ScopedProfileKey, revision_id: Optional[str] = None
+    ) -> Path:
+        revision = _safe_id(
+            revision_id
+            or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        )
+        path = self.profile_directory(key) / "revisions" / revision
+        path.mkdir(parents=True, exist_ok=False)
+        return path
+
+    def publish(
+        self,
+        key: ScopedProfileKey,
+        revision_directory: Path,
+        document: Mapping[str, Any],
+    ) -> dict:
+        revision_directory = Path(revision_directory).resolve()
+        expected_parent = (self.profile_directory(key) / "revisions").resolve()
+        if expected_parent not in revision_directory.parents:
+            raise ValueError("Revision directory is outside its scoped profile")
+        manifest = {
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "status": "review_required",
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "profile": key.as_dict(),
+            "revision_id": revision_directory.name,
+            **dict(document),
+        }
+        _atomic_json(revision_directory / "profile.json", manifest)
+        write_commented_yaml(
+            revision_directory / "profile.yaml",
+            manifest,
+            header=PROFILE_HEADER,
+            section_comments=PROFILE_COMMENTS,
+        )
+        pointer = {
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "profile": key.as_dict(),
+            "current_revision_id": revision_directory.name,
+            "current_revision": str(revision_directory),
+            "updated_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        directory = self.profile_directory(key)
+        _atomic_json(directory / "current.json", pointer)
+        write_commented_yaml(
+            directory / "current.yaml",
+            pointer,
+            header=PROFILE_HEADER,
+            section_comments=PROFILE_COMMENTS,
+        )
+        return manifest
+
+    def current(self, key: ScopedProfileKey) -> Optional[dict]:
+        path = self.profile_directory(key) / "current.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None

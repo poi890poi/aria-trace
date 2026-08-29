@@ -1,8 +1,8 @@
 """Record synchronized Android/native-HIK frames during one controlled zigzag.
 
-This module is deliberately limited to acquisition.  It does not select a
-mini-map, estimate orientation, create calibration profiles, or publish a
-calibration result.
+Acquisition is always native full-sensor HIK and has no rig dependency.  The
+optional post-capture analysis is a separate layer invoked only after the
+session has finalized successfully.
 """
 
 from __future__ import annotations
@@ -102,6 +102,16 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--settle-seconds", type=float, default=1.5)
     value.add_argument("--tail-seconds", type=float, default=1.5)
     value.add_argument("--yes", action="store_true")
+    value.add_argument(
+        "--analyze",
+        action="store_true",
+        help="run standalone mini-map analysis after successful capture",
+    )
+    value.add_argument("--rig-calibration", type=Path)
+    value.add_argument("--profiles-root", type=Path, default=Path("profiles"))
+    value.add_argument("--calibration-output", type=Path)
+    value.add_argument("--android-crop")
+    value.add_argument("--hik-crop")
     return value
 
 
@@ -229,6 +239,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             control.expected_event_count, session_path.resolve()
         )
     )
+    if arguments.analyze:
+        from .automated_minimap_calibration import (
+            _parse_crop,
+            calibrate_zigzag_session,
+        )
+
+        calibration_output = arguments.calibration_output or (
+            Path("artifacts")
+            / "game-minimap-calibration-{}".format(timestamp)
+        )
+        result = calibrate_zigzag_session(
+            session_path,
+            calibration_output,
+            profiles_root=arguments.profiles_root,
+            rig_calibration=arguments.rig_calibration,
+            android_selected_crop_xywh=_parse_crop(arguments.android_crop),
+            hik_selected_crop_xywh=_parse_crop(arguments.hik_crop),
+        )
+        print("Mini-map calibration: {}".format(calibration_output.resolve()))
+        print("Phone-game profile: {}".format(result["summary"]["phone_game_profile"]))
+        if result["summary"]["rig_game_profile"]:
+            print("Rig-game profile: {}".format(result["summary"]["rig_game_profile"]))
+        else:
+            print("Rig-game profile: skipped (no optional rig calibration supplied)")
     return 0
 
 
