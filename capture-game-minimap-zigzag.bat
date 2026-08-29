@@ -13,11 +13,5 @@ set "PYTHONPATH=%ARIA_CAPTURE_OPENCV%;%ARIA_CAPTURE_ROOT%.tools;%ARIA_CAPTURE_RO
 set "ARIA_CAPTURE_PYTHON=C:\Program Files\Python37\python.exe"
 if not exist "%ARIA_CAPTURE_PYTHON%" set "ARIA_CAPTURE_PYTHON=python"
 
-if "%~1"=="" (
-  echo Usage: capture-game-minimap-zigzag.bat ^<HIK calibration folder or JSON^>
-  echo This records synchronized source data only. It does not run calibration.
-  exit /b 2
-)
-
 "%ARIA_CAPTURE_PYTHON%" -B -m acquisition.capture_game_minimap_zigzag %*
 exit /b %errorlevel%

@@ -1,4 +1,4 @@
-"""Record synchronized Android/HIK frames during one controlled zigzag.
+"""Record synchronized Android/native-HIK frames during one controlled zigzag.
 
 This module is deliberately limited to acquisition.  It does not select a
 mini-map, estimate orientation, create calibration profiles, or publish a
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import threading
 import time
@@ -24,66 +23,35 @@ from .android_capture import (
     find_scrcpy_server,
 )
 from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
-from .hik_capture import CalibratedHikFrameSource
+from .hik_capture import NativeHikFrameSource
 from .recorder import AcquisitionRecorder
 from .rig_calibration.hik.phone import (
     AdbPhoneSession,
     connected_adb_devices,
     resolve_adb_executable,
 )
+from .rig_calibration.hik.driver import HikMvsCameraAdapter
 from .scrcpy_control import ScrcpyTouchController
 from .sources import AdbClockMapper
 
 
-def _calibration_file(value: Path) -> Path:
-    path = Path(value)
-    if path.is_dir():
-        path = path / "hik_camera_calibration.json"
-    if not path.is_file():
-        raise FileNotFoundError("HIK rig calibration does not exist: {}".format(path))
-    return path.resolve()
-
-
-def _select_phone(adb: Path, configured: Optional[str], rig: dict) -> str:
+def _select_phone(adb: Path, configured: Optional[str]) -> str:
     if configured:
         return str(configured)
-    calibrated = str((rig.get("phone") or {}).get("serial") or "")
     devices = list(connected_adb_devices(adb))
-    if calibrated and calibrated in devices:
-        return calibrated
     if len(devices) == 1:
         return devices[0]
     raise RuntimeError(
-        "Pass --phone-serial when the calibrated phone cannot be selected uniquely"
+        "Pass --phone-serial when the Android phone cannot be selected uniquely"
     )
 
 
-def _phone_surface(adb: Path, serial: str, rig: dict) -> dict:
+def _phone_surface(adb: Path, serial: str) -> dict:
     phone = AdbPhoneSession(serial, adb_executable=adb)
-    quarter_turns = None
-    for command, pattern in (
-        (("dumpsys", "input"), r"SurfaceOrientation:\s*([0-3])"),
-        (("dumpsys", "display"), r"mCurrentOrientation=([0-3])"),
-    ):
-        try:
-            match = re.search(pattern, phone.shell(*command))
-            if match:
-                quarter_turns = int(match.group(1))
-                break
-        except Exception:
-            pass
-    if quarter_turns is None:
-        raise RuntimeError("Android did not report its current surface orientation")
-    natural = list(
-        map(
-            int,
-            (rig.get("phone") or {}).get("natural_screen_size_px")
-            or (rig.get("phone") or {}).get("screen_size_px"),
-        )
-    )
-    logical = list(natural)
-    if quarter_turns % 2:
-        logical.reverse()
+    metrics = phone.metrics()
+    quarter_turns = int(metrics.orientation_quarter_turns)
+    natural = list(map(int, metrics.natural_screen_size_px))
+    logical = list(map(int, metrics.screen_size_px))
     return {
         "quarter_turns_clockwise_from_natural": quarter_turns,
         "degrees_clockwise_from_natural": quarter_turns * 90,
@@ -93,15 +61,35 @@ def _phone_surface(adb: Path, serial: str, rig: dict) -> dict:
     }
 
 
+def _select_camera(adapter: HikMvsCameraAdapter, configured: Optional[str]):
+    devices = list(adapter.devices(probe=True))
+    if configured:
+        selected = next(
+            (item for item in devices if item.device_id == str(configured)), None
+        )
+        if selected is None:
+            raise RuntimeError("Configured HIK camera was not found: {}".format(configured))
+        return selected
+    if len(devices) == 1:
+        return devices[0]
+    if not devices:
+        raise RuntimeError("No connected HIK camera was found")
+    raise RuntimeError("Pass --camera-id when multiple HIK cameras are connected")
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
-            "Record Android and calibrated HIK streams during one continuous "
+            "Record Android and native full-view HIK streams during one continuous "
             "horizon-returning zigzag. No calibration is run or published."
         )
     )
-    value.add_argument("rig_calibration", type=Path)
     value.add_argument("--game-id", default="genshin-impact")
+    value.add_argument("--camera-id")
+    value.add_argument("--camera-width", type=int, default=2448)
+    value.add_argument("--camera-height", type=int, default=2048)
+    value.add_argument("--camera-fps", type=float, default=30.0)
+    value.add_argument("--mvs-python-path")
     value.add_argument("--phone-serial")
     value.add_argument("--adb")
     value.add_argument("--scrcpy-server", type=Path)
@@ -119,12 +107,12 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
-    rig_file = _calibration_file(arguments.rig_calibration)
-    rig = json.loads(rig_file.read_text(encoding="utf-8"))
+    hik_adapter = HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
+    selected_camera = _select_camera(hik_adapter, arguments.camera_id)
     adb = resolve_adb_executable(arguments.adb)
-    serial = _select_phone(adb, arguments.phone_serial, rig)
+    serial = _select_phone(adb, arguments.phone_serial)
     server = find_scrcpy_server(arguments.scrcpy_server)
-    surface = _phone_surface(adb, serial, rig)
+    surface = _phone_surface(adb, serial)
     width, height = surface["logical_size_px"]
     plan = ZigzagTouchPlan(
         start_xy=[round(width * 0.82), round(height * 0.50)],
@@ -140,8 +128,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         arguments.game_id, timestamp
     )
     pending_path = session_path.with_name(session_path.name + ".pending")
+    print("HIK camera: {} ({})".format(selected_camera.label, selected_camera.device_id))
     print("Phone: {} ({}x{})".format(serial, width, height))
-    print("HIK calibration: {}".format(rig_file))
     print("Output session: {}".format(session_path.resolve()))
     print("This command records data only; it does not calibrate or publish profiles.")
     if not arguments.yes:
@@ -159,7 +147,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     android = AndroidRoiFrameSource(
         hub, AndroidRoiSpec("android_phone", 0, 0, 0, 0)
     )
-    hik = CalibratedHikFrameSource(rig_file, "hik_phone", rectify=True)
+    hik = NativeHikFrameSource(
+        selected_camera.device_id,
+        "hik_full",
+        width_px=arguments.camera_width,
+        height_px=arguments.camera_height,
+        fps=arguments.camera_fps,
+        adapter=hik_adapter,
+    )
     controller = ScrcpyTouchController(adb, server, serial, [width, height])
     control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
     recorder = AcquisitionRecorder(
@@ -172,7 +167,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "capture_kind": "zigzag_minimap_source_data",
             "game_id": arguments.game_id,
             "image_sources": ["android_scrcpy", "hik_mvs"],
-            "rig_calibration": str(rig_file),
+            "hik_capture": {
+                "mode": "native_full_sensor",
+                "camera_id": selected_camera.device_id,
+                "rig_calibration_used": False,
+            },
             "phone_surface_orientation": surface,
             "zigzag_plan": plan.as_dict(),
             "calibration_status": "not_run",
@@ -217,7 +216,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if (
             manifest.get("status") != "complete"
             or int(counts.get("android_phone", 0)) <= 0
-            or int(counts.get("hik_phone", 0)) <= 0
+            or int(counts.get("hik_full", 0)) <= 0
         ):
             raise RuntimeError("Recording did not complete with both frame streams")
         pending_path.replace(session_path)
@@ -225,7 +224,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if pending_path.is_dir():
             shutil.rmtree(str(pending_path))
         raise
-    print("Captured 26-event zigzag with both streams: {}".format(session_path.resolve()))
+    print(
+        "Captured {}-event zigzag with both streams: {}".format(
+            control.expected_event_count, session_path.resolve()
+        )
+    )
     return 0
 
 
