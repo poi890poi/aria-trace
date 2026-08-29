@@ -1881,8 +1881,18 @@ class AcquisitionWorkbench:
                 localization_coverage,
                 localization.get("localization_to_original_map_3x3"),
             )
+            gaussian_fit_method = str(
+                value.get("cursor_pose_method") or "vectorized_grid"
+            )
+            if gaussian_fit_method not in CursorPoseEstimator.GAUSSIAN_FIT_METHODS:
+                raise ValueError(
+                    "Cursor pose method must be one of: {}".format(
+                        ", ".join(CursorPoseEstimator.GAUSSIAN_FIT_METHODS)
+                    )
+                )
             cursor_pose_estimator = CursorPoseEstimator(
-                self._minimap_calibration_root(game_profile_id) / calibration_id
+                self._minimap_calibration_root(game_profile_id) / calibration_id,
+                gaussian_fit_method=gaussian_fit_method,
             )
             frame_config = dict(value.get("frame_source") or {})
             adapter = frame_config.get("adapter")
@@ -1917,6 +1927,7 @@ class AcquisitionWorkbench:
                 "map_stitch_id": stitch_id,
                 "frame_source": frame_config,
                 "global_interval_s": global_interval_s,
+                "cursor_pose_method": gaussian_fit_method,
                 "started_utc": datetime.now(timezone.utc).isoformat(),
                 "latest": None,
                 "high_rate_fps": 0.0,

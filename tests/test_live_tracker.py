@@ -394,13 +394,19 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                 ), patch(
                     "acquisition.workbench.CursorPoseEstimator",
                     return_value=object(),
-                ):
+                ) as cursor_constructor:
+                    cursor_constructor.GAUSSIAN_FIT_METHODS = (
+                        "vectorized_grid",
+                        "fast_grid",
+                        "legacy_grid",
+                    )
                     state.start_live_tracker(
                         {
                             "game_profile_id": game_id,
                             "minimap_calibration_id": "mini-a",
                             "scene_yaw_calibration_id": "yaw-a",
                             "map_stitch_id": "map-a",
+                            "cursor_pose_method": "fast_grid",
                             "frame_source": {
                                 "adapter": "windows_window",
                                 "window_title": "Genshin Impact",
@@ -414,6 +420,11 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         time.sleep(0.005)
                     runtime = descriptor["live_tracker"]
                     self.assertEqual(runtime["status"], "running")
+                    self.assertEqual(runtime["cursor_pose_method"], "fast_grid")
+                    cursor_constructor.assert_called_once_with(
+                        calibration_root,
+                        gaussian_fit_method="fast_grid",
+                    )
                     self.assertEqual(runtime["latest"]["mode"], "TRACK")
                     json.dumps(descriptor)
                     overlay = cv2.imdecode(
