@@ -299,11 +299,16 @@ class MinimapExtractor:
         )
         self.radius = float(boundary.get("radius", min(self.crop_xywh[2:]) * 0.4))
 
-    def extract(self, frame: np.ndarray):
+    def crop(self, frame: np.ndarray) -> np.ndarray:
         x, y, width, height = self.crop_xywh
         crop = frame[y : y + height, x : x + width]
         if crop.shape[:2] != (height, width):
             raise RuntimeError("Live frame does not contain the calibrated mini-map crop")
+        return crop
+
+    def extract(self, frame: np.ndarray):
+        crop = self.crop(frame)
+        _, _, width, height = self.crop_xywh
         cx, cy = self.center
         radius = int(round(self.radius))
         left = max(0, int(round(cx)) - radius)
@@ -478,7 +483,7 @@ class TwoRateRealtimeTracker:
         ):
             self._cursor_future = self._cursor_executor.submit(
                 self.cursor_pose_estimator.estimate,
-                frame.copy(),
+                self.extractor.crop(frame).copy(),
                 None,
                 timestamp_ns,
             )

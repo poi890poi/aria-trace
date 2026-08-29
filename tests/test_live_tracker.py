@@ -82,7 +82,11 @@ class ImmediateLocalizer:
 
 
 class FakeCursorPoseEstimator:
+    def __init__(self):
+        self.last_frame_shape = None
+
     def estimate(self, frame, frame_index=None, session_time_ns=None):
+        self.last_frame_shape = frame.shape
         return {
             "detected": True,
             "angle_screen_deg": 35.0,
@@ -208,8 +212,9 @@ class TwoRateTrackerTests(unittest.TestCase):
             tracker.close()
 
     def test_exposes_player_heading_from_cursor_and_map_alignment(self):
+        cursor_pose_estimator = FakeCursorPoseEstimator()
         tracker = self._tracker(
-            ImmediateLocalizer(), cursor_pose_estimator=FakeCursorPoseEstimator()
+            ImmediateLocalizer(), cursor_pose_estimator=cursor_pose_estimator
         )
         tracker.cursor_interval_ns = 1
         frame = np.zeros((100, 100, 3), np.uint8)
@@ -232,6 +237,7 @@ class TwoRateTrackerTests(unittest.TestCase):
                 result["pose"]["heading_source"],
                 "calibrated_cursor_plus_map_alignment",
             )
+            self.assertEqual(cursor_pose_estimator.last_frame_shape, (80, 80, 3))
         finally:
             tracker.close()
 
