@@ -4194,10 +4194,14 @@ class AcquisitionWorkbench:
             active["cancel"].set()
             active["stop"].set()
             active["thread"].join(timeout=5)
-        if tracker and tracker.get("status") in ("starting", "running"):
-            tracker["stop"].set()
+        if tracker:
+            if tracker.get("status") in ("starting", "running"):
+                tracker["stop"].set()
+            # The worker publishes "stopped" before its evidence and post-run
+            # report files are finalized. Always join a still-live worker so
+            # callers can safely release or remove the artifact directory.
             thread = tracker.get("thread")
-            if thread is not None:
+            if thread is not None and thread.is_alive():
                 thread.join(timeout=5)
 
 
