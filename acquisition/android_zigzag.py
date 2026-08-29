@@ -25,7 +25,8 @@ class ZigzagTouchPlan:
     end_x: int
     vertical_amplitude_px: int
     move_count: int = 24
-    step_seconds: float = 0.12
+    step_seconds: float = 0.45
+    sample_hz: float = 30.0
     settle_seconds: float = 1.0
 
     def points(self) -> List[List[int]]:
@@ -43,6 +44,8 @@ class ZigzagTouchPlan:
             raise ValueError("Zigzag needs at least four MOVE points")
         if self.step_seconds < 0.03:
             raise ValueError("Zigzag step duration must be at least 30 ms")
+        if self.sample_hz < 10.0 or self.sample_hz > 120.0:
+            raise ValueError("Zigzag sample rate must be in 10..120 Hz")
         if self.settle_seconds < 0.0:
             raise ValueError("Zigzag settle duration cannot be negative")
 
@@ -61,6 +64,31 @@ class ZigzagTouchPlan:
             points.append([int(x), int(y)])
         return points
 
+    def sampled_moves(self) -> List[dict]:
+        """Interpolate each leg so Android receives sustained drag motion."""
+
+        samples_per_leg = max(
+            1, int(round(float(self.step_seconds) * float(self.sample_hz)))
+        )
+        previous = list(map(int, self.start_xy))
+        moves = []
+        for leg_index, waypoint in enumerate(self.points()):
+            for sample_index in range(samples_per_leg):
+                fraction = float(sample_index + 1) / float(samples_per_leg)
+                point = [
+                    int(round(previous[axis] + (waypoint[axis] - previous[axis]) * fraction))
+                    for axis in (0, 1)
+                ]
+                moves.append(
+                    {
+                        "point_xy": point,
+                        "leg_index": int(leg_index),
+                        "leg_fraction": fraction,
+                    }
+                )
+            previous = waypoint
+        return moves
+
     @property
     def duration_seconds(self) -> float:
         return float(self.settle_seconds) + len(self.points()) * float(self.step_seconds)
@@ -72,8 +100,14 @@ class ZigzagTouchPlan:
             "vertical_amplitude_px": int(self.vertical_amplitude_px),
             "move_count": int(self.move_count),
             "step_seconds": float(self.step_seconds),
+            "sample_hz": float(self.sample_hz),
             "settle_seconds": float(self.settle_seconds),
+            "waypoints_xy": self.points(),
             "absolute_points_xy": self.points(),
+            "samples_per_leg": max(
+                1, int(round(float(self.step_seconds) * float(self.sample_hz)))
+            ),
+            "move_event_count": len(self.sampled_moves()),
             "vertical_command_pattern": ["up", "down", "down", "up"],
         }
 
@@ -127,7 +161,16 @@ class AndroidZigzagInputSource(InputSource):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
-    def _record(self, kind: str, action: str, point: Sequence[int], index: int) -> None:
+    def _record(
+        self,
+        kind: str,
+        action: str,
+        point: Sequence[int],
+        index: int,
+        *,
+        leg_index: Optional[int] = None,
+        leg_fraction: Optional[float] = None,
+    ) -> None:
         host_time_ns = time.perf_counter_ns()
         self._events_issued += 1
         self._emit(
@@ -139,6 +182,8 @@ class AndroidZigzagInputSource(InputSource):
                     "action": action,
                     "point_xy": list(map(int, point)),
                     "point_index": int(index),
+                    "leg_index": leg_index,
+                    "leg_fraction": leg_fraction,
                     "plan": self.plan.as_dict() if index == -1 else None,
                 },
             )
@@ -148,6 +193,7 @@ class AndroidZigzagInputSource(InputSource):
         down = False
         last = list(map(int, self.plan.start_xy))
         completed_moves = 0
+        sampled_moves = self.plan.sampled_moves()
         try:
             if self.ready_event is not None:
                 while not self._stop.is_set() and not self.ready_event.wait(0.1):
@@ -157,12 +203,24 @@ class AndroidZigzagInputSource(InputSource):
             self._motion("DOWN", last[0], last[1])
             down = True
             self._record("zigzag_touch", "DOWN", last, -1)
-            for index, point in enumerate(self.plan.points()):
-                if self._stop.wait(float(self.plan.step_seconds)):
+            sample_interval = float(self.plan.step_seconds) / max(
+                1,
+                int(round(float(self.plan.step_seconds) * float(self.plan.sample_hz))),
+            )
+            for index, move in enumerate(sampled_moves):
+                if self._stop.wait(sample_interval):
                     break
+                point = move["point_xy"]
                 self._motion("MOVE", point[0], point[1])
                 last = point
-                self._record("zigzag_touch", "MOVE", point, index)
+                self._record(
+                    "zigzag_touch",
+                    "MOVE",
+                    point,
+                    index,
+                    leg_index=move["leg_index"],
+                    leg_fraction=move["leg_fraction"],
+                )
                 completed_moves += 1
         except Exception as exc:
             self._error = "{}: {}".format(type(exc).__name__, exc)
@@ -179,12 +237,12 @@ class AndroidZigzagInputSource(InputSource):
             if down:
                 try:
                     self._motion("UP", last[0], last[1])
-                    self._record("zigzag_touch", "UP", last, len(self.plan.points()))
+                    self._record("zigzag_touch", "UP", last, len(sampled_moves))
                 except Exception as exc:
                     if self._error is None:
                         self._error = "{}: {}".format(type(exc).__name__, exc)
             self._gesture_completed = (
-                self._error is None and completed_moves == len(self.plan.points())
+                self._error is None and completed_moves == len(sampled_moves)
             )
             self._completed.set()
 
@@ -218,7 +276,7 @@ class AndroidZigzagInputSource(InputSource):
 
     @property
     def expected_event_count(self) -> int:
-        return len(self.plan.points()) + 2
+        return len(self.plan.sampled_moves()) + 2
 
     @property
     def events_issued(self) -> int:

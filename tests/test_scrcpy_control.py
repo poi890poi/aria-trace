@@ -105,6 +105,30 @@ class ScrcpyControlTests(unittest.TestCase):
         self.assertTrue(controller.opened)
         self.assertTrue(controller.closed)
 
+    def test_zigzag_interpolates_sustained_motion_along_every_leg(self):
+        plan = ZigzagTouchPlan(
+            start_xy=[90, 50],
+            end_x=10,
+            vertical_amplitude_px=20,
+            move_count=4,
+            step_seconds=0.12,
+            sample_hz=30.0,
+            settle_seconds=0.0,
+        )
+        moves = plan.sampled_moves()
+        self.assertEqual(16, len(moves))
+        self.assertEqual(4, plan.as_dict()["samples_per_leg"])
+        waypoints = plan.points()
+        self.assertEqual(waypoints[0], moves[3]["point_xy"])
+        self.assertEqual(waypoints[1], moves[7]["point_xy"])
+        self.assertEqual(waypoints[2], moves[11]["point_xy"])
+        self.assertEqual(waypoints[3], moves[15]["point_xy"])
+        first_leg_y = [item["point_xy"][1] for item in moves[:4]]
+        second_leg_y = [item["point_xy"][1] for item in moves[4:8]]
+        self.assertEqual(first_leg_y, sorted(first_leg_y, reverse=True))
+        self.assertEqual(second_leg_y, sorted(second_leg_y))
+        self.assertTrue(all(item["leg_index"] == 0 for item in moves[:4]))
+
 
 if __name__ == "__main__":
     unittest.main()
