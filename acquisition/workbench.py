@@ -1922,6 +1922,9 @@ class AcquisitionWorkbench:
             cursor_pose_estimator = CursorPoseEstimator(
                 self._minimap_calibration_root(game_profile_id) / calibration_id,
                 gaussian_fit_method=gaussian_fit_method,
+                validation_policy=str(
+                    resolved_profile["cursor_validation_policy"]
+                ),
             )
             frame_config = dict(value.get("frame_source") or {})
             adapter = frame_config.get("adapter")

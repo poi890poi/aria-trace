@@ -10,6 +10,11 @@ class TrackingProfileTests(unittest.TestCase):
         self.assertTrue(realtime["temporal_pose_search"])
         self.assertFalse(offline["temporal_pose_search"])
         self.assertEqual(realtime["cursor_pose_method"], "cascade")
+        self.assertEqual(realtime["cursor_validation_policy"], "ambiguous")
+        self.assertEqual(
+            resolve_tracking_profile("fast")["cursor_validation_policy"],
+            "minimal",
+        )
         self.assertEqual(offline["diagnostics_stride"], 1)
 
     def test_explicit_developer_override_is_visible(self):

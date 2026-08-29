@@ -6,6 +6,29 @@ from acquisition.cursor_pose import CursorPoseEstimator, circular_difference_deg
 
 
 class CircularGaussianFitTests(unittest.TestCase):
+    def test_pixel_validation_policy_only_expands_ambiguous_frames(self):
+        estimator = object.__new__(CursorPoseEstimator)
+        strong = {
+            "r_squared": 0.98,
+            "center_std_deg": 0.2,
+            "fallback_used": False,
+        }
+        estimator.validation_policy = "ambiguous"
+        self.assertFalse(
+            estimator._needs_pixel_validation(strong, 0.10, 2.0, 0.85)
+        )
+        self.assertTrue(
+            estimator._needs_pixel_validation(strong, 0.01, 2.0, 0.85)
+        )
+        estimator.validation_policy = "full"
+        self.assertTrue(
+            estimator._needs_pixel_validation(strong, 0.10, 2.0, 0.85)
+        )
+        estimator.validation_policy = "minimal"
+        self.assertFalse(
+            estimator._needs_pixel_validation(strong, 0.01, 40.0, 0.2)
+        )
+
     def test_vectorized_grid_matches_legacy_fit(self):
         random = np.random.RandomState(13)
         angles = np.arange(360, dtype=np.float64)

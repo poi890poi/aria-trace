@@ -7,6 +7,7 @@ from typing import Mapping, Optional
 TRACKING_PROFILES = {
     "real-time": {
         "cursor_pose_method": "cascade",
+        "cursor_validation_policy": "ambiguous",
         "cursor_interval_s": 0.05,
         "global_interval_s": 2.0,
         "temporal_pose_search": True,
@@ -17,6 +18,7 @@ TRACKING_PROFILES = {
     },
     "fast": {
         "cursor_pose_method": "cascade",
+        "cursor_validation_policy": "minimal",
         "cursor_interval_s": 0.10,
         "global_interval_s": 3.0,
         "temporal_pose_search": True,
@@ -27,6 +29,7 @@ TRACKING_PROFILES = {
     },
     "accurate": {
         "cursor_pose_method": "vectorized_grid",
+        "cursor_validation_policy": "full",
         "cursor_interval_s": 0.15,
         "global_interval_s": 1.5,
         "temporal_pose_search": True,
@@ -37,6 +40,7 @@ TRACKING_PROFILES = {
     },
     "offline": {
         "cursor_pose_method": "vectorized_grid",
+        "cursor_validation_policy": "full",
         "cursor_interval_s": 0.0,
         "global_interval_s": 0.5,
         "temporal_pose_search": False,

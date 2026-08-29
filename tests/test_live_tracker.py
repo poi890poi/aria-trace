@@ -516,6 +516,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     cursor_constructor.assert_called_once_with(
                         calibration_root,
                         gaussian_fit_method="fast_grid",
+                        validation_policy="ambiguous",
                     )
                     self.assertEqual(runtime["latest"]["mode"], "TRACK")
                     json.dumps(descriptor)

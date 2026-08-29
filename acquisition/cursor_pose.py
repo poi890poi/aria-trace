@@ -66,11 +66,13 @@ class CursorPoseEstimator:
         "fast_grid",
         "legacy_grid",
     )
+    VALIDATION_POLICIES = ("full", "ambiguous", "minimal")
 
     def __init__(
         self,
         calibration_path: Path,
         gaussian_fit_method: str = "vectorized_grid",
+        validation_policy: str = "full",
     ) -> None:
         calibration_path = Path(calibration_path)
         if calibration_path.is_dir():
@@ -83,6 +85,13 @@ class CursorPoseEstimator:
                 )
             )
         self.gaussian_fit_method = gaussian_fit_method
+        if validation_policy not in self.VALIDATION_POLICIES:
+            raise ValueError(
+                "Unsupported validation policy {!r}; expected one of {}".format(
+                    validation_policy, ", ".join(self.VALIDATION_POLICIES)
+                )
+            )
+        self.validation_policy = validation_policy
         self.root = self.calibration_path.parent
         self.calibration = json.loads(self.calibration_path.read_text(encoding="utf-8"))
         model_path = self.root / self.calibration.get("model_file", "model.npz")
@@ -722,6 +731,26 @@ class CursorPoseEstimator:
         )
         return gaussian_fit, likelihood, chamfer, observed_edge
 
+    def _needs_pixel_validation(
+        self,
+        gaussian_fit: dict,
+        peak_margin: float,
+        centroid_error_deg: float,
+        aligned_iou: float,
+    ) -> bool:
+        if self.validation_policy == "full":
+            return True
+        if self.validation_policy == "minimal":
+            return False
+        return bool(
+            gaussian_fit["r_squared"] < 0.90
+            or gaussian_fit["center_std_deg"] > 1.5
+            or peak_margin < 0.05
+            or abs(centroid_error_deg) > 15.0
+            or aligned_iou < 0.65
+            or gaussian_fit.get("fallback_used", False)
+        )
+
     def estimate(
         self,
         frame: np.ndarray,
@@ -770,9 +799,6 @@ class CursorPoseEstimator:
             if angle_prior_deg is not None
             else None
         )
-        pixel_fit, pixel_correlation, polar = self._pixel_correlate(
-            patch, relative_prior, search_half_width_deg
-        )
         gaussian_fit, correlation, chamfer_curve, observed_edge = (
             self._polygon_likelihood(patch, relative_prior, search_half_width_deg)
         )
@@ -810,12 +836,23 @@ class CursorPoseEstimator:
         agreement_error = float(
             circular_difference_degrees(shift, centroid_shift)
         )
-        pixel_agreement_error = float(
-            circular_difference_degrees(shift, pixel_fit["center_deg"])
-        )
         fitted_chamfer = float(
             np.interp(shift % 360.0, np.arange(360), chamfer_curve, period=360)
         )
+        pixel_validation = self._needs_pixel_validation(
+            gaussian_fit, margin, agreement_error, aligned_iou
+        )
+        pixel_fit = None
+        pixel_correlation = None
+        polar = None
+        pixel_agreement_error = None
+        if pixel_validation:
+            pixel_fit, pixel_correlation, polar = self._pixel_correlate(
+                patch, relative_prior, search_half_width_deg
+            )
+            pixel_agreement_error = float(
+                circular_difference_degrees(shift, pixel_fit["center_deg"])
+            )
         component_scores = {
             "polygon_likelihood": float(np.clip((peak - 0.55) / 0.45, 0.0, 1.0)),
             "peak_margin": float(np.clip(margin / 0.16, 0.0, 1.0)),
@@ -827,13 +864,14 @@ class CursorPoseEstimator:
             ),
             "polygon_iou": float(np.clip(aligned_iou / 0.82, 0.0, 1.0)),
             "edge_distance": float(math.exp(-((fitted_chamfer / 1.5) ** 2))),
-            "pixel_polar_agreement": float(
-                math.exp(-((pixel_agreement_error / 8.0) ** 2))
-            ),
             "centroid_agreement": float(
                 math.exp(-((agreement_error / 20.0) ** 2))
             ),
         }
+        if pixel_agreement_error is not None:
+            component_scores["pixel_polar_agreement"] = float(
+                math.exp(-((pixel_agreement_error / 8.0) ** 2))
+            )
         confidence = float(
             np.prod([max(value, 0.02) for value in component_scores.values()])
             ** (1.0 / len(component_scores))
@@ -852,10 +890,18 @@ class CursorPoseEstimator:
                 "angular_likelihood_peak": float(peak),
                 "angular_likelihood_margin": float(margin),
                 "polygon_symmetric_chamfer_px": fitted_chamfer,
-                "pixel_polar_rotation_deg": float(pixel_fit["center_deg"]),
+                "validation_policy": self.validation_policy,
+                "pixel_validation_performed": pixel_validation,
+                "pixel_polar_rotation_deg": float(pixel_fit["center_deg"])
+                if pixel_fit is not None
+                else None,
                 "polygon_pixel_agreement_error_deg": pixel_agreement_error,
-                "polar_correlation_peak": float(pixel_fit["fitted_peak"]),
-                "polar_peak_margin": float(pixel_fit["peak_margin"]),
+                "polar_correlation_peak": float(pixel_fit["fitted_peak"])
+                if pixel_fit is not None
+                else None,
+                "polar_peak_margin": float(pixel_fit["peak_margin"])
+                if pixel_fit is not None
+                else None,
                 "gaussian_center_deg": float(gaussian_fit["center_deg"]),
                 "gaussian_sigma_deg": float(gaussian_fit["sigma_deg"]),
                 "gaussian_center_std_deg": float(gaussian_fit["center_std_deg"]),
@@ -871,7 +917,9 @@ class CursorPoseEstimator:
                     gaussian_fit.get("fallback_used", False)
                 ),
                 "raw_angular_likelihood_peak_deg": float(gaussian_fit["raw_peak_deg"]),
-                "raw_correlation_peak_deg": float(pixel_fit["raw_peak_deg"]),
+                "raw_correlation_peak_deg": float(pixel_fit["raw_peak_deg"])
+                if pixel_fit is not None
+                else None,
                 "template_aligned_iou": aligned_iou,
                 "confidence": confidence,
                 "confidence_level": _confidence_level(confidence),
