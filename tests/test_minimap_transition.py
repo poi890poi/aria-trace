@@ -53,6 +53,27 @@ class MinimapTransitionTests(unittest.TestCase):
         self.assertEqual(switched["position_delta_xy"], [0.0, 0.0])
         self.assertEqual(switched["active_mode_id"], "town")
 
+    def test_transition_bounds_exclude_long_stable_endpoints(self):
+        observations = []
+        scores = [(0.95, 0.05)] * 8 + [
+            (0.70, 0.30),
+            (0.48, 0.52),
+            (0.20, 0.80),
+        ] + [(0.05, 0.95)] * 8
+        for index, (world, town) in enumerate(scores):
+            observations.append(
+                ModeObservation(
+                    frame_index=index,
+                    session_time_ns=index * 100_000_000,
+                    likelihoods={"world": world, "town": town},
+                )
+            )
+
+        model = learn_transition_model(observations, "world", "town")
+
+        self.assertGreaterEqual(model["transition"]["first_frame_index"], 7)
+        self.assertLessEqual(model["transition"]["last_frame_index"], 11)
+
     def test_workbench_exposes_transition_capture_label(self):
         labels = {item["value"]: item for item in AcquisitionWorkbench.SESSION_LABELS}
 

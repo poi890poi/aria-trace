@@ -46,6 +46,23 @@ def _stable_run(
     return None
 
 
+def _stable_runs(
+    observations: Sequence[ModeObservation],
+    mode_id: str,
+    competing_mode_id: str,
+    count: int,
+    margin: float,
+):
+    return [
+        (start, start + count - 1)
+        for start in range(0, len(observations) - count + 1)
+        if all(
+            row.score(mode_id) - row.score(competing_mode_id) >= margin
+            for row in observations[start : start + count]
+        )
+    ]
+
+
 def learn_transition_model(
     observations: Iterable[ModeObservation],
     source_mode_id: str,
@@ -69,23 +86,28 @@ def learn_transition_model(
     ):
         raise ValueError("Transition observations must have increasing timestamps")
 
-    source_run = _stable_run(
+    source_runs = _stable_runs(
         rows, source_mode_id, target_mode_id, stable_count, stable_margin
     )
-    target_run = _stable_run(
-        rows,
-        target_mode_id,
-        source_mode_id,
-        stable_count,
-        stable_margin,
-        reverse=True,
+    target_runs = _stable_runs(
+        rows, target_mode_id, source_mode_id, stable_count, stable_margin
     )
-    if source_run is None:
+    if not source_runs:
         raise ValueError("No stable source-mode evidence was found")
-    if target_run is None:
+    if not target_runs:
         raise ValueError("No stable target-mode evidence was found")
-    if source_run[1] >= target_run[0]:
+    ordered_pairs = [
+        (source_run, target_run)
+        for source_run in source_runs
+        for target_run in target_runs
+        if source_run[1] < target_run[0]
+    ]
+    if not ordered_pairs:
         raise ValueError("Stable source evidence does not precede stable target evidence")
+    source_run, target_run = min(
+        ordered_pairs,
+        key=lambda pair: (pair[1][0] - pair[0][1], pair[0][1]),
+    )
 
     source_end = source_run[1]
     target_start = target_run[0]
@@ -107,13 +129,15 @@ def learn_transition_model(
             key=lambda index: abs(float(signed[index])),
         )
     )
+    endpoint_source_run = source_runs[0]
+    endpoint_target_run = target_runs[-1]
     source_margins = [
         row.score(source_mode_id) - row.score(target_mode_id)
-        for row in rows[source_run[0] : source_run[1] + 1]
+        for row in rows[endpoint_source_run[0] : endpoint_source_run[1] + 1]
     ]
     target_margins = [
         row.score(target_mode_id) - row.score(source_mode_id)
-        for row in rows[target_run[0] : target_run[1] + 1]
+        for row in rows[endpoint_target_run[0] : endpoint_target_run[1] + 1]
     ]
     endpoint_margin = min(float(np.median(source_margins)), float(np.median(target_margins)))
     monotonic_fraction = float(

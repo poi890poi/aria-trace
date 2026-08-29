@@ -2624,7 +2624,16 @@ class WorkbenchTests(unittest.TestCase):
                         "canonical_mode_id": canonical_mode_id,
                         "canonical_mosaic_file": "canonical_mosaic.png",
                         "canonical_coverage_file": "canonical_coverage.png",
-                        "layers": [],
+                        "layers": [
+                            {
+                                "mode_id": "world",
+                                "map_pixels_per_minimap_pixel": 2.6,
+                            },
+                            {
+                                "mode_id": "town",
+                                "map_pixels_per_minimap_pixel": 0.9,
+                            },
+                        ],
                     }
                     (output / "canonical_mosaic.png").write_bytes(b"image")
                     (output / "canonical_coverage.png").write_bytes(b"mask")
@@ -2644,6 +2653,12 @@ class WorkbenchTests(unittest.TestCase):
                     return_value={"source": source, "target": target},
                 ), patch(
                     "acquisition.workbench.build_map_atlas", side_effect=fake_atlas
+                ), patch(
+                    "acquisition.workbench.analyze_transition_session",
+                    return_value={
+                        "quality": {"confidence": 0.9},
+                        "evidence_file": "transition_scale_timeline.png",
+                    },
                 ):
                     descriptor = state.run_map_atlas(
                         {

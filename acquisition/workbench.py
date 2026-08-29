@@ -35,6 +35,7 @@ from .android_capture import (
 from .map_stitching import stitch_map_session
 from .map_layers import LayeredGlobalLocalizer, build_map_atlas
 from .map_layer_references import transition_endpoint_references
+from .minimap_transition_analysis import analyze_transition_session
 from .cursor_pose import CursorPoseEstimator
 from .frame_pump import LatestFramePump
 from .live_tracker import (
@@ -1997,6 +1998,30 @@ class AcquisitionWorkbench:
             canonical_mode_id=canonical_mode_id,
             atlas_id=atlas_id,
         )
+        transition_model = None
+        if transition_path is not None:
+            mode_scales = {
+                str(item["mode_id"]): float(
+                    item["map_pixels_per_minimap_pixel"]
+                )
+                for item in result["layers"]
+                if item.get("map_pixels_per_minimap_pixel") is not None
+            }
+            if progress:
+                progress("Learning the recorded scale-transition behavior")
+            transition_model = analyze_transition_session(
+                transition_path,
+                transition_extractor,
+                cv2.imread(str(output / result["canonical_mosaic_file"])),
+                cv2.imread(
+                    str(output / result["canonical_coverage_file"]),
+                    cv2.IMREAD_GRAYSCALE,
+                ),
+                mode_scales,
+                output,
+                source_mode_id=source_mode_id,
+                target_mode_id=target_mode_id,
+            )
         with self._lock:
             result["game_profile_id"] = game_profile_id
             result["source_layers"] = [
@@ -2015,6 +2040,7 @@ class AcquisitionWorkbench:
                 else None
             )
             result["transition_reference"] = endpoint_provenance
+            result["transition_model"] = transition_model
             result["artifact_relative_path"] = str(
                 output.relative_to(self.artifact_root)
             )
@@ -2043,6 +2069,7 @@ class AcquisitionWorkbench:
             item.get("minimap_reference_file")
             for item in descriptor.get("layers") or []
         )
+        declared.add((descriptor.get("transition_model") or {}).get("evidence_file"))
         if name not in declared:
             raise ValueError("Unknown map-atlas evidence image")
         return (root / name).read_bytes()
