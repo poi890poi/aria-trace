@@ -59,7 +59,7 @@ def _color_heatmap(values: np.ndarray) -> np.ndarray:
 class CursorPoseEstimator:
     """Estimate one screen-space cursor angle without temporal assumptions."""
 
-    GAUSSIAN_FIT_METHODS = ("vectorized_grid", "legacy_grid")
+    GAUSSIAN_FIT_METHODS = ("vectorized_grid", "fast_grid", "legacy_grid")
 
     def __init__(
         self,
@@ -433,9 +433,38 @@ class CursorPoseEstimator:
             raise RuntimeError("Circular Gaussian refinement failed")
         return cls._finalize_circular_gaussian_fit(correlation, *refined)
 
+    @classmethod
+    def _fit_circular_gaussian_fast(cls, correlation: np.ndarray) -> dict:
+        """Fit the same model on a reduced grid for latency-sensitive tracking."""
+        candidate_centers = cls._gaussian_fit_candidates(correlation)
+        if not candidate_centers:
+            raise RuntimeError("Circular Gaussian correlation fit failed")
+        coarse_centers = (
+            np.asarray(candidate_centers)[:, None]
+            + np.arange(-8.0, 8.01, 1.0)[None, :]
+        ).reshape(-1)
+        coarse = cls._score_gaussian_grid(
+            correlation,
+            coarse_centers,
+            np.linspace(2.0, 50.0, 17),
+        )
+        if coarse is None or not math.isfinite(coarse[0]):
+            raise RuntimeError("Circular Gaussian correlation fit failed")
+        _, coarse_center, coarse_sigma, _, _ = coarse
+        refined = cls._score_gaussian_grid(
+            correlation,
+            coarse_center + np.arange(-0.6, 0.601, 0.075),
+            np.maximum(1.0, coarse_sigma + np.arange(-3.0, 3.001, 0.25)),
+        )
+        if refined is None or not math.isfinite(refined[0]):
+            raise RuntimeError("Circular Gaussian refinement failed")
+        return cls._finalize_circular_gaussian_fit(correlation, *refined)
+
     def _fit_circular_gaussian(self, correlation: np.ndarray) -> dict:
         if self.gaussian_fit_method == "legacy_grid":
             return self._fit_circular_gaussian_legacy(correlation)
+        if self.gaussian_fit_method == "fast_grid":
+            return self._fit_circular_gaussian_fast(correlation)
         return self._fit_circular_gaussian_vectorized(correlation)
 
     def _pixel_correlate(self, patch: np.ndarray):

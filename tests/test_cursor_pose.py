@@ -34,6 +34,21 @@ class CircularGaussianFitTests(unittest.TestCase):
                 vectorized["r_squared"], legacy["r_squared"], places=6
             )
 
+    def test_fast_grid_still_fits_the_gaussian_center(self):
+        angles = np.arange(360, dtype=np.float64)
+        distance = circular_difference_degrees(angles, -83.35)
+        response = (
+            0.18 + 0.71 * np.exp(-0.5 * (distance / 17.0) ** 2)
+        ).astype(np.float32)
+
+        fitted = CursorPoseEstimator._fit_circular_gaussian_fast(response)
+
+        self.assertLess(
+            abs(float(circular_difference_degrees(fitted["center_deg"], -83.35))),
+            0.1,
+        )
+        self.assertGreater(fitted["r_squared"], 0.999)
+
 
 if __name__ == "__main__":
     unittest.main()
