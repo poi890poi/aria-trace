@@ -14,6 +14,22 @@ class PoseFusionTests(unittest.TestCase):
         self.assertAlmostEqual(fusion.state.pose.x, 0.0, places=8)
         self.assertAlmostEqual(fusion.state.pose.y, 1.0, places=8)
 
+    def test_strong_measurements_accumulate_less_uncertainty(self):
+        weak = PoseFusionGate()
+        strong = PoseFusionGate()
+        weak.initialize(Pose2D(0.0, 0.0, 0.0))
+        strong.initialize(Pose2D(0.0, 0.0, 0.0))
+
+        for _ in range(20):
+            weak.predict((0.1, 0.0), 0.2, measurement_quality=0.0)
+            strong.predict((0.1, 0.0), 0.2, measurement_quality=1.0)
+
+        self.assertLess(
+            strong.state.position_sigma_m,
+            weak.state.position_sigma_m * 0.25,
+        )
+        self.assertLess(strong.state.yaw_sigma_deg, weak.state.yaw_sigma_deg)
+
     def test_accepts_consistent_absolute_pose(self):
         fusion = PoseFusionGate()
         fusion.initialize(Pose2D(0.0, 0.0, 0.0))

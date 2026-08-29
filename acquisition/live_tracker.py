@@ -516,6 +516,7 @@ class TwoRateRealtimeTracker:
         )
         self.recovery_consensus_count = max(2, int(recovery_consensus_count))
         self._local_rejections = 0
+        self._recovery_request_active = False
         self._recovery_hypotheses = []
         transition_model = getattr(self.localizer, "transition_model", None)
         runtime_transition = (transition_model or {}).get("runtime") or {}
@@ -751,6 +752,18 @@ class TwoRateRealtimeTracker:
             return None
         return self.transition_controller.update(likelihoods)
 
+    def _recovery_requested(self) -> bool:
+        if self.fusion._state is None:
+            return False
+        if self._local_rejections >= self.relocalize_after_rejections:
+            self._recovery_request_active = True
+        if self.fusion.state.mode in ("RELOCALIZE", "STOP"):
+            self._recovery_request_active = True
+        return self._recovery_request_active
+
+    def _clear_recovery_request(self) -> None:
+        self._recovery_request_active = False
+
     @staticmethod
     def _mean_fix(rows) -> Pose2D:
         return Pose2D(
@@ -802,10 +815,24 @@ class TwoRateRealtimeTracker:
         )
 
         local_motion_applied = False
+        local_quality = 0.0
+        if local_accepted:
+            local_quality = float(
+                np.clip(
+                    (local_response - self.local_response_min)
+                    / max(1.0 - self.local_response_min, 1.0e-6),
+                    0.0,
+                    1.0,
+                )
+            )
         if self.fusion._state is not None and self.sequence and local_accepted:
             shift_x, shift_y = local_shift
             local_motion = (-shift_x * self.map_scale, -shift_y * self.map_scale)
-            self.fusion.predict(local_motion, alignment_delta_deg)
+            self.fusion.predict(
+                local_motion,
+                alignment_delta_deg,
+                measurement_quality=local_quality,
+            )
             local_motion_applied = True
             self._local_rejections = 0
             self._recovery_hypotheses = []
@@ -976,9 +1003,7 @@ class TwoRateRealtimeTracker:
                             "reason": decision,
                         }
                 else:
-                    recovery_requested = (
-                        self._local_rejections >= self.relocalize_after_rejections
-                    )
+                    recovery_requested = self._recovery_requested()
                     if not recovery_requested:
                         decision = "ignored:locked-continuity"
                         fusion_metrics = {
@@ -1069,6 +1094,7 @@ class TwoRateRealtimeTracker:
                                     np.mean([item.scale for item in rows])
                                 )
                                 self._local_rejections = 0
+                                self._clear_recovery_request()
                                 previous_mode = self._active_map_mode_id
                                 self._active_map_mode_id = str(recovery_mode)
                                 self.previous_minimap = None
@@ -1110,6 +1136,7 @@ class TwoRateRealtimeTracker:
                                         np.mean([item.scale for item in rows])
                                     )
                                     self._local_rejections = 0
+                                    self._clear_recovery_request()
                                 self._recovery_hypotheses = []
                                 fusion_metrics = {
                                     "accepted": correction.accepted,
@@ -1153,8 +1180,8 @@ class TwoRateRealtimeTracker:
                 "mode_likelihoods": self._fix_mode_likelihoods(global_fix),
                 "host_time_ns": timestamp_ns,
             }
-        global_search_needed = self.fusion._state is None or (
-            self._local_rejections >= self.relocalize_after_rejections
+        global_search_needed = (
+            self.fusion._state is None or self._recovery_requested()
         )
         due = (
             self.last_global_ns is None
@@ -1248,10 +1275,12 @@ class TwoRateRealtimeTracker:
             "local_motion": {
                 "map_content_shift_xy_px": list(local_shift),
                 "response": float(local_response),
+                "quality": local_quality,
                 "accepted": local_accepted,
                 "applied": local_motion_applied,
                 "decision": local_decision,
                 "rejection_streak": self._local_rejections,
+                "recovery_requested": self._recovery_request_active,
                 "response_min": self.local_response_min,
                 "shift_limit_px": self.local_shift_max_px,
                 "rotation_compensation_sign": compensation_sign,

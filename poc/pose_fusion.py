@@ -97,7 +97,12 @@ class PoseFusionGate:
         self._refresh_mode()
         return self.state
 
-    def predict(self, local_motion: Tuple[float, float], delta_yaw_deg: float) -> FusionState:
+    def predict(
+        self,
+        local_motion: Tuple[float, float],
+        delta_yaw_deg: float,
+        measurement_quality: float = 0.0,
+    ) -> FusionState:
         state = self.state
         local_x, local_y = local_motion
         distance = math.hypot(local_x, local_y)
@@ -111,11 +116,17 @@ class PoseFusionGate:
             state.pose.y + world_y,
             wrap_angle_deg(state.pose.yaw_deg + delta_yaw_deg),
         )
-        state.position_sigma_m += (
+        quality = min(1.0, max(0.0, float(measurement_quality)))
+        # A strong frame-to-frame match is evidence that continuity held; it
+        # should not be charged the same uncertainty as a barely accepted one.
+        # Retain a non-zero floor so even excellent dead reckoning eventually
+        # requests an independent absolute check.
+        quality_multiplier = 0.05 + 0.95 * (1.0 - quality) ** 2
+        state.position_sigma_m += quality_multiplier * (
             self.config.position_sigma_per_step_m
             + self.config.position_sigma_per_meter * distance
         )
-        state.yaw_sigma_deg += (
+        state.yaw_sigma_deg += quality_multiplier * (
             self.config.yaw_sigma_per_step_deg
             + self.config.yaw_sigma_per_turn * abs(delta_yaw_deg)
         )

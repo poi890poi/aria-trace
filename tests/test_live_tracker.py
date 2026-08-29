@@ -490,6 +490,23 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
+    def test_fusion_relocalize_state_requests_and_latches_recovery(self):
+        tracker = self._tracker(ImmediateLocalizer())
+        try:
+            tracker.fusion.initialize(Pose2D(10.0, 20.0, 0.0))
+            tracker.fusion.state.position_sigma_m = 41.0
+            tracker.fusion._refresh_mode()
+
+            self.assertTrue(tracker._recovery_requested())
+            tracker.fusion.state.position_sigma_m = 3.0
+            tracker.fusion._refresh_mode()
+            self.assertTrue(tracker._recovery_requested())
+
+            tracker._clear_recovery_request()
+            self.assertFalse(tracker._recovery_requested())
+        finally:
+            tracker.close()
+
     def test_route_pose_projection_hook_is_not_supported(self):
         class RouteEstimator:
             def update(self, observation, mask, predicted_xy, timestamp_ns=None):
