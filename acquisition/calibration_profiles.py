@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from .commented_yaml import PROFILE_COMMENTS, PROFILE_HEADER, write_commented_yaml
+
 
 PROFILE_SCHEMA_VERSION = "1.0"
 
@@ -114,6 +116,12 @@ class CalibrationProfileStore:
             "notes": dict(notes or {}),
         }
         _atomic_json(revision_directory / "profile_revision.json", manifest)
+        write_commented_yaml(
+            revision_directory / "profile_revision.yaml",
+            manifest,
+            header=PROFILE_HEADER,
+            section_comments=PROFILE_COMMENTS,
+        )
         pointer = {
             "schema_version": PROFILE_SCHEMA_VERSION,
             "profile": key.as_dict(),
@@ -122,6 +130,12 @@ class CalibrationProfileStore:
             "updated_utc": datetime.now(timezone.utc).isoformat(),
         }
         _atomic_json(self.profile_directory(key) / "current.json", pointer)
+        write_commented_yaml(
+            self.profile_directory(key) / "current.yaml",
+            pointer,
+            header=PROFILE_HEADER,
+            section_comments=PROFILE_COMMENTS,
+        )
         return manifest
 
     def current(self, key: CalibrationProfileKey) -> Optional[dict]:

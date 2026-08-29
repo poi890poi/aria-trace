@@ -230,6 +230,22 @@ class HikAlgorithmTests(unittest.TestCase):
             )
         )
 
+    def test_camera_panel_uses_same_static_font_scale_at_different_heights(self):
+        scales = []
+
+        def record(*args, **_kwargs):
+            scales.append(float(args[4]))
+
+        with mock.patch.object(cv2, "putText", side_effect=record):
+            HikRigCalibrationSession._draw_text_panel(
+                np.zeros((180, 400, 3), np.uint8), 0, 400, ["one", "two", "three"]
+            )
+            HikRigCalibrationSession._draw_text_panel(
+                np.zeros((800, 400, 3), np.uint8), 0, 400, ["one", "two", "three"]
+            )
+        self.assertTrue(scales)
+        self.assertEqual({0.50}, set(scales))
+
     def test_plugin_factory_is_lazy_and_does_not_require_vendor_sdk(self):
         adapter = create_camera_adapter()
         self.assertEqual(adapter.devices(probe=False), ())
@@ -1224,6 +1240,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
             self.assertEqual(saved, output.resolve())
             self.assertTrue((saved / "calibration.yaml").is_file())
             self.assertTrue((saved / "rectification_maps.npz").is_file())
+            self.assertTrue((saved / "hik_camera_calibration.yaml").is_file())
             config = json.loads((saved / "hik_camera_calibration.json").read_text(encoding="utf-8"))
             self.assertEqual(config["normalization"]["output_size_px"], session.visible_region["xywh"][2:])
             self.assertEqual(
@@ -1241,6 +1258,9 @@ class HikRectifiedStreamTests(unittest.TestCase):
             )
             self.assertTrue(
                 (saved / "cross_source_check" / "cross_source_check.json").is_file()
+            )
+            self.assertTrue(
+                (saved / "cross_source_check" / "cross_source_check.yaml").is_file()
             )
 
 

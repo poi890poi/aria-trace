@@ -17,6 +17,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from ...commented_yaml import (
+    HIK_CONFIG_COMMENTS,
+    HIK_CONFIG_HEADER,
+    write_commented_yaml,
+)
 from ..app.device_adapters import CameraConfiguration
 from ..app.phone_target import LocalPhoneTargetServer, PhoneTargetAdapter, Presentation
 from ..bundle import build_calibration, write_calibration_bundle
@@ -60,6 +65,8 @@ DATA_MATRIX_ACCEPTANCE_RATE = 0.95
 DATA_MATRIX_MINIMUM_TRIALS = 20
 DATA_MATRIX_DEFAULT_TRIALS = 40
 DATA_MATRIX_MAX_PATTERNS_PER_SCREEN = 8
+PANEL_FONT_SCALE = 0.50
+PANEL_LINE_STEP_PX = 22
 
 
 def _default_progress(message: str) -> None:
@@ -501,20 +508,15 @@ class HikRigCalibrationSession:
         panel_width: int,
         lines: Sequence[str],
     ) -> List[str]:
-        """Draw a measured, vertically fitting text panel and return rendered lines."""
+        """Draw a fixed-scale text panel and clip overflow without eye-straining zoom."""
 
         left = int(panel_left) + 14
         usable_width = max(40, int(panel_width) - 28)
-        selected_lines: List[str] = []
-        selected_scale = 0.55
-        selected_step = 27
-        for scale in (0.55, 0.50, 0.46, 0.42, 0.38):
-            candidate = cls._wrap_panel_lines(lines, usable_width, scale)
-            step = max(17, int(round(43.0 * scale)))
-            if 12 + len(candidate) * step <= canvas.shape[0]:
-                selected_lines, selected_scale, selected_step = candidate, scale, step
-                break
-            selected_lines, selected_scale, selected_step = candidate, scale, step
+        selected_scale = PANEL_FONT_SCALE
+        selected_step = PANEL_LINE_STEP_PX
+        selected_lines = cls._wrap_panel_lines(
+            lines, usable_width, selected_scale
+        )
         maximum_lines = max(1, (canvas.shape[0] - 12) // selected_step)
         selected_lines = selected_lines[:maximum_lines]
         for index, line in enumerate(selected_lines):
@@ -2855,6 +2857,18 @@ class HikRigCalibrationSession:
             (evidence_directory / "cross_source_check.json").write_text(
                 json.dumps(result, indent=2, sort_keys=True), encoding="utf-8"
             )
+            write_commented_yaml(
+                evidence_directory / "cross_source_check.yaml",
+                result,
+                header=(
+                    "# Non-gating ADB/HIK coordinate-alignment evidence.\n"
+                    "# Confidence summarizes the saved rig mapping; no transform is fitted here."
+                ),
+                section_comments={
+                    "source_spaces": "Coordinate systems compared by this diagnostic.",
+                    "evidence_files": "Relative review images saved beside this result.",
+                },
+            )
         except Exception as exc:
             result["evidence_write_error"] = str(exc)
         self.cross_source_check = result
@@ -3016,6 +3030,12 @@ class HikRigCalibrationSession:
             }
             (temporary / "hik_camera_calibration.json").write_text(
                 json.dumps(config, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            write_commented_yaml(
+                temporary / "hik_camera_calibration.yaml",
+                config,
+                header=HIK_CONFIG_HEADER,
+                section_comments=HIK_CONFIG_COMMENTS,
             )
             if self.last_frame is not None:
                 cv2.imwrite(str(temporary / "last_camera_frame.png"), self.last_frame)

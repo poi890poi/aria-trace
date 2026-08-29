@@ -34,6 +34,14 @@ class CalibrationProfileStoreTests(unittest.TestCase):
             self.assertEqual("revision-1", current["current_revision_id"])
             self.assertEqual(str(revision.resolve()), current["current_revision"])
             self.assertTrue((revision / "profile_revision.json").is_file())
+            self.assertTrue((revision / "profile_revision.yaml").is_file())
+            self.assertTrue(
+                (store.profile_directory(key) / "current.yaml").is_file()
+            )
+            yaml_text = (revision / "profile_revision.yaml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("# Stable scope and identity", yaml_text)
 
     def test_revision_ids_cannot_overwrite_an_existing_revision(self):
         with tempfile.TemporaryDirectory() as temporary:
