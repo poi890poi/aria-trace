@@ -136,6 +136,8 @@ class TemporalCursorPoseEstimator(FakeCursorPoseEstimator):
             "cursor_temporal_dynamics": {
                 "recommended_runtime_envelope": {
                     "calibrated_turn_rate_p99_deg_s": 180.0,
+                    "normal_turn_rate_p95_deg_s": 60.0,
+                    "normal_turn_rate_p99_deg_s": 90.0,
                     "calibrated_angular_acceleration_p99_deg_s2": 360.0,
                     "ordinary_heading_jump_p99_deg": 2.0,
                 }
@@ -235,6 +237,15 @@ class TwoRateTrackerTests(unittest.TestCase):
             self.assertAlmostEqual(estimator.calls[1][0], 35.0)
             self.assertGreater(estimator.calls[1][1], 2.0)
             self.assertLess(estimator.calls[1][1], 20.0)
+            self.assertEqual(
+                tracker._last_cursor_search["state"], "stable"
+            )
+            tracker._cursor_last_time_ns = 2_000_000_000
+            tracker._cursor_tracking_state = "stable"
+            _, stable_width = tracker._cursor_search(2_050_000_000)
+            tracker._cursor_tracking_state = "turning"
+            _, turning_width = tracker._cursor_search(2_050_000_000)
+            self.assertGreater(turning_width, stable_width)
         finally:
             tracker.close()
 

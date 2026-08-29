@@ -484,6 +484,7 @@ class TwoRateRealtimeTracker:
         self._cursor_last_time_ns = None
         self._cursor_angular_velocity_deg_s = 0.0
         self._cursor_rejections = 0
+        self._cursor_tracking_state = "uninitialized"
         self._last_cursor_search = None
 
     def close(self) -> None:
@@ -522,8 +523,17 @@ class TwoRateRealtimeTracker:
         if elapsed_s <= 0.0 or elapsed_s > 2.0:
             return None, None
         envelope = self.cursor_motion_envelope
-        turn_rate = float(
+        calibrated_turn_rate = float(
             envelope.get("calibrated_turn_rate_p99_deg_s") or 720.0
+        )
+        normal_turn_rate = float(
+            envelope.get("normal_turn_rate_p99_deg_s")
+            or calibrated_turn_rate
+        )
+        turn_rate = (
+            normal_turn_rate
+            if self._cursor_tracking_state == "stable"
+            else calibrated_turn_rate
         )
         acceleration = float(
             envelope.get("calibrated_angular_acceleration_p99_deg_s2") or 1440.0
@@ -644,15 +654,33 @@ class TwoRateRealtimeTracker:
                                 0.5 * self._cursor_angular_velocity_deg_s
                                 + 0.5 * measured_rate
                             )
+                            normal_threshold = float(
+                                self.cursor_motion_envelope.get(
+                                    "normal_turn_rate_p95_deg_s",
+                                    hard_rate * 0.25,
+                                )
+                            )
+                            self._cursor_tracking_state = (
+                                "turning"
+                                if abs(measured_rate) > normal_threshold
+                                else "stable"
+                            )
+                        else:
+                            self._cursor_tracking_state = "stable"
+                    else:
+                        self._cursor_tracking_state = "stable"
                     self._cursor_last_angle = result_angle
                     self._cursor_last_time_ns = result_time_ns
                     self._cursor_rejections = 0
                 else:
                     self._cursor_rejections += 1
+                    self._cursor_tracking_state = "recovering"
                 self._cursor_error = None
                 cursor_pose_fresh = True
             except Exception as exc:
                 self._cursor_error = "{}: {}".format(type(exc).__name__, exc)
+                self._cursor_rejections += 1
+                self._cursor_tracking_state = "recovering"
             self._cursor_future = None
         cursor_due = (
             self.last_cursor_ns is None
@@ -669,6 +697,7 @@ class TwoRateRealtimeTracker:
                 "angle_prior_deg": angle_prior,
                 "half_width_deg": search_half_width,
                 "rejection_count": self._cursor_rejections,
+                "state": self._cursor_tracking_state,
             }
             cursor_crop = self.extractor.crop(frame).copy()
             if angle_prior is None:
@@ -867,6 +896,7 @@ class TwoRateRealtimeTracker:
             "cursor_temporal_search": dict(self._last_cursor_search)
             if self._last_cursor_search
             else None,
+            "cursor_tracking_state": self._cursor_tracking_state,
             "global_fix": dict(self._last_global_fix) if self._last_global_fix else None,
             "global_fix_fresh": global_fix is not None,
             "global_localization_running": self._global_future is not None,
