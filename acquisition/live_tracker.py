@@ -53,6 +53,7 @@ class GlobalFix:
     alternatives: tuple = ()
     search_bounds_xyxy: Optional[tuple] = None
     search_area_fraction: float = 1.0
+    diagnostics: Optional[dict] = None
 
 
 class GlobalMapLocalizer:
@@ -322,6 +323,70 @@ class GlobalMapLocalizer:
             self.localization_to_original[0, 1], self.localization_to_original[1, 1]
         )
         original_scale = scale * (map_scale_x + map_scale_y) / 2.0
+        response_u8 = cv2.normalize(
+            response, None, 0, 255, cv2.NORM_MINMAX
+        ).astype(np.uint8)
+        correlation_heatmap = cv2.applyColorMap(
+            response_u8, cv2.COLORMAP_TURBO
+        )
+        search_region = self.mosaic[
+            search_top:search_bottom, search_left:search_right
+        ].copy()
+        candidate_overlay = search_region.copy()
+        colors = ((80, 230, 120), (70, 210, 245), (90, 90, 245))
+        for rank, ((peak_score, peak_center), color) in enumerate(
+            zip(peaks, colors), start=1
+        ):
+            local_center = (
+                int(round(peak_center[0] - search_left)),
+                int(round(peak_center[1] - search_top)),
+            )
+            cv2.rectangle(
+                candidate_overlay,
+                (
+                    int(round(local_center[0] - width / 2.0)),
+                    int(round(local_center[1] - height / 2.0)),
+                ),
+                (
+                    int(round(local_center[0] + width / 2.0)),
+                    int(round(local_center[1] + height / 2.0)),
+                ),
+                color,
+                2,
+            )
+            cv2.putText(
+                candidate_overlay,
+                "{} {:.3f}".format(rank, peak_score),
+                (local_center[0] + 4, local_center[1] - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+        feature_center = (
+            int(round(center[0] - search_left)),
+            int(round(center[1] - search_top)),
+        )
+        cv2.drawMarker(
+            candidate_overlay,
+            feature_center,
+            (255, 120, 60),
+            cv2.MARKER_CROSS,
+            18,
+            2,
+        )
+        transformed_gradient = cv2.normalize(
+            transformed, None, 0, 255, cv2.NORM_MINMAX
+        ).astype(np.uint8)
+        diagnostics = {
+            "observation": observation.copy(),
+            "mask": mask.copy(),
+            "transformed_gradient": transformed_gradient,
+            "search_region": search_region,
+            "correlation_heatmap": correlation_heatmap,
+            "candidate_overlay": candidate_overlay,
+        }
         return GlobalFix(
             original_x,
             original_y,
@@ -349,6 +414,7 @@ class GlobalMapLocalizer:
                 int(search_bottom),
             ),
             search_area_fraction=search_area_fraction,
+            diagnostics=diagnostics,
         )
 
 
@@ -458,6 +524,7 @@ class TwoRateRealtimeTracker:
         self._last_global_fix = None
         self._last_global_search = None
         self._global_error = None
+        self._last_global_diagnostics = None
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
         self.cursor_pose_estimator = cursor_pose_estimator
@@ -494,6 +561,11 @@ class TwoRateRealtimeTracker:
         self._global_executor.shutdown(wait=False)
         if self._cursor_executor is not None:
             self._cursor_executor.shutdown(wait=False)
+
+    def take_global_diagnostics(self):
+        diagnostics = self._last_global_diagnostics
+        self._last_global_diagnostics = None
+        return diagnostics
 
     def _ensure_scene_estimator(self, frame):
         if self.scene_estimator is None:
@@ -728,6 +800,8 @@ class TwoRateRealtimeTracker:
                 self._global_error = "{}: {}".format(type(exc).__name__, exc)
             self._global_future = None
         if global_fix is not None:
+            self._last_global_diagnostics = global_fix.diagnostics
+            fusion_metrics = None
             if not global_fix.valid:
                 self._initial_hypotheses = []
                 decision = "rejected-quality:" + ",".join(
@@ -766,10 +840,22 @@ class TwoRateRealtimeTracker:
                         self.fusion.initialize(initialized)
                         self._initial_hypotheses = []
                         decision = "initialized-consensus"
+                        fusion_metrics = {
+                            "accepted": True,
+                            "reason": decision,
+                            "predicted_position_innovation_map_px": None,
+                            "predicted_yaw_innovation_deg": None,
+                            "applied_position_change_map_px": 0.0,
+                            "applied_yaw_change_deg": 0.0,
+                        }
                     else:
                         decision = "awaiting-consensus:{}/{}".format(
                             count, self.initial_consensus_count
                         )
+                        fusion_metrics = {
+                            "accepted": False,
+                            "reason": decision,
+                        }
                 else:
                     correction = self.fusion.consider_absolute(hypothesis)
                     decision = (
@@ -779,6 +865,20 @@ class TwoRateRealtimeTracker:
                     )
                     if correction.accepted:
                         self.map_scale = global_fix.scale
+                    fusion_metrics = {
+                        "accepted": correction.accepted,
+                        "reason": correction.reason,
+                        "predicted_position_innovation_map_px": (
+                            correction.predicted_position_innovation_m
+                        ),
+                        "predicted_yaw_innovation_deg": (
+                            correction.predicted_yaw_innovation_deg
+                        ),
+                        "applied_position_change_map_px": (
+                            correction.applied_position_change_m
+                        ),
+                        "applied_yaw_change_deg": correction.applied_yaw_change_deg,
+                    }
             self._last_global_fix = {
                 "x": global_fix.x,
                 "y": global_fix.y,
@@ -800,6 +900,7 @@ class TwoRateRealtimeTracker:
                 if global_fix.search_bounds_xyxy is not None
                 else None,
                 "search_area_fraction": global_fix.search_area_fraction,
+                "fusion": fusion_metrics,
                 "host_time_ns": timestamp_ns,
             }
         due = self.last_global_ns is None or timestamp_ns - self.last_global_ns >= self.global_interval_ns

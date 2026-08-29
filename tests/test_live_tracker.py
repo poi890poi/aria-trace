@@ -57,6 +57,16 @@ class GlobalMapLocalizerTests(unittest.TestCase):
         self.assertTrue(fix.valid)
         self.assertGreaterEqual(fix.inlier_count, 6)
         self.assertLess(fix.elapsed_ms, 1000.0)
+        self.assertIsNotNone(fix.diagnostics)
+        self.assertEqual(
+            fix.diagnostics["observation"].shape, observation.shape
+        )
+        self.assertEqual(
+            fix.diagnostics["candidate_overlay"].shape, mosaic.shape
+        )
+        self.assertEqual(
+            fix.diagnostics["correlation_heatmap"].ndim, 3
+        )
 
     def test_position_prior_bounds_correlation_without_changing_coordinates(self):
         random = np.random.RandomState(43)
@@ -402,11 +412,19 @@ class FakeLiveEngine:
     def __init__(self, *args, **kwargs):
         self.sequence = 0
         self.closed = False
+        self._diagnostics = None
 
     def update(self, frame, host_time_ns):
         self.sequence += 1
+        fresh = self.sequence == 2
+        if fresh:
+            self._diagnostics = {
+                "candidate_overlay": np.full((40, 50, 3), 140, np.uint8),
+                "correlation_heatmap": np.full((30, 40, 3), 180, np.uint8),
+            }
         return {
             "sequence": self.sequence,
+            "host_time_ns": host_time_ns,
             "mode": "TRACK",
             "pose": {"x": 45.0, "y": 55.0, "yaw_deg": 10.0},
             "trail": [[45.0, 55.0]],
@@ -414,13 +432,26 @@ class FakeLiveEngine:
                 "score": 0.9,
                 "margin": 0.1,
                 "elapsed_ms": 80.0,
+                "decision": "consistent",
+                "alternatives": [],
+                "fusion": {
+                    "accepted": True,
+                    "reason": "consistent",
+                    "applied_position_change_map_px": 10.0,
+                },
             },
+            "global_fix_fresh": fresh,
             "local_motion": {"response": 0.8},
             "scene_yaw": {"confidence": 0.7},
             "update_elapsed_ms": 4.0,
             "position_sigma_map_px": 3.0,
             "yaw_sigma_deg": 2.0,
         }
+
+    def take_global_diagnostics(self):
+        diagnostics = self._diagnostics
+        self._diagnostics = None
+        return diagnostics
 
     def close(self):
         self.closed = True
@@ -547,6 +578,23 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     self.assertEqual(
                         state.descriptor()["live_tracker"]["status"], "stopped"
                     )
+                    descriptor = state.descriptor()
+                    evidence = descriptor["live_tracker"]["evidence"]
+                    self.assertGreater(evidence["counts"]["telemetry_rows"], 0)
+                    run = descriptor["live_tracking_runs"][game_id][0]
+                    self.assertEqual(run["status"], "stopped")
+                    run_root = artifact_root / run["artifact_relative_path"]
+                    self.assertTrue((run_root / "telemetry.jsonl").is_file())
+                    self.assertTrue((run_root / "live_tracking.json").is_file())
+                    fix = run["recent_global_fixes"][0]
+                    content_type, image = state.live_tracking_image(
+                        game_id,
+                        run["tracking_id"],
+                        fix["fix_id"],
+                        "candidate_overlay.png",
+                    )
+                    self.assertEqual(content_type, "image/png")
+                    self.assertGreater(len(image), 0)
             finally:
                 source.stop()
                 state.close()

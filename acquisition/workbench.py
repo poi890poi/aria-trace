@@ -35,6 +35,7 @@ from .map_stitching import stitch_map_session
 from .cursor_pose import CursorPoseEstimator
 from .frame_pump import LatestFramePump
 from .live_tracker import GlobalMapLocalizer, TwoRateRealtimeTracker, render_map_overlay
+from .live_tracking_evidence import LiveTrackingEvidenceRecorder
 from .minimap_calibration import (
     ORDINARY_MOTION_SEGMENT_LABELS,
     calibrate_segment_sessions,
@@ -1869,6 +1870,33 @@ class AcquisitionWorkbench:
             )
         return values
 
+    def live_tracking_image(
+        self,
+        game_profile_id: str,
+        tracking_id: str,
+        fix_id: str,
+        name: str,
+    ):
+        if safe_id(game_profile_id) != game_profile_id:
+            raise ValueError("Invalid game profile ID")
+        if safe_id(tracking_id) != tracking_id:
+            raise ValueError("Invalid live-tracking ID")
+        if safe_id(fix_id) != fix_id:
+            raise ValueError("Invalid global-fix ID")
+        root = (
+            self._live_tracking_root(game_profile_id)
+            / tracking_id
+            / "global_fixes"
+            / fix_id
+        )
+        descriptor = json.loads(
+            (root / "global_fix.json").read_text(encoding="utf-8")
+        )
+        if name not in set(descriptor.get("evidence") or ()):
+            raise ValueError("Unknown live-tracking evidence image")
+        content_type = "image/jpeg" if name.lower().endswith(".jpg") else "image/png"
+        return content_type, (root / name).read_bytes()
+
     def run_teleport_analysis(self, value: dict, progress=None) -> dict:
         if progress:
             progress("Checking teleport session and spatial artifacts")
@@ -1970,8 +1998,49 @@ class AcquisitionWorkbench:
         return {
             key: value
             for key, value in self._live_tracker.items()
-            if key not in ("thread", "stop")
+            if key not in ("thread", "stop", "evidence_recorder")
         }
+
+    def _live_tracking_root(self, game_profile_id: str) -> Path:
+        return self.artifact_root / "live_tracking" / safe_id(game_profile_id)
+
+    def _live_tracking_runs(self) -> dict:
+        values = {}
+        root = self.artifact_root / "live_tracking"
+        if not root.is_dir():
+            return values
+        for path in sorted(root.glob("*/*/live_tracking.json")):
+            game_profile_id = path.parent.parent.name
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item["tracking_id"] = path.parent.name
+                item["artifact_relative_path"] = str(
+                    path.parent.relative_to(self.artifact_root)
+                )
+                recent_fixes = []
+                for fix_path in sorted(
+                    (path.parent / "global_fixes").glob("*/global_fix.json"),
+                    reverse=True,
+                )[:6]:
+                    try:
+                        fix = json.loads(fix_path.read_text(encoding="utf-8"))
+                        fix["fix_id"] = fix_path.parent.name
+                        recent_fixes.append(fix)
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                item["recent_global_fixes"] = recent_fixes
+                values.setdefault(game_profile_id, []).append(item)
+            except (OSError, json.JSONDecodeError) as exc:
+                values.setdefault(game_profile_id, []).append(
+                    {
+                        "tracking_id": path.parent.name,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        for items in values.values():
+            items.sort(key=lambda item: item.get("started_utc") or "", reverse=True)
+        return values
 
     def _tracker_running(self) -> bool:
         return bool(
@@ -2144,6 +2213,30 @@ class AcquisitionWorkbench:
                 "stop": stop,
                 "thread": None,
             }
+            tracking_id = "{}-{}".format(
+                datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"),
+                uuid.uuid4().hex[:8],
+            )
+            evidence_output = self._live_tracking_root(game_profile_id) / tracking_id
+            evidence_recorder = LiveTrackingEvidenceRecorder(
+                evidence_output,
+                {
+                    "tracking_id": tracking_id,
+                    "game_profile_id": game_profile_id,
+                    "minimap_calibration_id": calibration_id,
+                    "scene_yaw_calibration_id": scene_yaw_id,
+                    "map_stitch_id": stitch_id,
+                    "tracking_profile": tracking_profile_name,
+                    "resolved_tracking_profile": resolved_profile,
+                    "frame_source": frame_config,
+                },
+            )
+            runtime["tracking_id"] = tracking_id
+            runtime["artifact_relative_path"] = str(
+                evidence_output.relative_to(self.artifact_root)
+            )
+            runtime["evidence"] = evidence_recorder.summary
+            runtime["evidence_recorder"] = evidence_recorder
             self._live_tracker = runtime
             self._live_tracker_engine = engine
             self._live_tracker_mosaic = mosaic
@@ -2152,6 +2245,7 @@ class AcquisitionWorkbench:
         def work() -> None:
             recent_times = []
             frame_pump = LatestFramePump(frame_source)
+            run_error = None
             try:
                 frame_pump.start()
                 with self._lock:
@@ -2166,6 +2260,24 @@ class AcquisitionWorkbench:
                         continue
                     latest = engine.update(
                         packet.image, packet.host_capture_time_ns
+                    )
+                    take_diagnostics = getattr(
+                        engine, "take_global_diagnostics", None
+                    )
+                    diagnostics = (
+                        take_diagnostics() if callable(take_diagnostics) else None
+                    )
+                    extractor = getattr(engine, "extractor", None)
+                    minimap = None
+                    if extractor is not None:
+                        minimap, _ = extractor.extract(packet.image)
+                    if latest.get("global_fix_fresh"):
+                        diagnostics = dict(diagnostics or {})
+                        diagnostics["map_overlay"] = render_map_overlay(
+                            mosaic, latest
+                        )
+                    evidence_recorder.record(
+                        packet.image, minimap, latest, diagnostics
                     )
                     now = time.perf_counter()
                     recent_times.append(now)
@@ -2183,11 +2295,14 @@ class AcquisitionWorkbench:
                         runtime["capture_dropped_before_processing"] = (
                             frame_pump.dropped_before_processing
                         )
+                        if latest["sequence"] % 30 == 0:
+                            runtime["evidence"] = evidence_recorder.summary
                 with self._lock:
                     runtime["status"] = "stopped"
                     runtime["detail"] = "Live tracking stopped by the user."
             except Exception as exc:
                 error = "{}: {}".format(type(exc).__name__, exc)
+                run_error = error
                 with self._lock:
                     runtime["status"] = "failed"
                     runtime["detail"] = error
@@ -2200,6 +2315,13 @@ class AcquisitionWorkbench:
                 except Exception:
                     pass
                 engine.close()
+                evidence_summary = evidence_recorder.close(
+                    status="failed" if run_error else "stopped",
+                    error=run_error,
+                    processed_frames=runtime.get("processed_frames"),
+                )
+                with self._lock:
+                    runtime["evidence"] = evidence_summary
 
         thread = threading.Thread(
             target=work, name="acquisition-live-tracker", daemon=True
@@ -2762,6 +2884,7 @@ class AcquisitionWorkbench:
                 "scene_yaw_calibrations": self._scene_yaw_calibrations(),
                 "map_stitches": self._map_stitches(),
                 "teleport_behaviors": self._teleport_behaviors(),
+                "live_tracking_runs": self._live_tracking_runs(),
                 "analysis_candidates": self.analysis_candidates(),
                 "analysis_jobs": {
                     key: dict(value) for key, value in self._analysis_jobs.items()
@@ -3669,6 +3792,15 @@ def make_handler(state: AcquisitionWorkbench):
                         "image/png",
                         state.live_tracker_overlay_image(),
                     )
+                elif path == "/api/live-tracking/image":
+                    query = parse_qs(parsed.query)
+                    content_type, body = state.live_tracking_image(
+                        query.get("game_id", [""])[0],
+                        query.get("tracking_id", [""])[0],
+                        query.get("fix_id", [""])[0],
+                        query.get("name", [""])[0],
+                    )
+                    self._send(200, content_type, body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
             except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
