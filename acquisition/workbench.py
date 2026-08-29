@@ -1944,6 +1944,12 @@ class AcquisitionWorkbench:
                 localizer=localizer,
                 cursor_pose_estimator=cursor_pose_estimator,
                 cursor_interval_s=float(resolved_profile["cursor_interval_s"]),
+                temporal_pose_search=bool(
+                    resolved_profile["temporal_pose_search"]
+                ),
+                pose_confidence_min=float(
+                    resolved_profile["pose_confidence_min"]
+                ),
             )
             stop = threading.Event()
             runtime = {

@@ -99,6 +99,32 @@ class FakeCursorPoseEstimator:
         return dict(value)
 
 
+class TemporalCursorPoseEstimator(FakeCursorPoseEstimator):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+        self.calibration = {
+            "cursor_temporal_dynamics": {
+                "recommended_runtime_envelope": {
+                    "calibrated_turn_rate_p99_deg_s": 180.0,
+                    "calibrated_angular_acceleration_p99_deg_s2": 360.0,
+                    "ordinary_heading_jump_p99_deg": 2.0,
+                }
+            }
+        }
+
+    def estimate(
+        self,
+        frame,
+        frame_index=None,
+        session_time_ns=None,
+        angle_prior_deg=None,
+        search_half_width_deg=None,
+    ):
+        self.calls.append((angle_prior_deg, search_half_width_deg))
+        return super().estimate(frame, frame_index, session_time_ns)
+
+
 class TwoRateTrackerTests(unittest.TestCase):
     @staticmethod
     def _tracker(
@@ -149,6 +175,37 @@ class TwoRateTrackerTests(unittest.TestCase):
             self.assertEqual(decisions[-1], "initialized-consensus")
             self.assertIsNotNone(result["pose"])
             self.assertGreaterEqual(localizer.calls, 2)
+        finally:
+            tracker.close()
+
+    def test_calibrated_cursor_motion_supplies_a_bounded_next_search(self):
+        estimator = TemporalCursorPoseEstimator()
+        tracker = TwoRateRealtimeTracker(
+            np.full((160, 180, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {
+                "focal_ratio": 0.9,
+                "config": {"excluded_rects": []},
+            },
+            global_interval_s=10.0,
+            localizer=ImmediateLocalizer(),
+            initial_consensus_count=1,
+            cursor_pose_estimator=estimator,
+            cursor_interval_s=0.001,
+            temporal_pose_search=True,
+        )
+        frame = np.zeros((100, 100, 3), np.uint8)
+        try:
+            for index in range(100):
+                tracker.update(frame, 1_000_000_000 + index * 10_000_000)
+                if len(estimator.calls) >= 2:
+                    break
+                time.sleep(0.001)
+            self.assertIsNone(estimator.calls[0][0])
+            self.assertAlmostEqual(estimator.calls[1][0], 35.0)
+            self.assertGreater(estimator.calls[1][1], 2.0)
+            self.assertLess(estimator.calls[1][1], 20.0)
         finally:
             tracker.close()
 
