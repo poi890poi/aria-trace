@@ -112,6 +112,94 @@ class RouteGlobalLocalizer:
         )
 
 
+class RouteCandidateAdvisor:
+    """Suggest bounded atlas searches without producing or accepting a pose.
+
+    Adjacent demonstrated states often describe the same physical neighborhood.
+    Grouping them before selecting a search window avoids treating neighboring
+    frames as competing pose hypotheses.  The returned window is only a cache/
+    search-order hint; the ordinary atlas localizer still measures and validates
+    the actual fix.
+    """
+
+    def __init__(
+        self,
+        package: RouteTrackingPackage,
+        *,
+        top_k: int = 32,
+        adjacent_state_gap: int = 4,
+        spatial_cluster_radius_px: float = 45.0,
+        search_padding_px: float = 90.0,
+    ) -> None:
+        self.package = package
+        self.top_k = max(4, int(top_k))
+        self.adjacent_state_gap = max(1, int(adjacent_state_gap))
+        self.spatial_cluster_radius_px = max(
+            1.0, float(spatial_cluster_radius_px)
+        )
+        self.search_padding_px = max(20.0, float(search_padding_px))
+
+    def propose(self, observation, mask) -> Optional[dict]:
+        descriptor = describe_minimap(observation, mask)
+        candidates = self.package.candidates(
+            descriptor,
+            top_k=min(self.top_k, len(self.package.states)),
+        )
+        if not candidates:
+            return None
+        clusters = []
+        for candidate in candidates:
+            index = int(candidate["state_index"])
+            point = np.asarray(candidate["state"]["canonical_xy"], dtype=np.float64)
+            selected = None
+            for cluster in clusters:
+                index_gap = min(abs(index - item) for item in cluster["indexes"])
+                spatial_gap = float(np.linalg.norm(point - cluster["center"]))
+                if (
+                    index_gap <= self.adjacent_state_gap
+                    or spatial_gap <= self.spatial_cluster_radius_px
+                ):
+                    selected = cluster
+                    break
+            if selected is None:
+                selected = {
+                    "indexes": [],
+                    "points": [],
+                    "scores": [],
+                    "center": point,
+                }
+                clusters.append(selected)
+            selected["indexes"].append(index)
+            selected["points"].append(point)
+            selected["scores"].append(float(candidate["score"]))
+            weights = np.maximum(np.asarray(selected["scores"]), 0.0) + 1.0e-3
+            selected["center"] = np.average(
+                np.asarray(selected["points"]), axis=0, weights=weights
+            )
+        for cluster in clusters:
+            ordered = sorted(cluster["scores"], reverse=True)
+            # Several consistent neighboring frames outrank one isolated match,
+            # but never become a localization acceptance score.
+            cluster["rank_score"] = float(
+                ordered[0] + 0.10 * sum(ordered[1:4])
+            )
+        best = max(clusters, key=lambda item: item["rank_score"])
+        distances = [
+            float(np.linalg.norm(point - best["center"]))
+            for point in best["points"]
+        ]
+        radius = self.search_padding_px + (max(distances) if distances else 0.0)
+        return {
+            "center_xy": [float(best["center"][0]), float(best["center"][1])],
+            "radius_px": float(radius),
+            "cluster_state_indexes": sorted(best["indexes"]),
+            "cluster_candidate_count": len(best["indexes"]),
+            "candidate_count": len(candidates),
+            "cluster_count": len(clusters),
+            "policy": "candidate-window-only",
+        }
+
+
 class RouteLockedStateEstimator:
     """Collapse live position onto a directed route with bounded progress."""
 

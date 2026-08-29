@@ -550,6 +550,54 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
+    def test_route_candidate_window_is_verified_and_falls_back_on_miss(self):
+        class Advisor:
+            def propose(self, observation, mask):
+                return {"center_xy": [20.0, 30.0], "radius_px": 40.0,
+                        "policy": "candidate-window-only"}
+
+        class Verifier:
+            supports_bounded_search = True
+
+            def __init__(self):
+                self.calls = []
+
+            def localize(self, observation, mask, yaw_prior_deg=None,
+                         search_center_xy=None, search_radius_px=None):
+                self.calls.append((search_center_xy, search_radius_px))
+                if len(self.calls) == 1:
+                    return GlobalFix(0, 0, 0, 1, 0.1, 0, 1,
+                                     valid=False,
+                                     rejection_reasons=("weak",))
+                return GlobalFix(55, 66, 7, 1, 0.8, 0.2, 2)
+
+        verifier = Verifier()
+        tracker = TwoRateRealtimeTracker(
+            np.full((100, 100, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+            localizer=verifier,
+            global_candidate_advisor=Advisor(),
+        )
+        try:
+            fix = tracker._localize_global(
+                np.zeros((68, 68, 3), np.uint8),
+                np.full((68, 68), 255, np.uint8),
+                None,
+                None,
+                None,
+            )
+            self.assertTrue(fix.valid)
+            self.assertEqual(verifier.calls[0], ([20.0, 30.0], 40.0))
+            self.assertEqual(verifier.calls[1], (None, None))
+            self.assertEqual(
+                tracker._last_route_assistance["status"],
+                "bounded-miss-fell-back",
+            )
+        finally:
+            tracker.close()
+
     def test_renders_pose_and_quality_overlay(self):
         mosaic = np.full((420, 620, 3), (35, 45, 55), np.uint8)
         state = {
@@ -930,6 +978,9 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     engine = state._live_tracker_engine
                     self.assertIsInstance(
                         engine.kwargs["localizer"], LayeredGlobalLocalizer
+                    )
+                    self.assertIsNotNone(
+                        engine.kwargs["global_candidate_advisor"]
                     )
                     self.assertNotIn("route_state_estimator", engine.kwargs)
             finally:

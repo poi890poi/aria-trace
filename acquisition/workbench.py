@@ -55,6 +55,7 @@ from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
 from .route_compilation import compile_route_session
+from .route_tracker import RouteCandidateAdvisor
 from .session import SessionReader, input_capture_health
 from .scene_yaw_calibration import calibrate_scene_yaw_session
 from .sources import (
@@ -2577,6 +2578,11 @@ class AcquisitionWorkbench:
                 ),
                 pose_confidence_min=float(
                     resolved_profile["pose_confidence_min"]
+                ),
+                global_candidate_advisor=(
+                    RouteCandidateAdvisor(route_package)
+                    if tracking_mode == "route-assisted"
+                    else None
                 ),
             )
             stop = threading.Event()

@@ -488,6 +488,7 @@ class TwoRateRealtimeTracker:
         local_shift_max_fraction: float = 0.18,
         relocalize_after_rejections: int = 6,
         recovery_consensus_count: int = 2,
+        global_candidate_advisor=None,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -556,6 +557,8 @@ class TwoRateRealtimeTracker:
         self._last_global_search = None
         self._global_error = None
         self._last_global_diagnostics = None
+        self.global_candidate_advisor = global_candidate_advisor
+        self._last_route_assistance = None
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
         self.cursor_pose_estimator = cursor_pose_estimator
@@ -665,6 +668,34 @@ class TwoRateRealtimeTracker:
         return (float(state.pose.x), float(state.pose.y)), radius
 
     def _localize_global(self, minimap, mask, yaw_prior, center, radius):
+        proposal = None
+        if self.global_candidate_advisor is not None:
+            try:
+                proposal = self.global_candidate_advisor.propose(minimap, mask)
+            except Exception as exc:
+                self._last_route_assistance = {
+                    "policy": "candidate-window-only",
+                    "status": "advisor-error",
+                    "error": "{}: {}".format(type(exc).__name__, exc),
+                }
+            if proposal is not None:
+                advised = self.localizer.localize(
+                    minimap,
+                    mask,
+                    yaw_prior,
+                    search_center_xy=proposal["center_xy"],
+                    search_radius_px=proposal["radius_px"],
+                )
+                self._last_route_assistance = dict(proposal)
+                self._last_route_assistance["bounded_fix_valid"] = bool(
+                    advised.valid
+                )
+                if advised.valid:
+                    self._last_route_assistance["status"] = "verified"
+                    return advised
+                self._last_route_assistance["status"] = (
+                    "bounded-miss-fell-back"
+                )
         if getattr(self.localizer, "supports_bounded_search", False):
             return self.localizer.localize(
                 minimap,
@@ -1227,6 +1258,9 @@ class TwoRateRealtimeTracker:
                 "map_alignment_delta_deg": alignment_delta_deg,
             },
             "route_tracking": None,
+            "route_assistance": dict(self._last_route_assistance)
+            if self._last_route_assistance
+            else None,
             "active_map_mode_id": self._active_map_mode_id,
             "map_scale": float(self.map_scale),
             "map_transition": dict(self._last_map_transition)

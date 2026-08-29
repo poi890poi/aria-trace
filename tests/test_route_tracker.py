@@ -5,7 +5,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from acquisition.route_tracker import RouteGlobalLocalizer, RouteLockedStateEstimator
+from acquisition.route_tracker import (
+    RouteCandidateAdvisor,
+    RouteGlobalLocalizer,
+    RouteLockedStateEstimator,
+)
 from replay.route_tracking import (
     RouteTrackingPackage,
     compile_route_tracking_package,
@@ -63,6 +67,22 @@ class RouteTrackerTests(unittest.TestCase):
                 fix.diagnostics["route"]["selected_state_index"], 8
             )
             self.assertLessEqual(fix.search_area_fraction, 3.0 / 12.0)
+
+    def test_candidate_advisor_clusters_adjacent_route_states(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            package, images = self._package(Path(temporary) / "route")
+            advisor = RouteCandidateAdvisor(
+                package, top_k=6, adjacent_state_gap=2, search_padding_px=50.0
+            )
+
+            proposal = advisor.propose(
+                images[8], np.full((64, 64), 255, np.uint8)
+            )
+
+            self.assertEqual(proposal["policy"], "candidate-window-only")
+            self.assertIn(8, proposal["cluster_state_indexes"])
+            self.assertGreater(proposal["cluster_candidate_count"], 1)
+            self.assertGreaterEqual(proposal["radius_px"], 50.0)
 
     def test_state_estimator_advances_locally_and_projects_to_route(self):
         with tempfile.TemporaryDirectory() as temporary:
