@@ -170,15 +170,7 @@ def parser() -> argparse.ArgumentParser:
         "--output-root", type=Path, default=Path("sessions") / "calibration"
     )
     value.add_argument("--moves", type=int, default=24)
-    value.add_argument(
-        "--step-seconds",
-        "--leg-seconds",
-        dest="step_seconds",
-        type=float,
-        default=0.45,
-        help="duration of each sustained diagonal zigzag leg",
-    )
-    value.add_argument("--move-hz", type=float, default=30.0)
+    value.add_argument("--step-seconds", type=float, default=0.12)
     value.add_argument("--settle-seconds", type=float, default=1.5)
     value.add_argument("--tail-seconds", type=float, default=1.5)
     value.add_argument("--yes", action="store_true")
@@ -202,10 +194,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     adb = resolve_adb_executable(arguments.adb)
     serial = _select_phone(adb, arguments.phone_serial)
     server = find_scrcpy_server(arguments.scrcpy_server)
-    surface = _phone_surface(adb, serial)
-    width, height = surface["logical_size_px"]
+    wake_surface = _phone_surface(adb, serial)
+    wake_width, wake_height = wake_surface["logical_size_px"]
     phone = AdbPhoneSession(serial, adb_executable=adb)
-    preparation = _wake_phone_for_preparation(phone, [width, height])
+    preparation = _wake_phone_for_preparation(phone, [wake_width, wake_height])
     game_launch = (
         {
             "game_id": arguments.game_id,
@@ -221,13 +213,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             explicit_package=arguments.android_package,
         )
     )
+    # Game launch may rotate the Android logical display. Control coordinates
+    # must be probed after that transition, not inherited from the launcher.
+    time.sleep(0.75)
+    surface = _phone_surface(adb, serial)
+    width, height = surface["logical_size_px"]
     plan = ZigzagTouchPlan(
         start_xy=[round(width * 0.82), round(height * 0.50)],
         end_x=round(width * 0.18),
         vertical_amplitude_px=round(height * 0.30),
         move_count=arguments.moves,
         step_seconds=arguments.step_seconds,
-        sample_hz=arguments.move_hz,
         settle_seconds=arguments.settle_seconds,
     )
     plan.points()

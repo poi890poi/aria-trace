@@ -244,11 +244,11 @@ Android logical display. It does not load a rig calibration or the calibrated
 camera adapter. The continuous gesture sweeps horizontally while alternating
 horizon/sky/horizon/ground returns.
 
-Each diagonal leg is a sustained 450 ms drag sampled at 30 Hz rather than one
-endpoint jump. The default pitch excursion is 30% of display height above and
-below the horizon, while the established up/down/down/up pattern still returns
-to the horizon between sky and ground scans. `--leg-seconds`, `--move-hz`, and
-`--moves` allow deliberate test overrides.
+The gesture retains the previously verified one-MOVE-per-leg transport and
+timing. Its only motion change is a larger pitch distance: 30% of the
+post-launch landscape height above and below the horizon instead of 16%. The
+established up/down/down/up pattern still returns to the horizon between sky
+and ground scans.
 
 Before showing the prompt, the command sends Android's non-toggling
 `KEYCODE_WAKEUP` through ADB and dismisses the keyguard. If Android explicitly
