@@ -266,7 +266,15 @@ class AcquisitionRecorder:
                 except queue.Empty:
                     break
                 if recording_started and kind in ("frame", "input"):
-                    handle_event(kind, value)
+                    try:
+                        handle_event(kind, value)
+                    except Exception as exc:
+                        # A primary write failure may leave queued frames that
+                        # fail the same way. Preserve the first failure, but do
+                        # not let drain-time repetition bypass writer.close().
+                        status = "incomplete"
+                        if error_text is None:
+                            error_text = "{}: {}".format(type(exc).__name__, exc)
             # Input sources can only report final receive/filter counters after
             # their worker threads stop. Keep those diagnostics in the durable
             # manifest so an empty stream is explainable instead of mysterious.

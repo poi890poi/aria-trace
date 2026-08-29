@@ -570,7 +570,10 @@ class HikMvsCameraAdapter(CameraAdapter):
         if not self._opened:
             raise RuntimeError("HIK camera is not open")
         image, frame_metadata = self.backend.read_bgr()
-        received = time.monotonic_ns()
+        # Acquisition sessions use perf_counter_ns as their common host clock.
+        # Keep the raw HIK device counter in metadata, but put the receive time
+        # on the same host timebase as scrcpy's Android clock mapping.
+        received = time.perf_counter_ns()
         return FrameSample(
             image=image,
             time_ns=received,

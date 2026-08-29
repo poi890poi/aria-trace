@@ -9,6 +9,7 @@ import numpy as np
 
 from acquisition.minimap_calibration import (
     _validate_segments,
+    calibrate_minimap_boundary_frames,
     calibrate_minimap_frames,
     calibrate_segment_sessions,
 )
@@ -47,6 +48,39 @@ def synthetic_frames(frame_count=96):
 
 
 class MinimapCalibrationTests(unittest.TestCase):
+    def test_boundary_only_entry_point_uses_verified_evidence_contract(self):
+        rotation, _, boundary_center, _, radius = synthetic_frames()
+        with tempfile.TemporaryDirectory() as temporary:
+            result = calibrate_minimap_boundary_frames(
+                rotation,
+                Path(temporary),
+            )
+            boundary = result["outer_boundary"]
+            self.assertLess(
+                np.linalg.norm(
+                    np.array([boundary["center_x"], boundary["center_y"]])
+                    - boundary_center
+                ),
+                2.0,
+            )
+            self.assertLess(abs(boundary["radius"] - radius), 2.5)
+            declared = {item["name"] for item in result["evidence"]}
+            self.assertEqual(
+                declared,
+                {
+                    "minimap_stacked_difference_heatmap.png",
+                    "boundary_temporal_heatmap.png",
+                    "boundary_radial_heatmap.png",
+                    "boundary_points_binary.png",
+                    "boundary_fitted_circle.png",
+                    "boundary_evidence_overlay.png",
+                    "boundary_confidence.png",
+                },
+            )
+            self.assertFalse((Path(temporary) / "model.npz").exists())
+            for name in declared:
+                self.assertGreater((Path(temporary) / name).stat().st_size, 0)
+
     def test_recovers_boundary_pivot_shape_and_evidence(self):
         rotation, movement, boundary_center, pivot, radius = synthetic_frames()
         with tempfile.TemporaryDirectory() as temporary:

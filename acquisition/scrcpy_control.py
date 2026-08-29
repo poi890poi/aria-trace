@@ -282,4 +282,3 @@ class ScrcpyTouchController:
 
     def __exit__(self, *_exc) -> None:
         self.close()
-

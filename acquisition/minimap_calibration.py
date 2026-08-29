@@ -727,6 +727,7 @@ def _write_evidence(
     boundary: dict,
     center: dict,
     shape: dict,
+    boundary_only: bool = False,
 ) -> Sequence[dict]:
     output.mkdir(parents=True, exist_ok=True)
     files = []
@@ -818,6 +819,9 @@ def _write_evidence(
         cv2.rectangle(confidence, (235,y-18), (235+int(430*value),y+5), (30,190,235), -1)
         cv2.putText(confidence, "{:.2f}".format(value), (675,y+2), cv2.FONT_HERSHEY_SIMPLEX, .48, (245,245,245), 1)
     save("boundary_confidence.png", confidence, "Boundary confidence breakdown", "quality")
+
+    if boundary_only:
+        return files
 
     cm = center["metrics"]
     occupancy = center["masks"].mean(axis=0)
@@ -930,6 +934,51 @@ def _write_evidence(
         ),
     )
     return files
+
+
+def calibrate_minimap_boundary_frames(
+    frames: np.ndarray,
+    output_path: Path,
+    config: Optional[dict] = None,
+    progress=None,
+    write_evidence: bool = True,
+) -> dict:
+    """Run the verified mini-map boundary calibration on prepared frame arrays.
+
+    Game control and image acquisition belong outside this function.  Callers
+    may select or crop frames before passing them here, but the boundary fit and
+    review evidence always come from the same implementation used by
+    :func:`calibrate_minimap_frames`.
+    """
+
+    if frames.ndim != 4:
+        raise ValueError("Calibration frames must be N x H x W x C arrays")
+    boundary_config = json.loads(json.dumps(DEFAULT_CONFIG["boundary"]))
+    boundary_config.update(config or {})
+    if progress:
+        progress("Fitting the circular mini-map boundary")
+    boundary = _boundary_model(frames, boundary_config)
+    evidence = []
+    if write_evidence:
+        if progress:
+            progress("Rendering mini-map boundary evidence")
+        evidence = list(
+            _write_evidence(
+                Path(output_path),
+                frames,
+                frames,
+                boundary,
+                None,
+                None,
+                boundary_only=True,
+            )
+        )
+    return {
+        "model": boundary,
+        "outer_boundary": boundary["metrics"],
+        "config": boundary_config,
+        "evidence": evidence,
+    }
 
 
 def calibrate_minimap_frames(
