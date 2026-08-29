@@ -163,6 +163,30 @@ class HikGameCameraTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Ambiguous mini-map crop"):
             _source_crop_to_canonical_phone({"crop_xywh": [0, 0, 20, 20]})
 
+    def test_current_profile_pointer_resolves_revision_calibration(self):
+        revision = self.minimap_path.parent / "revisions" / "r1"
+        revision.mkdir(parents=True)
+        calibration = revision / "minimap_calibration.json"
+        calibration.write_text(
+            json.dumps({"canonical_phone_crop_xywh": [10, 20, 30, 20]}),
+            encoding="utf-8",
+        )
+        pointer = self.minimap_path.parent / "current.json"
+        pointer.write_text(
+            json.dumps({"current_revision": str(revision)}), encoding="utf-8"
+        )
+        adapter = FakeAdapter()
+        camera = ProfiledHikGameCamera(
+            self.rig_path,
+            pointer,
+            mode="minimap",
+            rectify_minimap=False,
+            minimap_margin_px=0,
+            adapter=adapter,
+        ).open()
+        self.assertEqual(calibration, camera.minimap_path)
+        self.assertEqual([10, 20, 30, 20], adapter.roi)
+
 
 if __name__ == "__main__":
     unittest.main()

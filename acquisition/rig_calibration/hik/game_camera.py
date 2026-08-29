@@ -30,7 +30,20 @@ def _load_json(value: PathLike, names: Sequence[str]) -> tuple[Path, dict]:
                 )
             )
         path = matches[0]
-    return path, json.loads(path.read_text(encoding="utf-8"))
+    document = json.loads(path.read_text(encoding="utf-8"))
+    current_revision = document.get("current_revision")
+    if current_revision:
+        revision = Path(current_revision)
+        if not revision.is_absolute():
+            revision = path.parent / revision
+        return _load_json(revision, names)
+    artifact = (document.get("artifacts") or {}).get("minimap_calibration")
+    if artifact:
+        artifact_path = Path(artifact)
+        if not artifact_path.is_absolute():
+            artifact_path = path.parent / artifact_path
+        return _load_json(artifact_path, names)
+    return path, document
 
 
 def _translation(x: float, y: float) -> np.ndarray:
