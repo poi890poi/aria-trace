@@ -587,6 +587,7 @@ class AcquisitionWorkbench:
     CAPTURE_KINDS = (
         "route",
         "game_profile",
+        "game_behavior",
         "full_map",
         "minimap_calibration",
         "minimap_cruise",
@@ -635,6 +636,13 @@ class AcquisitionWorkbench:
             "capture_kind": "full_map",
             "workflow_stage_id": "full-map",
             "capture_id": "genshin-full-map",
+        },
+        {
+            "value": "teleportation",
+            "label": "Teleport behavior",
+            "capture_kind": "game_behavior",
+            "workflow_stage_id": "teleport-behavior",
+            "capture_id": "genshin-teleport-behavior",
         },
         {
             "value": "route",

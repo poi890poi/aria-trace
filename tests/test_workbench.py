@@ -702,6 +702,7 @@ class WorkbenchTests(unittest.TestCase):
                 "minimap_calibration",
                 "minimap_calibration",
                 "full_map",
+                "game_behavior",
                 "route",
             ],
         )
@@ -728,6 +729,15 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIn("mini-map shift", instructions)
         self.assertIn("do not turn", instructions)
         self.assertTrue(game["profile_editor"]["controls"])
+
+        teleport = game["poc_workflow"][6]
+        self.assertEqual(teleport["capture_kind"], "game_behavior")
+        self.assertEqual(teleport["segment_label"], "teleportation")
+        self.assertEqual(teleport["input_requirement"], "required")
+        self.assertEqual(
+            teleport["segment_semantics"]["required_learned_coordinates"],
+            ["teleport_target_global_xy", "destination_global_xy"],
+        )
 
     def test_optional_labeled_segment_can_arm_without_input_capture(self):
         with tempfile.TemporaryDirectory() as temporary:
