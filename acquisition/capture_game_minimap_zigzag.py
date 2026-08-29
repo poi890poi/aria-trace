@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import threading
 import time
@@ -59,6 +60,70 @@ def _phone_surface(adb: Path, serial: str) -> dict:
         "natural_size_px": natural,
         "source": "adb_surface_orientation_at_capture",
     }
+
+
+def _keyguard_showing(phone: AdbPhoneSession) -> Optional[bool]:
+    """Return Android's keyguard state without inferring it from brightness."""
+
+    try:
+        text = phone.shell("dumpsys", "window", "policy")
+    except RuntimeError:
+        return None
+    true_patterns = (
+        r"\bisKeyguardShowing\s*[=:]\s*true\b",
+        r"\bmShowingLockscreen\s*[=:]\s*true\b",
+        r"\bshowing\s*[=:]\s*true\b.*?\bKeyguard",
+    )
+    false_patterns = (
+        r"\bisKeyguardShowing\s*[=:]\s*false\b",
+        r"\bmShowingLockscreen\s*[=:]\s*false\b",
+        r"\bshowing\s*[=:]\s*false\b.*?\bKeyguard",
+    )
+    if any(re.search(pattern, text, re.IGNORECASE | re.DOTALL) for pattern in true_patterns):
+        return True
+    if any(re.search(pattern, text, re.IGNORECASE | re.DOTALL) for pattern in false_patterns):
+        return False
+    return None
+
+
+def _wake_phone_for_preparation(
+    phone: AdbPhoneSession,
+    logical_size_px: Sequence[int],
+    *,
+    sleeper=time.sleep,
+) -> dict:
+    """Wake/unlock electronically so no physical rig control is touched."""
+
+    width, height = map(int, logical_size_px)
+    result = {
+        "method": "adb_non_toggling_wakeup",
+        "physical_power_button_used": False,
+        "actions": [],
+    }
+    phone.shell("input", "keyevent", "KEYCODE_WAKEUP")
+    result["actions"].append("KEYCODE_WAKEUP")
+    result["display"] = phone.ensure_display_on(timeout_seconds=8.0)
+    phone.shell("wm", "dismiss-keyguard")
+    result["actions"].append("wm_dismiss_keyguard")
+    sleeper(0.5)
+    keyguard = _keyguard_showing(phone)
+    result["keyguard_before_remote_swipe"] = keyguard
+    if keyguard is True:
+        center_x = width // 2
+        phone.shell(
+            "input",
+            "swipe",
+            str(center_x),
+            str(round(height * 0.72)),
+            str(center_x),
+            str(round(height * 0.24)),
+            "350",
+        )
+        result["actions"].append("keyguard_upward_swipe")
+        sleeper(0.5)
+        phone.shell("wm", "dismiss-keyguard")
+    result["keyguard_after"] = _keyguard_showing(phone)
+    return result
 
 
 def _select_camera(adapter: HikMvsCameraAdapter, configured: Optional[str]):
@@ -124,6 +189,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     server = find_scrcpy_server(arguments.scrcpy_server)
     surface = _phone_surface(adb, serial)
     width, height = surface["logical_size_px"]
+    phone = AdbPhoneSession(serial, adb_executable=adb)
+    preparation = _wake_phone_for_preparation(phone, [width, height])
     plan = ZigzagTouchPlan(
         start_xy=[round(width * 0.82), round(height * 0.50)],
         end_x=round(width * 0.18),
@@ -140,10 +207,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pending_path = session_path.with_name(session_path.name + ".pending")
     print("HIK camera: {} ({})".format(selected_camera.label, selected_camera.device_id))
     print("Phone: {} ({}x{})".format(serial, width, height))
+    print("Phone display awakened electronically through ADB; the physical power button is not used.")
+    if preparation.get("keyguard_after") is True:
+        print("The credential keyguard is still present; unlock it without moving the rig.")
     print("Output session: {}".format(session_path.resolve()))
     print("This command records data only; it does not calibrate or publish profiles.")
     if not arguments.yes:
-        input("Confirm the game is awake and unobstructed, then press Enter: ")
+        input("Prepare the game, then press Enter when its unobstructed view is ready: ")
 
     clock = AdbClockMapper(adb, serial)
     hub = ScrcpyCaptureHub(
@@ -183,6 +253,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "rig_calibration_used": False,
             },
             "phone_surface_orientation": surface,
+            "phone_preparation": preparation,
             "zigzag_plan": plan.as_dict(),
             "calibration_status": "not_run",
         },

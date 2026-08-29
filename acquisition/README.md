@@ -230,6 +230,11 @@ Android logical display. It does not load a rig calibration or the calibrated
 camera adapter. The continuous gesture sweeps horizontally while alternating
 horizon/sky/horizon/ground returns.
 
+Before showing the prompt, the command sends Android's non-toggling
+`KEYCODE_WAKEUP` through ADB and dismisses the keyguard. If Android explicitly
+reports a remaining swipe keyguard, it performs one remote upward swipe. The
+physical power button is never used, so waking the phone cannot move the rig.
+
 To record source data without analysis, use:
 
 ```powershell
