@@ -59,11 +59,24 @@ def _color_heatmap(values: np.ndarray) -> np.ndarray:
 class CursorPoseEstimator:
     """Estimate one screen-space cursor angle without temporal assumptions."""
 
-    def __init__(self, calibration_path: Path) -> None:
+    GAUSSIAN_FIT_METHODS = ("vectorized_grid", "legacy_grid")
+
+    def __init__(
+        self,
+        calibration_path: Path,
+        gaussian_fit_method: str = "vectorized_grid",
+    ) -> None:
         calibration_path = Path(calibration_path)
         if calibration_path.is_dir():
             calibration_path = calibration_path / "calibration.json"
         self.calibration_path = calibration_path.resolve()
+        if gaussian_fit_method not in self.GAUSSIAN_FIT_METHODS:
+            raise ValueError(
+                "Unsupported Gaussian fit method {!r}; expected one of {}".format(
+                    gaussian_fit_method, ", ".join(self.GAUSSIAN_FIT_METHODS)
+                )
+            )
+        self.gaussian_fit_method = gaussian_fit_method
         self.root = self.calibration_path.parent
         self.calibration = json.loads(self.calibration_path.read_text(encoding="utf-8"))
         model_path = self.root / self.calibration.get("model_file", "model.npz")
@@ -156,9 +169,8 @@ class CursorPoseEstimator:
         )
 
     @staticmethod
-    def _fit_circular_gaussian(correlation: np.ndarray) -> dict:
-        """Fit a Gaussian lobe on the circular angular-correlation response."""
-        angles = np.arange(360, dtype=np.float64)
+    def _gaussian_fit_candidates(correlation: np.ndarray) -> list:
+        """Return separated response maxima in descending smoothed height."""
         kernel_x = np.arange(-6, 7, dtype=np.float64)
         kernel = np.exp(-0.5 * (kernel_x / 2.0) ** 2)
         kernel /= kernel.sum()
@@ -174,6 +186,13 @@ class CursorPoseEstimator:
                 candidate_centers.append(float(candidate))
             if len(candidate_centers) == 4:
                 break
+        return candidate_centers
+
+    @staticmethod
+    def _fit_circular_gaussian_legacy(correlation: np.ndarray) -> dict:
+        """Fit a Gaussian lobe on the circular angular-correlation response."""
+        angles = np.arange(360, dtype=np.float64)
+        candidate_centers = CursorPoseEstimator._gaussian_fit_candidates(correlation)
 
         best = None
         sigma_grid = np.linspace(2.0, 50.0, 17)
@@ -265,6 +284,159 @@ class CursorPoseEstimator:
             "peak_margin": fitted_peak - float(np.max(excluded)),
             "raw_peak_deg": float(wrap_signed_degrees(int(np.argmax(correlation)))),
         }
+
+    @staticmethod
+    def _score_gaussian_grid(
+        correlation: np.ndarray,
+        centers: np.ndarray,
+        sigmas: np.ndarray,
+        batch_size: int = 512,
+    ):
+        """Score a Cartesian center/sigma grid with closed-form linear fits."""
+        angles = np.arange(360, dtype=np.float64)
+        correlation = correlation.astype(np.float64, copy=False)
+        pair_centers = np.repeat(np.asarray(centers, dtype=np.float64), len(sigmas))
+        pair_sigmas = np.tile(np.asarray(sigmas, dtype=np.float64), len(centers))
+        best = None
+        for start in range(0, len(pair_centers), batch_size):
+            stop = min(start + batch_size, len(pair_centers))
+            batch_centers = pair_centers[start:stop]
+            batch_sigmas = pair_sigmas[start:stop]
+            distance = wrap_signed_degrees(
+                angles[None, :] - batch_centers[:, None]
+            )
+            window = np.abs(distance) <= 70.0
+            weights = window.astype(np.float64)
+            gaussian = np.exp(
+                -0.5 * (distance / batch_sigmas[:, None]) ** 2
+            ) * weights
+            sample_count = weights.sum(axis=1)
+            sum_y = weights @ correlation
+            sum_y2 = weights @ (correlation ** 2)
+            sum_g = gaussian.sum(axis=1)
+            sum_g2 = np.square(gaussian).sum(axis=1)
+            sum_gy = gaussian @ correlation
+            denominator = sample_count * sum_g2 - np.square(sum_g)
+            valid_denominator = np.abs(denominator) > 1.0e-12
+            baseline = np.full(len(batch_centers), np.nan, dtype=np.float64)
+            amplitude = np.full(len(batch_centers), np.nan, dtype=np.float64)
+            baseline[valid_denominator] = (
+                sum_y[valid_denominator] * sum_g2[valid_denominator]
+                - sum_g[valid_denominator] * sum_gy[valid_denominator]
+            ) / denominator[valid_denominator]
+            amplitude[valid_denominator] = (
+                sample_count[valid_denominator] * sum_gy[valid_denominator]
+                - sum_g[valid_denominator] * sum_y[valid_denominator]
+            ) / denominator[valid_denominator]
+            rss = (
+                sum_y2
+                - 2.0 * baseline * sum_y
+                - 2.0 * amplitude * sum_gy
+                + np.square(baseline) * sample_count
+                + 2.0 * baseline * amplitude * sum_g
+                + np.square(amplitude) * sum_g2
+            )
+            rss = np.maximum(rss, 0.0)
+            scores = np.sqrt(rss / sample_count) / np.maximum(amplitude, 1.0e-6)
+            scores[(amplitude <= 0.0) | ~np.isfinite(scores)] = np.inf
+            local_index = int(np.argmin(scores))
+            candidate = (
+                float(scores[local_index]),
+                float(batch_centers[local_index]),
+                float(batch_sigmas[local_index]),
+                float(baseline[local_index]),
+                float(amplitude[local_index]),
+            )
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+        return best
+
+    @staticmethod
+    def _finalize_circular_gaussian_fit(
+        correlation: np.ndarray,
+        score: float,
+        center: float,
+        sigma: float,
+        baseline: float,
+        amplitude: float,
+    ) -> dict:
+        angles = np.arange(360, dtype=np.float64)
+        distance_all = wrap_signed_degrees(angles - center)
+        window = np.abs(distance_all) <= 70.0
+        distance = distance_all[window]
+        y = correlation[window].astype(np.float64)
+        gaussian = np.exp(-0.5 * (distance / sigma) ** 2)
+        fitted = baseline + amplitude * gaussian
+        residual = y - fitted
+        rss = float(np.sum(residual ** 2))
+        tss = float(np.sum((y - np.mean(y)) ** 2))
+        r_squared = 1.0 - rss / max(tss, 1.0e-12)
+        jacobian = np.column_stack(
+            [
+                np.ones_like(gaussian),
+                gaussian,
+                amplitude * gaussian * distance / (sigma ** 2),
+                amplitude * gaussian * (distance ** 2) / (sigma ** 3),
+            ]
+        )
+        dof = max(1, len(y) - jacobian.shape[1])
+        covariance = (rss / dof) * np.linalg.pinv(jacobian.T @ jacobian)
+        center_std = float(math.sqrt(max(float(covariance[2, 2]), 0.0)))
+        exclusion = max(20, int(math.ceil(3.0 * sigma)))
+        excluded = correlation.copy()
+        fitted_index = int(round(center)) % 360
+        for offset in range(-exclusion, exclusion + 1):
+            excluded[(fitted_index + offset) % 360] = -np.inf
+        fitted_peak = float(baseline + amplitude)
+        return {
+            "center_deg": float(wrap_signed_degrees(center % 360.0)),
+            "sigma_deg": float(sigma),
+            "amplitude": float(amplitude),
+            "baseline": float(baseline),
+            "rmse": float(math.sqrt(rss / len(y))),
+            "normalized_rmse": float(score),
+            "r_squared": float(r_squared),
+            "center_std_deg": center_std,
+            "fitted_peak": fitted_peak,
+            "second_peak": float(np.max(excluded)),
+            "peak_margin": fitted_peak - float(np.max(excluded)),
+            "raw_peak_deg": float(wrap_signed_degrees(int(np.argmax(correlation)))),
+        }
+
+    @classmethod
+    def _fit_circular_gaussian_vectorized(
+        cls,
+        correlation: np.ndarray,
+    ) -> dict:
+        candidate_centers = cls._gaussian_fit_candidates(correlation)
+        if not candidate_centers:
+            raise RuntimeError("Circular Gaussian correlation fit failed")
+        center_offsets = np.arange(-8.0, 8.01, 0.5)
+        sigma_grid = np.linspace(2.0, 50.0, 17)
+        refine_center_offsets = np.arange(-0.6, 0.601, 0.05)
+        refine_sigma_offsets = np.arange(-3.0, 3.001, 0.1)
+        coarse_centers = (
+            np.asarray(candidate_centers)[:, None] + center_offsets[None, :]
+        ).reshape(-1)
+        coarse = cls._score_gaussian_grid(
+            correlation, coarse_centers, sigma_grid
+        )
+        if coarse is None or not math.isfinite(coarse[0]):
+            raise RuntimeError("Circular Gaussian correlation fit failed")
+        _, coarse_center, coarse_sigma, _, _ = coarse
+        refined_centers = coarse_center + refine_center_offsets
+        refined_sigmas = np.maximum(1.0, coarse_sigma + refine_sigma_offsets)
+        refined = cls._score_gaussian_grid(
+            correlation, refined_centers, refined_sigmas
+        )
+        if refined is None or not math.isfinite(refined[0]):
+            raise RuntimeError("Circular Gaussian refinement failed")
+        return cls._finalize_circular_gaussian_fit(correlation, *refined)
+
+    def _fit_circular_gaussian(self, correlation: np.ndarray) -> dict:
+        if self.gaussian_fit_method == "legacy_grid":
+            return self._fit_circular_gaussian_legacy(correlation)
+        return self._fit_circular_gaussian_vectorized(correlation)
 
     def _pixel_correlate(self, patch: np.ndarray):
         polar = cv2.remap(
@@ -636,9 +808,13 @@ def estimate_cursor_pose_frames(
     frame_indices: Optional[Sequence[int]] = None,
     session_times_ns: Optional[Sequence[int]] = None,
     provenance: Optional[dict] = None,
+    gaussian_fit_method: str = "vectorized_grid",
 ) -> dict:
     """Estimate and persist raw pose measurements for a labeled frame sequence."""
-    estimator = CursorPoseEstimator(calibration_path)
+    estimator = CursorPoseEstimator(
+        calibration_path,
+        gaussian_fit_method=gaussian_fit_method,
+    )
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     if frame_indices is None:
@@ -721,6 +897,7 @@ def estimate_cursor_pose_frames(
         "p10_confidence": float(np.percentile(confidence, 10)),
         "confidence_level": _confidence_level(float(np.median(confidence))),
         "pose_model": "symmetry_constrained_rigid_polygon",
+        "gaussian_fit_method": estimator.gaussian_fit_method,
         "pose_estimation_benchmark": timing_summary_ms(
             pose_durations_ns,
             "observed per-frame estimator wall time; model load and evidence excluded",
@@ -852,6 +1029,7 @@ def estimate_cursor_pose_session(
     session_path: Path,
     output_path: Path,
     interval: Sequence[float],
+    gaussian_fit_method: str = "vectorized_grid",
 ) -> dict:
     calibration_file = (
         Path(calibration_path) / "calibration.json"
@@ -877,6 +1055,7 @@ def estimate_cursor_pose_session(
             "interval_s": list(map(float, interval)),
             "calibration_path": str(calibration_file.resolve()),
         },
+        gaussian_fit_method=gaussian_fit_method,
     )
 
 
@@ -886,12 +1065,18 @@ def main() -> None:
     parser.add_argument("session", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--interval", nargs=2, type=float, required=True)
+    parser.add_argument(
+        "--gaussian-fit-method",
+        choices=CursorPoseEstimator.GAUSSIAN_FIT_METHODS,
+        default="vectorized_grid",
+    )
     args = parser.parse_args()
     summary = estimate_cursor_pose_session(
         args.calibration,
         args.session,
         args.output,
         args.interval,
+        gaussian_fit_method=args.gaussian_fit_method,
     )
     print(json.dumps(summary, indent=2))
 
