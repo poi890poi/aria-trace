@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,38 +84,44 @@ class GamePhonePreparationTests(unittest.TestCase):
         class PreparationCheckpoint(Exception):
             pass
 
-        with patch.object(capture, "HikMvsCameraAdapter"), patch.object(
-            capture, "_select_camera", return_value=camera
-        ), patch.object(
-            capture, "resolve_adb_executable", return_value=Path("adb.exe")
-        ), patch.object(
-            capture, "_select_phone", return_value="phone-1"
-        ), patch.object(
-            capture, "find_scrcpy_server", return_value=Path("scrcpy-server")
-        ), patch.object(
-            capture,
-            "_phone_surface",
-            side_effect=[
-                {"logical_size_px": [1080, 2400]},
-                {"logical_size_px": [2400, 1080]},
-            ],
-        ) as surface, patch.object(
-            capture, "AdbPhoneSession"
-        ), patch.object(
-            capture, "_wake_phone_for_preparation", return_value={"keyguard_after": False}
-        ), patch.object(
-            capture,
-            "launch_android_game",
-            return_value={"package": "game", "status": "launched"},
-        ), patch.object(
-            capture.time, "sleep"
-        ), patch.object(
-            capture, "ZigzagTouchPlan", return_value=plan
-        ) as constructor, patch(
-            "builtins.input", side_effect=PreparationCheckpoint
-        ):
-            with self.assertRaises(PreparationCheckpoint):
-                capture.main([])
+        with tempfile.TemporaryDirectory() as directory:
+            calibration = Path(directory) / "hik_camera_calibration.json"
+            calibration.write_text(
+                json.dumps({"camera": {"device_id": "camera-1"}}),
+                encoding="utf-8",
+            )
+            with patch.object(capture, "HikMvsCameraAdapter"), patch.object(
+                capture, "_select_camera", return_value=camera
+            ), patch.object(
+                capture, "resolve_adb_executable", return_value=Path("adb.exe")
+            ), patch.object(
+                capture, "_select_phone", return_value="phone-1"
+            ), patch.object(
+                capture, "find_scrcpy_server", return_value=Path("scrcpy-server")
+            ), patch.object(
+                capture,
+                "_phone_surface",
+                side_effect=[
+                    {"logical_size_px": [1080, 2400]},
+                    {"logical_size_px": [2400, 1080]},
+                ],
+            ) as surface, patch.object(
+                capture, "AdbPhoneSession"
+            ), patch.object(
+                capture, "_wake_phone_for_preparation", return_value={"keyguard_after": False}
+            ), patch.object(
+                capture,
+                "launch_android_game",
+                return_value={"package": "game", "status": "launched"},
+            ), patch.object(
+                capture.time, "sleep"
+            ), patch.object(
+                capture, "ZigzagTouchPlan", return_value=plan
+            ) as constructor, patch(
+                "builtins.input", side_effect=PreparationCheckpoint
+            ):
+                with self.assertRaises(PreparationCheckpoint):
+                    capture.main(["--rig-calibration", str(calibration)])
 
         self.assertEqual(2, surface.call_count)
         constructor.assert_called_once_with(

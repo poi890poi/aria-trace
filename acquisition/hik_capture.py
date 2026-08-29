@@ -14,6 +14,19 @@ from .rig_calibration.hik.driver import RectifiedHikCamera
 from .sources import FrameSource
 
 
+def rotate_quarter_turns_clockwise(image, quarter_turns: int):
+    """Rotate an image into the current Android logical-display orientation."""
+
+    turns = int(quarter_turns) % 4
+    if turns == 0:
+        return image
+    if turns == 1:
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    if turns == 2:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+
 class CalibratedHikFrameSource(FrameSource):
     """Expose normalized HIK frames with raw device timing kept as metadata."""
 
@@ -22,11 +35,15 @@ class CalibratedHikFrameSource(FrameSource):
         calibration_file: Path,
         stream_id: str = "hik_phone",
         rectify: bool = True,
+        output_quarter_turns_clockwise: int = 0,
         reader: Optional[RectifiedHikCamera] = None,
     ) -> None:
         self.calibration_file = Path(calibration_file)
         self.stream_id = str(stream_id)
         self.rectify = bool(rectify)
+        self.output_quarter_turns_clockwise = (
+            int(output_quarter_turns_clockwise) % 4
+        )
         self.reader = reader
         self._owns_reader = reader is None
         self._started = False
@@ -45,7 +62,10 @@ class CalibratedHikFrameSource(FrameSource):
         if not self._started or self.reader is None:
             return None
         sample = self.reader.read_sample()
-        image = sample.image
+        image = rotate_quarter_turns_clockwise(
+            sample.image, self.output_quarter_turns_clockwise
+        )
+        content_height, content_width = image.shape[:2]
         padding_right = int(image.shape[1] % 2)
         padding_bottom = int(image.shape[0] % 2)
         if padding_right or padding_bottom:
@@ -71,9 +91,12 @@ class CalibratedHikFrameSource(FrameSource):
                 "timestamp_timebase": "host perf_counter_ns at frame receive",
                 "device_timestamp_raw": raw_device_time,
                 "calibrated_source_size_px": [
-                    int(sample.image.shape[1]),
-                    int(sample.image.shape[0]),
+                    int(content_width),
+                    int(content_height),
                 ],
+                "output_quarter_turns_clockwise_from_phone_natural": (
+                    self.output_quarter_turns_clockwise
+                ),
                 "video_encoding_padding_right_bottom_px": [
                     padding_right,
                     padding_bottom,
@@ -102,6 +125,9 @@ class CalibratedHikFrameSource(FrameSource):
             "stream_id": self.stream_id,
             "calibration": str(self.calibration_file.resolve()),
             "rectified": self.rectify,
+            "output_quarter_turns_clockwise_from_phone_natural": (
+                self.output_quarter_turns_clockwise
+            ),
             "host_timestamp": "perf_counter_ns_at_frame_receive",
             "device_timestamp": "raw_hik_counter_in_frame_metadata",
             "video_encoding_padding": "replicate at right/bottom only when a dimension is odd",

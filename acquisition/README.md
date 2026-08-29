@@ -225,24 +225,23 @@ For a complete new HIK setup, use the single entry point:
 ```
 
 It calls the existing tools in order: headless rig calibration, automated game
-launch plus native-HIK/ADB zigzag capture and mini-map calibration, then the
+launch plus rig-normalized HIK/ADB zigzag capture and mini-map calibration, then the
 profiled HIK adapter demo in dual mode. Explicit output directories connect the
 stages; the mini-map summary supplies the exact published rig-game profile to
 the demo. A failed stage stops the sequence and retains completed artifacts.
 Use `-NoDemo` to finish after calibration, or `-GameId`, `-CameraId`, and
 `-PhoneSerial` only when defaults cannot select the intended setup.
 
-With the game awake and ready, run the complete headless capture and analysis:
+With the game awake and ready and an existing rig result, run capture with:
 
 ```powershell
-.\calibrate-game-minimap.bat
+.\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
 ```
 
 The command waits for Enter before it injects input. Acquisition always opens
-the native HIK driver at full sensor view and simultaneously records the full
-Android logical display. It does not load a rig calibration or the calibrated
-camera adapter. The continuous gesture sweeps horizontally while alternating
-horizon/sky/horizon/ground returns.
+the HIK camera through the saved rig-calibrated adapter and simultaneously
+records the full Android logical display. The continuous gesture sweeps
+horizontally while alternating horizon/sky/horizon/ground returns.
 
 Each long diagonal stroke starts on the unobstructed central look-control
 surface, away from the right-side action cluster. It emits progressive MOVE
@@ -267,14 +266,21 @@ does not inject game input or modify camera/calibration controls.
 To record source data without analysis, use:
 
 ```powershell
-.\capture-game-minimap-zigzag.bat
+.\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
 ```
 
-An existing session can be analyzed independently with
-`python -m acquisition.automated_minimap_calibration <session>`. Add
-`--rig-calibration <folder-or-json>` only when a rig-game profile is desired.
-That optional pass applies the saved rig homography to check coordinates; it
-does not estimate, modify, or replace camera/phone optical geometry.
+Dual-source capture requires the saved rig bundle. The `android_phone` stream
+keeps the complete Android logical display. The `hik_phone` stream uses the
+calibrated HIK adapter, so it contains only the camera-visible phone region,
+rectified by the saved rig geometry and quarter-turned into the same logical
+game orientation as ADB. Odd dimensions are padded only at the video encoder
+edge and the unpadded content size remains in frame metadata.
+
+Each session also contains `cross_source_check/`. At a low sampling rate it
+crops ADB with the saved rig-visible rectangle and reuses the rig calibration's
+cross-source scorer on synchronized game frames. The summary, side-by-side
+image, edge overlay, valid mask, and difference heatmap are diagnostic only;
+low confidence never rejects or changes a recording.
 
 Game control uses the reusable `ScrcpyTouchController` in
 `acquisition/scrcpy_control.py`. It maintains one pinned scrcpy 4.1 control
@@ -282,11 +288,10 @@ socket for the gesture instead of starting one ADB process per touch event.
 Acquisition ends only after the controller reports the complete DOWN/MOVE/UP
 sequence and the configured tail has elapsed; incomplete control is rejected.
 
-The result boundaries are deliberately separate:
+The downstream calibration result boundaries remain deliberately separate:
 
-- `artifacts/game-minimap-calibration-*` contains the native-HIK sensor result,
-  the Android result, stacked heatmaps, complete fitted boundaries, and exact
-  shift masks. It is valid without a rig.
+- `artifacts/game-minimap-calibration-*` contains source-specific mini-map
+  results, stacked heatmaps, complete fitted boundaries, and exact shift masks.
 - `profiles/phone_game/<phone>/<game>` stores the camera-independent mini-map
   crop in the phone's natural display coordinates.
 - `profiles/rig_game/<rig>/<game>` is created only when a base rig calibration

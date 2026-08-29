@@ -1,9 +1,4 @@
-"""Record synchronized Android/native-HIK frames during one controlled zigzag.
-
-Acquisition is always native full-sensor HIK and has no rig dependency.  The
-optional post-capture analysis is a separate layer invoked only after the
-session has finalized successfully.
-"""
+"""Record synchronized Android/rig-normalized HIK game frames during a zigzag."""
 
 from __future__ import annotations
 
@@ -25,14 +20,15 @@ from .android_capture import (
 )
 from .android_game_launcher import launch_android_game
 from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
-from .hik_capture import NativeHikFrameSource
+from .game_cross_source_check import GameCrossSourceEvidenceRecorder
+from .hik_capture import CalibratedHikFrameSource
 from .recorder import AcquisitionRecorder
 from .rig_calibration.hik.phone import (
     AdbPhoneSession,
     connected_adb_devices,
     resolve_adb_executable,
 )
-from .rig_calibration.hik.driver import HikMvsCameraAdapter
+from .rig_calibration.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from .scrcpy_control import ScrcpyTouchController
 from .sources import AdbClockMapper
 
@@ -61,6 +57,17 @@ def _phone_surface(adb: Path, serial: str) -> dict:
         "natural_size_px": natural,
         "source": "adb_surface_orientation_at_capture",
     }
+
+
+def _resolve_rig_calibration(path: Path) -> Path:
+    """Resolve either a calibration bundle directory or its JSON config."""
+
+    value = Path(path)
+    if value.is_dir():
+        value = value / "hik_camera_calibration.json"
+    if not value.is_file():
+        raise RuntimeError("Rig calibration does not exist: {}".format(value))
+    return value
 
 
 def _keyguard_showing(phone: AdbPhoneSession) -> Optional[bool]:
@@ -211,7 +218,7 @@ def _dismiss_game_booster_lock(
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
-            "Record Android and native full-view HIK streams during one continuous "
+            "Record Android and rig-normalized HIK streams during one continuous "
             "horizon-returning zigzag. No calibration is run or published."
         )
     )
@@ -245,7 +252,14 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run standalone mini-map analysis after successful capture",
     )
-    value.add_argument("--rig-calibration", type=Path)
+    value.add_argument(
+        "--rig-calibration",
+        type=Path,
+        help=(
+            "required calibration bundle directory or hik_camera_calibration.json; "
+            "the HIK stream is rectified and oriented from this result"
+        ),
+    )
     value.add_argument("--profiles-root", type=Path, default=Path("profiles"))
     value.add_argument("--calibration-output", type=Path)
     value.add_argument("--android-crop")
@@ -371,10 +385,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.control_only:
         return _run_control_only(arguments)
+    if arguments.rig_calibration is None:
+        parser().error("--rig-calibration is required for dual-source capture")
+    rig_calibration = _resolve_rig_calibration(arguments.rig_calibration)
+    rig_config = json.loads(rig_calibration.read_text(encoding="utf-8"))
     hik_adapter = HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
     selected_camera = _select_camera(hik_adapter, arguments.camera_id)
+    calibrated_camera_id = str(rig_config["camera"]["device_id"])
+    if str(selected_camera.device_id) != calibrated_camera_id:
+        raise RuntimeError(
+            "Rig calibration is for HIK camera {}, but {} was selected".format(
+                calibrated_camera_id, selected_camera.device_id
+            )
+        )
     adb = resolve_adb_executable(arguments.adb)
     serial = _select_phone(adb, arguments.phone_serial)
+    calibrated_phone_id = str((rig_config.get("phone") or {}).get("serial") or "")
+    if calibrated_phone_id and str(serial) != calibrated_phone_id:
+        raise RuntimeError(
+            "Rig calibration is for Android phone {}, but {} was selected".format(
+                calibrated_phone_id, serial
+            )
+        )
     server = find_scrcpy_server(arguments.scrcpy_server)
     wake_surface = _phone_surface(adb, serial)
     wake_width, wake_height = wake_surface["logical_size_px"]
@@ -444,13 +476,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     android = AndroidRoiFrameSource(
         hub, AndroidRoiSpec("android_phone", 0, 0, 0, 0)
     )
-    hik = NativeHikFrameSource(
-        selected_camera.device_id,
-        "hik_full",
-        width_px=arguments.camera_width,
-        height_px=arguments.camera_height,
-        fps=arguments.camera_fps,
-        adapter=hik_adapter,
+    cross_source_check = GameCrossSourceEvidenceRecorder(
+        rig_calibration, surface
+    )
+    output_image_turns = cross_source_check.geometry[
+        "output_image_quarter_turns_clockwise_from_phone_natural"
+    ]
+    hik = CalibratedHikFrameSource(
+        rig_calibration,
+        "hik_phone",
+        rectify=True,
+        output_quarter_turns_clockwise=output_image_turns,
+        reader=RectifiedHikCamera(rig_calibration, adapter=hik_adapter),
     )
     controller = ScrcpyTouchController(adb, server, serial, [width, height])
     control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
@@ -460,14 +497,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         [control],
         video_fps=30.0,
         video_crf=16,
+        frame_processors=[cross_source_check],
         session_context={
             "capture_kind": "zigzag_minimap_source_data",
             "game_id": arguments.game_id,
-            "image_sources": ["android_scrcpy", "hik_mvs"],
+            "image_sources": ["android_scrcpy", "hik_mvs_rig_rectified"],
             "hik_capture": {
-                "mode": "native_full_sensor",
+                "mode": "rig_rectified_phone_view",
                 "camera_id": selected_camera.device_id,
-                "rig_calibration_used": False,
+                "rig_calibration_used": True,
+                "rig_calibration": str(rig_calibration.resolve()),
+                "stream_id": "hik_phone",
+                "output_image_quarter_turns_clockwise_from_phone_natural": (
+                    output_image_turns
+                ),
+                "android_surface_quarter_turns_clockwise_from_natural": surface[
+                    "quarter_turns_clockwise_from_natural"
+                ],
             },
             "phone_surface_orientation": surface,
             "phone_preparation": preparation,
@@ -515,7 +561,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if (
             manifest.get("status") != "complete"
             or int(counts.get("android_phone", 0)) <= 0
-            or int(counts.get("hik_full", 0)) <= 0
+            or int(counts.get("hik_phone", 0)) <= 0
         ):
             raise RuntimeError("Recording did not complete with both frame streams")
         pending_path.replace(session_path)

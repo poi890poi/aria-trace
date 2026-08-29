@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from acquisition.hik_capture import NativeHikFrameSource
+from acquisition.hik_capture import CalibratedHikFrameSource, NativeHikFrameSource
 from acquisition.rig_calibration.contracts import FrameSample
 
 
@@ -46,6 +46,28 @@ class FakeNativeAdapter:
         self.closed = True
 
 
+class FakeRectifiedReader:
+    def __init__(self):
+        self.opened = False
+        self.released = False
+
+    def open(self):
+        self.opened = True
+
+    def read_sample(self):
+        image = np.zeros((3, 5, 3), np.uint8)
+        image[0, 0] = [1, 2, 3]
+        return FrameSample(
+            image,
+            100,
+            receive_time_ns=110,
+            metadata={"device_timestamp": 55},
+        )
+
+    def release(self):
+        self.released = True
+
+
 class NativeHikFrameSourceTests(unittest.TestCase):
     def test_native_source_forces_full_sensor_and_does_not_require_rig(self):
         adapter = FakeNativeAdapter()
@@ -62,6 +84,32 @@ class NativeHikFrameSourceTests(unittest.TestCase):
         self.assertNotIn("rig_calibration", packet.metadata)
         source.stop()
         self.assertTrue(adapter.closed)
+
+
+class CalibratedHikFrameSourceTests(unittest.TestCase):
+    def test_rotates_rectified_phone_view_to_android_logical_orientation(self):
+        reader = FakeRectifiedReader()
+        source = CalibratedHikFrameSource(
+            "rig.json",
+            reader=reader,
+            output_quarter_turns_clockwise=1,
+        )
+        source.start()
+        packet = source.read()
+        self.assertTrue(reader.opened)
+        self.assertEqual("hik_phone", packet.stream_id)
+        self.assertEqual((6, 4, 3), packet.image.shape)
+        self.assertEqual([3, 5], packet.metadata["calibrated_source_size_px"])
+        self.assertEqual(
+            1,
+            packet.metadata[
+                "output_quarter_turns_clockwise_from_phone_natural"
+            ],
+        )
+        self.assertEqual([1, 1], packet.metadata["video_encoding_padding_right_bottom_px"])
+        np.testing.assert_array_equal(packet.image[0, 2], [1, 2, 3])
+        source.stop()
+        self.assertTrue(reader.released)
 
 
 if __name__ == "__main__":
