@@ -48,8 +48,8 @@ class GlobalFix:
     ratio_match_count: int = 0
     inlier_count: int = 0
     inlier_ratio: float = 0.0
-    reprojection_p95_px: float = float("inf")
-    center_agreement_px: float = float("inf")
+    reprojection_p95_px: Optional[float] = None
+    center_agreement_px: Optional[float] = None
     alternatives: tuple = ()
 
 
@@ -114,6 +114,13 @@ class GlobalMapLocalizer:
         return float(mapped[0] / mapped[2]), float(mapped[1] / mapped[2])
 
     def _invalid(self, started, reasons, **metrics):
+        def finite_or_none(name):
+            value = metrics.get(name)
+            if value is None:
+                return None
+            value = float(value)
+            return value if math.isfinite(value) else None
+
         return GlobalFix(
             0.0,
             0.0,
@@ -127,8 +134,8 @@ class GlobalMapLocalizer:
             ratio_match_count=int(metrics.get("ratio_match_count", 0)),
             inlier_count=int(metrics.get("inlier_count", 0)),
             inlier_ratio=float(metrics.get("inlier_ratio", 0.0)),
-            reprojection_p95_px=float(metrics.get("reprojection_p95_px", float("inf"))),
-            center_agreement_px=float(metrics.get("center_agreement_px", float("inf"))),
+            reprojection_p95_px=finite_or_none("reprojection_p95_px"),
+            center_agreement_px=finite_or_none("center_agreement_px"),
         )
 
     def localize(
@@ -272,8 +279,12 @@ class GlobalMapLocalizer:
             ratio_match_count=ratio_count,
             inlier_count=inlier_count,
             inlier_ratio=inlier_ratio,
-            reprojection_p95_px=reprojection_p95,
-            center_agreement_px=center_agreement,
+            reprojection_p95_px=(
+                reprojection_p95 if math.isfinite(reprojection_p95) else None
+            ),
+            center_agreement_px=(
+                center_agreement if math.isfinite(center_agreement) else None
+            ),
             alternatives=tuple(alternatives),
         )
 

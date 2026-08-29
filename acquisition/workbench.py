@@ -60,6 +60,17 @@ from .windows import (
 WORKBENCH_SERVICE = "aria-trace-workbench"
 
 
+def _strict_json_value(value):
+    """Return browser-compatible JSON data without NaN or infinity tokens."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _strict_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_strict_json_value(item) for item in value]
+    return value
+
+
 def parse_adb_devices(output: str) -> List[dict]:
     """Parse `adb devices -l` without treating unavailable devices as targets."""
     devices = []
@@ -3368,7 +3379,9 @@ def make_handler(state: AcquisitionWorkbench):
             self._send(
                 status,
                 "application/json",
-                json.dumps(value).encode("utf-8"),
+                json.dumps(
+                    _strict_json_value(value), allow_nan=False
+                ).encode("utf-8"),
             )
 
         def _body(self) -> dict:

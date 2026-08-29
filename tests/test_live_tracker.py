@@ -22,6 +22,21 @@ from acquisition.workbench import AcquisitionWorkbench
 
 
 class GlobalMapLocalizerTests(unittest.TestCase):
+    def test_rejected_fix_reports_unavailable_metrics_as_json_null(self):
+        random = np.random.RandomState(7)
+        mosaic = random.randint(0, 256, (220, 280, 3), dtype=np.uint8)
+        localizer = GlobalMapLocalizer(mosaic)
+        observation = np.zeros((100, 100, 3), np.uint8)
+        mask = np.full((100, 100), 255, np.uint8)
+
+        fix = localizer.localize(observation, mask)
+
+        self.assertFalse(fix.valid)
+        self.assertEqual(fix.rejection_reasons, ("too-few-observation-features",))
+        self.assertIsNone(fix.reprojection_p95_px)
+        self.assertIsNone(fix.center_agreement_px)
+        json.dumps(fix.__dict__, allow_nan=False)
+
     def test_localizes_exact_observed_patch_on_mosaic(self):
         random = np.random.RandomState(42)
         mosaic = random.randint(0, 256, (300, 360, 3), dtype=np.uint8)

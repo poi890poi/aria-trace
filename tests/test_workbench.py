@@ -1315,6 +1315,55 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_state_api_replaces_nonfinite_tracker_metrics_with_json_null(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            state._live_tracker = {
+                "status": "stopped",
+                "latest": {
+                    "global_fix": {
+                        "decision": "rejected-quality:too-few-ratio-matches",
+                        "reprojection_p95_localization_px": float("inf"),
+                        "feature_correlation_center_agreement_px": float("-inf"),
+                        "synthetic_nonfinite_probe": float("nan"),
+                    }
+                },
+            }
+            server = WorkbenchHttpServer(("127.0.0.1", 0), make_handler(state))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = "http://127.0.0.1:{}/api/state".format(
+                    server.server_address[1]
+                )
+                body = urllib.request.urlopen(url).read()
+
+                def reject_nonfinite(token):
+                    raise ValueError("Non-finite JSON token: {}".format(token))
+
+                parsed = json.loads(body, parse_constant=reject_nonfinite)
+                global_fix = parsed["live_tracker"]["latest"]["global_fix"]
+                self.assertIsNone(
+                    global_fix["reprojection_p95_localization_px"]
+                )
+                self.assertIsNone(
+                    global_fix["feature_correlation_center_agreement_px"]
+                )
+                self.assertIsNone(global_fix["synthetic_nonfinite_probe"])
+                self.assertNotIn(b"Infinity", body)
+                self.assertNotIn(b"NaN", body)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                state.close()
+
     def test_post_take_confirmation_is_required_before_ready(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
