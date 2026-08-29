@@ -55,7 +55,6 @@ from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
 from .route_compilation import compile_route_session
-from .route_tracker import RouteGlobalLocalizer, RouteLockedStateEstimator
 from .session import SessionReader, input_capture_health
 from .scene_yaw_calibration import calibrate_scene_yaw_session
 from .sources import (
@@ -2440,7 +2439,6 @@ class AcquisitionWorkbench:
                 "scene_yaw_calibration.json",
                 scene_yaw_id,
             )
-            route_state_estimator = None
             if atlas_id or tracking_mode == "route-locked":
                 if tracking_mode == "route-locked":
                     package_root = (
@@ -2464,16 +2462,12 @@ class AcquisitionWorkbench:
                 )
                 if mosaic is None:
                     raise ValueError("Could not decode the canonical map-atlas mosaic")
-                if tracking_mode == "route-locked":
-                    if (
-                        route_package.manifest["coordinate_space_id"]
-                        != atlas["coordinate_space_id"]
-                    ):
-                        raise ValueError("Route package uses another canonical map space")
-                    localizer = RouteGlobalLocalizer(route_package)
-                    route_state_estimator = RouteLockedStateEstimator(route_package)
-                else:
-                    localizer = LayeredGlobalLocalizer(atlas_root)
+                if tracking_mode == "route-locked" and (
+                    route_package.manifest["coordinate_space_id"]
+                    != atlas["coordinate_space_id"]
+                ):
+                    raise ValueError("Route package uses another canonical map space")
+                localizer = LayeredGlobalLocalizer(atlas_root)
             else:
                 stitch_root = self._map_stitch_root(game_profile_id)
                 stitch = self._read_tracker_artifact(
@@ -2574,7 +2568,6 @@ class AcquisitionWorkbench:
                 pose_confidence_min=float(
                     resolved_profile["pose_confidence_min"]
                 ),
-                route_state_estimator=route_state_estimator,
             )
             stop = threading.Event()
             runtime = {

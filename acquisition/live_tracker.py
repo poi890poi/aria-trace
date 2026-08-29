@@ -488,7 +488,6 @@ class TwoRateRealtimeTracker:
         local_shift_max_fraction: float = 0.18,
         relocalize_after_rejections: int = 6,
         recovery_consensus_count: int = 2,
-        route_state_estimator=None,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -517,8 +516,6 @@ class TwoRateRealtimeTracker:
         self.recovery_consensus_count = max(2, int(recovery_consensus_count))
         self._local_rejections = 0
         self._recovery_hypotheses = []
-        self.route_state_estimator = route_state_estimator
-        self._last_route_tracking = None
         transition_model = getattr(self.localizer, "transition_model", None)
         runtime_transition = (transition_model or {}).get("runtime") or {}
         self.transition_controller = (
@@ -528,7 +525,7 @@ class TwoRateRealtimeTracker:
                     runtime_transition.get("confirmation_count", 2)
                 ),
             )
-            if transition_model is not None and route_state_estimator is None
+            if transition_model is not None
             else None
         )
         self._active_map_mode_id = None
@@ -783,29 +780,6 @@ class TwoRateRealtimeTracker:
             self._recovery_hypotheses = []
         elif self.fusion._state is not None and self.sequence:
             self._local_rejections += 1
-
-        if self.fusion._state is not None and self.route_state_estimator is not None:
-            state = self.fusion.state
-            self._last_route_tracking = self.route_state_estimator.update(
-                minimap,
-                mask,
-                (state.pose.x, state.pose.y),
-                timestamp_ns=timestamp_ns,
-            )
-            if self._last_route_tracking.get("accepted"):
-                constrained = self._last_route_tracking["canonical_xy"]
-                state.pose = Pose2D(
-                    float(constrained[0]),
-                    float(constrained[1]),
-                    state.pose.yaw_deg,
-                )
-            if self._last_route_tracking.get("reset_local_reference"):
-                self.previous_minimap = None
-                set_active_mode = getattr(self.localizer, "set_active_mode", None)
-                if set_active_mode is not None:
-                    set_active_mode(
-                        self._last_route_tracking.get("active_mode_id")
-                    )
 
         cursor_pose_fresh = False
         if self._cursor_future is not None and self._cursor_future.done():
@@ -1249,9 +1223,7 @@ class TwoRateRealtimeTracker:
                 "rotation_compensation_sign": compensation_sign,
                 "map_alignment_delta_deg": alignment_delta_deg,
             },
-            "route_tracking": dict(self._last_route_tracking)
-            if self._last_route_tracking
-            else None,
+            "route_tracking": None,
             "active_map_mode_id": self._active_map_mode_id,
             "map_transition": dict(self._last_map_transition)
             if self._last_map_transition

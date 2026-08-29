@@ -16,6 +16,7 @@ from acquisition.live_tracker import (
     TwoRateRealtimeTracker,
     render_map_overlay,
 )
+from acquisition.map_layers import LayeredGlobalLocalizer
 from acquisition.models import FramePacket
 from acquisition.profiles import ProfileCatalog
 from acquisition.workbench import AcquisitionWorkbench
@@ -484,7 +485,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
-    def test_optional_route_estimator_projects_pose_and_resets_reference(self):
+    def test_route_pose_projection_hook_is_not_supported(self):
         class RouteEstimator:
             def update(self, observation, mask, predicted_xy, timestamp_ns=None):
                 return {
@@ -504,29 +505,15 @@ class TwoRateTrackerTests(unittest.TestCase):
             def set_active_mode(self, mode_id):
                 self.active_mode_id = mode_id
 
-        localizer = ModeLocalizer()
-        tracker = TwoRateRealtimeTracker(
-            np.full((160, 180, 3), 40, np.uint8),
-            {"crop_xywh": [0, 0, 80, 80]},
-            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
-            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
-            localizer=localizer,
-            route_state_estimator=RouteEstimator(),
-        )
-        tracker.fusion.initialize(Pose2D(40.0, 20.0, 15.0))
-        frame = np.random.RandomState(12).randint(
-            0, 255, (100, 100, 3), dtype=np.uint8
-        )
-        try:
-            result = tracker.update(frame, 1)
-
-            self.assertAlmostEqual(result["pose"]["x"], 42.0)
-            self.assertAlmostEqual(result["pose"]["y"], 24.0)
-            self.assertEqual(result["route_tracking"]["state"], "route_track")
-            self.assertEqual(localizer.active_mode_id, "town")
-            self.assertIsNone(tracker.previous_minimap)
-        finally:
-            tracker.close()
+        with self.assertRaisesRegex(TypeError, "route_state_estimator"):
+            TwoRateRealtimeTracker(
+                np.full((160, 180, 3), 40, np.uint8),
+                {"crop_xywh": [0, 0, 80, 80]},
+                {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+                {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+                localizer=ModeLocalizer(),
+                route_state_estimator=RouteEstimator(),
+            )
 
     def test_exposes_player_heading_from_cursor_and_map_alignment(self):
         cursor_pose_estimator = FakeCursorPoseEstimator()
@@ -623,6 +610,8 @@ class FakeLiveEngine:
         self.sequence = 0
         self.closed = False
         self._diagnostics = None
+        self.args = args
+        self.kwargs = kwargs
 
     def update(self, frame, host_time_ns):
         self.sequence += 1
@@ -831,9 +820,19 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
             (scene_root / "scene_yaw_calibration.json").write_text(
                 json.dumps({"focal_ratio": 0.9}), encoding="utf-8"
             )
+            atlas_image = np.random.RandomState(29).randint(
+                0, 255, (180, 220, 3), dtype=np.uint8
+            )
+            cv2.imwrite(str(atlas_root / "canonical_mosaic.png"), atlas_image)
+            layer_root = atlas_root / "layers" / "world"
+            layer_root.mkdir(parents=True)
             cv2.imwrite(
-                str(atlas_root / "canonical_mosaic.png"),
-                np.full((180, 220, 3), 80, np.uint8),
+                str(layer_root / "localization_mosaic.png"),
+                atlas_image,
+            )
+            cv2.imwrite(
+                str(layer_root / "localization_coverage.png"),
+                np.full((180, 220), 255, np.uint8),
             )
             (atlas_root / "map_atlas.json").write_text(
                 json.dumps(
@@ -841,6 +840,22 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         "atlas_id": "atlas-a",
                         "coordinate_space_id": "map-atlas:atlas-a:canonical-map-px",
                         "canonical_mosaic_file": "canonical_mosaic.png",
+                        "layers": [
+                            {
+                                "mode_id": "world",
+                                "localization_mosaic_file": (
+                                    "layers/world/localization_mosaic.png"
+                                ),
+                                "localization_coverage_file": (
+                                    "layers/world/localization_coverage.png"
+                                ),
+                                "localization_to_canonical_3x3": [
+                                    [1, 0, 0],
+                                    [0, 1, 0],
+                                    [0, 0, 1],
+                                ],
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -904,6 +919,11 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     self.assertEqual(runtime["map_atlas_id"], "atlas-a")
                     self.assertEqual(runtime["route_package_id"], "route-a")
                     self.assertEqual(runtime["tracking_profile"], "fast")
+                    engine = state._live_tracker_engine
+                    self.assertIsInstance(
+                        engine.kwargs["localizer"], LayeredGlobalLocalizer
+                    )
+                    self.assertNotIn("route_state_estimator", engine.kwargs)
             finally:
                 source.stop()
                 if state._tracker_running():
