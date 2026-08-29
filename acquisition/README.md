@@ -218,6 +218,20 @@ mapping; copying only a video would discard the synchronization authority.
 
 ### Synchronized Android + HIK mini-map calibration
 
+For a complete new HIK setup, use the single entry point:
+
+```powershell
+.\calibrate-hik-game-camera.bat
+```
+
+It calls the existing tools in order: headless rig calibration, automated game
+launch plus native-HIK/ADB zigzag capture and mini-map calibration, then the
+profiled HIK adapter demo in dual mode. Explicit output directories connect the
+stages; the mini-map summary supplies the exact published rig-game profile to
+the demo. A failed stage stops the sequence and retains completed artifacts.
+Use `-NoDemo` to finish after calibration, or `-GameId`, `-CameraId`, and
+`-PhoneSerial` only when defaults cannot select the intended setup.
+
 With the game awake and ready, run the complete headless capture and analysis:
 
 ```powershell

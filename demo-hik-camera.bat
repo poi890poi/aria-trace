@@ -9,7 +9,7 @@ if not exist "%ARIA_HIK_OPENCV%\cv2\cv2.pyd" (
 )
 
 set "ARIA_HIK_CALIBRATION=%~1"
-set "ARIA_HIK_STREAM_OPTION=%~2"
+if defined ARIA_HIK_CALIBRATION shift
 if defined ARIA_HIK_CALIBRATION if exist "%ARIA_HIK_CALIBRATION%\hik_camera_calibration.json" set "ARIA_HIK_CALIBRATION=%ARIA_HIK_CALIBRATION%\hik_camera_calibration.json"
 if not defined ARIA_HIK_CALIBRATION (
   for /f "usebackq delims=" %%F in (`powershell.exe -NoProfile -Command "$f=Get-ChildItem -LiteralPath '%ARIA_HIK_ROOT%artifacts' -Filter 'hik_camera_calibration.json' -Recurse -File -ErrorAction SilentlyContinue ^| Sort-Object LastWriteTime -Descending ^| Select-Object -First 1; if($f){$f.FullName}"`) do set "ARIA_HIK_CALIBRATION=%%F"
@@ -31,7 +31,7 @@ if not exist "%ARIA_HIK_PYTHON%" set "ARIA_HIK_PYTHON=python"
 echo Calibration: %ARIA_HIK_CALIBRATION%
 echo The demo only controls Android display power. It does not launch apps or send touch input.
 pushd "%ARIA_HIK_ROOT%"
-"%ARIA_HIK_PYTHON%" -B -m acquisition.rig_calibration.hik.stream "%ARIA_HIK_CALIBRATION%" --gui --manage-phone-display %ARIA_HIK_STREAM_OPTION%
+"%ARIA_HIK_PYTHON%" -B -m acquisition.rig_calibration.hik.stream "%ARIA_HIK_CALIBRATION%" --gui --manage-phone-display %*
 set "ARIA_HIK_EXIT=%ERRORLEVEL%"
 popd
 exit /b %ARIA_HIK_EXIT%

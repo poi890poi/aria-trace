@@ -11,6 +11,7 @@ import cv2
 
 from acquisition.rig_calibration.hik.camera import Camera, HikCamera
 from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from acquisition.rig_calibration.hik.game_camera import ProfiledHikGameCamera
 from acquisition.rig_calibration.hik.phone import AdbPhoneSession
 
 
@@ -57,6 +58,17 @@ class PhoneDisplayPowerSession:
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="Stream the calibrated phone-display ROI from HIK MVS.")
     value.add_argument("calibration", type=Path, help="hik_camera_calibration.json")
+    value.add_argument(
+        "--minimap-calibration",
+        type=Path,
+        help="rig-game current.json/profile.json for mini-map or dual output",
+    )
+    value.add_argument(
+        "--mode",
+        choices=("minimap", "full", "dual"),
+        default="full",
+        help="profiled adapter stream mode; requires --minimap-calibration",
+    )
     value.add_argument("--mvs-python-path")
     value.add_argument("--gui", action="store_true", help="Show live rectified frames; Q/Esc closes")
     value.add_argument(
@@ -77,10 +89,22 @@ def open_camera(
     calibration: Path,
     mvs_python_path: Optional[str] = None,
     rectify: bool = True,
-) -> RectifiedHikCamera:
+    minimap_calibration: Optional[Path] = None,
+    mode: str = "full",
+):
     """Public UVC-like constructor for application code (read/release/isOpened)."""
 
+    if minimap_calibration is None and mode != "full":
+        raise ValueError("--mode {} requires --minimap-calibration".format(mode))
     adapter = HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
+    if minimap_calibration is not None:
+        return ProfiledHikGameCamera(
+            calibration,
+            minimap_calibration,
+            mode=mode,
+            rectify_minimap=rectify,
+            adapter=adapter,
+        ).open()
     return RectifiedHikCamera(
         calibration, adapter=adapter, rectify=rectify
     ).open()
@@ -90,9 +114,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.manage_phone_display and not arguments.gui:
         parser().error("--manage-phone-display requires --gui")
+    if arguments.minimap_calibration is None and arguments.mode != "full":
+        parser().error("--mode {} requires --minimap-calibration".format(arguments.mode))
     display = None
     camera = None
-    window = "HIK rectified phone display"
+    windows = []
     try:
         if arguments.manage_phone_display:
             configuration = json.loads(
@@ -126,28 +152,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.calibration,
             arguments.mvs_python_path,
             rectify=not arguments.no_rectify,
+            minimap_calibration=arguments.minimap_calibration,
+            mode=arguments.mode,
         )
         if not arguments.gui:
             print("Rectified stream configured. Use open_camera(...) from Python, or pass --gui.")
             return 0
+        profiled = arguments.minimap_calibration is not None
+        stream_names = (
+            ["full", "minimap"]
+            if profiled and arguments.mode == "dual"
+            else [arguments.mode if profiled else "full"]
+        )
+        windows = ["HIK {}".format(name) for name in stream_names]
         print(
-            "Live {} stream opened. Press Q/Esc or close the window to exit."
-            .format("rectified" if not arguments.no_rectify else "hardware-ROI"),
+            "Live {} stream opened. Press Q/Esc or close a window to exit."
+            .format(arguments.mode if profiled else "rectified phone"),
             flush=True,
         )
-        cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
+        for window in windows:
+            cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
         while True:
-            ok, frame = camera.read()
-            if not ok or frame is None:
-                key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q"), ord("Q")):
-                    return 0
-                continue
-            cv2.imshow(window, frame)
+            if profiled and arguments.mode == "dual":
+                frame_set = camera.read_streams()
+                displayed = frame_set.streams
+            else:
+                ok, frame = camera.read()
+                displayed = {stream_names[0]: frame} if ok and frame is not None else {}
+            for name, frame in displayed.items():
+                cv2.imshow("HIK {}".format(name), frame)
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q"), ord("Q")):
                 return 0
-            if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+            if any(
+                cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1
+                for window in windows
+            ):
                 return 0
     finally:
         try:
