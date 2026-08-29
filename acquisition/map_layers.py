@@ -218,10 +218,15 @@ def build_map_atlas(
     layers = []
     for spec, stitch_root, stitch, mosaic, coverage in loaded:
         mode_id = str(spec["mode_id"])
-        if mode_id == canonical_mode_id:
+        shares_canonical_source = stitch_root.resolve() == canonical[1].resolve()
+        if mode_id == canonical_mode_id or shares_canonical_source:
             original_to_canonical = np.eye(3, dtype=np.float64)
             alignment_quality = {
-                "method": "canonical_identity",
+                "method": (
+                    "canonical_identity"
+                    if mode_id == canonical_mode_id
+                    else "shared_source_identity"
+                ),
                 "inlier_count": None,
                 "inlier_ratio": 1.0,
                 "reprojection_p95_px": 0.0,

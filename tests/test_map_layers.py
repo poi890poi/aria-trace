@@ -121,15 +121,18 @@ class MapLayerTests(unittest.TestCase):
             )
 
     def test_transition_endpoints_normalize_each_layer_independently(self):
-        canonical, layer = self._mosaics()
+        canonical, _ = self._mosaics()
         mask = np.full((100, 100), 255, np.uint8)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             world = root / "world-stitch"
-            town = root / "town-stitch"
             output = root / "atlas"
             self._write_stitch(world, canonical, "cal-world")
-            self._write_stitch(town, layer, "cal-town")
+            town_reference = cv2.resize(
+                canonical[60:260, 100:300],
+                (100, 100),
+                interpolation=cv2.INTER_AREA,
+            )
 
             manifest = build_map_atlas(
                 [
@@ -141,8 +144,8 @@ class MapLayerTests(unittest.TestCase):
                     },
                     {
                         "mode_id": "town",
-                        "stitch_root": town,
-                        "minimap_reference": layer[56:156, 84:184].copy(),
+                        "stitch_root": world,
+                        "minimap_reference": town_reference,
                         "minimap_reference_mask": mask,
                     },
                 ],
@@ -161,6 +164,13 @@ class MapLayerTests(unittest.TestCase):
                 self.assertGreater(
                     atlas_layer["map_pixels_per_minimap_pixel"], 0.0
                 )
+            town_layer = next(
+                item for item in manifest["layers"] if item["mode_id"] == "town"
+            )
+            self.assertEqual(
+                town_layer["alignment_quality"]["method"],
+                "shared_source_identity",
+            )
 
 
 if __name__ == "__main__":

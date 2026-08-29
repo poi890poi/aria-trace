@@ -2570,7 +2570,7 @@ class WorkbenchTests(unittest.TestCase):
                 stitch_root = (
                     root / "artifacts" / "map_stitches" / "genshin-impact-pc"
                 )
-                for stitch_id in ("world-stitch", "town-stitch"):
+                for stitch_id in ("world-stitch",):
                     path = stitch_root / stitch_id
                     path.mkdir(parents=True)
                     (path / "map_stitch.json").write_text(
@@ -2613,6 +2613,9 @@ class WorkbenchTests(unittest.TestCase):
                 def fake_atlas(layers, output, canonical_mode_id, atlas_id):
                     self.assertIs(layers[0]["minimap_reference"], source["image"])
                     self.assertIs(layers[1]["minimap_reference"], target["image"])
+                    self.assertEqual(
+                        layers[0]["stitch_root"], layers[1]["stitch_root"]
+                    )
                     output.mkdir(parents=True)
                     result = {
                         "schema_version": "1.0",
@@ -2646,8 +2649,7 @@ class WorkbenchTests(unittest.TestCase):
                         {
                             "game_profile_id": "genshin-impact-pc",
                             "atlas_id": "atlas-transition",
-                            "world_stitch_id": "world-stitch",
-                            "town_stitch_id": "town-stitch",
+                            "map_stitch_id": "world-stitch",
                             "transition_session_relative_path": "transitions/run_01",
                             "minimap_calibration_id": "cal-a",
                         }
@@ -2664,6 +2666,7 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertEqual(
                     atlas["transition_reference"]["target_frame_index"], 58
                 )
+                self.assertEqual(atlas["source_map_stitch_id"], "world-stitch")
             finally:
                 state.close()
 

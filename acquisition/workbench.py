@@ -1905,15 +1905,18 @@ class AcquisitionWorkbench:
             game = self.profiles.game(game_profile_id)
             layers = [dict(item) for item in value.get("layers") or ()]
             if not layers:
+                map_stitch_id = value.get("map_stitch_id") or value.get(
+                    "world_stitch_id"
+                )
                 layers = [
                     {
                         "mode_id": "world",
-                        "stitch_id": value.get("world_stitch_id"),
+                        "stitch_id": map_stitch_id,
                         "display_name": "World overview",
                     },
                     {
                         "mode_id": "town",
-                        "stitch_id": value.get("town_stitch_id"),
+                        "stitch_id": value.get("town_stitch_id") or map_stitch_id,
                         "display_name": "Town detail",
                     },
                 ]
@@ -2003,6 +2006,14 @@ class AcquisitionWorkbench:
                 }
                 for item in layers
             ]
+            source_stitch_ids = {
+                str(item["stitch_id"]) for item in layers
+            }
+            result["source_map_stitch_id"] = (
+                next(iter(source_stitch_ids))
+                if len(source_stitch_ids) == 1
+                else None
+            )
             result["transition_reference"] = endpoint_provenance
             result["artifact_relative_path"] = str(
                 output.relative_to(self.artifact_root)
