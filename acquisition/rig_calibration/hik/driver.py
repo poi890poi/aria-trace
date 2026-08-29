@@ -930,6 +930,7 @@ class RectifiedHikCamera:
         self,
         calibration_file: Union[str, Path],
         adapter: Optional[HikMvsCameraAdapter] = None,
+        rectify: bool = True,
     ) -> None:
         self.path = Path(calibration_file)
         self.config = json.loads(self.path.read_text(encoding="utf-8"))
@@ -937,6 +938,7 @@ class RectifiedHikCamera:
             sdk_python_path=self.config.get("mvs_python_path")
         )
         self._opened = False
+        self._rectify_enabled = bool(rectify)
         self._matrix = None
         self._output_size = None
         self._map_x = None
@@ -961,30 +963,27 @@ class RectifiedHikCamera:
         wb = imaging["white_balance"]
         self.adapter.set_white_balance(wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"])
         effective_roi = self.adapter.set_roi(camera["hardware_roi_xywh"])
-        expected = list(map(int, camera["hardware_roi_xywh"]))
-        if effective_roi != expected:
-            self.adapter.close()
-            raise RuntimeError(
-                "HIK effective ROI {} differs from calibrated {}".format(effective_roi, expected)
-            )
         normalization = self.config["normalization"]
-        orientation = normalization.get("orientation", {})
-        if orientation and orientation.get("adapter_output_up") != "app_up":
-            self.adapter.close()
-            raise RuntimeError(
-                "Calibration does not guarantee app-up output orientation"
+        if self._rectify_enabled:
+            self._matrix = compose_hardware_roi_homography(
+                normalization["full_sensor_camera_to_output_3x3"], effective_roi
             )
-        self._matrix = compose_hardware_roi_homography(
-            normalization["full_sensor_camera_to_output_3x3"], effective_roi
-        )
-        self._output_size = tuple(map(int, normalization["output_size_px"]))
-        dense_file = normalization.get("dense_map_file")
-        if dense_file:
-            dense_path = self.path.parent / str(dense_file)
-            if dense_path.is_file():
-                with np.load(str(dense_path)) as dense:
-                    self._map_x = np.asarray(dense["map_x"], dtype=np.float32) - float(effective_roi[0])
-                    self._map_y = np.asarray(dense["map_y"], dtype=np.float32) - float(effective_roi[1])
+            self._output_size = tuple(map(int, normalization["output_size_px"]))
+            dense_file = normalization.get("dense_map_file")
+            if dense_file:
+                dense_path = self.path.parent / str(dense_file)
+                if dense_path.is_file():
+                    with np.load(str(dense_path)) as dense:
+                        self._map_x = (
+                            np.asarray(dense["map_x"], dtype=np.float32)
+                            - float(effective_roi[0])
+                        )
+                        self._map_y = (
+                            np.asarray(dense["map_y"], dtype=np.float32)
+                            - float(effective_roi[1])
+                        )
+        else:
+            self._output_size = (int(effective_roi[2]), int(effective_roi[3]))
         self._opened = True
         return self
 
@@ -1015,8 +1014,13 @@ class RectifiedHikCamera:
             sample.time_ns,
             clock_id=sample.clock_id,
             receive_time_ns=sample.receive_time_ns,
-            source_id=sample.source_id + ":rectified",
-            metadata={**dict(sample.metadata), "rectified": True},
+            source_id=sample.source_id
+            + (":rectified" if self._rectify_enabled else ":hardware-roi"),
+            metadata={
+                **dict(sample.metadata),
+                "rectified": self._rectify_enabled,
+                "hardware_roi_output": not self._rectify_enabled,
+            },
         )
 
     def release(self) -> None:
@@ -1024,6 +1028,8 @@ class RectifiedHikCamera:
         self._opened = False
 
     def _rectify(self, image: np.ndarray) -> np.ndarray:
+        if not self._rectify_enabled:
+            return image
         if self._map_x is not None and self._map_y is not None:
             return cv2.remap(
                 image,

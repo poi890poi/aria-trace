@@ -36,6 +36,28 @@ context-manager, frame, exposure, and setting calls. It does not emulate the
 vendor ctypes `MV_CC_*` ABI, and it rejects ROI/shape mutation because those
 changes invalidate calibration.
 
+The root `demo-hik-camera.bat` is an additive operator path for viewing this
+adapter. It selects the newest saved calibration unless one is supplied, opens
+the rectified GUI stream, and manages only Android panel power. One best-effort
+`KEYCODE_WAKEUP` and the cleanup `KEYCODE_SLEEP` are the complete ADB command
+surface: there is no power-state validation or frame-loop ADB traffic, and phone
+settings, activities, rotation, brightness, and touch input are outside this
+demo. Camera and display cleanup are protected by the same `finally` boundary.
+
+The production `RectifiedHikCamera` deliberately trusts the saved calibration.
+It does not repeat calibration identity/orientation checks or reject a camera-
+aligned effective ROI; it composes rectification from the actual ROI returned
+by the driver. Calibration retains all strict evidence gates. This keeps the
+steady-state production path to camera read plus one OpenCV remap and prevents
+diagnostic policy from blocking a valid user stream.
+
+An explicit production `rectify=False` / CLI `--no-rectify` mode removes that
+last image transform as well. It returns the hardware-ROI frame object directly,
+does not load dense maps, and performs neither `cv2.remap` nor
+`cv2.warpPerspective`. The tradeoff is deliberate: output stays in camera ROI
+coordinates and does not guarantee canonical phone geometry or app-up. Default
+behavior remains rectified for compatibility.
+
 ## Interpretations and compatibility
 
 - Faster candidates retain the original `N * refresh_hz` shutter-rate rule.
@@ -44,20 +66,25 @@ changes invalidate calibration.
   refresh rate (two periods through half a period).
 - The temporary quarter exposure used for white balance is an explicit
   exception requested by the workflow and is restored afterward.
-- The built-in Data Matrix evaluator reports the standardized ISO/IEC 15415
-  **Decode parameter** (`4/A` or `0/F`). It does not claim complete ISO/IEC
-  15415 conformance. A complete external grader can be supplied as a plugin.
-  The requested 99.9% value is labeled an observed operational rate, not an ISO
-  aggregate grade.
+- The operator-facing Data Matrix result is an exact-payload **decode success
+  rate**, not an overall ISO/IEC 15415 grade. Internally, a successful ZXing
+  decode corresponds only to ISO/IEC 15415's binary Decode parameter; contrast,
+  modulation, nonuniformity, damage, and aggregate symbol grading are not claimed.
+  A complete external verifier can still be supplied as a plugin.
 - ZXing 2.x and 3.x writer/decoder signatures are supported. A runtime error in
-  optional Data Matrix grading produces an unavailable result and returns control
+  optional Data Matrix decode testing produces an unavailable result and returns control
   to calibration; it cannot discard an otherwise usable rig session.
-- Built-in Decode grading drains buffered frames after every phone target change,
-  rectifies and crops to the transformed symbol bounds with a four-module quiet
-  margin, then uses a
+- Built-in decode testing drains buffered frames after every phone target change,
+  rectifies and crops each transformed symbol independently, then uses a
   bounded ZXing downscale/global-threshold/Otsu fallback sequence measured on the
   connected rig. ZXing 2.3.0 decoded real 2 px/module crops and full-frame targets
   from 4 px/module, so no decoder replacement is required.
+- Every failed exact-payload decode is preserved as review evidence independently
+  of whether the calibration bundle is later saved. The evidence includes a red
+  polygon on the original HIK frame, the raw-camera crop, the rectified decoder
+  crop, the complete rectified camera frame, the displayed target, and a JSON
+  index carrying the condition and decoder failure reason. This does not change
+  qualification, exposure, geometry, or camera controls.
 - Calibration files bind applicability to camera identity/mode, phone identity,
   orientation, screen size, and refresh rate. Another mode or device must not
   silently reuse the result.
@@ -84,10 +111,12 @@ changes invalidate calibration.
 
 ## Performance and verification
 
-- Exposure/WB use bounded frame counts and control searches. Data Matrix trials
-  are operator-triggered and bounded by CLI parameters. The live preview remains
-  active during grading, and a size is rejected early only when its mathematically
-  best possible final rate is already below 99.9%.
+- Exposure/WB use bounded frame counts and control searches. Data Matrix testing
+  is operator-triggered, requires at least 20 patterns per module size, defaults
+  to 40, and passes at 95% exact-payload decode success. Up to eight independent
+  patterns share one phone presentation; the connected-rig geometry fits eight
+  patterns through 8 px/module and four at 16 px/module. A size is rejected early
+  only when its mathematically best possible final rate is below 95%.
 - Automatic camera optimization is intentionally limited to shutter multiplier,
   gain, white balance, black level, and hardware ROI. Other GenICam values are
   diagnostic evidence, not a high-dimensional search space.

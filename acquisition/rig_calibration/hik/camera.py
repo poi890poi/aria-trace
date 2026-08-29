@@ -87,6 +87,7 @@ class HikCamera:
         self._reader = None
         self._last_frame = None
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
+        self._rectify_enabled = bool(self.config.get("rectify", True))
         if self._color_order not in ("RGB", "BGR"):
             raise ValueError("config['color_order'] must be RGB or BGR")
         imaging = self.calibration["imaging"]
@@ -98,9 +99,14 @@ class HikCamera:
         self._white_balance = dict(imaging["white_balance"])
         self._balance_selector = "Red"
         self._fps = float(camera["full_sensor_mode"]["fps"])
-        output_width, output_height = map(
-            int, self.calibration["normalization"]["output_size_px"]
-        )
+        if self._rectify_enabled:
+            output_width, output_height = map(
+                int, self.calibration["normalization"]["output_size_px"]
+            )
+        else:
+            _, _, output_width, output_height = map(
+                int, camera["hardware_roi_xywh"]
+            )
         self.shape = (output_height, output_width, 3)
         self.bit = 24
         self.pixel_format = "RGB8Packed" if self._color_order == "RGB" else "BGR8Packed"
@@ -142,8 +148,12 @@ class HikCamera:
     get_all_cams = get_cams
 
     def _new_reader(self):
-        factory = self.config.get("reader_factory", RectifiedHikCamera)
-        return factory(self.calibration_path)
+        factory = self.config.get("reader_factory")
+        if factory is not None:
+            return factory(self.calibration_path)
+        return RectifiedHikCamera(
+            self.calibration_path, rectify=self._rectify_enabled
+        )
 
     def open(self) -> "HikCamera":
         if self.is_open:

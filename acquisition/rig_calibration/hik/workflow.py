@@ -56,6 +56,11 @@ from .phone import AdbPhoneSession, PhoneMetrics
 Progress = Callable[[str], None]
 CompleteGrader = Callable[[np.ndarray, str, Mapping[str, Any]], Mapping[str, Any]]
 
+DATA_MATRIX_ACCEPTANCE_RATE = 0.95
+DATA_MATRIX_MINIMUM_TRIALS = 20
+DATA_MATRIX_DEFAULT_TRIALS = 40
+DATA_MATRIX_MAX_PATTERNS_PER_SCREEN = 8
+
 
 def _default_progress(message: str) -> None:
     print(message, flush=True)
@@ -110,7 +115,7 @@ class HikCalibrationOptions:
     headless: bool = False
     save_without_prompt: bool = False
     grade_data_matrix: bool = False
-    data_matrix_trials_per_size: int = 1000
+    data_matrix_trials_per_size: int = DATA_MATRIX_DEFAULT_TRIALS
     data_matrix_initial_module_px: int = 1
     complete_grader_plugin: Optional[str] = None
 
@@ -126,8 +131,11 @@ class HikCalibrationOptions:
             self.exposure_noise_frames,
         ) <= 0:
             raise ValueError("Camera dimensions and geometry frame count must be positive")
-        if self.data_matrix_trials_per_size < 1:
-            raise ValueError("Data Matrix trial count must be positive")
+        if self.data_matrix_trials_per_size < DATA_MATRIX_MINIMUM_TRIALS:
+            raise ValueError(
+                "Data Matrix trial count must be at least {}"
+                .format(DATA_MATRIX_MINIMUM_TRIALS)
+            )
         if self.operation_timeout_seconds <= 0:
             raise ValueError("Operation timeout must be positive")
 
@@ -185,6 +193,8 @@ class HikRigCalibrationSession:
         self._focus_focal_candidates_px: List[float] = []
         self._focus_geometry_changed = False
         self.data_matrix_result: Optional[Dict[str, Any]] = None
+        self.data_matrix_evidence_directory: Optional[Path] = None
+        self.data_matrix_failure_evidence: List[Dict[str, Any]] = []
         self.last_frame: Optional[np.ndarray] = None
         self._preview_window = "HIK calibration - live camera"
         self._preview_created = False
@@ -251,7 +261,7 @@ class HikRigCalibrationSession:
         passed: int,
         completed: int,
         planned: int,
-        required_rate: float = 0.999,
+        required_rate: float = DATA_MATRIX_ACCEPTANCE_RATE,
     ) -> bool:
         """Return true once perfect remaining trials cannot reach the target."""
 
@@ -262,6 +272,19 @@ class HikRigCalibrationSession:
             raise ValueError("Data Matrix pass count is invalid")
         maximum_final_rate = (passed + planned - completed) / float(planned)
         return maximum_final_rate + 1.0e-12 < float(required_rate)
+
+    @staticmethod
+    def _data_matrix_decode_succeeded(row: Mapping[str, Any]) -> bool:
+        """Return the operational exact-payload decode result for one pattern."""
+
+        exact = bool(row.get("exact_payload_decoded", True))
+        if "decode_success" in row:
+            decoded = bool(row["decode_success"])
+        elif "reference_decode_succeeded" in row:
+            decoded = bool(row["reference_decode_succeeded"])
+        else:
+            decoded = float(row.get("grade", 0.0)) >= 4.0
+        return bool(exact and decoded)
 
     @staticmethod
     def _desktop_work_area() -> Sequence[int]:
@@ -586,7 +609,10 @@ class HikRigCalibrationSession:
             corners = cv2.transform(corners.reshape((-1, 1, 2)), rotation).reshape(
                 (-1, 2)
             )
-        margin = max(8, int(module_width_display_px) * 4)
+        # The rendered raster contains the required one-module Data Matrix quiet
+        # zone. Keep one additional module for interpolation/crop tolerance; the
+        # remainder of its batch cell is white as well.
+        margin = max(4, int(module_width_display_px))
         screen_width, screen_height = map(int, screen_size_px)
         left = max(0, int(np.floor(np.min(corners[:, 0]))) - margin)
         top = max(0, int(np.floor(np.min(corners[:, 1]))) - margin)
@@ -595,6 +621,327 @@ class HikRigCalibrationSession:
         if right <= left or bottom <= top:
             raise RuntimeError("Rotated Data Matrix crop is empty")
         return [left, top, right - left, bottom - top]
+
+    def _compose_data_matrix_batch(
+        self,
+        screen_size_px: Sequence[int],
+        visible_region_xywh: Sequence[int],
+        module_width_display_px: int,
+        specifications: Sequence[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Pack as many independent grading symbols as fit in one phone image."""
+
+        screen_width, screen_height = map(int, screen_size_px)
+        region_x, region_y, region_width, region_height = map(
+            int, visible_region_xywh
+        )
+        candidates = list(specifications)[:DATA_MATRIX_MAX_PATTERNS_PER_SCREEN]
+        for batch_count in range(len(candidates), 0, -1):
+            selected = candidates[:batch_count]
+            for columns in range(1, batch_count + 1):
+                rows = int(np.ceil(batch_count / float(columns)))
+                if (rows - 1) * columns >= batch_count:
+                    continue
+                x_edges = [
+                    region_x + (region_width * index) // columns
+                    for index in range(columns + 1)
+                ]
+                y_edges = [
+                    region_y + (region_height * index) // rows
+                    for index in range(rows + 1)
+                ]
+                stimulus = np.full(
+                    (screen_height, screen_width, 3), 127, dtype=np.uint8
+                )
+                items = []
+                valid = True
+                for item_index, specification in enumerate(selected):
+                    column = item_index % columns
+                    row = item_index // columns
+                    cell = [
+                        x_edges[column],
+                        y_edges[row],
+                        x_edges[column + 1] - x_edges[column],
+                        y_edges[row + 1] - y_edges[row],
+                    ]
+                    trial = int(specification["trial_index"])
+                    angle = float(specification["angle_deg"])
+                    color = tuple(specification["color_bgr"])
+                    intensity = float(specification["intensity"])
+                    payload = "A{:X}{:X}".format(
+                        int(module_width_display_px), trial
+                    )
+                    try:
+                        target = render_data_matrix_target(
+                            screen_size_px,
+                            cell,
+                            payload,
+                            module_width_display_px,
+                            quiet_zone_modules=1,
+                            trial_id="dm-m{}-{:04d}".format(
+                                module_width_display_px, trial
+                            ),
+                        )
+                        decode_rect = self._data_matrix_screen_crop(
+                            target.symbol_rect_screen_xywh,
+                            cell,
+                            angle,
+                            module_width_display_px,
+                            screen_size_px,
+                        )
+                    except (RuntimeError, ValueError):
+                        valid = False
+                        break
+                    decode_x, decode_y, decode_width, decode_height = decode_rect
+                    cell_x, cell_y, cell_width, cell_height = cell
+                    if batch_count > 1 and not (
+                        decode_x >= cell_x
+                        and decode_y >= cell_y
+                        and decode_x + decode_width <= cell_x + cell_width
+                        and decode_y + decode_height <= cell_y + cell_height
+                    ):
+                        valid = False
+                        break
+                    patch = target.image[
+                        cell_y : cell_y + cell_height,
+                        cell_x : cell_x + cell_width,
+                    ]
+                    patch = tinted(patch, color, intensity)
+                    if angle:
+                        rotation = cv2.getRotationMatrix2D(
+                            (cell_width / 2.0, cell_height / 2.0), angle, 1.0
+                        )
+                        border = tuple(
+                            int(value)
+                            for value in tinted(
+                                np.full((1, 1, 3), 127, dtype=np.uint8),
+                                color,
+                                intensity,
+                            )[0, 0]
+                        )
+                        patch = cv2.warpAffine(
+                            patch,
+                            rotation,
+                            (cell_width, cell_height),
+                            flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT,
+                            borderValue=border,
+                        )
+                    stimulus[
+                        cell_y : cell_y + cell_height,
+                        cell_x : cell_x + cell_width,
+                    ] = patch
+                    items.append(
+                        {
+                            "trial_index": trial,
+                            "payload": payload,
+                            "trial_id": target.trial_id,
+                            "angle_deg": angle,
+                            "color_bgr": list(color),
+                            "intensity": intensity,
+                            "cell_rect_screen_xywh": list(cell),
+                            "decode_rect_screen_xywh": list(decode_rect),
+                        }
+                    )
+                if valid and len(items) == batch_count:
+                    return {
+                        "image": stimulus,
+                        "items": items,
+                        "columns": columns,
+                        "rows": rows,
+                    }
+        return None
+
+    def _ensure_data_matrix_evidence_directory(self) -> Path:
+        """Create a reviewable sibling artifact without requiring calibration save."""
+
+        if self.data_matrix_evidence_directory is not None:
+            return self.data_matrix_evidence_directory
+        output = Path(self.options.output_directory).resolve()
+        evidence = output.parent / "{}-data-matrix-evidence-{}-{}".format(
+            output.name,
+            time.strftime("%Y%m%d-%H%M%S"),
+            uuid.uuid4().hex[:8],
+        )
+        evidence.mkdir(parents=True, exist_ok=False)
+        self.data_matrix_evidence_directory = evidence
+        return evidence
+
+    @staticmethod
+    def _data_matrix_camera_polygon(
+        screen_rect_xywh: Sequence[int],
+        screen_to_camera_3x3: Sequence[Sequence[float]],
+    ) -> np.ndarray:
+        """Project a phone-screen decoder crop back into the original camera frame."""
+
+        x, y, width, height = map(float, screen_rect_xywh)
+        screen_corners = np.asarray(
+            [[x, y], [x + width, y], [x + width, y + height], [x, y + height]],
+            dtype=np.float32,
+        )
+        return cv2.perspectiveTransform(
+            screen_corners.reshape((1, -1, 2)),
+            np.asarray(screen_to_camera_3x3, dtype=np.float64),
+        ).reshape((-1, 2))
+
+    def _write_data_matrix_failure_evidence(
+        self,
+        module_px: int,
+        presentation_index: int,
+        camera_frame: np.ndarray,
+        rectified_camera_frame: np.ndarray,
+        target_image: np.ndarray,
+        failures: Sequence[Dict[str, Any]],
+    ) -> Path:
+        """Mark failed symbols in camera space and persist their decoder inputs."""
+
+        if not failures:
+            raise ValueError("At least one failed Data Matrix pattern is required")
+        geometry = self._required(self.geometry, "screen geometry")
+        evidence = self._ensure_data_matrix_evidence_directory()
+        stem = "m{:03d}-screen-{:03d}".format(
+            int(module_px), int(presentation_index) + 1
+        )
+        annotated = camera_frame.copy()
+        presentation_entries = []
+        for failure in failures:
+            row = failure["row"]
+            trial_index = int(failure["trial_index"])
+            polygon = self._data_matrix_camera_polygon(
+                row["decode_rect_screen_xywh"], geometry.inverse_matrix_3x3
+            )
+            polygon_i = np.rint(polygon).astype(np.int32)
+            cv2.polylines(
+                annotated,
+                [polygon_i.reshape((-1, 1, 2))],
+                True,
+                (0, 0, 255),
+                3,
+                cv2.LINE_AA,
+            )
+            reason = str(
+                row.get("failure_reason")
+                or failure.get("failure_reason")
+                or "exact_payload_decode_failed"
+            )
+            label = "FAIL m{} pattern {}: {}".format(
+                int(module_px), trial_index + 1, reason
+            )
+            anchor_x = max(
+                4, min(int(np.min(polygon_i[:, 0])), annotated.shape[1] - 5)
+            )
+            anchor_y = max(
+                22,
+                min(int(np.min(polygon_i[:, 1])) - 6, annotated.shape[0] - 5),
+            )
+            text_size = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2
+            )[0]
+            cv2.rectangle(
+                annotated,
+                (anchor_x - 2, max(0, anchor_y - text_size[1] - 5)),
+                (
+                    min(annotated.shape[1] - 1, anchor_x + text_size[0] + 3),
+                    anchor_y + 4,
+                ),
+                (0, 0, 0),
+                cv2.FILLED,
+            )
+            cv2.putText(
+                annotated,
+                label,
+                (anchor_x, anchor_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            left = max(0, int(np.floor(np.min(polygon[:, 0]))) - 8)
+            top = max(0, int(np.floor(np.min(polygon[:, 1]))) - 8)
+            right = min(
+                camera_frame.shape[1], int(np.ceil(np.max(polygon[:, 0]))) + 9
+            )
+            bottom = min(
+                camera_frame.shape[0], int(np.ceil(np.max(polygon[:, 1]))) + 9
+            )
+            pattern_stem = "{}-pattern-{:03d}".format(stem, trial_index + 1)
+            raw_crop_name = "{}-raw-camera-crop.png".format(pattern_stem)
+            decoder_crop_name = "{}-rectified-decoder-crop.png".format(
+                pattern_stem
+            )
+            if right > left and bottom > top:
+                if not cv2.imwrite(
+                    str(evidence / raw_crop_name),
+                    camera_frame[top:bottom, left:right],
+                ):
+                    raise OSError("Could not save {}".format(raw_crop_name))
+            else:
+                raw_crop_name = None
+            if not cv2.imwrite(
+                str(evidence / decoder_crop_name), failure["decode_image"]
+            ):
+                raise OSError("Could not save {}".format(decoder_crop_name))
+            row["camera_polygon_xy"] = polygon.astype(float).tolist()
+            row["failure_evidence_files"] = {
+                "annotated_camera_frame": "{}-annotated-camera.png".format(stem),
+                "raw_camera_crop": raw_crop_name,
+                "rectified_decoder_crop": decoder_crop_name,
+                "rectified_camera_frame": "{}-rectified-camera.png".format(stem),
+                "display_target": "{}-display-target.png".format(stem),
+            }
+            entry = {
+                "module_width_display_px": int(module_px),
+                "presentation_index": int(presentation_index),
+                "trial_index": trial_index,
+                "payload": str(failure.get("payload", "")),
+                "failure_reason": reason,
+                "camera_polygon_xy": row["camera_polygon_xy"],
+                "decode_rect_screen_xywh": list(row["decode_rect_screen_xywh"]),
+                "angle_deg": float(row.get("angle_deg", 0.0)),
+                "color_bgr": list(row.get("color_bgr", [])),
+                "intensity": float(row.get("intensity", 1.0)),
+                "decoded_payloads": list(row.get("decoded_payloads", [])),
+                "files": dict(row["failure_evidence_files"]),
+            }
+            self.data_matrix_failure_evidence.append(entry)
+            presentation_entries.append(entry)
+
+        images = {
+            "{}-annotated-camera.png".format(stem): annotated,
+            "{}-rectified-camera.png".format(stem): rectified_camera_frame,
+            "{}-display-target.png".format(stem): target_image,
+        }
+        for name, image in images.items():
+            if not cv2.imwrite(str(evidence / name), image):
+                raise OSError("Could not save {}".format(name))
+        (evidence / "index.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "meaning": (
+                        "Red polygons mark exact-payload decode failures in the "
+                        "original HIK camera frame."
+                    ),
+                    "camera": dict(self.camera_metadata),
+                    "phone": self.phone_metrics.to_dict()
+                    if self.phone_metrics
+                    else None,
+                    "failure_count": len(self.data_matrix_failure_evidence),
+                    "failures": self.data_matrix_failure_evidence,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        if self._preview_created:
+            self._preview_update(
+                annotated,
+                {"data_matrix_decode_failures": len(presentation_entries)},
+            )
+        return evidence
 
     def _wait_auto_imaging(self) -> Dict[str, Any]:
         """Wait for hardware auto exposure/gain and image brightness to converge."""
@@ -1778,7 +2125,7 @@ class HikRigCalibrationSession:
         self._close_preview(disable=True)
         self.progress(
             "Focus: adjust against the framed target; R recalibrates after moving the rig, "
-            "S saves, D grades Data Matrix, Q/Esc exits."
+            "S saves, D tests Data Matrix decoding, Q/Esc exits."
         )
         window = "HIK focus - native 1:1"
         window_created = False
@@ -1859,7 +2206,7 @@ class HikRigCalibrationSession:
                         self._format_metric(measurement.get("mtf50"), 4),
                         self._format_metric(maxima.get("mtf50"), 4),
                     ),
-                    "MTF10 min(4 edges) {}  max {} | S save, D grade, Q quit".format(
+                    "MTF10 min(4 edges) {}  max {} | S save, D decode test, Q quit".format(
                         self._format_metric(measurement.get("mtf10"), 4),
                         self._format_metric(maxima.get("mtf10"), 4),
                     ),
@@ -2005,7 +2352,7 @@ class HikRigCalibrationSession:
                 cv2.destroyWindow(window)
 
     def grade_data_matrix(self) -> Dict[str, Any]:
-        """Run controlled sequential targets until the observed A rate reaches 99.9%."""
+        """Measure batched exact-payload decode success at a 95% threshold."""
 
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         visible_region = self._required(self.visible_region, "camera-visible screen region")
@@ -2020,47 +2367,68 @@ class HikRigCalibrationSession:
             (30.0, (0.92, 1.0, 0.82), 0.55),
         ]
         trials_per_size = int(self.options.data_matrix_trials_per_size)
-        if trials_per_size < 1000:
-            self.progress("Warning: fewer than 1000 trials cannot resolve a 99.9% observed rate.")
         module_px = int(self.options.data_matrix_initial_module_px)
         maximum_module = max(1, min(visible_region["xywh"][2:]))
         per_size = []
-        required_rate = 0.999
+        required_rate = DATA_MATRIX_ACCEPTANCE_RATE
         self._preview_disabled = False
         self.progress(
-            "Data Matrix grading started; up to {} controlled trials per size, "
-            "with immediate skip once 99.9% is unreachable."
-            .format(trials_per_size)
+            "Data Matrix decode test started; {} controlled patterns per size, "
+            "packed up to {} per phone screen; pass threshold {:.0%}."
+            .format(
+                trials_per_size,
+                DATA_MATRIX_MAX_PATTERNS_PER_SCREEN,
+                required_rate,
+            )
         )
         while module_px <= maximum_module:
             rows = []
             early_rejected = False
-            for trial in range(trials_per_size):
-                angle, color, intensity = conditions[trial % len(conditions)]
-                payload = "ARIA-HIK-{:04d}-M{}".format(trial, module_px)
-                try:
-                    target = render_data_matrix_target(
-                        phone_metrics.screen_size_px,
-                        visible_region["xywh"],
-                        payload,
-                        module_px,
-                        quiet_zone_modules=4,
-                        trial_id="dm-m{}-{:04d}".format(module_px, trial),
+            presentation_count = 0
+            batch_sizes = []
+            trial = 0
+            while trial < trials_per_size:
+                specifications = []
+                for candidate in range(
+                    trial,
+                    min(
+                        trials_per_size,
+                        trial + DATA_MATRIX_MAX_PATTERNS_PER_SCREEN,
+                    ),
+                ):
+                    angle, color, intensity = conditions[candidate % len(conditions)]
+                    specifications.append(
+                        {
+                            "trial_index": candidate,
+                            "angle_deg": angle,
+                            "color_bgr": color,
+                            "intensity": intensity,
+                        }
                     )
-                except ValueError:
-                    if trial == 0:
-                        break
-                    raise
-                stimulus = tinted(target.image, color, intensity)
-                if angle:
-                    x, y, width, height = visible_region["xywh"]
-                    matrix = cv2.getRotationMatrix2D((x + width / 2.0, y + height / 2.0), angle, 1.0)
-                    stimulus = cv2.warpAffine(stimulus, matrix, tuple(phone_metrics.screen_size_px), borderValue=(0, 0, 0))
-                shown = self.target.present_image(stimulus, target.trial_id)
+                batch = self._compose_data_matrix_batch(
+                    phone_metrics.screen_size_px,
+                    visible_region["xywh"],
+                    module_px,
+                    specifications,
+                )
+                if batch is None:
+                    break
+                items = list(batch["items"])
+                first_trial = int(items[0]["trial_index"])
+                last_trial = int(items[-1]["trial_index"])
+                label = "dm-m{}-batch-{:03d}".format(
+                    module_px, presentation_count
+                )
+                shown = self.target.present_image(batch["image"], label)
                 self._wait_painted(shown)
                 self._set_preview_stage(
-                    "Data Matrix grading: module {} px, trial {}/{}".format(
-                        module_px, trial + 1, trials_per_size
+                    "Data Matrix decode test: module {} px, screen {}, patterns {}-{}/{}"
+                    .format(
+                        module_px,
+                        presentation_count + 1,
+                        first_trial + 1,
+                        last_trial + 1,
+                        trials_per_size,
                     ),
                     exposure_mode="manual locked",
                     exposure_us=self.exposure.exposure_us if self.exposure else None,
@@ -2075,84 +2443,177 @@ class HikRigCalibrationSession:
                     borderMode=cv2.BORDER_CONSTANT,
                     borderValue=(127, 127, 127),
                 )
-                decode_rect = self._data_matrix_screen_crop(
-                    target.symbol_rect_screen_xywh,
-                    visible_region["xywh"],
-                    angle,
-                    module_px,
-                    phone_metrics.screen_size_px,
-                )
-                x, y, width, height = decode_rect
-                decode_image = screen_frame[y : y + height, x : x + width]
-                metadata = {
-                    "angle_deg": angle,
-                    "color_bgr": list(color),
-                    "intensity": intensity,
-                    "decode_input": "rectified_rotated_symbol_crop",
-                    "decode_rect_screen_xywh": list(decode_rect),
-                    "discarded_camera_frames_after_target_change": max(
-                        8, int(self.options.settle_frames) * 2
-                    ),
-                }
-                try:
-                    grade = dict(
-                        complete_grader(frame, payload, metadata)
-                        if complete_grader
-                        else grade_data_matrix_decode(decode_image, payload)
-                    )
-                except Exception as exc:
-                    message = (
-                        "Data Matrix grading is unavailable at module {} px, trial {}: {}. "
-                        "Returning to calibration without discarding the session."
-                        .format(module_px, trial, exc)
-                    )
-                    self._warn(message)
-                    self.data_matrix_result = {
-                        "standard": "ISO/IEC 15415:2024",
-                        "parameter": "Decode",
-                        "status": "unavailable",
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                        "failed_module_width_display_px": module_px,
-                        "failed_trial_index": trial,
-                        "completed_sizes": per_size,
-                        "partial_current_size_trials": rows,
+                presentation_count += 1
+                batch_sizes.append(len(items))
+                presentation_failures = []
+                for pattern_index, item in enumerate(items):
+                    decode_rect = item["decode_rect_screen_xywh"]
+                    x, y, width, height = map(int, decode_rect)
+                    decode_image = screen_frame[y : y + height, x : x + width]
+                    metadata = {
+                        "angle_deg": float(item["angle_deg"]),
+                        "color_bgr": list(item["color_bgr"]),
+                        "intensity": float(item["intensity"]),
+                        "decode_input": "rectified_rotated_symbol_crop",
+                        "decode_rect_screen_xywh": list(decode_rect),
+                        "cell_rect_screen_xywh": list(
+                            item["cell_rect_screen_xywh"]
+                        ),
+                        "presentation_index": presentation_count - 1,
+                        "pattern_index_in_presentation": pattern_index,
+                        "patterns_in_presentation": len(items),
+                        "discarded_camera_frames_after_target_change": max(
+                            8, int(self.options.settle_frames) * 2
+                        ),
                     }
-                    return self.data_matrix_result
-                grade.update(metadata)
-                rows.append(grade)
-                current_a_count = sum(
-                    1
-                    for row in rows
-                    if float(row.get("grade", 0.0)) >= 4.0
-                    and row.get("exact_payload_decoded", True)
-                )
-                if self._data_matrix_cannot_qualify(
-                    current_a_count,
-                    len(rows),
-                    trials_per_size,
-                    required_rate,
-                ):
-                    early_rejected = True
-                    failures = len(rows) - current_a_count
-                    self.progress(
-                        "Data Matrix module {} px skipped after {} trials and {} failures; "
-                        "99.9% is no longer reachable."
-                        .format(module_px, len(rows), failures)
+                    try:
+                        grade = dict(
+                            complete_grader(frame, item["payload"], metadata)
+                            if complete_grader
+                            else grade_data_matrix_decode(
+                                decode_image, item["payload"]
+                            )
+                        )
+                    except Exception as exc:
+                        failed_trial = int(item["trial_index"])
+                        error_row = {
+                            **metadata,
+                            "decode_success": False,
+                            "exact_payload_decoded": False,
+                            "failure_reason": "decoder_error: {}".format(exc),
+                        }
+                        try:
+                            self._write_data_matrix_failure_evidence(
+                                module_px,
+                                presentation_count - 1,
+                                frame,
+                                screen_frame,
+                                batch["image"],
+                                [
+                                    {
+                                        "row": error_row,
+                                        "trial_index": failed_trial,
+                                        "payload": item["payload"],
+                                        "decode_image": decode_image.copy(),
+                                        "failure_reason": error_row["failure_reason"],
+                                    }
+                                ],
+                            )
+                        except (OSError, ValueError, cv2.error) as evidence_exc:
+                            self._warn(
+                                "Could not save Data Matrix failure evidence: {}"
+                                .format(evidence_exc)
+                            )
+                        message = (
+                            "Data Matrix decode test is unavailable at module {} px, "
+                            "pattern {}: {}. Returning to calibration without "
+                            "discarding the session."
+                            .format(module_px, failed_trial, exc)
+                        )
+                        self._warn(message)
+                        self.data_matrix_result = {
+                            "measurement": "exact_payload_decode_success",
+                            "status": "unavailable",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "failed_module_width_display_px": module_px,
+                            "failed_trial_index": failed_trial,
+                            "completed_sizes": per_size,
+                            "partial_current_size_trials": rows,
+                            "partial_current_size_presentation_count": (
+                                presentation_count
+                            ),
+                            "failure_evidence_directory": (
+                                str(self.data_matrix_evidence_directory)
+                                if self.data_matrix_evidence_directory
+                                else None
+                            ),
+                        }
+                        return self.data_matrix_result
+                    if not complete_grader:
+                        for formal_grade_key in (
+                            "standard",
+                            "parameter",
+                            "grade",
+                            "grade_letter",
+                            "grade_scale",
+                        ):
+                            grade.pop(formal_grade_key, None)
+                    grade.update(metadata)
+                    grade["decode_success"] = self._data_matrix_decode_succeeded(
+                        grade
                     )
+                    rows.append(grade)
+                    if not grade["decode_success"]:
+                        presentation_failures.append(
+                            {
+                                "row": grade,
+                                "trial_index": int(item["trial_index"]),
+                                "payload": item["payload"],
+                                "decode_image": decode_image.copy(),
+                            }
+                        )
+                    trial = int(item["trial_index"]) + 1
+                    current_success_count = sum(
+                        1
+                        for row in rows
+                        if self._data_matrix_decode_succeeded(row)
+                    )
+                    if self._data_matrix_cannot_qualify(
+                        current_success_count,
+                        len(rows),
+                        trials_per_size,
+                        required_rate,
+                    ):
+                        early_rejected = True
+                        failures = len(rows) - current_success_count
+                        self.progress(
+                            "Data Matrix module {} px skipped after {} patterns "
+                            "and {} failures; {:.0%} is no longer reachable."
+                            .format(
+                                module_px,
+                                len(rows),
+                                failures,
+                                required_rate,
+                            )
+                        )
+                        break
+                if presentation_failures:
+                    try:
+                        evidence = self._write_data_matrix_failure_evidence(
+                            module_px,
+                            presentation_count - 1,
+                            frame,
+                            screen_frame,
+                            batch["image"],
+                            presentation_failures,
+                        )
+                        self.progress(
+                            "Marked {} failed Data Matrix pattern(s); evidence: {}"
+                            .format(len(presentation_failures), evidence)
+                        )
+                    except (OSError, ValueError, cv2.error) as exc:
+                        self._warn(
+                            "Could not save Data Matrix failure evidence: {}".format(exc)
+                        )
+                if early_rejected:
                     break
             if not rows:
                 break
-            a_count = sum(1 for row in rows if float(row.get("grade", 0.0)) >= 4.0 and row.get("exact_payload_decoded", True))
-            rate = a_count / float(len(rows))
+            success_count = sum(
+                1 for row in rows if self._data_matrix_decode_succeeded(row)
+            )
+            rate = success_count / float(len(rows))
             size_row = {
                 "module_width_display_px": module_px,
                 "trial_count": len(rows),
                 "planned_trial_count": trials_per_size,
-                "grade_4_A_count": a_count,
-                "grade_4_A_rate": rate,
+                "presentation_count": presentation_count,
+                "patterns_per_presentation": batch_sizes,
+                "decode_success_count": success_count,
+                "decode_success_rate": rate,
                 "maximum_possible_final_rate": (
-                    a_count + trials_per_size - len(rows)
+                    success_count + trials_per_size - len(rows)
                 )
                 / float(trials_per_size),
                 "early_rejected": early_rejected,
@@ -2162,16 +2623,34 @@ class HikRigCalibrationSession:
                 "trials": rows,
             }
             per_size.append(size_row)
-            self.progress("Data Matrix module {} px: {:.3%} grade 4/A ({}/{}).".format(module_px, rate, a_count, len(rows)))
+            self.progress(
+                "Data Matrix module {} px: {:.1%} decoded ({}/{} patterns)."
+                .format(module_px, rate, success_count, len(rows))
+            )
             if size_row["qualified"]:
                 break
             module_px *= 2
         self.data_matrix_result = {
-            "standard": "ISO/IEC 15415:2024",
-            "acceptance": "observed_per_trial_grade_4_A_rate_at_least_0.999",
+            "measurement": "exact_payload_decode_success",
+            "acceptance": "observed_exact_payload_decode_success_rate_at_least_0.95",
+            "required_decode_success_rate": required_rate,
+            "iso_iec_15415_note": (
+                "Decode parameter only; not a complete ISO/IEC 15415 symbol grade"
+            ),
+            "minimum_patterns_per_size": DATA_MATRIX_MINIMUM_TRIALS,
+            "planned_patterns_per_size": trials_per_size,
+            "maximum_patterns_per_presentation": (
+                DATA_MATRIX_MAX_PATTERNS_PER_SCREEN
+            ),
             "implementation_conformance": (
                 "external_complete_grader" if complete_grader else "Decode_parameter_only_not_complete_ISO_IEC_15415_verifier"
             ),
+            "failure_evidence_directory": (
+                str(self.data_matrix_evidence_directory)
+                if self.data_matrix_evidence_directory
+                else None
+            ),
+            "failure_evidence_count": len(self.data_matrix_failure_evidence),
             "qualified_module_width_display_px": (
                 per_size[-1]["module_width_display_px"]
                 if per_size and per_size[-1]["qualified"]

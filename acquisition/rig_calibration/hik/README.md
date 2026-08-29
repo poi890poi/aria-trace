@@ -2,14 +2,14 @@
 
 This folder is an isolated HIK MVS camera plugin plus two standalone commands.
 It reuses the repository's ChArUco geometry, ISO 12233 e-SFR, calibration bundle,
-and Data Matrix Decode grading rather than defining replacement algorithms.
+and Data Matrix encoding/decoding rather than defining replacement algorithms.
 
 ## Dependencies
 
 - Hikrobot/HIKROBOT MVS, including `MvCameraControl_class.py` and native DLLs.
 - ADB with one phone selected by an explicit serial.
 - OpenCV contrib (`cv2.aruco`).
-- `zxing-cpp` for built-in Data Matrix Decode grading. The setup installs the
+- `zxing-cpp` for built-in Data Matrix exact-payload decode testing. The setup installs the
   compatible 2.x writer on Python 3.7/3.8 and 3.x on newer Python.
 
 Set `HIK_MVS_PYTHON_PATH`, or pass `--mvs-python-path`, to the MVS
@@ -141,7 +141,7 @@ logical UI density is never used as physical scale. Keys:
 
 - `S`: save the complete calibration bundle.
 - `R`: rerun geometry and locked imaging after physically moving the rig.
-- `D`: run the Data Matrix size/condition sweep, then return to focus.
+- `D`: run the Data Matrix decode-success sweep, then return to focus.
 - `Q` or Escape: exit without saving.
 
 Headless mode skips the focus window. Saving remains explicit:
@@ -150,23 +150,38 @@ Headless mode skips the focus window. Saving remains explicit:
 python -m acquisition.rig_calibration.hik.calibrate ... --headless --save
 ```
 
-Use `--grade-data-matrix` to run the sweep before saving. At least 1000 trials
-per size are needed to resolve an observed 99.9% rate; this is the default.
-The live camera overview remains open and identifies the current module size and
-trial. Poor sizes stop early as soon as even perfect remaining trials could not
-reach 99.9%; with 1000 planned trials, the second failure skips directly to the
-next doubled size. A potentially qualifying size still runs all required trials.
-The built-in implementation grades only ISO/IEC 15415's binary Decode parameter
-and is **not a complete or certified ISO/IEC 15415 verifier**. Supply a complete
-verifier as `--complete-grader-plugin package.module:callable`. The callable is
+Use `--test-data-matrix-decode` (legacy alias `--grade-data-matrix`) to run the
+sweep before saving. The test requires at
+least 20 patterns per module size and defaults to 40; a size passes when at least
+95% decode to their exact expected payload. The live camera overview identifies
+the current module size, phone screen, and pattern range. Poor sizes stop early
+once even perfect remaining patterns cannot reach 95%.
+
+Several independently identified patterns share one phone image, each with its
+own angle, color, intensity, cell, and rectified decode crop. The batch planner
+uses up to eight patterns when geometry permits. On the connected 721x977-pixel
+visible phone region it fits eight patterns per screen through 8 px/module and
+four at 16 px/module, reducing the default 16-pixel test from 40 phone operations
+to 10. Each cell remains white around its symbol; the raster contains the required
+one-module Data Matrix quiet zone and the decoder crop retains another module.
+
+The displayed percentage is simple exact-payload decode success. A successful
+decode corresponds only to ISO/IEC 15415's binary Decode parameter; the UI does
+not label it `4/A` and does **not** claim a complete or certified ISO/IEC 15415
+grade. Supply a complete verifier as `--complete-grader-plugin package.module:callable`. The callable is
 passed `(camera_bgr, expected_payload, condition_metadata)` and must return a
 mapping containing at least numeric `grade` and payload-match evidence.
+Every failed pattern is saved immediately in a sibling
+`*-data-matrix-evidence-*` directory, even if the operator later exits without
+saving calibration. Its original HIK frame marks the failed decoder crop with a
+red polygon and label; raw and rectified crops, the displayed target, and a JSON
+index preserve the exact angle, color, intensity, payload, and failure reason.
 ZXing 2.x and 3.x encoder/decoder signatures are both supported. If an optional
 decoder or external grader still fails, grading is marked unavailable and the
 calibrator returns to the interactive session instead of discarding the camera
 calibration.
-Built-in grading drains buffered camera frames after each target change and
-decodes the rectified, rotation-aware symbol crop with a four-module margin. It uses a bounded set of ZXing
+Built-in testing drains buffered camera frames after each batched target change and
+decodes each rectified, rotation-aware symbol crop. It uses a bounded set of ZXing
 downscale and threshold fallbacks; this avoids treating one binarizer's miss as a
 camera failure while retaining the exact-payload synchronization check.
 
@@ -180,11 +195,41 @@ It also records which WB path was retained, every attempted WB measurement, and
 non-fatal imaging-quality warnings.
 It also records measured ROI payload reduction, adapter read/frame-interval
 distributions, and a reference host-display-request to first stable camera-frame
-latency. This reference is explicitly not labeled as game input latency.
+latency. It establishes solid-black/solid-white baselines, then measures three
+alternating transitions (white-to-black, black-to-white, white-to-black). This
+reference includes phone presentation and camera settling, and is explicitly
+not labeled as game input latency or image-transform cost.
 
 ```powershell
 python -m acquisition.rig_calibration.hik.stream calibration-output\hik_camera_calibration.json --gui
 ```
+
+For the normal operator demo, run this from the repository root:
+
+```powershell
+.\demo-hik-camera.bat
+```
+
+It selects the newest saved HIK calibration under `artifacts`, turns on only the
+calibrated phone's display power, and opens the live rectified output. Press
+`Q`, Escape, or close the window to stop. Camera release and display sleep run
+from `finally`, including camera/stream failures. Display wake is a single
+best-effort `KEYCODE_WAKEUP`: it is not polled or validated and an ADB failure
+cannot block camera startup. No ADB work occurs in the frame loop. The demo does
+not change phone settings, start an app, rotate the display, change brightness,
+or send touch input. Pass a calibration JSON or its containing directory as the
+first batch argument to override newest-calibration selection.
+
+For minimum processing latency, pass `--no-rectify` after the calibration. This
+returns the hardware-ROI camera raster directly and skips both dense
+`cv2.remap` and homography `cv2.warpPerspective`:
+
+```powershell
+.\demo-hik-camera.bat ".\artifacts\hik-calibration-20260829-083137" --no-rectify
+```
+
+The low-latency output remains in camera ROI coordinates, so it is not
+orthogonalized, app-up, or cropped to the canonical phone rectangle.
 
 ```python
 from acquisition.rig_calibration.hik.stream import open_camera
@@ -207,6 +252,24 @@ with hikcam.HikCamera(
 ) as camera:
     rgb = camera.get_frame()
 ```
+
+Production code can request the same zero-transform mode:
+
+```python
+with hikcam.HikCamera(
+    config={
+        "calibration": "calibration-output/hik_camera_calibration.json",
+        "rectify": False,
+    }
+) as camera:
+    hardware_roi_rgb = camera.get_frame()
+```
+
+The production reader trusts the saved calibration instead of repeating
+calibration-time checks. It applies the locked controls, accepts the effective
+hardware-aligned ROI returned by the camera, adjusts the rectification origin,
+and enters the capture loop. Strict identity, geometry, orientation, exposure,
+and evidence checks remain in calibration only.
 
 Alternatively set `ARIA_HIK_CALIBRATION` and use `hikcam.HikCamera()` with no
 arguments. The facade implements `HikCamera`/`Camera`, context management,

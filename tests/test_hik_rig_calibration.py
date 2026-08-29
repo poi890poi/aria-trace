@@ -46,6 +46,7 @@ from acquisition.rig_calibration.hik.phone import (
     resolve_adb_executable,
 )
 from acquisition.rig_calibration.hik.phone import PhoneMetrics
+from acquisition.rig_calibration.hik.stream import PhoneDisplayPowerSession
 from acquisition.rig_calibration.hik.workflow import (
     HikCalibrationOptions,
     HikRigCalibrationSession,
@@ -66,9 +67,17 @@ class HikAlgorithmTests(unittest.TestCase):
 
     def test_data_matrix_early_rejection_waits_until_target_is_impossible(self):
         cannot_qualify = HikRigCalibrationSession._data_matrix_cannot_qualify
-        self.assertFalse(cannot_qualify(0, 1, 1000, 0.999))
-        self.assertTrue(cannot_qualify(0, 2, 1000, 0.999))
-        self.assertFalse(cannot_qualify(999, 1000, 1000, 0.999))
+        self.assertFalse(cannot_qualify(38, 40, 40, 0.95))
+        self.assertFalse(cannot_qualify(0, 2, 40, 0.95))
+        self.assertTrue(cannot_qualify(0, 3, 40, 0.95))
+
+    def test_data_matrix_requires_at_least_twenty_patterns(self):
+        with self.assertRaisesRegex(ValueError, "at least 20"):
+            HikCalibrationOptions("fake", "phone", Path("unused"), data_matrix_trials_per_size=19)
+        self.assertEqual(
+            HikCalibrationOptions("fake", "phone", Path("unused")).data_matrix_trials_per_size,
+            40,
+        )
 
     def test_data_matrix_capture_drains_target_change_backlog(self):
         session = HikRigCalibrationSession(
@@ -99,8 +108,49 @@ class HikAlgorithmTests(unittest.TestCase):
         rotated = HikRigCalibrationSession._data_matrix_screen_crop(
             [40, 45, 20, 10], [10, 10, 80, 80], 90.0, 2, [100, 100]
         )
-        self.assertEqual(unrotated, [32, 37, 36, 26])
-        self.assertEqual(rotated, [36, 32, 27, 36])
+        self.assertEqual(unrotated, [36, 41, 28, 18])
+        self.assertEqual(rotated, [40, 36, 19, 28])
+
+    def test_data_matrix_batch_packs_multiple_exact_payloads_on_one_screen(self):
+        session = HikRigCalibrationSession(
+            HikCalibrationOptions("fake", "phone", Path("unused")),
+            progress=lambda _message: None,
+        )
+
+        def render(screen_size, cell, payload, _module, **kwargs):
+            screen_width, screen_height = screen_size
+            x, y, width, height = cell
+            image = np.full((screen_height, screen_width, 3), 127, np.uint8)
+            image[y : y + height, x : x + width] = 255
+            symbol = [x + (width - 8) // 2, y + (height - 8) // 2, 8, 8]
+            sx, sy, sw, sh = symbol
+            image[sy : sy + sh, sx : sx + sw] = 0
+            return mock.Mock(
+                image=image,
+                payload=payload,
+                symbol_rect_screen_xywh=symbol,
+                trial_id=kwargs["trial_id"],
+            )
+
+        specifications = [
+            {
+                "trial_index": index,
+                "angle_deg": (0.0, 15.0, -15.0, 30.0)[index % 4],
+                "color_bgr": (1.0, 1.0, 1.0),
+                "intensity": 1.0,
+            }
+            for index in range(8)
+        ]
+        with mock.patch(
+            "acquisition.rig_calibration.hik.workflow.render_data_matrix_target",
+            side_effect=render,
+        ):
+            batch = session._compose_data_matrix_batch(
+                [100, 180], [10, 10, 80, 160], 2, specifications
+            )
+        self.assertIsNotNone(batch)
+        self.assertEqual(len(batch["items"]), 8)
+        self.assertEqual(len({item["payload"] for item in batch["items"]}), 8)
 
     def test_focus_metric_formatter_accepts_partial_esfr_results(self):
         self.assertEqual(HikRigCalibrationSession._format_metric(None), "n/a")
@@ -731,13 +781,78 @@ class FakeRectifiedAdapter:
 
 
 class HikRectifiedStreamTests(unittest.TestCase):
-    def test_data_matrix_high_failure_rate_skips_each_size_after_two_trials(self):
+    def test_demo_display_session_uses_only_power_key_events(self):
+        class FakePowerPhone:
+            def __init__(self):
+                self.commands = []
+
+            def shell(self, *args):
+                self.commands.append(args)
+                return ""
+
+        phone = FakePowerPhone()
+        session = PhoneDisplayPowerSession("phone", phone=phone)
+        session.open()
+        session.close()
+        self.assertEqual(
+            phone.commands,
+            [
+                ("input", "keyevent", "KEYCODE_WAKEUP"),
+                ("input", "keyevent", "KEYCODE_SLEEP"),
+            ],
+        )
+
+    def test_demo_display_session_does_not_query_display_state(self):
+        phone = mock.Mock()
+        session = PhoneDisplayPowerSession("phone", phone=phone)
+        with session:
+            pass
+        self.assertEqual(
+            phone.shell.call_args_list,
+            [
+                mock.call("input", "keyevent", "KEYCODE_WAKEUP"),
+                mock.call("input", "keyevent", "KEYCODE_SLEEP"),
+            ],
+        )
+        phone.display_state.assert_not_called()
+
+    def test_demo_display_power_errors_never_gate_camera_startup(self):
+        phone = mock.Mock()
+        phone.shell.side_effect = RuntimeError("ADB unavailable")
+        session = PhoneDisplayPowerSession("phone", phone=phone)
+        session.open()
+        self.assertIn("ADB unavailable", session.last_error)
+        session.close()
+        self.assertFalse(session._opened)
+
+    @staticmethod
+    def _fake_data_matrix_batch(_screen, _region, _module, specifications):
+        items = []
+        for specification in list(specifications)[:4]:
+            trial = int(specification["trial_index"])
+            items.append(
+                {
+                    **dict(specification),
+                    "payload": "A{}".format(trial),
+                    "trial_id": "dm-{}".format(trial),
+                    "cell_rect_screen_xywh": [10, 10, 20, 20],
+                    "decode_rect_screen_xywh": [10, 10, 20, 20],
+                }
+            )
+        return {
+            "image": np.zeros((100, 100, 3), np.uint8),
+            "items": items,
+            "columns": 2,
+            "rows": 2,
+        }
+
+    def test_data_matrix_high_failure_rate_batches_and_skips_after_three_patterns(self):
         with tempfile.TemporaryDirectory() as directory:
             options = HikCalibrationOptions(
                 "fake",
                 "phone",
                 Path(directory) / "output",
-                data_matrix_trials_per_size=1000,
+                data_matrix_trials_per_size=40,
             )
             target = mock.Mock()
             target.present_image.return_value = mock.Mock()
@@ -752,30 +867,88 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
             session.visible_region = {"xywh": [10, 10, 80, 80]}
-            session.geometry = mock.Mock(matrix_3x3=np.eye(3).tolist())
+            session.geometry = mock.Mock(
+                matrix_3x3=np.eye(3).tolist(),
+                inverse_matrix_3x3=np.eye(3).tolist(),
+            )
             session._wait_painted = lambda _shown: None
             session._capture_data_matrix_frame = lambda: np.zeros((100, 100, 3), np.uint8)
-            rendered = mock.Mock(
-                image=np.zeros((100, 100, 3), np.uint8),
-                trial_id="dm-test",
-                symbol_rect_screen_xywh=[40, 40, 20, 20],
-            )
+            session._compose_data_matrix_batch = self._fake_data_matrix_batch
             failed_grade = {
                 "grade": 0.0,
                 "grade_letter": "F",
                 "exact_payload_decoded": False,
             }
             with mock.patch(
-                "acquisition.rig_calibration.hik.workflow.render_data_matrix_target",
-                return_value=rendered,
-            ), mock.patch(
                 "acquisition.rig_calibration.hik.workflow.grade_data_matrix_decode",
                 return_value=failed_grade,
             ):
                 result = session.grade_data_matrix()
+            evidence = Path(result["failure_evidence_directory"])
+            self.assertTrue(evidence.is_dir())
+            index = json.loads((evidence / "index.json").read_text("utf-8"))
+            self.assertEqual(index["failure_count"], result["failure_evidence_count"])
+            self.assertGreater(index["failure_count"], 0)
+            first = index["failures"][0]
+            annotated = evidence / first["files"]["annotated_camera_frame"]
+            raw_crop = evidence / first["files"]["raw_camera_crop"]
+            decoder_crop = evidence / first["files"]["rectified_decoder_crop"]
+            self.assertTrue(annotated.is_file())
+            self.assertTrue(raw_crop.is_file())
+            self.assertTrue(decoder_crop.is_file())
+            marked = cv2.imread(str(annotated))
+            self.assertGreater(int(np.max(marked[:, :, 2])), 0)
         self.assertGreater(len(result["per_size"]), 1)
         self.assertTrue(all(row["early_rejected"] for row in result["per_size"]))
-        self.assertTrue(all(row["trial_count"] == 2 for row in result["per_size"]))
+        self.assertTrue(all(row["trial_count"] == 3 for row in result["per_size"]))
+        self.assertTrue(all(row["presentation_count"] == 1 for row in result["per_size"]))
+
+    def test_data_matrix_reports_plain_decode_success_and_batches_qualified_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            options = HikCalibrationOptions(
+                "fake", "phone", Path(directory) / "output"
+            )
+            target = mock.Mock()
+            target.present_image.return_value = mock.Mock()
+            session = HikRigCalibrationSession(
+                options,
+                camera=mock.Mock(),
+                phone=mock.Mock(),
+                target=target,
+                progress=lambda _message: None,
+            )
+            session.phone_metrics = PhoneMetrics(
+                "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
+            )
+            session.visible_region = {"xywh": [10, 10, 80, 80]}
+            session.geometry = mock.Mock(
+                matrix_3x3=np.eye(3).tolist(),
+                inverse_matrix_3x3=np.eye(3).tolist(),
+            )
+            session._wait_painted = lambda _shown: None
+            session._capture_data_matrix_frame = lambda: np.zeros(
+                (100, 100, 3), np.uint8
+            )
+            session._compose_data_matrix_batch = self._fake_data_matrix_batch
+            decoded = {
+                "grade": 4.0,
+                "reference_decode_succeeded": True,
+                "exact_payload_decoded": True,
+            }
+            with mock.patch(
+                "acquisition.rig_calibration.hik.workflow.grade_data_matrix_decode",
+                return_value=decoded,
+            ):
+                result = session.grade_data_matrix()
+        size = result["per_size"][0]
+        self.assertEqual(result["measurement"], "exact_payload_decode_success")
+        self.assertEqual(result["required_decode_success_rate"], 0.95)
+        self.assertEqual(size["decode_success_count"], 40)
+        self.assertEqual(size["decode_success_rate"], 1.0)
+        self.assertEqual(size["presentation_count"], 10)
+        self.assertNotIn("grade_4_A_rate", size)
+        self.assertNotIn("grade", size["trials"][0])
+        self.assertNotIn("grade_letter", size["trials"][0])
 
     def test_optional_data_matrix_decoder_failure_returns_unavailable_result(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -783,7 +956,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "fake",
                 "phone",
                 Path(directory) / "output",
-                data_matrix_trials_per_size=1,
+                data_matrix_trials_per_size=20,
             )
             target = mock.Mock()
             target.present_image.return_value = mock.Mock()
@@ -798,18 +971,14 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
             session.visible_region = {"xywh": [10, 10, 80, 80]}
-            session.geometry = mock.Mock(matrix_3x3=np.eye(3).tolist())
+            session.geometry = mock.Mock(
+                matrix_3x3=np.eye(3).tolist(),
+                inverse_matrix_3x3=np.eye(3).tolist(),
+            )
             session._wait_painted = lambda _shown: None
             session._capture_data_matrix_frame = lambda: np.zeros((100, 100, 3), np.uint8)
-            rendered = mock.Mock(
-                image=np.zeros((100, 100, 3), np.uint8),
-                trial_id="dm-test",
-                symbol_rect_screen_xywh=[40, 40, 20, 20],
-            )
+            session._compose_data_matrix_batch = self._fake_data_matrix_batch
             with mock.patch(
-                "acquisition.rig_calibration.hik.workflow.render_data_matrix_target",
-                return_value=rendered,
-            ), mock.patch(
                 "acquisition.rig_calibration.hik.workflow.grade_data_matrix_decode",
                 side_effect=RuntimeError("decoder unavailable"),
             ):
@@ -818,7 +987,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
         self.assertEqual(result["failed_trial_index"], 0)
         self.assertIn("decoder unavailable", result["error"])
         self.assertFalse(session._preview_disabled)
-        self.assertIn("Data Matrix grading", session._preview_stage)
+        self.assertIn("Data Matrix decode test", session._preview_stage)
 
     def test_live_preview_fits_usable_desktop_and_keeps_settings_beside_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -881,6 +1050,98 @@ class HikRectifiedStreamTests(unittest.TestCase):
             self.assertEqual(tuple(frame[1, 1]), (3, 4, 5))
             camera.release()
             self.assertTrue(adapter.closed)
+
+    def test_minimum_latency_reader_returns_hardware_roi_without_transform(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hik_camera_calibration.json"
+            config = {
+                "camera": {
+                    "device_id": "fake",
+                    "full_sensor_mode": {
+                        "width_px": 8,
+                        "height_px": 8,
+                        "fps": 30.0,
+                    },
+                    "hardware_roi_xywh": [2, 3, 4, 4],
+                },
+                "imaging": {
+                    "exposure_us": 1000.0,
+                    "gain": 0.0,
+                    "white_balance": {
+                        "ratio_red": 1000,
+                        "ratio_green": 1000,
+                        "ratio_blue": 1000,
+                    },
+                },
+                "normalization": {
+                    "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
+                    "output_size_px": [3, 3],
+                },
+            }
+            path.write_text(json.dumps(config), encoding="utf-8")
+            image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape((4, 4, 3))
+            adapter = FakeRectifiedAdapter(image)
+            with mock.patch.object(
+                cv2, "remap", side_effect=AssertionError("remap must not run")
+            ), mock.patch.object(
+                cv2,
+                "warpPerspective",
+                side_effect=AssertionError("warp must not run"),
+            ):
+                camera = RectifiedHikCamera(
+                    path, adapter=adapter, rectify=False
+                ).open()
+                ok, frame = camera.read()
+                sample = camera.read_sample()
+            self.assertTrue(ok)
+            np.testing.assert_array_equal(frame, image)
+            self.assertFalse(sample.metadata["rectified"])
+            self.assertTrue(sample.metadata["hardware_roi_output"])
+            self.assertTrue(sample.source_id.endswith(":hardware-roi"))
+            camera.release()
+
+    def test_production_reader_trusts_effective_roi_and_saved_orientation(self):
+        class AlignedByCameraAdapter(FakeRectifiedAdapter):
+            def set_roi(self, roi):
+                self.roi = list(roi)
+                return [1, 3, 4, 4]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hik_camera_calibration.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "camera": {
+                            "device_id": "fake",
+                            "full_sensor_mode": {
+                                "width_px": 8,
+                                "height_px": 8,
+                                "fps": 30.0,
+                            },
+                            "hardware_roi_xywh": [2, 3, 4, 4],
+                        },
+                        "imaging": {
+                            "exposure_us": 1000.0,
+                            "gain": 0.0,
+                            "white_balance": {
+                                "ratio_red": 1000,
+                                "ratio_green": 1000,
+                                "ratio_blue": 1000,
+                            },
+                        },
+                        "normalization": {
+                            "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
+                            "output_size_px": [4, 4],
+                            "orientation": {"adapter_output_up": "unknown"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            adapter = AlignedByCameraAdapter(np.zeros((4, 4, 3), np.uint8))
+            camera = RectifiedHikCamera(path, adapter=adapter).open()
+            self.assertTrue(camera.isOpened())
+            camera.release()
 
     def test_explicit_save_writes_reloadable_warning_bundle_and_dense_map(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1025,6 +1286,21 @@ class HikCompatibleFacadeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "immutable"):
                     camera["Width"] = 4
             self.assertTrue(FakeFacadeReader.instances[0].released)
+
+    def test_hikcam_rectify_false_selects_zero_transform_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config_path(directory)
+            reader = FakeFacadeReader(path)
+            with mock.patch.object(
+                hikcam, "RectifiedHikCamera", return_value=reader
+            ) as factory:
+                camera = hikcam.HikCamera(
+                    config={"calibration": path, "rectify": False}
+                )
+                self.assertEqual(camera.get_shape(), (8, 8, 3))
+                camera.open()
+            factory.assert_called_once_with(path.resolve(), rectify=False)
+            camera.close()
 
     def test_calibration_can_be_first_argument_or_environment_default(self):
         with tempfile.TemporaryDirectory() as directory:

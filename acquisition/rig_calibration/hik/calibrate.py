@@ -66,12 +66,23 @@ def parser() -> argparse.ArgumentParser:
         help="Run a no-save headless observation test",
     )
     value.add_argument("--save", action="store_true", help="Save without the GUI S hotkey")
-    value.add_argument("--grade-data-matrix", action="store_true")
-    value.add_argument("--data-matrix-trials", type=int, default=1000)
+    value.add_argument(
+        "--grade-data-matrix",
+        "--test-data-matrix-decode",
+        dest="grade_data_matrix",
+        action="store_true",
+        help="Run the batched exact-payload Data Matrix decode test",
+    )
+    value.add_argument(
+        "--data-matrix-trials",
+        type=int,
+        default=40,
+        help="Patterns per module size (minimum 20, default 40)",
+    )
     value.add_argument("--data-matrix-initial-module-px", type=int, default=1)
     value.add_argument(
         "--complete-grader-plugin",
-        help="Optional module:callable implementing complete ISO/IEC 15415 grading",
+        help="Optional module:callable implementing an external complete symbol verifier",
     )
     return value
 
