@@ -54,6 +54,18 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self.last_target: Optional[np.ndarray] = None
         self.last_screenshot: Optional[np.ndarray] = None
         self._canonical_orientation_quarter_turns = 0
+        self._configured_canonical_orientation_quarter_turns: Optional[int] = None
+
+    def configure_canonical_orientation(self, quarter_turns: int) -> None:
+        """Bind the target raster to the orientation in which it was generated."""
+
+        if self._temporary is not None:
+            raise RuntimeError(
+                "Canonical orientation must be configured before Display starts"
+            )
+        self._configured_canonical_orientation_quarter_turns = (
+            int(quarter_turns) % 4
+        )
 
     def _resolve_component(self) -> str:
         if self.component:
@@ -380,8 +392,11 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._charuco = generate_charuco_target(layout)
         self.component = self._resolve_component()
         self._temporary = tempfile.TemporaryDirectory(prefix="aria-hik-display-")
+        configured_orientation = self._configured_canonical_orientation_quarter_turns
         self._canonical_orientation_quarter_turns = (
             self.phone.display_orientation_quarter_turns()
+            if configured_orientation is None
+            else int(configured_orientation)
         )
         self._show(self._charuco, "image", "ChArUco screen atlas", "charuco-initial")
         return self.component
@@ -421,3 +436,4 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._layout = None
         self._charuco = None
         self._canonical_orientation_quarter_turns = 0
+        self._configured_canonical_orientation_quarter_turns = None

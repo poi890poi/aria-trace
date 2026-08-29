@@ -72,6 +72,52 @@ class HikDisplayOrientationTests(unittest.TestCase):
         self.assertEqual(viewer["logical_target_size_px"], [200, 100])
         target.stop()
 
+    def test_start_preserves_configured_atlas_orientation_for_every_display_rotation(self):
+        canonical = np.zeros((200, 100, 3), np.uint8)
+        canonical[10:50, 5:30] = 255
+        for quarter_turns in range(4):
+            with self.subTest(quarter_turns=quarter_turns):
+                phone = OrientationChangingPhone([quarter_turns] * 4)
+                target = AdbDisplayTarget(
+                    phone,
+                    component="com.example/.Display",
+                    settle_seconds=0.1,
+                    presentation_timeout_seconds=1.0,
+                    minimum_ui_settle_seconds=0.0,
+                    stable_probe_count=1,
+                )
+                target.configure_canonical_orientation(0)
+                launched = []
+
+                def launch(image, _revision, _attempt):
+                    launched.append(image.copy())
+
+                with mock.patch(
+                    "acquisition.rig_calibration.hik.display.generate_charuco_target",
+                    return_value=canonical,
+                ), mock.patch.object(
+                    target, "_launch_target", side_effect=launch
+                ), mock.patch.object(
+                    target,
+                    "_capture_screenshot",
+                    side_effect=lambda _revision: launched[-1].copy(),
+                ):
+                    target.start(CharucoLayout((100, 200), 5, 10, (0, 0)))
+
+                expected = np.rot90(canonical, k=-quarter_turns)
+                self.assertEqual(len(launched), 1)
+                self.assertTrue(np.array_equal(launched[0], expected))
+                viewer = target.telemetry()["viewer"]
+                self.assertEqual(viewer["canonical_orientation_quarter_turns"], 0)
+                self.assertEqual(
+                    viewer["display_orientation_quarter_turns"], quarter_turns
+                )
+                self.assertEqual(
+                    viewer["canonical_to_display_rotation_quarter_turns"],
+                    quarter_turns,
+                )
+                target.stop()
+
     def test_portrait_target_keeps_existing_raster_and_launches_once(self):
         phone = OrientationChangingPhone([0, 0, 0, 0])
         target = self._target(phone)

@@ -1183,6 +1183,13 @@ class HikRigCalibrationSession:
                     self.phone_metrics.orientation_quarter_turns,
                 )
             else:
+                configure_orientation = getattr(
+                    self.target, "configure_canonical_orientation", None
+                )
+                if callable(configure_orientation):
+                    configure_orientation(
+                        self.phone_metrics.orientation_quarter_turns
+                    )
                 self.phone.wake_and_hold_display(
                     self.phone_metrics.orientation_quarter_turns
                 )
