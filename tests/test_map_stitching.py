@@ -37,6 +37,8 @@ class MapStitchingTests(unittest.TestCase):
                 mosaic, coverage, output, reference
             )
             self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["map_orientation_model"], "fixed_north_up")
+            self.assertFalse(result["north_normalization_applied"])
             self.assertAlmostEqual(
                 result["map_pixels_per_minimap_pixel"], 2.5, delta=0.08
             )

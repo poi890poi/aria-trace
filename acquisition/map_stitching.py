@@ -12,6 +12,9 @@ import numpy as np
 from .session import SessionReader
 
 
+MAP_ORIENTATION_MODEL = "fixed_north_up"
+
+
 def _gradient(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     gray = gray.astype(np.float32)
@@ -243,6 +246,8 @@ def _build_localization_derivative(
         "schema_version": "1.0",
         "status": "ready" if ready else "review_required",
         "method": "sift_similarity_with_masked_gradient_verification",
+        "map_orientation_model": MAP_ORIENTATION_MODEL,
+        "north_normalization_applied": False,
         "source_minimap_calibration_id": reference.get("calibration_id"),
         "source_minimap_image": reference.get("source_image_name"),
         "coordinate_space": "derived_localization_map_px",
