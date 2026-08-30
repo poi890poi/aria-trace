@@ -21,7 +21,10 @@ from .android_capture import (
 from .android_game_launcher import launch_android_game
 from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from .dual_source_spaces import write_dual_source_space_yaml
-from .game_cross_source_check import GameCrossSourceEvidenceRecorder
+from .game_cross_source_check import (
+    GameCrossSourceEvidenceRecorder,
+    orient_hik_source_from_first_adb_frame,
+)
 from .hik_capture import CalibratedHikFrameSource
 from .recorder import AcquisitionRecorder
 from .rig_calibration.hik.phone import (
@@ -249,48 +252,12 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--tail-seconds", type=float, default=1.5)
     value.add_argument("--yes", action="store_true")
     value.add_argument(
-        "--analyze",
-        action="store_true",
-        help="run standalone mini-map analysis after successful capture",
-    )
-    value.add_argument(
         "--rig-calibration",
         type=Path,
         help=(
             "required calibration bundle directory or hik_camera_calibration.json; "
             "the HIK stream is rectified and oriented from this result"
         ),
-    )
-    value.add_argument("--profiles-root", type=Path, default=Path("profiles"))
-    value.add_argument("--calibration-output", type=Path)
-    value.add_argument("--android-crop")
-    value.add_argument(
-        "--hik-crop",
-        help=(
-            "legacy diagnostic override; automatic analysis derives the current "
-            "HIK observation from Android and does not persist this crop"
-        ),
-    )
-    value.add_argument(
-        "--android-discovery",
-        choices=("relative-prior", "unrestricted", "legacy-hint"),
-        default="relative-prior",
-    )
-    value.add_argument(
-        "--android-center-region",
-        default="0,0,0.35,0.35",
-        help="relative x0,y0,x1,y1 bounds for automatic Android circle centers",
-    )
-    value.add_argument(
-        "--android-radius-fraction",
-        default="0.07,0.22",
-        help="minimum,maximum radius as fractions of the shorter Android dimension",
-    )
-    value.add_argument(
-        "--android-min-visible",
-        type=float,
-        default=0.85,
-        help="minimum visible circumference fraction for Android candidates",
     )
     value.add_argument(
         "--control-only",
@@ -410,7 +377,8 @@ def _run_control_only(arguments) -> int:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    arguments = parser().parse_args(argv)
+    argument_parser = parser()
+    arguments = argument_parser.parse_args(argv)
     if arguments.control_only:
         return _run_control_only(arguments)
     if arguments.rig_calibration is None:
@@ -504,18 +472,78 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     android = AndroidRoiFrameSource(
         hub, AndroidRoiSpec("android_phone", 0, 0, 0, 0)
     )
-    cross_source_check = GameCrossSourceEvidenceRecorder(
-        rig_calibration, surface
-    )
-    output_image_turns = cross_source_check.geometry[
-        "output_image_quarter_turns_clockwise_from_phone_natural"
-    ]
     hik = CalibratedHikFrameSource(
         rig_calibration,
         "hik_phone",
         rectify=True,
-        output_quarter_turns_clockwise=output_image_turns,
+        output_quarter_turns_clockwise=0,
         reader=RectifiedHikCamera(rig_calibration, adapter=hik_adapter),
+    )
+    print(
+        "Matching HIK orientation from the first game ADB/HIK images...",
+        flush=True,
+    )
+    try:
+        orientation_match, orientation_images = (
+            orient_hik_source_from_first_adb_frame(
+                android,
+                hik,
+                rig_calibration,
+                android_reported_quarter_turns=surface[
+                    "quarter_turns_clockwise_from_natural"
+                ],
+            )
+        )
+    except Exception:
+        hik.stop()
+        android.stop()
+        raise
+    selected_surface_turns = int(
+        orientation_match[
+            "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
+        ]
+    )
+    output_image_turns = int(
+        orientation_match[
+            "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+        ]
+    )
+    print(
+        "ADB surface: {} degrees clockwise from phone-natural; calibrated "
+        "HIK output rotation: {} degrees from rig-calibration display "
+        "(image confidence {:.3f}, margin {}).".format(
+            selected_surface_turns * 90,
+            output_image_turns * 90,
+            float(orientation_match["selected_confidence"]),
+            (
+                "n/a"
+                if orientation_match["confidence_margin"] is None
+                else "{:.3f}".format(
+                    float(orientation_match["confidence_margin"])
+                )
+            ),
+        ),
+        flush=True,
+    )
+    if orientation_match.get("warning"):
+        print("Orientation warning: {}".format(orientation_match["warning"]), flush=True)
+    aligned_surface = {
+        **dict(surface),
+        "quarter_turns_clockwise_from_natural": selected_surface_turns,
+        "degrees_clockwise_from_natural": selected_surface_turns * 90,
+        "source": "first_game_adb_and_hik_image_evidence",
+        "android_reported_quarter_turns_clockwise_from_natural": surface[
+            "quarter_turns_clockwise_from_natural"
+        ],
+        "orientation_evidence": (
+            "cross_source_check/orientation_match/summary.json"
+        ),
+    }
+    cross_source_check = GameCrossSourceEvidenceRecorder(
+        rig_calibration,
+        aligned_surface,
+        orientation_match=orientation_match,
+        orientation_evidence_images=orientation_images,
     )
     controller = ScrcpyTouchController(adb, server, serial, [width, height])
     control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
@@ -536,14 +564,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "rig_calibration_used": True,
                 "rig_calibration": str(rig_calibration.resolve()),
                 "stream_id": "hik_phone",
-                "output_image_quarter_turns_clockwise_from_phone_natural": (
+                "output_image_quarter_turns_clockwise_from_calibration_display": (
                     output_image_turns
                 ),
-                "android_surface_quarter_turns_clockwise_from_natural": surface[
+                "output_orientation_selection": {
+                    "basis": orientation_match["selection_basis"],
+                    "status": orientation_match["status"],
+                    "confidence": orientation_match["selected_confidence"],
+                    "confidence_margin": orientation_match["confidence_margin"],
+                    "evidence": (
+                        "cross_source_check/orientation_match/summary.json"
+                    ),
+                },
+                "android_reported_quarter_turns_clockwise_from_natural": surface[
                     "quarter_turns_clockwise_from_natural"
                 ],
             },
-            "phone_surface_orientation": surface,
+            "phone_surface_orientation": aligned_surface,
             "phone_preparation": preparation,
             "game_launch": game_launch,
             "zigzag_plan": plan.as_dict(),
@@ -595,7 +632,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_dual_source_space_yaml(
             pending_path,
             rig_calibration,
-            surface,
+            aligned_surface,
             manifest,
         )
         manifest["coordinate_spaces"] = "coordinate_spaces.yaml"
@@ -615,37 +652,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             control.expected_event_count, session_path.resolve()
         )
     )
-    if arguments.analyze:
-        from .automated_minimap_calibration import (
-            _parse_crop,
-            android_discovery_config,
-            calibrate_zigzag_session,
-        )
-
-        calibration_output = arguments.calibration_output or (
-            Path("artifacts")
-            / "game-minimap-calibration-{}".format(timestamp)
-        )
-        result = calibrate_zigzag_session(
-            session_path,
-            calibration_output,
-            profiles_root=arguments.profiles_root,
-            rig_calibration=arguments.rig_calibration,
-            android_selected_crop_xywh=_parse_crop(arguments.android_crop),
-            hik_selected_crop_xywh=_parse_crop(arguments.hik_crop),
-            android_discovery=android_discovery_config(
-                arguments.android_discovery,
-                arguments.android_center_region,
-                arguments.android_radius_fraction,
-                arguments.android_min_visible,
-            ),
-        )
-        print("Mini-map calibration: {}".format(calibration_output.resolve()))
-        print("Phone-game profile: {}".format(result["summary"]["phone_game_profile"]))
-        if result["summary"]["rig_game_profile"]:
-            print("Rig-game profile: {}".format(result["summary"]["rig_game_profile"]))
-        else:
-            print("Rig-game profile: skipped (no optional rig calibration supplied)")
     return 0
 
 

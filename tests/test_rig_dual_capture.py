@@ -49,7 +49,8 @@ class RigDualCaptureTests(unittest.TestCase):
             input_source = object()
             processor = object()
             orientation = {
-                "selected_quarter_turns_clockwise_from_phone_natural": 1,
+                "selected_adb_surface_quarter_turns_clockwise_from_phone_natural": 1,
+                "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 0,
                 "status": "selected",
                 "selection_basis": "image_evidence",
                 "selected_confidence": 0.9,
@@ -159,7 +160,8 @@ class RigDualCaptureTests(unittest.TestCase):
                 "acquisition.rig_dual_capture.orient_hik_source_from_first_adb_frame",
                 return_value=(
                     {
-                        "selected_quarter_turns_clockwise_from_phone_natural": 0,
+                        "selected_adb_surface_quarter_turns_clockwise_from_phone_natural": 0,
+                        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 0,
                         "status": "selected",
                         "selection_basis": "image_evidence",
                         "selected_confidence": 1.0,

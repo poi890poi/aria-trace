@@ -144,15 +144,15 @@ def build_calibrated_rig_recording_bundle(
                 "quarter_turns_clockwise_from_natural"
             ],
         )
-        output_turns = int(
+        selected_surface_turns = int(
             orientation_match[
-                "selected_quarter_turns_clockwise_from_phone_natural"
+                "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
             ]
         )
         aligned_surface = {
             **surface,
-            "quarter_turns_clockwise_from_natural": output_turns,
-            "degrees_clockwise_from_natural": output_turns * 90,
+            "quarter_turns_clockwise_from_natural": selected_surface_turns,
+            "degrees_clockwise_from_natural": selected_surface_turns * 90,
             "source": "first_game_adb_and_hik_image_evidence",
             "android_reported_quarter_turns_clockwise_from_natural": surface[
                 "quarter_turns_clockwise_from_natural"

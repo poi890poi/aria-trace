@@ -1,5 +1,6 @@
 import unittest
 
+import cv2
 import numpy as np
 
 from acquisition.hik_capture import CalibratedHikFrameSource, NativeHikFrameSource
@@ -67,6 +68,9 @@ class FakeRectifiedReader:
     def release(self):
         self.released = True
 
+    def rectify_for_evidence(self, image):
+        return cv2.resize(image, (5, 3), interpolation=cv2.INTER_NEAREST)
+
 
 class NativeHikFrameSourceTests(unittest.TestCase):
     def test_native_source_forces_full_sensor_and_does_not_require_rig(self):
@@ -98,18 +102,68 @@ class CalibratedHikFrameSourceTests(unittest.TestCase):
         packet = source.read()
         self.assertTrue(reader.opened)
         self.assertEqual("hik_phone", packet.stream_id)
+        self.assertEqual(
+            "hik_session_aligned_visible_phone_pixels",
+            packet.metadata["coordinate_space"],
+        )
+        self.assertEqual(
+            "hik_rig_rectified_visible_phone_pixels",
+            packet.metadata["source_coordinate_space"],
+        )
         self.assertEqual((6, 4, 3), packet.image.shape)
         self.assertEqual([3, 5], packet.metadata["calibrated_source_size_px"])
         self.assertEqual(
             1,
             packet.metadata[
-                "output_quarter_turns_clockwise_from_phone_natural"
+                "output_quarter_turns_clockwise_from_calibration_display"
             ],
         )
         self.assertEqual([1, 1], packet.metadata["video_encoding_padding_right_bottom_px"])
         np.testing.assert_array_equal(packet.image[0, 2], [1, 2, 3])
         source.stop()
         self.assertTrue(reader.released)
+
+    def test_orientation_can_be_updated_from_evidence_before_recording(self):
+        reader = FakeRectifiedReader()
+        source = CalibratedHikFrameSource(
+            "rig.json",
+            reader=reader,
+            output_quarter_turns_clockwise=0,
+        )
+        source.start()
+        source.set_output_orientation(
+            2,
+            {
+                "selection_basis": "first_game_adb_and_hik_image_evidence_only",
+                "selected_confidence": 0.91,
+            },
+        )
+        packet = source.read()
+        np.testing.assert_array_equal(packet.image[2, 4], [1, 2, 3])
+        self.assertEqual(
+            2,
+            packet.metadata[
+                "output_quarter_turns_clockwise_from_calibration_display"
+            ],
+        )
+        self.assertEqual(
+            "first_game_adb_and_hik_image_evidence_only",
+            packet.metadata["output_orientation_evidence"]["selection_basis"],
+        )
+
+    def test_unrectified_stream_rectifies_only_explicit_evidence_image(self):
+        reader = FakeRectifiedReader()
+        source = CalibratedHikFrameSource(
+            "rig.json",
+            reader=reader,
+            rectify=False,
+            output_quarter_turns_clockwise=1,
+        )
+        source.start()
+        packet = source.read()
+        evidence = source.alignment_evidence_image(packet)
+        self.assertEqual((3, 5, 3), evidence.shape)
+        np.testing.assert_array_equal(evidence[0, 0], [1, 2, 3])
 
 
 if __name__ == "__main__":

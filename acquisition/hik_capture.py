@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import cv2
 
@@ -15,7 +16,7 @@ from .sources import FrameSource
 
 
 def rotate_quarter_turns_clockwise(image, quarter_turns: int):
-    """Rotate an image into the current Android logical-display orientation."""
+    """Rotate an image between two explicitly declared raster spaces."""
 
     turns = int(quarter_turns) % 4
     if turns == 0:
@@ -47,6 +48,56 @@ class CalibratedHikFrameSource(FrameSource):
         self.reader = reader
         self._owns_reader = reader is None
         self._started = False
+        self._orientation_lock = threading.Lock()
+        self._orientation_evidence = None
+
+    def set_output_orientation(
+        self,
+        quarter_turns_clockwise: int,
+        evidence: Optional[Mapping[str, object]] = None,
+    ) -> None:
+        """Set output rotation relative to the rig-calibration display space."""
+
+        with self._orientation_lock:
+            self.output_quarter_turns_clockwise = (
+                int(quarter_turns_clockwise) % 4
+            )
+            self._orientation_evidence = (
+                dict(evidence) if evidence is not None else None
+            )
+
+    def alignment_evidence_image(self, packet: FramePacket):
+        """Return this packet in rig-normalized calibration-display space.
+
+        A minimum-latency (rectify=False) stream stays unrectified for normal
+        reads.  Only this explicit diagnostic conversion performs the saved
+        rig warp so its orientation can be compared with an ADB image.
+        """
+
+        image = packet.image
+        padding = packet.metadata.get(
+            "video_encoding_padding_right_bottom_px", [0, 0]
+        )
+        padding_right, padding_bottom = map(int, padding)
+        if padding_right:
+            image = image[:, :-padding_right]
+        if padding_bottom:
+            image = image[:-padding_bottom, :]
+        turns = int(
+            packet.metadata.get(
+                "output_quarter_turns_clockwise_from_calibration_display", 0
+            )
+        ) % 4
+        calibration_display = rotate_quarter_turns_clockwise(image, -turns)
+        if self.rectify:
+            return calibration_display
+        rectify_for_evidence = getattr(self.reader, "rectify_for_evidence", None)
+        if not callable(rectify_for_evidence):
+            raise RuntimeError(
+                "The HIK reader cannot rectify a hardware-ROI frame for "
+                "cross-source orientation evidence"
+            )
+        return rectify_for_evidence(calibration_display)
 
     def start(self) -> None:
         if self._started:
@@ -62,9 +113,14 @@ class CalibratedHikFrameSource(FrameSource):
         if not self._started or self.reader is None:
             return None
         sample = self.reader.read_sample()
-        image = rotate_quarter_turns_clockwise(
-            sample.image, self.output_quarter_turns_clockwise
-        )
+        with self._orientation_lock:
+            output_turns = self.output_quarter_turns_clockwise
+            orientation_evidence = (
+                dict(self._orientation_evidence)
+                if self._orientation_evidence is not None
+                else None
+            )
+        image = rotate_quarter_turns_clockwise(sample.image, output_turns)
         content_height, content_width = image.shape[:2]
         padding_right = int(image.shape[1] % 2)
         padding_bottom = int(image.shape[0] % 2)
@@ -87,6 +143,8 @@ class CalibratedHikFrameSource(FrameSource):
         metadata.update(
             {
                 "source": "hik_mvs_calibrated",
+                "coordinate_space": "hik_session_aligned_visible_phone_pixels",
+                "source_coordinate_space": "hik_rig_rectified_visible_phone_pixels",
                 "rig_calibration": str(self.calibration_file.resolve()),
                 "timestamp_timebase": "host perf_counter_ns at frame receive",
                 "device_timestamp_raw": raw_device_time,
@@ -94,9 +152,10 @@ class CalibratedHikFrameSource(FrameSource):
                     int(content_width),
                     int(content_height),
                 ],
-                "output_quarter_turns_clockwise_from_phone_natural": (
-                    self.output_quarter_turns_clockwise
+                "output_quarter_turns_clockwise_from_calibration_display": (
+                    output_turns
                 ),
+                "output_orientation_evidence": orientation_evidence,
                 "video_encoding_padding_right_bottom_px": [
                     padding_right,
                     padding_bottom,
@@ -120,14 +179,24 @@ class CalibratedHikFrameSource(FrameSource):
             self.reader = None
 
     def describe(self) -> dict:
+        with self._orientation_lock:
+            output_turns = self.output_quarter_turns_clockwise
+            orientation_evidence = (
+                dict(self._orientation_evidence)
+                if self._orientation_evidence is not None
+                else None
+            )
         return {
             "type": type(self).__name__,
             "stream_id": self.stream_id,
             "calibration": str(self.calibration_file.resolve()),
             "rectified": self.rectify,
-            "output_quarter_turns_clockwise_from_phone_natural": (
-                self.output_quarter_turns_clockwise
+            "coordinate_space": "hik_session_aligned_visible_phone_pixels",
+            "source_coordinate_space": "hik_rig_rectified_visible_phone_pixels",
+            "output_quarter_turns_clockwise_from_calibration_display": (
+                output_turns
             ),
+            "output_orientation_evidence": orientation_evidence,
             "host_timestamp": "perf_counter_ns_at_frame_receive",
             "device_timestamp": "raw_hik_counter_in_frame_metadata",
             "video_encoding_padding": "replicate at right/bottom only when a dimension is odd",

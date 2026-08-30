@@ -78,11 +78,255 @@ def load_game_alignment_geometry(
         "android_surface_quarter_turns_clockwise_from_natural": (
             converter.adb_surface_quarter_turns_clockwise_from_natural
         ),
-        "output_image_quarter_turns_clockwise_from_phone_natural": (
-            converter.output_image_quarter_turns_clockwise_from_phone_natural
+        "output_image_quarter_turns_clockwise_from_calibration_display": (
+            converter.output_image_quarter_turns_clockwise_from_calibration_display
         ),
         "space_conversion": converter.describe(),
     }
+
+
+def match_game_camera_orientation(
+    adb_image: np.ndarray,
+    hik_calibration_display_image: np.ndarray,
+    calibration_file: Path,
+    *,
+    android_reported_quarter_turns: Optional[int] = None,
+    preferred_confidence: float = 0.50,
+    preferred_margin: float = 0.08,
+) -> tuple[dict, dict]:
+    """Select HIK output orientation solely from ADB/HIK image evidence.
+
+    The HIK input must be the rig-normalized visible phone region in the
+    calibration display's app-up/app-right space. Candidates represent the
+    current ADB surface orientation. The converter alone supplies the relative
+    image rotation and coordinate transform for each candidate.
+    """
+
+    calibration_file = Path(calibration_file)
+    config = json.loads(calibration_file.read_text(encoding="utf-8"))
+    normalization = config["normalization"]
+    natural_width, natural_height = map(
+        int, config["phone"]["natural_screen_size_px"]
+    )
+    expected_width, expected_height = map(
+        int, normalization["output_size_px"]
+    )
+    if hik_calibration_display_image.shape[:2] != (
+        expected_height,
+        expected_width,
+    ):
+        raise RuntimeError(
+            "HIK orientation evidence is {}x{}, expected rig-normalized {}x{}"
+            .format(
+                hik_calibration_display_image.shape[1],
+                hik_calibration_display_image.shape[0],
+                expected_width,
+                expected_height,
+            )
+        )
+    mask_file = normalization.get("valid_mask_file", "valid_screen_mask.png")
+    valid_mask = cv2.imread(
+        str(calibration_file.parent / str(mask_file)), cv2.IMREAD_GRAYSCALE
+    )
+    if valid_mask is None:
+        raise RuntimeError("Rig calibration valid-screen mask is missing")
+    if valid_mask.shape[:2] != (expected_height, expected_width):
+        raise RuntimeError("Rig calibration valid-screen mask has the wrong size")
+
+    adb_height, adb_width = adb_image.shape[:2]
+    candidates = []
+    evidence_images = {
+        "first_adb_game_image.png": adb_image.copy(),
+        "first_hik_rig_normalized_calibration_display.png": (
+            hik_calibration_display_image.copy()
+        ),
+    }
+    scored = []
+    for surface_turns in range(4):
+        converter = RigCalibratedSpaceConverter(config, surface_turns)
+        image_turns = int(
+            converter.output_image_quarter_turns_clockwise_from_calibration_display
+        )
+        candidate = {
+            "adb_surface_quarter_turns_clockwise_from_phone_natural": surface_turns,
+            "adb_surface_degrees_clockwise_from_phone_natural": surface_turns * 90,
+            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": image_turns,
+            "camera_adapter_image_degrees_clockwise_from_calibration_display": image_turns * 90,
+            "expected_adb_size_px": list(converter.adb_size_px),
+            "logical_adb_crop_xywh": (
+                converter.camera_adapter_bounds_in_adb_xywh()
+            ),
+            "metrics": None,
+        }
+        if converter.adb_size_px != (adb_width, adb_height):
+            candidate["status"] = "not_scored_adb_raster_size_mismatch"
+            candidates.append(candidate)
+            continue
+        x, y, width, height = candidate["logical_adb_crop_xywh"]
+        if (
+            min(x, y, width, height) < 0
+            or x + width > adb_width
+            or y + height > adb_height
+        ):
+            candidate["status"] = "not_scored_crop_outside_adb_image"
+            candidates.append(candidate)
+            continue
+        adb_crop = adb_image[y : y + height, x : x + width].copy()
+        hik_candidate = converter.camera_adapter_image_to_adb_orientation(
+            hik_calibration_display_image
+        )
+        candidate_mask = converter.camera_adapter_image_to_adb_orientation(
+            valid_mask
+        )
+        if hik_candidate.shape[:2] != adb_crop.shape[:2]:
+            candidate["status"] = "not_scored_image_size_mismatch"
+            candidates.append(candidate)
+            continue
+        metrics, images = cross_source_alignment_evidence(
+            adb_crop, hik_candidate, candidate_mask
+        )
+        candidate["status"] = "scored"
+        candidate["metrics"] = dict(metrics)
+        candidates.append(candidate)
+        scored.append(candidate)
+        prefix = "candidate_surface_{}_adapter_{}deg_".format(
+            surface_turns, image_turns * 90
+        )
+        evidence_images[prefix + "adb_crop.png"] = adb_crop
+        evidence_images[prefix + "hik.png"] = hik_candidate
+        for name, image in images.items():
+            evidence_images[prefix + name] = image
+
+    if not scored:
+        raise RuntimeError(
+            "No HIK orientation candidate matches the first ADB raster {}x{}; "
+            "phone natural raster is {}x{}".format(
+                adb_width,
+                adb_height,
+                natural_width,
+                natural_height,
+            )
+        )
+    ranked = sorted(
+        scored,
+        key=lambda value: float(value["metrics"]["confidence"]),
+        reverse=True,
+    )
+    best = ranked[0]
+    best_confidence = float(best["metrics"]["confidence"])
+    runner_up_confidence = (
+        float(ranked[1]["metrics"]["confidence"])
+        if len(ranked) > 1
+        else None
+    )
+    margin = (
+        best_confidence - runner_up_confidence
+        if runner_up_confidence is not None
+        else None
+    )
+    preferred = best_confidence >= float(preferred_confidence) and (
+        margin is None or margin >= float(preferred_margin)
+    )
+    selected_surface_turns = int(
+        best["adb_surface_quarter_turns_clockwise_from_phone_natural"]
+    )
+    selected_image_turns = int(
+        best["camera_adapter_image_quarter_turns_clockwise_from_calibration_display"]
+    )
+    summary = {
+        "schema_version": 1,
+        "status": "selected" if preferred else "selected_low_confidence",
+        "selection_basis": "first_game_adb_and_hik_image_evidence_only",
+        "runtime_operation": "space_converter_discrete_quarter_turn_no_interpolation",
+        "rectification_note": (
+            "A rectified HIK image is required only for this evidence check; "
+            "the selected quarter-turn can be applied to an unrectified ROI stream."
+        ),
+        "rig_calibration": str(calibration_file.resolve()),
+        "first_adb_size_px": [adb_width, adb_height],
+        "hik_rig_normalized_calibration_display_size_px": [
+            expected_width,
+            expected_height,
+        ],
+        "rig_calibration_display_quarter_turns_clockwise_from_natural": int(
+            config.get("phone", {}).get("orientation_quarter_turns", 0)
+        ) % 4,
+        "android_reported_quarter_turns_clockwise_from_natural": (
+            int(android_reported_quarter_turns) % 4
+            if android_reported_quarter_turns is not None
+            else None
+        ),
+        "selected_adb_surface_quarter_turns_clockwise_from_phone_natural": (
+            selected_surface_turns
+        ),
+        "selected_adb_surface_degrees_clockwise_from_phone_natural": (
+            selected_surface_turns * 90
+        ),
+        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+            selected_image_turns
+        ),
+        "selected_camera_adapter_image_degrees_clockwise_from_calibration_display": (
+            selected_image_turns * 90
+        ),
+        "selected_confidence": best_confidence,
+        "runner_up_confidence": runner_up_confidence,
+        "confidence_margin": margin,
+        "preferred_confidence": float(preferred_confidence),
+        "preferred_margin": float(preferred_margin),
+        "warning": (
+            None
+            if preferred
+            else "The best image-evidence candidate was applied, but the match is ambiguous."
+        ),
+        "candidates": candidates,
+    }
+    return summary, evidence_images
+
+
+def orient_hik_source_from_first_adb_frame(
+    adb_source,
+    hik_source,
+    calibration_file: Path,
+    *,
+    android_reported_quarter_turns: Optional[int] = None,
+) -> tuple[dict, dict]:
+    """Start reusable sources and orient HIK from their first game images."""
+
+    hik_source.set_output_orientation(0)
+    adb_source.start()
+    hik_source.start()
+    adb_packet = adb_source.read()
+    if adb_packet is None:
+        raise RuntimeError("ADB source ended before its first game image")
+    hik_packet = hik_source.read()
+    if hik_packet is None:
+        raise RuntimeError("HIK source ended before its first game image")
+    hik_calibration_display = hik_source.alignment_evidence_image(hik_packet)
+    summary, images = match_game_camera_orientation(
+        adb_packet.image,
+        hik_calibration_display,
+        calibration_file,
+        android_reported_quarter_turns=android_reported_quarter_turns,
+    )
+    summary["first_frame_pair_delta_ms"] = abs(
+        int(hik_packet.host_capture_time_ns)
+        - int(adb_packet.host_capture_time_ns)
+    ) / 1.0e6
+    selected_image_turns = int(
+        summary[
+            "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+        ]
+    )
+    hik_source.set_output_orientation(
+        selected_image_turns,
+        {
+            "status": summary["status"],
+            "selection_basis": summary["selection_basis"],
+            "selected_confidence": summary["selected_confidence"],
+            "confidence_margin": summary["confidence_margin"],
+        },
+    )
+    return summary, images
 
 
 class GameCrossSourceEvidenceRecorder:
@@ -102,10 +346,28 @@ class GameCrossSourceEvidenceRecorder:
         hik_stream_id: str = "hik_phone",
         sample_period_seconds: float = 1.0,
         maximum_pair_delta_ms: float = 250.0,
+        orientation_match: Optional[Mapping[str, object]] = None,
+        orientation_evidence_images: Optional[Mapping[str, np.ndarray]] = None,
     ) -> None:
         self.calibration_file = Path(calibration_file)
+        self.orientation_match = (
+            dict(orientation_match) if orientation_match is not None else None
+        )
+        self.orientation_evidence_images = {
+            str(name): image.copy()
+            for name, image in (orientation_evidence_images or {}).items()
+        }
+        effective_surface = dict(phone_surface_orientation)
+        if self.orientation_match is not None:
+            selected = self.orientation_match.get(
+                "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
+            )
+            if selected is not None:
+                effective_surface["quarter_turns_clockwise_from_natural"] = (
+                    int(selected) % 4
+                )
         self.geometry = load_game_alignment_geometry(
-            self.calibration_file, phone_surface_orientation
+            self.calibration_file, effective_surface
         )
         self.adb_stream_id = str(adb_stream_id)
         self.hik_stream_id = str(hik_stream_id)
@@ -192,12 +454,21 @@ class GameCrossSourceEvidenceRecorder:
             "best_pair_delta_ms": self._best_pair_delta_ms,
             "metrics": self._best_metrics,
             "warning": self._warning,
+            "orientation_match": self.orientation_match,
         }
         (self._path / "summary.json").write_text(
             json.dumps(result, indent=2), encoding="utf-8"
         )
         for name, image in (self._best_images or {}).items():
             cv2.imwrite(str(self._path / name), image)
+        if self.orientation_match is not None:
+            orientation_path = self._path / "orientation_match"
+            orientation_path.mkdir(parents=True, exist_ok=True)
+            (orientation_path / "summary.json").write_text(
+                json.dumps(self.orientation_match, indent=2), encoding="utf-8"
+            )
+            for name, image in self.orientation_evidence_images.items():
+                cv2.imwrite(str(orientation_path / name), image)
 
     def describe(self) -> dict:
         result = {
@@ -213,4 +484,23 @@ class GameCrossSourceEvidenceRecorder:
             result["best_pair_delta_ms"] = self._best_pair_delta_ms
         if self._warning:
             result["warning"] = self._warning
+        if self.orientation_match is not None:
+            result["orientation_match"] = {
+                "status": self.orientation_match.get("status"),
+                "selection_basis": self.orientation_match.get("selection_basis"),
+                "selected_adb_surface_quarter_turns_clockwise_from_phone_natural": (
+                    self.orientation_match.get(
+                        "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
+                    )
+                ),
+                "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+                    self.orientation_match.get(
+                        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                    )
+                ),
+                "selected_confidence": self.orientation_match.get(
+                    "selected_confidence"
+                ),
+                "path": "cross_source_check/orientation_match/summary.json",
+            }
         return result

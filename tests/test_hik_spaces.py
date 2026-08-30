@@ -22,6 +22,8 @@ def calibration_document():
         "phone": {
             "serial": "phone-1",
             "natural_screen_size_px": [100, 200],
+            "screen_size_px": [200, 100],
+            "orientation_quarter_turns": 1,
         },
         "imaging": {
             "exposure_us": 8000,
@@ -45,15 +47,18 @@ class HikSpaceConversionTests(unittest.TestCase):
     def test_forward_inverse_and_bounds_match_rotated_adb_pixels(self):
         converter = RigCalibratedSpaceConverter(calibration_document(), 1)
         mapped = converter.camera_adapter_to_adb_points([[0, 0], [29, 39]])
-        np.testing.assert_allclose(mapped, [[20, 89], [59, 60]])
+        np.testing.assert_allclose(mapped, [[10, 20], [39, 59]])
         np.testing.assert_allclose(
             converter.adb_to_camera_adapter_points(mapped),
             [[0, 0], [29, 39]],
             atol=1.0e-9,
         )
-        self.assertEqual([20, 60, 40, 30], converter.camera_adapter_bounds_in_adb_xywh())
+        self.assertEqual([10, 20, 30, 40], converter.camera_adapter_bounds_in_adb_xywh())
         self.assertEqual((200, 100), converter.adb_size_px)
-        self.assertEqual(3, converter.output_image_quarter_turns_clockwise_from_phone_natural)
+        self.assertEqual(
+            0,
+            converter.output_image_quarter_turns_clockwise_from_calibration_display,
+        )
 
     def test_public_camera_adapters_expose_same_conversion_without_opening(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -61,7 +66,7 @@ class HikSpaceConversionTests(unittest.TestCase):
             path.write_text(json.dumps(calibration_document()), encoding="utf-8")
             rectified = RectifiedHikCamera(path)
             facade = HikCamera(config={"calibration": str(path), "color_order": "BGR"})
-            expected = np.asarray([[20, 89], [59, 60]], dtype=np.float64)
+            expected = np.asarray([[10, 20], [39, 59]], dtype=np.float64)
             for camera in (rectified, facade):
                 mapped = camera.camera_adapter_to_adb_points([[0, 0], [29, 39]], 1)
                 np.testing.assert_allclose(mapped, expected)
@@ -69,6 +74,20 @@ class HikSpaceConversionTests(unittest.TestCase):
                     camera.adb_to_camera_adapter_points(mapped, 1),
                     [[0, 0], [29, 39]],
                 )
+
+    def test_session_rotation_is_relative_to_calibration_display_space(self):
+        converter = RigCalibratedSpaceConverter(calibration_document(), 3)
+        self.assertEqual(
+            2,
+            converter.output_image_quarter_turns_clockwise_from_calibration_display,
+        )
+        self.assertEqual((30, 40), converter.output_image_size_px)
+        self.assertEqual(
+            [160, 40, 30, 40],
+            converter.camera_adapter_bounds_in_adb_xywh(),
+        )
+        mapped = converter.camera_adapter_to_adb_points([[0, 0], [29, 39]])
+        np.testing.assert_allclose(mapped, [[189, 79], [160, 40]])
 
     def test_session_yaml_is_commented_and_describes_saved_video_spaces(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -79,12 +98,14 @@ class HikSpaceConversionTests(unittest.TestCase):
             session.mkdir()
             frames = [
                 {"stream_id": "android_phone", "width": 200, "height": 100},
-                {"stream_id": "hik_phone", "width": 40, "height": 30},
+                {"stream_id": "hik_phone", "width": 30, "height": 40},
             ]
             (session / "frames.jsonl").write_text(
                 "".join(json.dumps(frame) + "\n" for frame in frames),
                 encoding="utf-8",
             )
+            (session / "video_android_phone.mkv").write_bytes(b"test")
+            (session / "video_hik_phone.mkv").write_bytes(b"test")
             path = write_dual_source_space_yaml(
                 session,
                 calibration,
@@ -103,7 +124,7 @@ class HikSpaceConversionTests(unittest.TestCase):
             self.assertIn("# Named image rasters", text)
             result = yaml.safe_load(text)
             self.assertEqual(
-                [20, 60, 40, 30],
+                [10, 20, 30, 40],
                 result["conversions"]["hik_phone_video_bounds_in_adb_xywh"],
             )
             self.assertEqual(
@@ -112,6 +133,10 @@ class HikSpaceConversionTests(unittest.TestCase):
             )
             self.assertEqual(
                 "video_hik_phone.mkv", result["streams"]["hik_phone"]["video"]
+            )
+            self.assertEqual(
+                {"video_android_phone.mkv", "video_hik_phone.mkv"},
+                {row["file"] for row in result["media"]},
             )
 
 
