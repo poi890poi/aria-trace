@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
-from acquisition.media_trace import (
+from aria_trace.evidence.media_trace import (
     image_size_px,
     raster_record,
     validate_media_registry,

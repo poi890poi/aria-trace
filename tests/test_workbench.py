@@ -350,7 +350,7 @@ class WorkbenchTests(unittest.TestCase):
         provider = _UrlStatusProvider("http://127.0.0.1:8765/api/hud")
         missed = urllib.error.URLError("transient timeout")
         with patch(
-            "acquisition.hud.urllib.request.urlopen",
+            "aria_trace.apps.workbench.hud.urllib.request.urlopen",
             side_effect=[
                 Response(active),
                 Response(b"map-frame"),
@@ -400,7 +400,7 @@ class WorkbenchTests(unittest.TestCase):
         ).encode("utf-8")
         hidden = json.dumps({"visible": False}).encode("utf-8")
         with patch(
-            "acquisition.hud.urllib.request.urlopen",
+            "aria_trace.apps.workbench.hud.urllib.request.urlopen",
             side_effect=[Response(active), Response(b"map-frame"), Response(hidden)],
         ):
             self.assertIn("map_overlay_png_base64", provider())
@@ -409,7 +409,7 @@ class WorkbenchTests(unittest.TestCase):
         self.assertNotIn("map_overlay_png_base64", deliberately_hidden)
         provider.failures = 19
         with patch(
-            "acquisition.hud.urllib.request.urlopen",
+            "aria_trace.apps.workbench.hud.urllib.request.urlopen",
             side_effect=urllib.error.URLError("sustained outage"),
         ):
             failed = provider()

@@ -65,6 +65,24 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_frame, FramePacket)
         self.assertIs(legacy_input, InputPacket)
 
+    def test_legacy_evidence_and_app_exports_are_exact_aliases(self):
+        from acquisition.features import OnlineSiftRecorder as legacy_features
+        from acquisition.hud import _UrlStatusProvider as legacy_hud_provider
+        from acquisition.media_trace import raster_record as legacy_media
+        from acquisition.poc_evidence import build_poc_evidence_index as legacy_poc
+        from acquisition.review import ReviewState as legacy_review
+        from aria_trace.apps.review import ReviewState
+        from aria_trace.apps.workbench.hud import _UrlStatusProvider
+        from aria_trace.evidence.features import OnlineSiftRecorder
+        from aria_trace.evidence.media_trace import raster_record
+        from aria_trace.evidence.poc_catalog import build_poc_evidence_index
+
+        self.assertIs(legacy_features, OnlineSiftRecorder)
+        self.assertIs(legacy_hud_provider, _UrlStatusProvider)
+        self.assertIs(legacy_media, raster_record)
+        self.assertIs(legacy_poc, build_poc_evidence_index)
+        self.assertIs(legacy_review, ReviewState)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

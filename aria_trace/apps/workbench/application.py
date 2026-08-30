@@ -59,7 +59,7 @@ from aria_trace.services.calibration.minimap.calibration import (
     calibrate_session,
 )
 from aria_trace.services.calibration.minimap.verification import verify_forward_session
-from acquisition.poc_evidence import build_poc_evidence_index
+from aria_trace.evidence.poc_catalog import build_poc_evidence_index
 from aria_trace.adapters.filesystem.profiles import ProfileCatalog
 from aria_trace.workflows.recording import AcquisitionRecorder
 from aria_trace.workflows.route import compile_route_session
@@ -3920,7 +3920,7 @@ def main() -> None:
     hud_error = None
     if os.name == "nt":
         try:
-            from acquisition.hud_process import WorkbenchHudProcess
+            from aria_trace.apps.workbench.hud_process import WorkbenchHudProcess
 
             hud_host = (
                 "127.0.0.1"

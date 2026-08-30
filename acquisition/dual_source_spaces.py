@@ -10,7 +10,7 @@ from typing import Mapping
 import numpy as np
 
 from .commented_yaml import write_commented_yaml
-from .media_trace import image_size_px, raster_record, validate_media_registry
+from aria_trace.evidence.media_trace import image_size_px, raster_record, validate_media_registry
 from .rig_calibration.hik.spaces import RigCalibratedSpaceConverter
 
 

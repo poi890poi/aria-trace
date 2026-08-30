@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 
-from .recorder import AcquisitionRecorder
-from .features import OnlineSiftRecorder
+from aria_trace.evidence.features import OnlineSiftRecorder
+from aria_trace.workflows.recording import AcquisitionRecorder
 from aria_trace.adapters.sources import (
     AdbClockMapper,
     AdbGetEventSource,
