@@ -28,6 +28,7 @@ from aria_trace.apps.workbench.server import (
     occupied_port_message,
 )
 from aria_trace.apps.workbench.sources import SourceFactory, parse_adb_devices
+from aria_trace.apps.workbench.jobs import AnalysisJobManager
 
 from replay.alignment import align_session
 from replay.package import compile_replay_package
@@ -427,7 +428,7 @@ class AcquisitionWorkbench:
         self._last_capture_diagnostics = None
         self._compile_state = "not_ready"
         self._compile_result = None
-        self._analysis_jobs = {}
+        self._analysis_jobs = AnalysisJobManager(lock=self._lock)
         self._live_tracker = None
         self._live_tracker_engine = None
         self._live_tracker_mosaic = None
@@ -1008,82 +1009,12 @@ class AcquisitionWorkbench:
 
     def _queue_analysis(self, kind: str, value: dict, runner) -> dict:
         """Start one observable analysis job without blocking the HTTP request."""
-        with self._lock:
+        def preflight() -> None:
             if self._active is not None:
                 raise RuntimeError("Wait for the active take to finish")
             if self._tracker_running():
                 raise RuntimeError("Stop live tracking before running analysis")
-            if any(
-                item.get("status") in {"queued", "running"}
-                for item in self._analysis_jobs.values()
-            ):
-                raise RuntimeError("Wait for the active analysis task to finish")
-            job_id = "{}-{}".format(kind, time.time_ns())
-            request = {
-                key: item
-                for key, item in dict(value).items()
-                if isinstance(item, (str, int, float, bool)) or item is None
-            }
-            self._analysis_jobs[kind] = {
-                "job_id": job_id,
-                "kind": kind,
-                "status": "queued",
-                "queued_utc": datetime.now(timezone.utc).isoformat(),
-                "started_utc": None,
-                "finished_utc": None,
-                "request": request,
-                "error": None,
-                "message": "Waiting for the background worker",
-                "updated_utc": datetime.now(timezone.utc).isoformat(),
-            }
-
-        def report(message: str) -> None:
-            with self._lock:
-                job = self._analysis_jobs.get(kind)
-                if job and job.get("job_id") == job_id:
-                    job["message"] = str(message)
-                    job["updated_utc"] = datetime.now(timezone.utc).isoformat()
-
-        def work() -> None:
-            with self._lock:
-                job = self._analysis_jobs.get(kind)
-                if not job or job.get("job_id") != job_id:
-                    return
-                job["status"] = "running"
-                job["started_utc"] = datetime.now(timezone.utc).isoformat()
-                job["message"] = "Starting analysis"
-                job["updated_utc"] = job["started_utc"]
-            try:
-                runner(dict(value), report)
-            except Exception as exc:
-                with self._lock:
-                    job = self._analysis_jobs.get(kind)
-                    if job and job.get("job_id") == job_id:
-                        job["status"] = "failed"
-                        job["error"] = "{}: {}".format(
-                            type(exc).__name__, exc
-                        )
-                        job["message"] = "Analysis failed"
-                        job["finished_utc"] = datetime.now(
-                            timezone.utc
-                        ).isoformat()
-                        job["updated_utc"] = job["finished_utc"]
-            else:
-                with self._lock:
-                    job = self._analysis_jobs.get(kind)
-                    if job and job.get("job_id") == job_id:
-                        job["status"] = "complete"
-                        job["message"] = "Analysis complete"
-                        job["finished_utc"] = datetime.now(
-                            timezone.utc
-                        ).isoformat()
-                        job["updated_utc"] = job["finished_utc"]
-
-        threading.Thread(
-            target=work,
-            name="acquisition-workbench-{}".format(kind),
-            daemon=True,
-        ).start()
+        self._analysis_jobs.queue(kind, value, runner, preflight=preflight)
         return self.descriptor()
 
     def queue_minimap_calibration(self, value: dict) -> dict:
@@ -2149,10 +2080,7 @@ class AcquisitionWorkbench:
                 raise RuntimeError("Stop the active recording before live tracking")
             if self._tracker_running():
                 raise RuntimeError("The live tracker is already running")
-            if any(
-                job.get("status") in ("queued", "running")
-                for job in self._analysis_jobs.values()
-            ):
+            if self._analysis_jobs.has_active_job():
                 raise RuntimeError("Wait for background analysis to finish")
             game_profile_id = str(value.get("game_profile_id") or "")
             if not game_profile_id:
@@ -3152,9 +3080,7 @@ class AcquisitionWorkbench:
                 "teleport_behaviors": self._teleport_behaviors(),
                 "live_tracking_runs": self._live_tracking_runs(),
                 "analysis_candidates": self.analysis_candidates(),
-                "analysis_jobs": {
-                    key: dict(value) for key, value in self._analysis_jobs.items()
-                },
+                "analysis_jobs": self._analysis_jobs.snapshot(),
                 "live_tracker": self._live_tracker_descriptor(),
                 "hud_runtime": dict(self._hud_runtime),
                 "sources": self.sources.descriptor(),
