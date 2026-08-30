@@ -40,7 +40,9 @@ class LatestFramePumpTests(unittest.TestCase):
         pump.start()
         try:
             first = pump.read_latest(0.2)
-            time.sleep(0.02)
+            deadline = time.monotonic() + 1.0
+            while pump.dropped_before_processing == 0 and time.monotonic() < deadline:
+                time.sleep(0.001)
             second = pump.read_latest(0.2)
             self.assertGreater(second.host_capture_time_ns, first.host_capture_time_ns)
             self.assertGreater(pump.dropped_before_processing, 0)
