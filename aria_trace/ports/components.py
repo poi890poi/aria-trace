@@ -49,7 +49,7 @@ class Source(ABC, Generic[T]):
         raise NotImplementedError
 
     @abstractmethod
-    def read(self) -> DataEnvelope[T]:
+    def read(self) -> Optional[DataEnvelope[T]]:
         raise NotImplementedError
 
     @abstractmethod
