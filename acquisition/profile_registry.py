@@ -86,18 +86,7 @@ def default_profile_root(explicit: Optional[Path] = None) -> Path:
     configured = os.environ.get("ARIA_PROFILE_ROOT")
     if configured:
         return Path(configured).resolve()
-    module_path = Path(__file__).resolve()
-    for parent in module_path.parents:
-        if (parent / "release-manifest.yaml").is_file():
-            return (parent / "profiles").resolve()
-    source_root = module_path.parent.parent
-    if (source_root / ".git").exists():
-        return (source_root / "profiles").resolve()
-    raise RuntimeError(
-        "Profile root is not configured. Set ARIA_PROFILE_ROOT, pass "
-        "profile_root, or keep release-manifest.yaml beside the release "
-        "profiles directory."
-    )
+    return (Path.cwd() / "profiles").resolve()
 
 
 def _normalized_display(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:

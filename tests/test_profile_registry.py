@@ -57,21 +57,24 @@ class ProfileRegistryTests(unittest.TestCase):
             activate=activate,
         )
 
-    def test_release_marker_selects_one_shared_profiles_directory(self):
-        release = self.root / "release"
-        module = release / "python" / "acquisition" / "profile_registry.py"
-        module.parent.mkdir(parents=True)
-        module.write_text("# packaged source", encoding="utf-8")
-        (release / "release-manifest.yaml").write_text(
-            "schema_version: '1.0'", encoding="utf-8"
-        )
-        with mock.patch.object(profile_registry_module, "__file__", str(module)):
-            self.assertEqual((release / "profiles").resolve(), default_profile_root())
+    def test_local_working_directory_is_profile_root_fallback(self):
+        local = self.root / "application"
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with mock.patch.object(profile_registry_module.Path, "cwd", return_value=local):
+                self.assertEqual((local / "profiles").resolve(), default_profile_root())
 
-    def test_profile_root_environment_has_priority_over_release_marker(self):
+    def test_profile_root_environment_has_priority_over_local_directory(self):
+        configured = self.root / "configured-profiles"
+        local = self.root / "application"
+        with mock.patch.dict("os.environ", {"ARIA_PROFILE_ROOT": str(configured)}):
+            with mock.patch.object(profile_registry_module.Path, "cwd", return_value=local):
+                self.assertEqual(configured.resolve(), default_profile_root())
+
+    def test_explicit_profile_root_has_priority_over_environment(self):
+        explicit = self.root / "explicit-profiles"
         configured = self.root / "configured-profiles"
         with mock.patch.dict("os.environ", {"ARIA_PROFILE_ROOT": str(configured)}):
-            self.assertEqual(configured.resolve(), default_profile_root())
+            self.assertEqual(explicit.resolve(), default_profile_root(explicit))
 
     def test_display_dimensions_and_refresh_are_compatibility_dimensions(self):
         base = context()
