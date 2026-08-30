@@ -562,6 +562,71 @@ class TwoRateTrackerTests(unittest.TestCase):
                 route_state_estimator=RouteEstimator(),
             )
 
+    def test_route_visual_tracking_replaces_phase_xy_after_initial_lock(self):
+        class VisualTracker:
+            def __init__(self):
+                self.previous_xy = None
+                self.seeded = None
+                self.calls = 0
+
+            def seed(self, x, y):
+                self.previous_xy = (float(x), float(y))
+                self.seeded = self.previous_xy
+
+            def track(self, observation, mask):
+                self.calls += 1
+                self.previous_xy = (87.0, 73.0)
+                return {
+                    "measurement_accepted": True,
+                    "pose_available": True,
+                    "held": False,
+                    "x": 87.0,
+                    "y": 73.0,
+                    "score": 0.82,
+                    "decision": "accepted-current-frame-map-pose",
+                    "route_role": "bounded-search-proposal-only",
+                }
+
+        visual = VisualTracker()
+        tracker = TwoRateRealtimeTracker(
+            np.full((160, 180, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+            global_interval_s=0.001,
+            localizer=ImmediateLocalizer(),
+            initial_consensus_count=1,
+            route_visual_tracker=visual,
+        )
+        frame = np.random.RandomState(18).randint(
+            0, 255, (100, 100, 3), dtype=np.uint8
+        )
+        result = None
+        try:
+            with patch(
+                "acquisition.live_tracker.estimate_masked_shift"
+            ) as phase_shift:
+                for index in range(100):
+                    result = tracker.update(frame, index * 2_000_000 + 1)
+                    if result.get("route_tracking_fresh"):
+                        break
+                    time.sleep(0.002)
+
+            self.assertEqual(visual.seeded, (80.0, 70.0))
+            self.assertGreater(visual.calls, 0)
+            self.assertEqual(
+                (result["pose"]["x"], result["pose"]["y"]), (87.0, 73.0)
+            )
+            self.assertEqual(
+                result["local_motion"]["decision"],
+                "bypassed:route-map-correlation",
+            )
+            self.assertFalse(result["local_motion"]["applied"])
+            self.assertTrue(result["route_tracking"]["measurement_accepted"])
+            phase_shift.assert_not_called()
+        finally:
+            tracker.close()
+
     def test_exposes_player_heading_from_cursor_and_map_alignment(self):
         cursor_pose_estimator = FakeCursorPoseEstimator()
         tracker = self._tracker(
@@ -1105,7 +1170,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     runtime = descriptor["live_tracker"]
                     self.assertEqual(runtime["tracking_mode"], "route-assisted")
                     self.assertEqual(
-                        runtime["route_policy"], "candidate-acceleration-only"
+                        runtime["route_policy"], "current-frame-map-correlation"
                     )
                     self.assertEqual(runtime["map_atlas_id"], "atlas-a")
                     self.assertEqual(runtime["route_package_id"], "route-a")
@@ -1117,6 +1182,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     self.assertIsNotNone(
                         engine.kwargs["global_candidate_advisor"]
                     )
+                    self.assertIsNotNone(engine.kwargs["route_visual_tracker"])
                     self.assertEqual(
                         engine.kwargs["cursor_pose_process_config"][
                             "opencv_threads"

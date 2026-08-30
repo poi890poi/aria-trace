@@ -490,6 +490,7 @@ class TwoRateRealtimeTracker:
         relocalize_after_rejections: int = 6,
         recovery_consensus_count: int = 2,
         global_candidate_advisor=None,
+        route_visual_tracker=None,
         cursor_pose_process_config=None,
         representation_interval_s: float = 0.25,
     ) -> None:
@@ -568,6 +569,8 @@ class TwoRateRealtimeTracker:
         self._global_error = None
         self._last_global_diagnostics = None
         self.global_candidate_advisor = global_candidate_advisor
+        self.route_visual_tracker = route_visual_tracker
+        self._last_route_tracking = None
         self._last_route_assistance = None
         observe_modes = getattr(self.localizer, "observe_modes", None)
         if self.transition_controller is not None and callable(observe_modes):
@@ -863,7 +866,10 @@ class TwoRateRealtimeTracker:
         local_response = 0.0
         local_accepted = False
         local_decision = "reference-initialized"
-        if self.previous_minimap is not None:
+        if self.route_visual_tracker is not None:
+            compensation_sign = 0.0
+            local_decision = "bypassed:route-map-correlation"
+        elif self.previous_minimap is not None:
             trials = []
             signs = (0.0,)
             if yaw.confidence >= 0.20 and abs(yaw.delta_deg) >= 0.05:
@@ -1193,6 +1199,37 @@ class TwoRateRealtimeTracker:
                 "mode_likelihoods": self._fix_mode_likelihoods(global_fix),
                 "host_time_ns": timestamp_ns,
             }
+
+        route_tracking_fresh = False
+        if self.route_visual_tracker is not None and self.fusion._state is not None:
+            if self.route_visual_tracker.previous_xy is None:
+                state = self.fusion.state
+                self.route_visual_tracker.seed(state.pose.x, state.pose.y)
+            try:
+                route_result = self.route_visual_tracker.track(minimap, mask)
+                self._last_route_tracking = dict(route_result)
+                route_tracking_fresh = True
+                if route_result.get("measurement_accepted"):
+                    score = float(route_result.get("score") or 0.0)
+                    quality = float(np.clip(score, 0.0, 1.0))
+                    self.fusion.accept_position_measurement(
+                        route_result["x"], route_result["y"], quality
+                    )
+                    self._local_rejections = 0
+                    self._recovery_hypotheses = []
+                else:
+                    self._local_rejections += 1
+            except Exception as exc:
+                self._last_route_tracking = {
+                    "measurement_accepted": False,
+                    "pose_available": True,
+                    "held": True,
+                    "decision": "held:route-visual-error",
+                    "error": "{}: {}".format(type(exc).__name__, exc),
+                    "route_role": "bounded-search-proposal-only",
+                }
+                route_tracking_fresh = True
+                self._local_rejections += 1
         global_search_needed = (
             self.fusion._state is None or self._recovery_requested()
         )
@@ -1324,7 +1361,10 @@ class TwoRateRealtimeTracker:
                 "rotation_compensation_sign": compensation_sign,
                 "map_alignment_delta_deg": alignment_delta_deg,
             },
-            "route_tracking": None,
+            "route_tracking": dict(self._last_route_tracking)
+            if self._last_route_tracking
+            else None,
+            "route_tracking_fresh": route_tracking_fresh,
             "route_assistance": dict(self._last_route_assistance)
             if self._last_route_assistance
             else None,

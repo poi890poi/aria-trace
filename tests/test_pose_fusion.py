@@ -39,6 +39,14 @@ class PoseFusionTests(unittest.TestCase):
         )
         self.assertTrue(decision.accepted)
 
+    def test_position_measurement_updates_xy_without_changing_yaw(self):
+        fusion = PoseFusionGate()
+        fusion.initialize(Pose2D(4.0, 5.0, 37.0))
+        fusion.accept_position_measurement(8.0, 9.0, measurement_quality=0.8)
+
+        self.assertEqual((fusion.state.pose.x, fusion.state.pose.y), (8.0, 9.0))
+        self.assertEqual(fusion.state.pose.yaw_deg, 37.0)
+
     def test_rejects_position_jump(self):
         fusion = PoseFusionGate()
         fusion.initialize(Pose2D(0.0, 0.0, 0.0))

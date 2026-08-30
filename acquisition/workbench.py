@@ -63,7 +63,7 @@ from .rig_dual_capture import (
     single_source_recording_bundle,
 )
 from .route_compilation import compile_route_session
-from .route_tracker import RouteCandidateAdvisor
+from .route_tracker import RouteCandidateAdvisor, RouteVisualTracker
 from .session import SessionReader, input_capture_health
 from .scene_yaw_calibration import calibrate_scene_yaw_session
 from .sources import (
@@ -2790,6 +2790,11 @@ class AcquisitionWorkbench:
                     if tracking_mode == "route-assisted"
                     else None
                 ),
+                route_visual_tracker=(
+                    RouteVisualTracker(route_package, localizer)
+                    if tracking_mode == "route-assisted"
+                    else None
+                ),
             )
             stop = threading.Event()
             runtime = {
@@ -2803,7 +2808,7 @@ class AcquisitionWorkbench:
                 "route_package_id": route_package_id or None,
                 "tracking_mode": tracking_mode,
                 "route_policy": (
-                    "candidate-acceleration-only"
+                    "current-frame-map-correlation"
                     if tracking_mode == "route-assisted"
                     else None
                 ),
@@ -2843,7 +2848,7 @@ class AcquisitionWorkbench:
                     "route_package_id": route_package_id or None,
                     "tracking_mode": tracking_mode,
                     "route_policy": (
-                        "candidate-acceleration-only"
+                        "current-frame-map-correlation"
                         if tracking_mode == "route-assisted"
                         else None
                     ),

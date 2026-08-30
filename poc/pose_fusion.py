@@ -133,6 +133,26 @@ class PoseFusionGate:
         self._refresh_mode()
         return state
 
+    def accept_position_measurement(
+        self, x: float, y: float, measurement_quality: float = 1.0
+    ) -> FusionState:
+        """Accept an already-gated absolute XY measurement without changing yaw."""
+
+        state = self.state
+        state.pose = Pose2D(float(x), float(y), state.pose.yaw_deg)
+        quality = min(1.0, max(0.0, float(measurement_quality)))
+        measured_sigma = (
+            self.config.corrected_position_sigma_m
+            + (1.0 - quality)
+            * (
+                self.config.cautious_position_sigma_m
+                - self.config.corrected_position_sigma_m
+            )
+        )
+        state.position_sigma_m = min(state.position_sigma_m, measured_sigma)
+        self._refresh_mode()
+        return state
+
     def consider_absolute(
         self, hypothesis: Pose2D, coarse_prior: Optional[Pose2D] = None
     ) -> CorrectionDecision:
