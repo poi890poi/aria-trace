@@ -1,26 +1,4 @@
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+"""Compatibility exports for canonical capture packet contracts."""
 
-import numpy as np
+from aria_trace.domain.packets import *  # noqa: F401,F403
 
-from aria_trace.domain.behaviors import TeleportBehaviorSample
-
-
-@dataclass
-class FramePacket:
-    stream_id: str
-    image: np.ndarray
-    host_capture_time_ns: int
-    host_receive_time_ns: int
-    source_time_ns: Optional[int] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    dropped_before: int = 0
-
-
-@dataclass
-class InputPacket:
-    source_id: str
-    kind: str
-    host_time_ns: int
-    payload: Dict[str, Any]
-    source_time_ns: Optional[int] = None

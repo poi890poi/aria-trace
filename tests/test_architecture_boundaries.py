@@ -57,6 +57,14 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_catalog, ProfileCatalog)
         self.assertIs(legacy_publish, publish_rig_calibration)
 
+    def test_legacy_packet_exports_are_exact_domain_aliases(self):
+        from acquisition.models import FramePacket as legacy_frame
+        from acquisition.models import InputPacket as legacy_input
+        from aria_trace.domain.packets import FramePacket, InputPacket
+
+        self.assertIs(legacy_frame, FramePacket)
+        self.assertIs(legacy_input, InputPacket)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

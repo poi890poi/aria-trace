@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from acquisition.models import InputPacket
+from aria_trace.domain.packets import InputPacket
 from aria_trace.adapters.sources import InputSource
 
 

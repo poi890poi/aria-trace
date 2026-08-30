@@ -14,7 +14,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 from aria_trace.domain.session import SESSION_SCHEMA_VERSION as SCHEMA_VERSION
-from acquisition.models import FramePacket, InputPacket
+from aria_trace.domain.packets import FramePacket, InputPacket
 from .video import create_video_sink
 from .annotations import AnnotationStore
 

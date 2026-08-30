@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from acquisition.models import FramePacket, InputPacket
+from aria_trace.domain.packets import FramePacket, InputPacket
 from aria_trace.adapters.filesystem.session import SessionWriter
 
 

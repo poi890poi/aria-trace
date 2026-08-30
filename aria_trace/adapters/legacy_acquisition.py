@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Tuple
 
-from acquisition.models import FramePacket
+from aria_trace.domain.packets import FramePacket
 
 from aria_trace.domain import (
     CheckStatus,

@@ -24,7 +24,7 @@ from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 
-from acquisition.models import FramePacket
+from aria_trace.domain.packets import FramePacket
 from aria_trace.adapters.sources import AdbClockMapper, FrameSource
 from aria_trace.adapters.filesystem.video import find_ffmpeg
 

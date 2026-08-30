@@ -8,7 +8,7 @@ from typing import Mapping, Optional
 
 import cv2
 
-from acquisition.models import FramePacket
+from aria_trace.domain.packets import FramePacket
 from acquisition.rig_calibration.app.device_adapters import CameraConfiguration
 from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
