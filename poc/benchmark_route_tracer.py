@@ -31,6 +31,26 @@ VARIANTS = (
     "continuous_local",
     "continuous_gated",
 )
+CORRELATION_FEATURES = ("gradient", "intensity", "canny", "laplacian")
+MODE_POLICIES = ("all", "sticky")
+INITIALIZATION_POLICIES = ("route", "global")
+CONTINUITY_CLOCKS = ("frame", "accepted")
+RECOVERY_POLICIES = ("route", "global_consensus")
+
+
+def _correlation_feature(image: np.ndarray, name: str) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    if name == "gradient":
+        return _gradient(image)
+    if name == "intensity":
+        return gray.astype(np.float32)
+    if name == "canny":
+        return cv2.Canny(np.uint8(gray), 60, 160).astype(np.float32)
+    if name == "laplacian":
+        return np.abs(
+            cv2.Laplacian(gray.astype(np.float32), cv2.CV_32F, ksize=3)
+        )
+    raise ValueError("Unknown correlation feature: {}".format(name))
 
 
 @dataclass
@@ -96,6 +116,11 @@ class CausalRouteTracer:
         score_min: float = 0.55,
         recovery_radius_px: float = 55.0,
         local_radius_px: float = 18.0,
+        correlation_feature: str = "gradient",
+        mode_policy: str = "all",
+        continuity_clock: str = "frame",
+        continuity_speed_multiplier: float = 4.0,
+        recovery_policy: str = "route",
     ) -> None:
         if variant not in VARIANTS:
             raise ValueError("Unknown route tracer variant: {}".format(variant))
@@ -105,23 +130,57 @@ class CausalRouteTracer:
         self.score_min = float(score_min)
         self.recovery_radius_px = float(recovery_radius_px)
         self.local_radius_px = float(local_radius_px)
+        if correlation_feature not in CORRELATION_FEATURES:
+            raise ValueError(
+                "Unknown correlation feature: {}".format(correlation_feature)
+            )
+        if mode_policy not in MODE_POLICIES:
+            raise ValueError("Unknown mode policy: {}".format(mode_policy))
+        self.correlation_feature = correlation_feature
+        self.mode_policy = mode_policy
+        if continuity_clock not in CONTINUITY_CLOCKS:
+            raise ValueError(
+                "Unknown continuity clock: {}".format(continuity_clock)
+            )
+        self.continuity_clock = continuity_clock
+        if correlation_feature != "gradient":
+            for localizer in self.atlas.localizers.values():
+                localizer.map_gradient = _correlation_feature(
+                    localizer.mosaic, correlation_feature
+                )
         self.previous_xy = None
         self.previous_time_ns = None
+        self.previous_mode_id = None
         motion = package.manifest.get("motion_envelope") or {}
         speed = (motion.get("speed_px_s") or {}).get("p99")
-        self.continuity_speed_limit_px_s = max(120.0, 4.0 * float(speed or 0.0))
+        self.continuity_speed_multiplier = max(
+            1.0, float(continuity_speed_multiplier)
+        )
+        self.continuity_speed_limit_px_s = max(
+            30.0,
+            self.continuity_speed_multiplier * float(speed or 0.0),
+        )
+        if recovery_policy not in RECOVERY_POLICIES:
+            raise ValueError("Unknown recovery policy: {}".format(recovery_policy))
+        self.recovery_policy = recovery_policy
+        self.rejection_streak = 0
+        self.global_recovery_hypotheses = []
 
     def _route_candidates(self, descriptor, top_k: int):
         # No previous_state_index: the replay may pause, reverse, deviate, or
         # travel at a completely different rate from the demonstration.
         return self.package.candidates(descriptor, top_k=top_k)
 
-    def _refine_centers(self, gradient, mask, centers, radius_px, source):
+    def _refine_centers(
+        self, feature, mask, centers, radius_px, source, mode_ids=None
+    ):
         hypotheses = []
         for center, route_state_index in centers:
-            for mode_id, localizer in self.atlas.localizers.items():
+            selected_modes = mode_ids or self.atlas.localizers.keys()
+            for mode_id in selected_modes:
+                localizer = self.atlas.localizers[mode_id]
                 match = self.atlas._observe_one_mode(
-                    localizer, gradient, mask, center, radius_px
+                    localizer, feature, mask, center, radius_px
                 )
                 if not match.get("valid"):
                     continue
@@ -158,7 +217,7 @@ class CausalRouteTracer:
             best["mode_id"],
         )
 
-    def _route_refine(self, observation, gradient, mask, top_k: int):
+    def _route_refine(self, observation, feature, mask, top_k: int):
         descriptor = describe_minimap(observation, mask)
         candidates = self._route_candidates(descriptor, top_k)
         centers = [
@@ -166,7 +225,7 @@ class CausalRouteTracer:
             for item in candidates
         ]
         return self._refine_centers(
-            gradient, mask, centers, self.recovery_radius_px, "route_recovery"
+            feature, mask, centers, self.recovery_radius_px, "route_recovery"
         )
 
     def track(self, observation, mask, session_time_ns=None) -> TraceResult:
@@ -192,23 +251,32 @@ class CausalRouteTracer:
                 str(state["mode_id"]),
             )
         else:
-            gradient = _gradient(observation)
+            feature = _correlation_feature(
+                observation, self.correlation_feature
+            )
             if self.variant == "route_refine_top1":
-                result = self._route_refine(observation, gradient, mask, 1)
+                result = self._route_refine(observation, feature, mask, 1)
             elif self.variant == "route_refine_top3":
-                result = self._route_refine(observation, gradient, mask, 3)
+                result = self._route_refine(observation, feature, mask, 3)
             else:
                 result = TraceResult(False, None, None, 0.0, 0.0, "local")
                 if self.previous_xy is not None:
+                    mode_ids = (
+                        [self.previous_mode_id]
+                        if self.mode_policy == "sticky"
+                        and self.previous_mode_id in self.atlas.localizers
+                        else None
+                    )
                     result = self._refine_centers(
-                        gradient,
+                        feature,
                         mask,
                         [(self.previous_xy, None)],
                         self.local_radius_px,
                         "local",
+                        mode_ids=mode_ids,
                     )
                 if not result.valid:
-                    result = self._route_refine(observation, gradient, mask, 3)
+                    result = self._route_refine(observation, feature, mask, 3)
         if (
             self.variant == "continuous_gated"
             and result.valid
@@ -236,10 +304,68 @@ class CausalRouteTracer:
                     result.mode_id,
                     measurement_accepted=False,
                 )
+        if result.valid and result.measurement_accepted:
+            self.rejection_streak = 0
+            self.global_recovery_hypotheses = []
+        else:
+            self.rejection_streak += 1
+        if (
+            self.recovery_policy == "global_consensus"
+            and self.rejection_streak >= 6
+        ):
+            fix = self.atlas.localize(observation, mask)
+            if fix.valid:
+                mode_id = (
+                    ((fix.diagnostics or {}).get("map_layer") or {}).get(
+                        "selected_mode_id"
+                    )
+                )
+                hypothesis = {
+                    "x": float(fix.x),
+                    "y": float(fix.y),
+                    "score": float(fix.score),
+                    "margin": float(fix.margin),
+                    "mode_id": mode_id,
+                }
+                if self.global_recovery_hypotheses:
+                    previous = self.global_recovery_hypotheses[-1]
+                    agrees = (
+                        math.hypot(
+                            hypothesis["x"] - previous["x"],
+                            hypothesis["y"] - previous["y"],
+                        )
+                        <= 30.0
+                        and (
+                            not hypothesis["mode_id"]
+                            or not previous["mode_id"]
+                            or hypothesis["mode_id"] == previous["mode_id"]
+                        )
+                    )
+                    if not agrees:
+                        self.global_recovery_hypotheses = []
+                self.global_recovery_hypotheses.append(hypothesis)
+                if len(self.global_recovery_hypotheses) >= 2:
+                    rows = self.global_recovery_hypotheses[-2:]
+                    result = TraceResult(
+                        True,
+                        float(np.mean([item["x"] for item in rows])),
+                        float(np.mean([item["y"] for item in rows])),
+                        float(np.mean([item["score"] for item in rows])),
+                        float(np.mean([item["margin"] for item in rows])),
+                        "global_recovery",
+                        mode_id=rows[-1]["mode_id"],
+                        measurement_accepted=True,
+                    )
+                    self.rejection_streak = 0
+                    self.global_recovery_hypotheses = []
         if result.valid:
             if result.measurement_accepted:
                 self.previous_xy = (float(result.x), float(result.y))
-            if session_time_ns is not None:
+                self.previous_mode_id = result.mode_id
+            if session_time_ns is not None and (
+                result.measurement_accepted
+                or self.continuity_clock == "frame"
+            ):
                 self.previous_time_ns = int(session_time_ns)
         return result
 
@@ -326,6 +452,13 @@ def benchmark_session(
     variant: str,
     *,
     score_min: float = 0.55,
+    local_radius_px: float = 18.0,
+    correlation_feature: str = "gradient",
+    mode_policy: str = "all",
+    continuity_clock: str = "frame",
+    continuity_speed_multiplier: float = 4.0,
+    recovery_policy: str = "route",
+    initialization: str = "route",
     reference_package_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
 ) -> dict:
@@ -339,13 +472,27 @@ def benchmark_session(
     )
     extractor = MinimapExtractor(minimap_config["crop_xywh"], minimap_calibration)
     atlas = LayeredGlobalLocalizer(Path(atlas_path))
-    tracer = CausalRouteTracer(package, atlas, variant, score_min=score_min)
+    tracer = CausalRouteTracer(
+        package,
+        atlas,
+        variant,
+        score_min=score_min,
+        local_radius_px=local_radius_px,
+        correlation_feature=correlation_feature,
+        mode_policy=mode_policy,
+        continuity_clock=continuity_clock,
+        continuity_speed_multiplier=continuity_speed_multiplier,
+        recovery_policy=recovery_policy,
+    )
+    if initialization not in INITIALIZATION_POLICIES:
+        raise ValueError("Unknown initialization policy: {}".format(initialization))
     capture = cv2.VideoCapture(str(reader.video_path("main")))
     if not capture.isOpened():
         atlas.close()
         raise RuntimeError("Could not open video: {}".format(reader.video_path("main")))
     rows = []
     decode_times = []
+    initialization_result = None
     try:
         for record in records:
             decode_started = time.perf_counter_ns()
@@ -356,6 +503,36 @@ def benchmark_session(
                     "Video ended before frame {}".format(record["frame_index"])
                 )
             observation, mask = extractor.extract(frame)
+            if initialization == "global" and initialization_result is None:
+                initialization_started = time.perf_counter_ns()
+                fix = atlas.localize(observation, mask)
+                initialization_result = {
+                    "valid": bool(fix.valid),
+                    "elapsed_ms": (
+                        time.perf_counter_ns() - initialization_started
+                    )
+                    / 1.0e6,
+                    "score": float(fix.score),
+                    "margin": float(fix.margin),
+                    "x": float(fix.x),
+                    "y": float(fix.y),
+                    "mode_id": (
+                        ((fix.diagnostics or {}).get("map_layer") or {}).get(
+                            "selected_mode_id"
+                        )
+                    ),
+                    "rejection_reasons": list(fix.rejection_reasons),
+                    "feeds_tracker_once": bool(fix.valid),
+                }
+                if fix.valid:
+                    tracer.previous_xy = (float(fix.x), float(fix.y))
+                    tracer.previous_mode_id = initialization_result["mode_id"]
+                else:
+                    raise RuntimeError(
+                        "Independent global initialization failed: {}".format(
+                            ",".join(fix.rejection_reasons)
+                        )
+                    )
             started = time.perf_counter_ns()
             result = tracer.track(
                 observation, mask, session_time_ns=record["session_time_ns"]
@@ -423,7 +600,14 @@ def benchmark_session(
             "recovery_radius_px": tracer.recovery_radius_px,
             "local_radius_px": tracer.local_radius_px,
             "continuity_speed_limit_px_s": tracer.continuity_speed_limit_px_s,
+            "continuity_speed_multiplier": tracer.continuity_speed_multiplier,
+            "recovery_policy": tracer.recovery_policy,
+            "correlation_feature": tracer.correlation_feature,
+            "mode_policy": tracer.mode_policy,
+            "continuity_clock": tracer.continuity_clock,
+            "initialization": initialization,
         },
+        "initialization": initialization_result,
         "algorithm_latency_ms": _percentiles(algorithm_times),
         "algorithm_throughput_fps": (
             1000.0 / float(np.mean(algorithm_times)) if algorithm_times else 0.0
@@ -483,6 +667,21 @@ def _parse_args():
     parser.add_argument("--minimap-calibration", type=Path, required=True)
     parser.add_argument("--variant", choices=VARIANTS, required=True)
     parser.add_argument("--score-min", type=float, default=0.55)
+    parser.add_argument("--local-radius-px", type=float, default=18.0)
+    parser.add_argument(
+        "--correlation-feature", choices=CORRELATION_FEATURES, default="gradient"
+    )
+    parser.add_argument("--mode-policy", choices=MODE_POLICIES, default="all")
+    parser.add_argument(
+        "--initialization", choices=INITIALIZATION_POLICIES, default="route"
+    )
+    parser.add_argument(
+        "--continuity-clock", choices=CONTINUITY_CLOCKS, default="frame"
+    )
+    parser.add_argument("--continuity-speed-multiplier", type=float, default=4.0)
+    parser.add_argument(
+        "--recovery-policy", choices=RECOVERY_POLICIES, default="route"
+    )
     parser.add_argument("--reference-package", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
@@ -500,6 +699,13 @@ def main():
         calibration,
         args.variant,
         score_min=args.score_min,
+        local_radius_px=args.local_radius_px,
+        correlation_feature=args.correlation_feature,
+        mode_policy=args.mode_policy,
+        initialization=args.initialization,
+        continuity_clock=args.continuity_clock,
+        continuity_speed_multiplier=args.continuity_speed_multiplier,
+        recovery_policy=args.recovery_policy,
         reference_package_path=args.reference_package,
         output_path=args.output,
     )

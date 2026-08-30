@@ -1,9 +1,14 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
 
-from poc.benchmark_route_tracer import CausalRouteTracer, _loss_metrics
+from poc.benchmark_route_tracer import (
+    CausalRouteTracer,
+    _correlation_feature,
+    _loss_metrics,
+)
 
 
 class _Package:
@@ -110,6 +115,71 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
         self.assertEqual((result.x, result.y), (50.0, 60.0))
         self.assertEqual(result.source, "continuity_hold")
 
+    def test_accepted_continuity_clock_accumulates_time_while_held(self):
+        package = _Package()
+        atlas = Mock()
+        atlas.localizers = {"world": object()}
+        atlas._observe_one_mode.return_value = {
+            "valid": True,
+            "score": 0.8,
+            "best_offset_canonical_xy": [20.0, 0.0],
+        }
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "continuous_gated",
+            continuity_clock="accepted",
+        )
+        tracer.previous_xy = (50.0, 60.0)
+        tracer.previous_time_ns = 1_000_000_000
+
+        result = tracer.track(
+            np.zeros((32, 32, 3), np.uint8),
+            np.full((32, 32), 255, np.uint8),
+            session_time_ns=1_033_000_000,
+        )
+
+        self.assertFalse(result.measurement_accepted)
+        self.assertEqual(tracer.previous_time_ns, 1_000_000_000)
+
+    def test_global_recovery_consensus_reseeds_after_rejection_streak(self):
+        package = _Package()
+        atlas = Mock()
+        atlas.localizers = {"world": object()}
+        atlas._observe_one_mode.return_value = {
+            "valid": True,
+            "score": 0.8,
+            "best_offset_canonical_xy": [20.0, 0.0],
+        }
+        atlas.localize.return_value = SimpleNamespace(
+            valid=True,
+            x=70.0,
+            y=60.0,
+            score=0.9,
+            margin=0.2,
+            diagnostics={"map_layer": {"selected_mode_id": "world"}},
+        )
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "continuous_gated",
+            recovery_policy="global_consensus",
+        )
+        tracer.previous_xy = (50.0, 60.0)
+        tracer.previous_time_ns = 1_000_000_000
+        result = None
+        for index in range(7):
+            result = tracer.track(
+                np.zeros((32, 32, 3), np.uint8),
+                np.full((32, 32), 255, np.uint8),
+                session_time_ns=1_033_000_000 + index * 33_000_000,
+            )
+
+        self.assertEqual(result.source, "global_recovery")
+        self.assertTrue(result.measurement_accepted)
+        self.assertEqual((result.x, result.y), (70.0, 60.0))
+        self.assertEqual(atlas.localize.call_count, 2)
+
     def test_loss_metrics_count_episodes_and_longest_streak(self):
         metrics = _loss_metrics([True, False, False, True, False])
 
@@ -117,6 +187,15 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
         self.assertEqual(metrics["longest_loss_frames"], 2)
         self.assertEqual(metrics["lost_frame_count"], 3)
         self.assertAlmostEqual(metrics["tracked_fraction"], 0.4)
+
+    def test_experimental_correlation_features_preserve_image_size(self):
+        image = np.random.RandomState(3).randint(
+            0, 255, (32, 40, 3), dtype=np.uint8
+        )
+        for name in ("gradient", "intensity", "canny", "laplacian"):
+            feature = _correlation_feature(image, name)
+            self.assertEqual(feature.shape, (32, 40))
+            self.assertEqual(feature.dtype, np.float32)
 
 
 if __name__ == "__main__":
