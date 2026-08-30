@@ -20,7 +20,7 @@ from aria_trace.services.calibration.rig.cross_source import (
     orient_hik_source_from_first_adb_frame,
 )
 from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
-from aria_trace.services.calibration.rig.hik.phone import AdbPhoneSession
+from aria_trace.adapters.android.phone import AdbPhoneSession
 from aria_trace.adapters.sources import AdbClockMapper, AdbGetEventSource
 
 

@@ -6,7 +6,7 @@ import re
 import time
 from typing import Callable, Mapping, Optional, Sequence
 
-from aria_trace.services.calibration.rig.hik.phone import AdbPhoneSession
+from aria_trace.adapters.android.phone import AdbPhoneSession
 
 
 ANDROID_GAME_PACKAGE_CANDIDATES = {

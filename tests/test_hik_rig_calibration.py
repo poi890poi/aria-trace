@@ -24,7 +24,7 @@ from acquisition.rig_calibration.hik.algorithms import (
     temporal_black_statistics,
     temporal_white_statistics,
 )
-import aria_trace.services.calibration.rig.hik.camera as hikcam
+import aria_trace.adapters.hik.compat as hikcam
 from acquisition.rig_calibration.hik.driver import (
     HikMvsCameraAdapter,
     MvsPythonBackend,
@@ -72,10 +72,10 @@ class HikAlgorithmTests(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             with mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.os.replace",
+                "aria_trace.workflows.hik_rig_calibration.os.replace",
                 side_effect=PermissionError("directory locked"),
             ), mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.time.sleep"
+                "aria_trace.workflows.hik_rig_calibration.time.sleep"
             ):
                 method = HikRigCalibrationSession._publish_calibration_directory(
                     temporary, output
@@ -93,13 +93,13 @@ class HikAlgorithmTests(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             with mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.os.replace",
+                "aria_trace.workflows.hik_rig_calibration.os.replace",
                 side_effect=PermissionError("directory locked"),
             ), mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.shutil.copytree",
+                "aria_trace.workflows.hik_rig_calibration.shutil.copytree",
                 side_effect=PermissionError("file locked"),
             ), mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.time.sleep"
+                "aria_trace.workflows.hik_rig_calibration.time.sleep"
             ):
                 with self.assertRaisesRegex(PermissionError, "temporary bundle was retained"):
                     HikRigCalibrationSession._publish_calibration_directory(
@@ -248,7 +248,7 @@ class HikAlgorithmTests(unittest.TestCase):
             for index in range(8)
         ]
         with mock.patch(
-            "aria_trace.services.calibration.rig.hik.workflow.render_data_matrix_target",
+            "aria_trace.workflows.hik_rig_calibration.render_data_matrix_target",
             side_effect=render,
         ):
             batch = session._compose_data_matrix_batch(
@@ -921,7 +921,7 @@ class HikPhoneTests(unittest.TestCase):
             self.assertEqual(resolve_adb_executable(str(adb)), str(adb.resolve()))
             output = "List of devices attached\nPHONE-1\tdevice\nPHONE-2\toffline\n"
             with mock.patch(
-                "aria_trace.services.calibration.rig.hik.phone._subprocess_runner",
+                "aria_trace.adapters.android.phone._subprocess_runner",
                 return_value=output,
             ):
                 self.assertEqual(connected_adb_devices(str(adb)), ["PHONE-1"])
@@ -1170,7 +1170,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "exact_payload_decoded": False,
             }
             with mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.grade_data_matrix_decode",
+                "aria_trace.workflows.hik_rig_calibration.grade_data_matrix_decode",
                 return_value=failed_grade,
             ):
                 result = session.grade_data_matrix()
@@ -1229,7 +1229,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "exact_payload_decoded": True,
             }
             with mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.grade_data_matrix_decode",
+                "aria_trace.workflows.hik_rig_calibration.grade_data_matrix_decode",
                 return_value=decoded,
             ):
                 result = session.grade_data_matrix()
@@ -1275,7 +1275,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
             session._capture_data_matrix_frame = lambda: np.zeros((100, 100, 3), np.uint8)
             session._compose_data_matrix_batch = self._fake_data_matrix_batch
             with mock.patch(
-                "aria_trace.services.calibration.rig.hik.workflow.grade_data_matrix_decode",
+                "aria_trace.workflows.hik_rig_calibration.grade_data_matrix_decode",
                 side_effect=RuntimeError("decoder unavailable"),
             ):
                 result = session.grade_data_matrix()

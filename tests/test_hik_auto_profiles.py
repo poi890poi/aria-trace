@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from acquisition.profile_registry import ProfileContext, ProfileRegistry
-from aria_trace.services.calibration.rig.hik import camera as hikcam
-from aria_trace.services.calibration.rig.hik import game_camera
+from aria_trace.adapters.hik import compat as hikcam
+from aria_trace.adapters.hik import game_camera
 
 
 class HikAutoProfileTests(unittest.TestCase):

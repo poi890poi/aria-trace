@@ -15,8 +15,8 @@ import numpy as np
 
 from aria_trace.adapters.android.capture import find_scrcpy_server
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
-from aria_trace.services.calibration.rig.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
-from aria_trace.services.calibration.rig.hik.phone import AdbPhoneSession, resolve_adb_executable
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from aria_trace.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
 from aria_trace.adapters.android.control import ScrcpyTouchController
 
 

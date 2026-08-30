@@ -2,7 +2,7 @@
 
 Usage is intentionally shaped like the common ``hik_camera.hik_camera`` module::
 
-    import aria_trace.services.calibration.rig.hik.camera as hikcam
+    import aria_trace.adapters.hik.compat as hikcam
 
     with hikcam.HikCamera(config={"game_id": "genshin-impact"}) as cam:
         rgb = cam.get_frame()
@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from .driver import HikMvsCameraAdapter, RectifiedHikCamera
-from .spaces import RigCalibratedSpaceConverter
+from aria_trace.services.calibration.rig.hik.spaces import RigCalibratedSpaceConverter
 
 
 CalibrationPath = Union[str, Path]

@@ -7,13 +7,13 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .driver import HikMvsCameraAdapter
-from .phone import (
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
+from aria_trace.adapters.android.phone import (
     AdbPhoneSession,
     connected_adb_devices,
     resolve_adb_executable,
 )
-from .workflow import (
+from aria_trace.workflows.hik_rig_calibration import (
     HikCalibrationOptions,
     HikRigCalibrationSession,
 )

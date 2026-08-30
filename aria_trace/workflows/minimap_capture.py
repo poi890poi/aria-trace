@@ -31,12 +31,12 @@ from aria_trace.services.calibration.rig.cross_source import (
 from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
 from aria_trace.workflows.recording import AcquisitionRecorder
-from aria_trace.services.calibration.rig.hik.phone import (
+from aria_trace.adapters.android.phone import (
     AdbPhoneSession,
     connected_adb_devices,
     resolve_adb_executable,
 )
-from aria_trace.services.calibration.rig.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.android.control import ScrcpyTouchController
 from aria_trace.adapters.sources import AdbClockMapper
 

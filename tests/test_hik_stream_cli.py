@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from aria_trace.services.calibration.rig.hik import stream
+from aria_trace.apps import hik_stream as stream
 
 
 class HikStreamCliTests(unittest.TestCase):

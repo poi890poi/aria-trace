@@ -11,10 +11,10 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
-from ..geometry import CharucoLayout
-from .display import AdbDisplayTarget
-from .driver import HikMvsCameraAdapter, RectifiedHikCamera
-from .phone import AdbPhoneSession, resolve_adb_executable
+from aria_trace.services.calibration.rig.geometry import CharucoLayout
+from aria_trace.adapters.android.hik_display import AdbDisplayTarget
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from aria_trace.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
 
 

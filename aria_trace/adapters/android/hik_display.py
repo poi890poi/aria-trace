@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from aria_trace.adapters.android.display import PhoneTargetAdapter, Presentation
-from ..geometry import CharucoLayout, generate_charuco_target
+from aria_trace.services.calibration.rig.geometry import CharucoLayout, generate_charuco_target
 from .phone import AdbPhoneSession
 
 

@@ -24,11 +24,11 @@ from aria_trace.adapters.filesystem.commented_yaml import (
 )
 from aria_trace.adapters.rig.devices import CameraConfiguration
 from aria_trace.adapters.android.display import LocalPhoneTargetServer, PhoneTargetAdapter, Presentation
-from ..bundle import build_calibration, write_calibration_bundle
-from ..data_matrix_readability import grade_data_matrix_decode, render_data_matrix_target
-from ..geometry import CharucoLayout, detect_charuco_correspondences, estimate_screen_geometry
-from ..image_quality import measure_slanted_edge_esfr
-from .algorithms import (
+from aria_trace.services.calibration.rig.bundle import build_calibration, write_calibration_bundle
+from aria_trace.services.calibration.rig.data_matrix_readability import grade_data_matrix_decode, render_data_matrix_target
+from aria_trace.services.calibration.rig.geometry import CharucoLayout, detect_charuco_correspondences, estimate_screen_geometry
+from aria_trace.services.calibration.rig.image_quality import measure_slanted_edge_esfr
+from aria_trace.services.calibration.rig.hik.algorithms import (
     BlackLevelObservation,
     ExposureObservation,
     camera_roi_for_screen_region,
@@ -46,14 +46,15 @@ from .algorithms import (
     temporal_black_statistics,
     white_statistics,
 )
-from .driver import HikMvsCameraAdapter
-from .display import AdbDisplayTarget
-from .media_trace import (
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
+from aria_trace.adapters.android.hik_display import AdbDisplayTarget
+from aria_trace.evidence.rig_media import (
     build_data_matrix_media_registry,
     build_hik_calibration_media_registry,
     build_hik_failure_media_registry,
 )
-from .patterns import (
+from aria_trace.evidence.rig_alignment import cross_source_alignment_evidence
+from aria_trace.services.calibration.rig.hik.patterns import (
     camera_white_mask,
     focus_edge_regions,
     focus_frame_rect,
@@ -61,7 +62,7 @@ from .patterns import (
     tinted,
     white_patch,
 )
-from .phone import AdbPhoneSession, PhoneMetrics
+from aria_trace.adapters.android.phone import AdbPhoneSession, PhoneMetrics
 
 
 Progress = Callable[[str], None]
@@ -96,106 +97,6 @@ def screen_filling_charuco_layout(screen_size_px: Sequence[int]) -> CharucoLayou
         squares_y=squares_y,
         margin_px=(0, 0),
     )
-
-
-def cross_source_alignment_evidence(
-    adb_crop: np.ndarray,
-    hik_rectified: np.ndarray,
-    valid_mask: np.ndarray,
-) -> tuple[Dict[str, float], Dict[str, np.ndarray]]:
-    """Compare already-aligned ADB and HIK views without fitting a transform."""
-
-    if adb_crop is None or hik_rectified is None:
-        raise ValueError("Cross-source images are required")
-    if adb_crop.shape[:2] != hik_rectified.shape[:2]:
-        raise ValueError(
-            "Cross-source image sizes differ: {} versus {}".format(
-                adb_crop.shape[:2], hik_rectified.shape[:2]
-            )
-        )
-    if valid_mask.shape[:2] != adb_crop.shape[:2]:
-        raise ValueError("Cross-source valid mask has the wrong size")
-    selected = np.asarray(valid_mask) > 0
-    if int(np.count_nonzero(selected)) < 64:
-        raise ValueError("Cross-source valid mask contains too few pixels")
-
-    adb_gray = cv2.cvtColor(adb_crop, cv2.COLOR_BGR2GRAY)
-    hik_gray = cv2.cvtColor(hik_rectified, cv2.COLOR_BGR2GRAY)
-    adb_blur = cv2.GaussianBlur(adb_gray, (5, 5), 0.8)
-    hik_blur = cv2.GaussianBlur(hik_gray, (5, 5), 0.8)
-    adb_values = adb_blur[selected].astype(np.float64)
-    hik_values = hik_blur[selected].astype(np.float64)
-    if min(float(np.std(adb_values)), float(np.std(hik_values))) <= 1.0e-6:
-        correlation = 0.0
-    else:
-        correlation = float(np.corrcoef(adb_values, hik_values)[0, 1])
-        if not np.isfinite(correlation):
-            correlation = 0.0
-
-    adb_threshold = float(np.percentile(adb_values, 50))
-    hik_threshold = float(np.percentile(hik_values, 50))
-    adb_binary = adb_blur >= adb_threshold
-    hik_binary = hik_blur >= hik_threshold
-    binary_agreement = float(np.mean(adb_binary[selected] == hik_binary[selected]))
-
-    adb_edges = cv2.Canny(adb_blur, 40, 120) > 0
-    hik_edges = cv2.Canny(hik_blur, 40, 120) > 0
-    kernel = np.ones((3, 3), np.uint8)
-    adb_dilated = cv2.dilate(adb_edges.astype(np.uint8), kernel) > 0
-    hik_dilated = cv2.dilate(hik_edges.astype(np.uint8), kernel) > 0
-    adb_edge_count = int(np.count_nonzero(adb_edges & selected))
-    hik_edge_count = int(np.count_nonzero(hik_edges & selected))
-    adb_supported = (
-        float(np.count_nonzero(adb_edges & hik_dilated & selected)) / adb_edge_count
-        if adb_edge_count
-        else 0.0
-    )
-    hik_supported = (
-        float(np.count_nonzero(hik_edges & adb_dilated & selected)) / hik_edge_count
-        if hik_edge_count
-        else 0.0
-    )
-    edge_overlap = 0.5 * (adb_supported + hik_supported)
-    confidence = float(
-        np.clip(
-            0.50 * max(0.0, correlation)
-            + 0.25 * binary_agreement
-            + 0.25 * edge_overlap,
-            0.0,
-            1.0,
-        )
-    )
-
-    adb_normalized = cv2.normalize(adb_blur, None, 0, 255, cv2.NORM_MINMAX)
-    hik_normalized = cv2.normalize(hik_blur, None, 0, 255, cv2.NORM_MINMAX)
-    difference = cv2.absdiff(adb_normalized, hik_normalized)
-    heatmap = cv2.applyColorMap(difference, cv2.COLORMAP_TURBO)
-    overlay = np.zeros((*adb_gray.shape, 3), np.uint8)
-    overlay[:, :, 2] = adb_edges.astype(np.uint8) * 255
-    overlay[:, :, 0] = hik_edges.astype(np.uint8) * 255
-    overlay[:, :, 1] = hik_edges.astype(np.uint8) * 255
-    invalid = ~selected
-    heatmap[invalid] = 0
-    overlay[invalid] = 0
-    side_by_side = np.hstack([adb_crop, hik_rectified])
-    metrics = {
-        "confidence": confidence,
-        "grayscale_correlation": correlation,
-        "binary_agreement": binary_agreement,
-        "edge_overlap": edge_overlap,
-        "adb_edge_supported_fraction": adb_supported,
-        "hik_edge_supported_fraction": hik_supported,
-        "valid_pixel_fraction": float(np.mean(selected)),
-    }
-    images = {
-        "adb_visible_crop.png": adb_crop,
-        "hik_rectified.png": hik_rectified,
-        "edge_overlay_adb_red_hik_cyan.png": overlay,
-        "normalized_difference_heatmap.png": heatmap,
-        "side_by_side_adb_then_hik.png": side_by_side,
-        "valid_mask.png": np.asarray(valid_mask, dtype=np.uint8),
-    }
-    return metrics, images
 
 
 def _load_callable(specification: str):

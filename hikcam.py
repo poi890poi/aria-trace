@@ -9,10 +9,10 @@ adapter contract::
         frame = camera.get_frame()
 
 Profile selection, camera ownership, and all frame-mode behavior remain in the
-verified implementation under :mod:`aria_trace.services.calibration.rig.hik.camera`.
+verified implementation under :mod:`aria_trace.adapters.hik.compat`.
 """
 
-from aria_trace.services.calibration.rig.hik.camera import HikCamera, MultiHikCamera
+from aria_trace.adapters.hik.compat import HikCamera, MultiHikCamera
 
 
 get_cam = HikCamera.get_cam

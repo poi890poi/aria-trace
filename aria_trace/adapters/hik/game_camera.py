@@ -11,8 +11,8 @@ import cv2
 import numpy as np
 
 from aria_trace.adapters.rig.devices import CameraConfiguration
-from ..contracts import FrameSample
-from .algorithms import (
+from aria_trace.services.calibration.rig.contracts import FrameSample
+from aria_trace.services.calibration.rig.hik.algorithms import (
     camera_adapter_roi_to_output_homography,
     camera_roi_for_screen_region,
     compose_hardware_roi_homography,

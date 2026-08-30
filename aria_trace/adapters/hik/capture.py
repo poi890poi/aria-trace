@@ -10,8 +10,8 @@ import cv2
 
 from aria_trace.domain.packets import FramePacket
 from aria_trace.adapters.rig.devices import CameraConfiguration
-from aria_trace.services.calibration.rig.hik.driver import HikMvsCameraAdapter
-from aria_trace.services.calibration.rig.hik.driver import RectifiedHikCamera
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
+from aria_trace.adapters.hik.driver import RectifiedHikCamera
 from aria_trace.adapters.sources import FrameSource
 
 

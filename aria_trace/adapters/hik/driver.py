@@ -16,9 +16,9 @@ import cv2
 import numpy as np
 
 from aria_trace.adapters.rig.devices import CameraAdapter, CameraConfiguration, CameraDevice
-from ..contracts import FrameSample
-from .algorithms import camera_adapter_roi_to_output_homography
-from .spaces import RigCalibratedSpaceConverter
+from aria_trace.services.calibration.rig.contracts import FrameSample
+from aria_trace.services.calibration.rig.hik.algorithms import camera_adapter_roi_to_output_homography
+from aria_trace.services.calibration.rig.hik.spaces import RigCalibratedSpaceConverter
 
 
 def _decode_c_string(value: Any) -> str:

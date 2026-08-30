@@ -19,7 +19,7 @@ def _invoke(module_name: str, argv: Optional[Sequence[str]]) -> int:
 
 
 def rig_calibration(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.services.calibration.rig.hik.calibrate", argv)
+    return _invoke("aria_trace.apps.hik_rig_calibration", argv)
 
 
 def zigzag_acquisition(argv: Optional[Sequence[str]] = None) -> int:
@@ -31,7 +31,7 @@ def minimap_calibration(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def camera_adapter_demo(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.services.calibration.rig.hik.stream", argv)
+    return _invoke("aria_trace.apps.hik_stream", argv)
 
 
 COMMANDS = {

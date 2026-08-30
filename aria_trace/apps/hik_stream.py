@@ -9,10 +9,10 @@ from typing import Optional, Sequence
 
 import cv2
 
-from .camera import Camera, HikCamera
-from .driver import HikMvsCameraAdapter, RectifiedHikCamera
-from .game_camera import ProfiledHikGameCamera
-from .phone import AdbPhoneSession
+from aria_trace.adapters.hik.compat import Camera, HikCamera
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
+from aria_trace.adapters.android.phone import AdbPhoneSession
 
 
 class PhoneDisplayPowerSession:

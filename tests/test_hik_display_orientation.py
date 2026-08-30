@@ -93,7 +93,7 @@ class HikDisplayOrientationTests(unittest.TestCase):
                     launched.append(image.copy())
 
                 with mock.patch(
-                    "aria_trace.services.calibration.rig.hik.display.generate_charuco_target",
+                    "aria_trace.adapters.android.hik_display.generate_charuco_target",
                     return_value=canonical,
                 ), mock.patch.object(
                     target, "_launch_target", side_effect=launch

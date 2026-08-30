@@ -95,7 +95,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.rig_calibration import FrameSample as legacy_result
         from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter as legacy_hik
         from aria_trace.services.calibration.rig import FrameSample
-        from aria_trace.services.calibration.rig.hik.driver import HikMvsCameraAdapter
+        from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
 
         self.assertIs(legacy_result, FrameSample)
         self.assertIs(legacy_hik, HikMvsCameraAdapter)
@@ -119,6 +119,21 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 for imported in imports_in(path):
                     if imported.startswith(forbidden):
                         violations.append((str(path.relative_to(ROOT)), imported))
+        self.assertEqual([], violations)
+
+    def test_rig_hik_service_has_no_hardware_or_application_dependencies(self):
+        forbidden = (
+            "acquisition",
+            "aria_trace.adapters",
+            "aria_trace.apps",
+            "aria_trace.workflows",
+        )
+        violations = []
+        root = ROOT / "aria_trace" / "services" / "calibration" / "rig" / "hik"
+        for path in root.rglob("*.py"):
+            for imported in imports_in(path):
+                if imported.startswith(forbidden):
+                    violations.append((str(path.relative_to(ROOT)), imported))
         self.assertEqual([], violations)
 
     def test_no_new_production_imports_from_poc_are_added(self):

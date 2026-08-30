@@ -9,7 +9,7 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
-from .hik.workflow import cross_source_alignment_evidence
+from aria_trace.evidence.rig_alignment import cross_source_alignment_evidence
 from .hik.spaces import RigCalibratedSpaceConverter
 
 
