@@ -188,6 +188,18 @@ records exact IDs and modes, exposure/gain/WB, hardware ROI, camera-visible phon
 `(x,y,w,h)`, phone/viewer orientation, full-sensor homographies, and output geometry.
 It also records which WB path was retained, every attempted WB measurement, and
 non-fatal imaging-quality warnings.
+The hardware ROI and normalized output cover the raster bounding box of every
+phone-display pixel visible in the full-sensor image; this coverage is never
+eroded. Calibration adds an outward 8-display-pixel allowance by default for
+fit and sampling tolerance. Override it when needed:
+
+```powershell
+.\calibrate-hik-rig.bat --visible-screen-margin-px 12
+```
+
+Exposure, focus, and Data Matrix targets use a separately recorded, fully
+visible safe rectangle. Rectangular output corners outside the measured phone
+footprint remain explicit in `valid_screen_mask.png`.
 It also records measured ROI payload reduction, adapter read/frame-interval
 distributions, and a reference host-display-request to first stable camera-frame
 latency. It establishes solid-black/solid-white baselines, then measures three

@@ -220,6 +220,7 @@ class HikCalibrationOptions:
     maximum_auto_gain_db: float = 12.0
     exposure_noise_frames: int = 4
     geometry_frames: int = 12
+    visible_screen_margin_px: int = 8
     settle_frames: int = 3
     headless: bool = False
     save_without_prompt: bool = False
@@ -249,6 +250,8 @@ class HikCalibrationOptions:
             )
         if self.operation_timeout_seconds <= 0:
             raise ValueError("Operation timeout must be positive")
+        if self.visible_screen_margin_px < 0:
+            raise ValueError("Visible-screen coverage margin cannot be negative")
 
 
 class HikRigCalibrationSession:
@@ -1338,8 +1341,12 @@ class HikRigCalibrationSession:
         self.visible_region = camera_visible_screen_region(
             self.geometry.viewport_polygon_screen_xy,
             phone_metrics.screen_size_px,
+            coverage_margin_px=self.options.visible_screen_margin_px,
         )
         x, y, width, height = self.visible_region["xywh"]
+        safe_x, safe_y, safe_width, safe_height = self.visible_region[
+            "safe_xywh"
+        ]
         self.orientation_evidence = charuco_orientation_evidence(
             self.geometry.inverse_matrix_3x3,
             [x + (width - 1) / 2.0, y + (height - 1) / 2.0],
@@ -1348,16 +1355,21 @@ class HikRigCalibrationSession:
         self.white_mask = camera_white_mask(
             camera_size,
             self.phone_metrics.screen_size_px,
-            self.visible_region["xywh"],
+            self.visible_region["safe_xywh"],
             self.geometry.inverse_matrix_3x3,
         )
         self.progress(
-            "Camera-visible phone region: x={} y={} w={} h={} px; screen IoU {:.3f}; "
+            "Camera-visible phone coverage: x={} y={} w={} h={} px; safe target "
+            "x={} y={} w={} h={} px; screen IoU {:.3f}; "
             "ChArUco app-up is {:.2f} degrees clockwise from camera-up.".format(
                 x,
                 y,
                 width,
                 height,
+                safe_x,
+                safe_y,
+                safe_width,
+                safe_height,
                 self.visible_region["screen_view_iou"],
                 self.orientation_evidence["camera_up_to_app_up_clockwise_degrees"],
             )
@@ -1465,7 +1477,7 @@ class HikRigCalibrationSession:
         visible_region = self._required(self.visible_region, "camera-visible screen region")
         geometry = self._required(self.geometry, "screen geometry")
         auto_camera_roi = camera_roi_for_screen_region(
-            visible_region["xywh"],
+            visible_region["safe_xywh"],
             geometry.inverse_matrix_3x3,
             [int(self.camera_metadata["width_px"]), int(self.camera_metadata["height_px"])],
             margin_px=0,
@@ -1490,7 +1502,7 @@ class HikRigCalibrationSession:
             )
         auto_target = white_patch(
             phone_metrics.screen_size_px,
-            visible_region["xywh"],
+            visible_region["safe_xywh"],
             intensity_bgr=(128, 128, 128),
         )
         self.auto_target_image = auto_target.copy()
@@ -1611,7 +1623,7 @@ class HikRigCalibrationSession:
         self.progress("Locking the completed HIK one-shot exposure and gain...")
         self._set_preview_stage("Verifying HIK auto result", exposure_mode="manual locked")
         shown = self.target.present_image(
-            white_patch(phone_metrics.screen_size_px, visible_region["xywh"]),
+            white_patch(phone_metrics.screen_size_px, visible_region["safe_xywh"]),
             "HIK auto-result verification white patch",
         )
         self._wait_painted(shown)
@@ -2134,7 +2146,7 @@ class HikRigCalibrationSession:
         geometry = self._required(self.geometry, "screen geometry")
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         roi = camera_roi_for_screen_region(
-            visible_region["xywh"],
+            visible_region["safe_xywh"],
             geometry.inverse_matrix_3x3,
             [frame.shape[1], frame.shape[0]],
             margin_px=0,
@@ -2149,7 +2161,7 @@ class HikRigCalibrationSession:
             "edges": [],
         }
         pitch = phone_metrics.to_dict().get("physical_pixel_pitch_mm_xy")
-        for edge in focus_edge_regions(visible_region["xywh"]):
+        for edge in focus_edge_regions(visible_region["safe_xywh"]):
             evidence = dict(edge)
             try:
                 esfr, _ = measure_slanted_edge_esfr(
@@ -2210,7 +2222,7 @@ class HikRigCalibrationSession:
         geometry = self._required(self.geometry, "screen geometry")
         physical_pitch = phone_metrics.to_dict().get("physical_pixel_pitch_mm_xy")
         frame_x, frame_y, frame_width, frame_height = focus_frame_rect(
-            visible_region["xywh"]
+            visible_region["safe_xywh"]
         )
         frame_screen_quad = np.asarray(
             [
@@ -2236,7 +2248,9 @@ class HikRigCalibrationSession:
             ),
         )
         shown = self.target.present_image(
-            focus_pattern(phone_metrics.screen_size_px, visible_region["xywh"]),
+            focus_pattern(
+                phone_metrics.screen_size_px, visible_region["safe_xywh"]
+            ),
             "Native focus and ISO 12233 slanted edge",
         )
         self._wait_painted(shown)
@@ -2393,7 +2407,7 @@ class HikRigCalibrationSession:
                 tile_limit_width = max(120, (grid_available_width - 6) // 2)
                 tile_limit_height = max(120, (available_height - 6) // 2)
                 crops = []
-                for edge in focus_edge_regions(visible_region["xywh"]):
+                for edge in focus_edge_regions(visible_region["safe_xywh"]):
                     edge_roi = camera_roi_for_screen_region(
                         edge["rect_screen_xywh"],
                         geometry.inverse_matrix_3x3,
@@ -2487,7 +2501,7 @@ class HikRigCalibrationSession:
         ]
         trials_per_size = int(self.options.data_matrix_trials_per_size)
         module_px = int(self.options.data_matrix_initial_module_px)
-        maximum_module = max(1, min(visible_region["xywh"][2:]))
+        maximum_module = max(1, min(visible_region["safe_xywh"][2:]))
         per_size = []
         required_rate = DATA_MATRIX_ACCEPTANCE_RATE
         self._preview_disabled = False
@@ -2526,7 +2540,7 @@ class HikRigCalibrationSession:
                     )
                 batch = self._compose_data_matrix_batch(
                     phone_metrics.screen_size_px,
-                    visible_region["xywh"],
+                    visible_region["safe_xywh"],
                     module_px,
                     specifications,
                 )

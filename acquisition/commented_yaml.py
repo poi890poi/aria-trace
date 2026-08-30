@@ -76,7 +76,12 @@ HIK_CONFIG_COMMENTS = {
     ),
     "phone": "Phone identity, raster, orientation, refresh, brightness, and physical scale.",
     "imaging": "Locked exposure, gain, black level, and white balance owned by this rig.",
-    "geometry": "Measured camera-sensor to phone-display coordinate relationship.",
+    "geometry": (
+        "Measured camera-sensor to phone-display coordinate relationship. In "
+        "camera_visible_screen_region, xywh covers every full-sensor-visible "
+        "display pixel plus coverage_margin_px; safe_xywh is the inset, fully "
+        "visible rectangle used only for calibration targets and metrics."
+    ),
     "normalization": "Runtime mapping from HIK sensor pixels to the normalized visible-phone image.",
     "coordinate_spaces": (
         "Two HIK acquisition spaces are intentional.\n"

@@ -64,6 +64,15 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--operation-timeout-seconds", type=float, default=8.0)
     value.add_argument("--geometry-frames", type=int, default=12)
+    value.add_argument(
+        "--visible-screen-margin-px",
+        type=int,
+        default=8,
+        help=(
+            "Outward display-space margin around all camera-visible phone pixels "
+            "for normalization and hardware ROI coverage (default: 8)"
+        ),
+    )
     value.add_argument("--settle-frames", type=int, default=3)
     value.add_argument("--headless", action="store_true", help="Skip interactive focus UI")
     value.add_argument(
@@ -157,6 +166,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         maximum_auto_gain_db=arguments.max_auto_gain_db,
         exposure_noise_frames=arguments.exposure_noise_frames,
         geometry_frames=arguments.geometry_frames,
+        visible_screen_margin_px=arguments.visible_screen_margin_px,
         settle_frames=arguments.settle_frames,
         headless=arguments.headless,
         save_without_prompt=arguments.save,

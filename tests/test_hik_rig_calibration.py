@@ -327,6 +327,7 @@ class HikAlgorithmTests(unittest.TestCase):
             )
         self.assertEqual(options.maximum_exposure_periods, 1)
         self.assertEqual(options.maximum_auto_gain_db, 12.0)
+        self.assertEqual(options.visible_screen_margin_px, 8)
         self.assertAlmostEqual(
             refresh_quantized_exposure_us(
                 120.0, 1.0 / options.maximum_exposure_periods
@@ -382,7 +383,10 @@ class HikAlgorithmTests(unittest.TestCase):
                 refresh_hz=60.0,
                 screen_size_px=(32, 32),
             )
-            session.visible_region = {"xywh": [0, 0, 16, 16]}
+            session.visible_region = {
+                "xywh": [0, 0, 16, 16],
+                "safe_xywh": [0, 0, 16, 16],
+            }
             session.white_mask = np.full((16, 16), 255, np.uint8)
             session.auto_imaging_seed = {
                 "exposure_us": 16667.0,
@@ -528,15 +532,37 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertEqual(result["ratio_green"], 1333)
         self.assertEqual(result["ratio_blue"], 2000)
 
-    def test_visible_region_is_wholly_inside_skewed_footprint(self):
+    def test_visible_region_covers_skewed_footprint_and_keeps_safe_target(self):
         polygon = np.asarray([[25, 10], [190, 35], [160, 190], [5, 150]], np.float32)
         result = camera_visible_screen_region(polygon, (200, 200), margin_px=3)
         x, y, width, height = result["xywh"]
-        corners = [(x, y), (x + width - 1, y), (x + width - 1, y + height - 1), (x, y + height - 1)]
+        self.assertLessEqual(x, int(np.floor(np.min(polygon[:, 0]))))
+        self.assertLessEqual(y, int(np.floor(np.min(polygon[:, 1]))))
+        self.assertGreaterEqual(x + width - 1, int(np.ceil(np.max(polygon[:, 0]))))
+        self.assertGreaterEqual(y + height - 1, int(np.ceil(np.max(polygon[:, 1]))))
+        safe_x, safe_y, safe_width, safe_height = result["safe_xywh"]
+        corners = [
+            (safe_x, safe_y),
+            (safe_x + safe_width - 1, safe_y),
+            (safe_x + safe_width - 1, safe_y + safe_height - 1),
+            (safe_x, safe_y + safe_height - 1),
+        ]
         contour = polygon.reshape((-1, 1, 2))
         self.assertTrue(all(cv2.pointPolygonTest(contour, point, False) >= 0 for point in corners))
-        self.assertGreater(width, 32)
-        self.assertGreater(height, 32)
+        self.assertGreater(width * height, safe_width * safe_height)
+
+    def test_visible_region_margin_expands_coverage_outward_only(self):
+        polygon = np.asarray([[25, 20], [150, 20], [150, 160], [25, 160]], np.float32)
+        baseline = camera_visible_screen_region(
+            polygon, (200, 200), margin_px=3, coverage_margin_px=0
+        )
+        expanded = camera_visible_screen_region(
+            polygon, (200, 200), margin_px=3, coverage_margin_px=8
+        )
+        self.assertEqual([25, 20, 126, 141], baseline["xywh"])
+        self.assertEqual([17, 12, 142, 157], expanded["xywh"])
+        self.assertEqual(baseline["safe_xywh"], expanded["safe_xywh"])
+        self.assertEqual(8, expanded["coverage_margin_px"])
 
     def test_pattern_and_projected_mask_share_declared_region(self):
         pattern = white_patch((120, 200), (20, 30, 60, 80))
@@ -1011,7 +1037,10 @@ class HikRectifiedStreamTests(unittest.TestCase):
             session.phone_metrics = PhoneMetrics(
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
-            session.visible_region = {"xywh": [10, 10, 80, 80]}
+            session.visible_region = {
+                "xywh": [10, 10, 80, 80],
+                "safe_xywh": [10, 10, 80, 80],
+            }
             session.geometry = mock.Mock(
                 matrix_3x3=np.eye(3).tolist(),
                 inverse_matrix_3x3=np.eye(3).tolist(),
@@ -1065,7 +1094,10 @@ class HikRectifiedStreamTests(unittest.TestCase):
             session.phone_metrics = PhoneMetrics(
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
-            session.visible_region = {"xywh": [10, 10, 80, 80]}
+            session.visible_region = {
+                "xywh": [10, 10, 80, 80],
+                "safe_xywh": [10, 10, 80, 80],
+            }
             session.geometry = mock.Mock(
                 matrix_3x3=np.eye(3).tolist(),
                 inverse_matrix_3x3=np.eye(3).tolist(),
@@ -1115,7 +1147,10 @@ class HikRectifiedStreamTests(unittest.TestCase):
             session.phone_metrics = PhoneMetrics(
                 "phone", "Example", "Phone", "14", [100, 100], 420, 60.0
             )
-            session.visible_region = {"xywh": [10, 10, 80, 80]}
+            session.visible_region = {
+                "xywh": [10, 10, 80, 80],
+                "safe_xywh": [10, 10, 80, 80],
+            }
             session.geometry = mock.Mock(
                 matrix_3x3=np.eye(3).tolist(),
                 inverse_matrix_3x3=np.eye(3).tolist(),

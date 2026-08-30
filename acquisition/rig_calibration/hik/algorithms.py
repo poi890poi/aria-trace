@@ -312,8 +312,15 @@ def camera_visible_screen_region(
     viewport_polygon_screen_xy: Sequence[Sequence[float]],
     screen_size_px: Sequence[int],
     margin_px: int = 8,
+    coverage_margin_px: int = 0,
 ) -> dict[str, Any]:
-    """Intersect the camera footprint with the screen and return a safe XYWH."""
+    """Return complete camera-visible coverage plus a safe target rectangle.
+
+    ``xywh`` is the raster bounding box of every visible phone-display pixel.
+    It owns adapter normalization and hardware ROI selection, so it must never
+    be eroded. ``safe_xywh`` is the largest fully visible rectangle after the
+    requested inset and is only for calibration targets and imaging metrics.
+    """
 
     width, height = map(int, screen_size_px)
     viewport = np.asarray(viewport_polygon_screen_xy, dtype=np.float32).reshape(
@@ -327,19 +334,36 @@ def camera_visible_screen_region(
     if intersection is None or float(area) <= 0:
         raise RuntimeError("Camera view does not intersect the phone display")
     polygon = intersection.reshape((-1, 2))
-    margin = max(0, int(margin_px))
     mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillConvexPoly(mask, np.round(polygon).astype(np.int32), 1)
+    coverage_margin = max(0, int(coverage_margin_px))
+    coverage_mask = mask
+    if coverage_margin:
+        coverage_mask = cv2.dilate(
+            coverage_mask,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (2 * coverage_margin + 1, 2 * coverage_margin + 1),
+            ),
+        )
+    x, y, region_width, region_height = map(
+        int, cv2.boundingRect(coverage_mask)
+    )
+    if region_width < 32 or region_height < 32:
+        raise RuntimeError("Camera-visible phone coverage is too small")
+
+    margin = max(0, int(margin_px))
+    safe_mask = mask
     if margin:
-        mask = cv2.erode(
-            mask,
+        safe_mask = cv2.erode(
+            safe_mask,
             cv2.getStructuringElement(cv2.MORPH_RECT, (2 * margin + 1, 2 * margin + 1)),
         )
-    # Largest axis-aligned all-visible rectangle (histogram/monotonic-stack).
+    # Largest axis-aligned all-visible rectangle for target presentation only.
     heights = np.zeros(width, dtype=np.int32)
     best = (0, 0, 0, 0, 0)
     for bottom in range(height):
-        heights = np.where(mask[bottom] > 0, heights + 1, 0)
+        heights = np.where(safe_mask[bottom] > 0, heights + 1, 0)
         stack = []
         for column in range(width + 1):
             current = int(heights[column]) if column < width else 0
@@ -352,19 +376,27 @@ def camera_visible_screen_region(
                 start = left
             if not stack or stack[-1][1] < current:
                 stack.append((start, current))
-    _, x, y, region_width, region_height = best
-    if region_width < 32 or region_height < 32:
+    _, safe_x, safe_y, safe_width, safe_height = best
+    if safe_width < 32 or safe_height < 32:
         raise RuntimeError("Camera-visible phone region is too small after margin")
     screen_area = float(width * height)
     viewport_area = abs(float(cv2.contourArea(viewport)))
     union = screen_area + viewport_area - float(area)
     return {
         "xywh": [int(x), int(y), int(region_width), int(region_height)],
+        "safe_xywh": [
+            int(safe_x),
+            int(safe_y),
+            int(safe_width),
+            int(safe_height),
+        ],
         "intersection_polygon_screen_xy": polygon.astype(float).tolist(),
         "intersection_area_screen_px2": float(area),
         "screen_fraction": float(area / max(screen_area, 1.0)),
         "screen_view_iou": float(area / max(union, 1.0)),
+        "safe_inset_px": margin,
         "margin_px": margin,
+        "coverage_margin_px": coverage_margin,
         "space": "canonical_phone_screen_px",
     }
 
