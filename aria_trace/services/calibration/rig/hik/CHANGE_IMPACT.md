@@ -11,7 +11,7 @@ and exposes a small OpenCV/UVC-like rectified stream interface.
 
 ## Affected boundaries
 
-- New code is isolated under `acquisition/rig_calibration/hik/`.
+- Device-independent HIK algorithms are isolated under `aria_trace/services/calibration/rig/hik/`; MVS/Android integrations are under `aria_trace/adapters/`, orchestration is under `aria_trace/workflows/`, and commands are under `aria_trace/apps/`.
 - The camera plugin implements the existing `CameraAdapter` contract and loads
   the vendor MVS Python wrapper only when the HIK path is invoked.
 - The existing ChArUco geometry, ISO 12233 e-SFR/MTF, ISO/IEC 15415 Decode
@@ -31,7 +31,7 @@ rectified phone-display frames.
 
 The saved-camera adapter also exposes an additive high-level `HikCamera`
 compatibility facade in `hik/camera.py`. Consumers may use
-`import acquisition.rig_calibration.hik.camera as hikcam` and retain common
+`import aria_trace.adapters.hik.compat as hikcam` and retain common
 context-manager, frame, exposure, and setting calls. It does not emulate the
 vendor ctypes `MV_CC_*` ABI, and it rejects ROI/shape mutation because those
 changes invalidate calibration.

@@ -10,6 +10,36 @@ performance change. Current acquisition formats, command-line entry points,
 Workbench HTTP endpoints, profile resolution, calibration artifacts, and the
 `hikcam` compatibility facade remain supported during migration.
 
+## Implementation record (2026-08-31)
+
+The structural migration described here is implemented. The authoritative
+post-refactor package map and dependency rules are in
+[`CURRENT_ARCHITECTURE.md`](CURRENT_ARCHITECTURE.md); preserved legacy surfaces
+and their removal rules are in [`COMPATIBILITY.md`](COMPATIBILITY.md).
+
+Completed slices include:
+
+- universal domain envelopes, identity, timing, space, provenance, quality,
+  artifact, execution and component port contracts;
+- promotion of pose/yaw, cursor, mini-map, scene-yaw, mapping, route, teleport,
+  capture and tracking mechanisms into service-owned clusters;
+- isolation of Android, Windows, HIK, rig-device and filesystem integrations as
+  adapters;
+- separation of recorder, calibration, profile, route and teleport workflows;
+- decomposition of Workbench into HTTP translation, jobs, catalog, sources,
+  capture, analysis, live tracking, state and a thin application shell;
+- separation of evidence/review surfaces from algorithms and workflows;
+- separation of source-controlled `config/games` and `config/routes` from
+  mutable device/rig profiles;
+- conversion of `acquisition` and promoted `poc` paths to tested compatibility
+  aliases without production reverse dependencies;
+- explicit architecture guards for core contracts, Workbench, HIK services,
+  configuration roots and compatibility identity.
+
+Compatibility facades are intentionally retained. Their presence is not an
+unfinished duplicate implementation: new implementation in those paths is
+forbidden and removal requires the criteria in `COMPATIBILITY.md`.
+
 ## Why this refactor is required
 
 The design documents describe replaceable capture, calibration, localization,
@@ -109,7 +139,7 @@ orientation, session label, map revision, or artifact layout.
 ## Target package hierarchy
 
 ```text
-src/aria_trace/
+aria_trace/
   domain/
     envelope.py
     identity.py

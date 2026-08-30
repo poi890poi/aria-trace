@@ -8,7 +8,7 @@ The Acquisition Workbench is the normal way to record a route. It uses the canon
 2. From the AriaTrace repository root, run:
 
        $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
-       python -m acquisition.workbench
+       python -m aria_trace.apps.workbench
 
 3. Open <http://127.0.0.1:8765/>.
 
@@ -65,7 +65,7 @@ Android live tracking remains unavailable until Android-specific mini-map crop
 and cursor geometry have been calibrated and visually verified. The Workbench
 does not reuse PC geometry on Android.
 
-The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. It hides immediately when the selected game loses focus. Use **Hide overlay** / **Show overlay** in the Workbench at any time; `python -m acquisition.workbench --no-hud` starts with it hidden. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays.
+The HUD is enabled automatically on Windows. It is always on top, click-through, does not activate or unfocus the game, and is accepted only when Windows applies `WDA_EXCLUDEFROMCAPTURE`; otherwise it remains disabled so it cannot silently enter the recorded frames. It hides immediately when the selected game loses focus. Use **Hide overlay** / **Show overlay** in the Workbench at any time; `python -m aria_trace.apps.workbench --no-hud` starts with it hidden. Use borderless/windowed-fullscreen mode if an exclusive-fullscreen presentation hides ordinary desktop overlays.
 
 Label changes refresh `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json`. This index identifies each source session and its selected role, markers, timestamps, frame/input counts, and drops. It is an evidence inventory, not a claim that the captured map or mini-map data has already been modeled successfully.
 

@@ -9,7 +9,7 @@ the final review action.
 ## Source launch
 
 ```powershell
-python -m acquisition.rig_calibration.app
+python -m aria_trace.apps.rig_calibrator
 ```
 
 The normal sequence is:
@@ -71,7 +71,7 @@ Camera, ADB, and target presentation are public adapter boundaries in
 without editing the GUI:
 
 ```powershell
-python -m acquisition.rig_calibration.app `
+python -m aria_trace.apps.rig_calibrator `
   --camera-adapter my_package.camera:create_camera `
   --adb-adapter my_package.phone:create_adb `
   --target-adapter my_package.target:create_presenter

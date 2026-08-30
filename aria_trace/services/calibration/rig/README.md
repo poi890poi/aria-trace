@@ -1,6 +1,6 @@
 # Rig calibration package
 
-`acquisition.rig_calibration` is the dependency-light implementation of the design in [`RIG_CALIBRATION.md`](../../RIG_CALIBRATION.md). It contains calibration math and artifacts, not camera, ADB, game, map, workbench, or dataset integrations.
+`aria_trace.services.calibration.rig` is the dependency-light implementation of the design in [`RIG_CALIBRATION.md`](../../../../RIG_CALIBRATION.md). It contains calibration math and artifacts, not camera, ADB, game, map, Workbench, or dataset integrations.
 
 The package provides:
 
@@ -24,11 +24,11 @@ The package provides:
 
 ## Standalone Windows application
 
-The optional [PySide6 application](app/README.md) supplies the guided USB-camera
+The optional [PySide6 application](../../../apps/rig_calibrator/README.md) supplies the guided USB-camera
 workflow while retaining this package boundary. Run it from source with:
 
 ```powershell
-python -m acquisition.rig_calibration.app
+python -m aria_trace.apps.rig_calibrator
 ```
 
 Camera, ADB, and phone presentation use public adapter classes and optional
@@ -37,7 +37,7 @@ hardware, run ADB, start the phone server, or write into recorder sessions.
 The isolated PyInstaller build is documented in the app guide.
 
 The public calibration API and GUI no longer use the former project-defined
-`MR95` evaluator. [`RIG_CALIBRATION.md`](../../RIG_CALIBRATION.md) selects the
+`MR95` evaluator. [`RIG_CALIBRATION.md`](../../../../RIG_CALIBRATION.md) selects the
 standard ISO/IEC 15415 Decode parameter as the one feature-readability grade:
 `4/A` for a successful reference decode or `0/F` for failure. Module width in
 display pixels is a test condition, not a new metric. The code does not average
@@ -71,7 +71,7 @@ Ordinary geometry, normalization, e-SFR, feature matching, latency, YAML, and sp
 ## Grade Data Matrix Decode
 
 ```python
-from acquisition.rig_calibration import (
+from aria_trace.services.calibration.rig import (
     DataMatrixObservation,
     grade_data_matrix_decode,
     summarize_data_matrix_decode_sweep,
@@ -98,7 +98,7 @@ The current project environment may use ordinary `opencv-python-headless`. In th
 ```python
 from pathlib import Path
 
-from acquisition.rig_calibration import (
+from aria_trace.services.calibration.rig import (
     build_calibration,
     write_calibration_bundle,
 )
@@ -122,7 +122,7 @@ write_calibration_bundle(Path("artifacts/rig_calibrations/example"), calibration
 ## Normalize a frame
 
 ```python
-from acquisition.rig_calibration import FrameNormalizer, load_calibration_yaml
+from aria_trace.services.calibration.rig import FrameNormalizer, load_calibration_yaml
 
 root = Path("artifacts/rig_calibrations/example")
 calibration = load_calibration_yaml(root / "calibration.yaml")
@@ -137,7 +137,7 @@ normalized = normalizer.normalize(undistorted_camera_frame)
 ## Measure alternating-signal latency
 
 ```python
-from acquisition.rig_calibration import estimate_latency, estimate_paired_delay
+from aria_trace.services.calibration.rig import estimate_latency, estimate_paired_delay
 
 adb_latency = estimate_latency(control_events, adb_state_observations)
 camera_latency = estimate_latency(control_events, camera_state_observations)

@@ -23,7 +23,7 @@ Genshin Impact PC is the first POC game. The Acquisition Workbench records an un
 Start the integrated PC acquisition flow from the repository root:
 
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
-    python -m acquisition.workbench
+    python -m aria_trace.apps.workbench
 
 Open http://127.0.0.1:8765/. Choose the game, visible game window, input type, and duration, then select **Start recording**. Switch to the game during the three-second settling countdown; recording begins on the first control received while that game has focus and stops after the selected duration. The optional overlay hides whenever the game loses focus and can be shown or hidden from the Workbench. Every successful, non-empty session appears in the list, where it can be labeled or moved to recoverable trash. Failed, canceled, zero-duration, and frameless attempts are discarded automatically.
 
@@ -31,11 +31,11 @@ The process that starts the Workbench owns its lifecycle. Its instance ID, PID, 
 
 Camera-to-phone rig calibration has a separate Windows desktop application:
 
-    python -m acquisition.rig_calibration.app
+    python -m aria_trace.apps.rig_calibrator
 
 Its USB camera, phone target, and optional ADB access are operator initiated and
 do not touch recorder sessions. See
-[the app guide](acquisition/rig_calibration/app/README.md) for the guided
+[the app guide](aria_trace/apps/rig_calibrator/README.md) for the guided
 geometry, exact-pixel focus, standardized e-SFR/MTF design, established feature
 matching measurements, latency, YAML, adapter, and isolated PyInstaller build
 workflows. The current source replaces the former project-defined resolving
@@ -57,6 +57,8 @@ Start with:
 - [SDS.md](SDS.md) — brief architecture and replaceable interfaces
 - [RIG_CALIBRATION.md](RIG_CALIBRATION.md) — USB-camera/phone geometry, focus, matchability, UI, and YAML contract
 - [SPATIAL_UNIFICATION.md](SPATIAL_UNIFICATION.md) — coordinate-frame graph for screens, cameras, mini-maps, maps, datasets, and time
+- [docs/architecture/CURRENT_ARCHITECTURE.md](docs/architecture/CURRENT_ARCHITECTURE.md) — implemented package ownership and data flow
+- [docs/architecture/COMPATIBILITY.md](docs/architecture/COMPATIBILITY.md) — retained legacy facades and removal rules
 - [RECORDER_GUIDE.md](RECORDER_GUIDE.md) — minimal GUI workflow for recording repeated routes
 - [poc/README.md](poc/README.md) — pose-estimation POC commands
 - [poc/RESULTS.md](poc/RESULTS.md) — measured results

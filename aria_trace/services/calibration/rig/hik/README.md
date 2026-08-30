@@ -1,8 +1,12 @@
 # HIK camera / Android display rig calibration
 
-This folder is an isolated HIK MVS camera plugin plus two standalone commands.
-It reuses the repository's ChArUco geometry, ISO 12233 e-SFR, calibration bundle,
-and Data Matrix encoding/decoding rather than defining replacement algorithms.
+This folder contains device-independent HIK calibration algorithms, patterns,
+color matching and coordinate-space conversion. The MVS camera integration lives
+under `aria_trace.adapters.hik`; Android presentation lives under
+`aria_trace.adapters.android`; orchestration and commands live under
+`aria_trace.workflows` and `aria_trace.apps`. They reuse the repository's
+ChArUco geometry, ISO 12233 e-SFR, calibration bundle and Data Matrix
+encoding/decoding rather than defining replacement algorithms.
 
 ## Dependencies
 
@@ -24,13 +28,13 @@ location and from standard MVS install locations. Nonstandard installs can set
 The existing desktop adapter loader can use this camera plugin factory:
 
 ```text
-acquisition.rig_calibration.hik.driver:create_camera_adapter
+aria_trace.adapters.hik.driver:create_camera_adapter
 ```
 
 List cameras without claiming one:
 
 ```powershell
-python -m acquisition.rig_calibration.hik.calibrate --list-cameras --mvs-python-path C:\path\to\MvImport
+python -m aria_trace.apps.hik_rig_calibration --list-cameras --mvs-python-path C:\path\to\MvImport
 ```
 
 Interactive calibration:
@@ -145,7 +149,7 @@ logical UI density is never used as physical scale. Keys:
 Headless mode skips the focus window. Saving remains explicit:
 
 ```powershell
-python -m acquisition.rig_calibration.hik.calibrate ... --headless --save
+python -m aria_trace.apps.hik_rig_calibration ... --headless --save
 ```
 
 Use `--test-data-matrix-decode` (legacy alias `--grade-data-matrix`) to run the
@@ -211,7 +215,7 @@ reference includes phone presentation and camera settling, and is explicitly
 not labeled as game input latency or image-transform cost.
 
 ```powershell
-python -m acquisition.rig_calibration.hik.stream calibration-output\hik_camera_calibration.json --gui
+python -m aria_trace.apps.hik_stream calibration-output\hik_camera_calibration.json --gui
 ```
 
 For the normal operator demo, run this from the repository root:
@@ -242,7 +246,7 @@ The low-latency output remains in camera ROI coordinates, so it is not
 orthogonalized, app-up, or cropped to the canonical phone rectangle.
 
 ```python
-from acquisition.rig_calibration.hik.stream import open_camera
+from aria_trace.apps.hik_stream import open_camera
 
 camera = open_camera("calibration-output/hik_camera_calibration.json")
 ok, rectified_phone_bgr = camera.read()
@@ -255,7 +259,7 @@ Downstream code that normally imports a high-level HIK camera module can alias
 the calibrated adapter directly:
 
 ```python
-import acquisition.rig_calibration.hik.camera as hikcam
+import aria_trace.adapters.hik.compat as hikcam
 
 with hikcam.HikCamera(
     config={"calibration": "calibration-output/hik_camera_calibration.json"}

@@ -48,7 +48,7 @@ The Acquisition Workbench exposes separate short Genshin POC stages for ordinary
 
 ### Game profile session
 
-The existing files under `profiles/games` provide adapter defaults and coarse control summaries. The workbench profile editor now saves a reviewable draft under `artifacts/workbench/game_profiles/<profile-id>/draft.json` without rewriting the source profile. Later automatic profiling extends the same relationship with measured behavior; it does not introduce a separate configuration product.
+The source-controlled files under `config/games` provide adapter defaults and coarse control summaries. The workbench profile editor now saves a reviewable draft under `artifacts/workbench/game_profiles/<profile-id>/draft.json` without rewriting the source definition. Later automatic profiling extends the same relationship with measured behavior; it does not introduce a separate configuration product.
 
 A semi-automatic profiling session runs controlled actions while recording inputs and game frames. It should infer or help a reviewer enter:
 
@@ -57,7 +57,7 @@ A semi-automatic profiling session runs controlled actions while recording input
 - activation details including press/release, single click, hold, toggle, chord, analog range, dead zone, duration, and compatible simultaneous actions;
 - movement, turning, acceleration/stopping, camera-character coupling, jump/dash timing, cooldown/recovery, collision response, and input-to-visible-response timing where measurable.
 
-Every inferred field retains its probe definition, source frames and input records, timing, intermediate measurements, confidence, and profiler version. Human edits are versioned and preserve the original measured value. The profile distinguishes measured, manually supplied, assumed, and unknown values. Route-specific setup remains in `profiles/routes`.
+Every inferred field retains its probe definition, source frames and input records, timing, intermediate measurements, confidence, and profiler version. Human edits are versioned and preserve the original measured value. The profile distinguishes measured, manually supplied, assumed, and unknown values. Source-controlled route definitions remain in `config/routes`.
 
 ### Full map-viewer acquisition
 
@@ -111,7 +111,7 @@ The source session remains authoritative. Sparse map tiles, stitched local maps,
 For the PC-only MVP, use the local acquisition workbench:
 
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
-    python -m acquisition.workbench
+    python -m aria_trace.apps.workbench
 
 Open http://127.0.0.1:8765/. Select a game profile, visible game window, control type, and duration, then select **Start recording**. The screen intentionally has no guided-stage or arming state: every valid completed capture is appended to the session list and can be classified afterward with a label dropdown. Failed, canceled, zero-duration, and frameless attempts are discarded rather than saved; unwanted successful sessions are moved to recoverable trash. See [the recorder guide](../RECORDER_GUIDE.md) for the complete player workflow.
 
@@ -123,7 +123,7 @@ Select **Start recording** and switch to the selected game during **SWITCH TO GA
 
 The recorder preserves the entire take. It derives a provisional take start from the first observed control and retains the captured tail for completion evidence. After gameplay, choosing a non-empty session label is the explicit content-review action. Visual landmarks are recognizable reference observations derived or annotated after recording; they never require player actions.
 
-The workbench is an orchestrator, not another recorder. Game defaults live under profiles/games, route instructions live under profiles/routes, and replaceable Windows, UVC, and ADB sources feed the same AcquisitionRecorder and session schema.
+The workbench is an orchestrator, not another recorder. Game definitions live under `config/games`, route definitions live under `config/routes`, and replaceable Windows, HIK, and ADB sources feed the same recording workflow and session schema.
 
 The independent [`rig_calibration`](rig_calibration/README.md) package implements camera/phone geometry, normalization, matchability, alternating-signal latency, commented YAML artifacts, and spatial export. It deliberately has no dependency on the workbench, camera/ADB drivers, game profiles, maps, or dataset registries; those systems integrate through small adapters.
 ## Standalone recorder (advanced)
@@ -324,7 +324,7 @@ The calibrated camera adapter exposes the same base-space conversion without
 opening hardware:
 
 ```python
-import acquisition.rig_calibration.hik.camera as hikcam
+import aria_trace.adapters.hik.compat as hikcam
 
 camera = hikcam.HikCamera(config={"calibration": "hik_camera_calibration.json"})
 adb_xy = camera.camera_adapter_to_adb_points(adapter_xy, surface_quarter_turns)
@@ -345,7 +345,7 @@ The production HIK adapter consumes the base rig plus the optional rig-game
 profile:
 
 ```python
-from acquisition.rig_calibration.hik import ProfiledHikGameCamera
+from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
 
 with ProfiledHikGameCamera(
     "artifacts/hik-calibration-...",
@@ -378,7 +378,7 @@ The existing `import ... as hikcam` facade accepts the same options and keeps
 two synchronized products in dual mode:
 
 ```python
-import acquisition.rig_calibration.hik.camera as hikcam
+import aria_trace.adapters.hik.compat as hikcam
 
 with hikcam.HikCamera(config={
     "calibration": "artifacts/hik-calibration-.../hik_camera_calibration.json",
