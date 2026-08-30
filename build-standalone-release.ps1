@@ -120,7 +120,9 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "acquisition") -Recurse -File
     Copy-Item -LiteralPath $_.FullName -Destination $Destination
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "hikcam.py") -Destination $PythonSource
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "aria_tools.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "requirements-hik-camera-adapter.txt") -Destination $PythonSource
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "requirements-python-tools.txt") -Destination $PythonSource
 $BuildSourceFiles = @(
     "build-standalone-release.bat",
     "build-standalone-release.ps1",
@@ -165,6 +167,7 @@ $Manifest = @(
     "  - apps/aria-zigzag-acquisition/aria-zigzag-acquisition.exe",
     "  - apps/aria-minimap-calibration/aria-minimap-calibration.exe",
     "camera_adapter_import: python/hikcam.py",
+    "python_tools_import: python/aria_tools.py",
     "external_environment:",
     "  hik_mvs: required",
     "  adb: required_on_path_or_pass_explicit_path",

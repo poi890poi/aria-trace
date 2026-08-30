@@ -1,0 +1,10 @@
+# Dependencies for all pure-Python calibration helpers in a user-managed env.
+# HIK MVS, ADB, scrcpy-server, and FFmpeg remain external dependencies.
+numpy>=1.24; python_version >= "3.8"
+opencv-contrib-python>=4.8,<6; python_version >= "3.8"
+PyYAML>=6.0; python_version >= "3.8"
+zxing-cpp>=2.2,<4; python_version >= "3.8"
+
+numpy==1.21.6; python_version < "3.8"
+opencv-contrib-python==4.6.0.66; python_version < "3.8"
+PyYAML==5.4.1; python_version < "3.8"

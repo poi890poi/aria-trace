@@ -19,6 +19,8 @@ without a C compiler.
 - USB debugging authorized on the Android phone.
 - For `import hikcam`, a user-managed Python environment. Run
   `install-camera-adapter.bat` once in that environment.
+- For every tool in a user-managed Python environment, run
+  `install-python-tools.bat` once in that environment.
 
 Only Python executables, their Python/native-wheel dependencies, and Python
 source are bundled. ADB, scrcpy, FFmpeg, and HIK MVS are all user-managed
@@ -31,10 +33,16 @@ Run these from the extracted release directory:
 
 ```bat
 rig-calibration.bat
-zigzag-acquisition.bat --game-id genshin-impact
+zigzag-acquisition.bat
 minimap-calibration.bat SESSION OUTPUT --rotation START END --movement START END
 camera-adapter-demo.bat --game-id genshin-impact --mode dual
 ```
+
+Acquisition is game-agnostic. With no `--game-id` or `--android-package`, it
+records whichever landscape game the user prepares at the confirmation prompt.
+Use `--android-package org.example.game` to launch any explicit installed
+package, or add `--game-id` when known-game identity should be retained for
+later profile publication.
 
 All arguments remain available with `--help`. The helper scripts only supply
 the bundled tool locations and forward every user argument to the application.
@@ -44,6 +52,32 @@ diagnostic evidence. These probes do not reject a product run; camera-observed
 ChArUco geometry and final calibration evidence remain authoritative. Test
 harnesses can opt into the old strict behavior with
 `--strict-display-screenshot-verification`.
+
+## Pure-Python helpers
+
+The release exposes the same tools through the user's current Python
+environment; no bundled executable or interpreter is used:
+
+```bat
+install-python-tools.bat
+python-tools.bat rig-calibration
+python-tools.bat zigzag-acquisition
+python-tools.bat minimap-calibration SESSION OUTPUT --rotation START END --movement START END
+python-tools.bat camera-adapter-demo --game-id genshin-impact --mode dual --gui
+```
+
+Set `ARIA_PYTHON` before these commands to select a particular interpreter.
+Python applications can call the helpers without a subprocess:
+
+```python
+import aria_tools
+
+aria_tools.rig_calibration(["--headless", "--save"])
+aria_tools.zigzag_acquisition(["--android-package", "org.example.game"])
+```
+
+The release `python` directory must be on `PYTHONPATH` when importing
+`aria_tools` or `hikcam` from outside that directory.
 
 ## Camera adapter
 
@@ -87,6 +121,12 @@ The executables write below `artifacts/`, `sessions/`, and `profiles/` in the
 release directory unless overridden. Production camera opening resolves active
 profiles by camera, phone, game, display context, and adapter mode. Explicit
 calibration paths are diagnostic overrides only.
+
+Automatic profile storage uses `ARIA_PROFILE_ROOT` when it is set; otherwise
+it uses `profiles/` below the current working directory. The release helper
+scripts start from the extracted release directory, so the executables and
+`import hikcam` share the same local registry. Applications launched from a
+different directory should set `ARIA_PROFILE_ROOT` to the shared registry.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams and
 [REFERENCE_BENCHMARKS.md](REFERENCE_BENCHMARKS.md) for measured reference data.
