@@ -10,8 +10,10 @@ import numpy as np
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
 from acquisition.rig_calibration.hik.reuse_precheck import (
     compare_calibration_snapshots,
+    discover_active_profile_calibration,
     discover_previous_calibration,
 )
+from acquisition.profile_registry import ProfileContext, ProfileRegistry
 
 
 def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> Path:
@@ -43,6 +45,34 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
+    def test_active_registry_profile_is_resolved_without_artifact_scanning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calibration = write_calibration(root / "bundle")
+            registry = ProfileRegistry(root / "profiles")
+            context = ProfileContext(
+                camera_id="CAM-1",
+                phone_id="PHONE-1",
+                panel_display={
+                    "natural_panel_px": [64, 48],
+                    "logical_frame_px": [64, 48],
+                    "refresh_hz": 60,
+                },
+            )
+            registry.publish(
+                "rig",
+                context,
+                {"profile_kind": "rig"},
+                runtime_files={"hik_camera_calibration": calibration},
+                review_state="accepted",
+                activate=True,
+            )
+            resolved = discover_active_profile_calibration(
+                root / "profiles", camera_id="CAM-1", phone_serial="PHONE-1"
+            )
+            self.assertTrue(resolved.is_file())
+            self.assertNotEqual(calibration.resolve(), resolved)
+
     def test_adapter_reports_complete_saved_calibration(self):
         with tempfile.TemporaryDirectory() as directory:
             path = write_calibration(Path(directory) / "rig")

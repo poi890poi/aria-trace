@@ -15,6 +15,7 @@ from ..geometry import CharucoLayout
 from .display import AdbDisplayTarget
 from .driver import HikMvsCameraAdapter, RectifiedHikCamera
 from .phone import AdbPhoneSession, resolve_adb_executable
+from acquisition.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
 
 
 DEFAULT_MINIMUM_CORRELATION = 0.985
@@ -55,6 +56,27 @@ def discover_previous_calibration(
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
     return max(candidates, default=(None, None), key=lambda item: item[0])[1]
+
+
+def discover_active_profile_calibration(
+    profile_root: Optional[Path],
+    *,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+) -> Optional[Path]:
+    """Resolve one exact active rig without inspecting calibration artifacts."""
+
+    registry = ProfileRegistry(profile_root)
+    try:
+        profile = registry.resolve(
+            "rig",
+            ProfileContext(camera_id=camera_id, phone_id=phone_serial),
+        )
+    except ProfileResolutionError as exc:
+        if str(exc).startswith("No active rig profile"):
+            return None
+        raise
+    return registry.runtime_file(profile, "hik_camera_calibration").resolve()
 
 
 def compare_calibration_snapshots(
@@ -269,6 +291,7 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--calibration", type=Path)
     value.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
+    value.add_argument("--profile-root", type=Path)
     value.add_argument("--output", type=Path, required=True)
     value.add_argument("--camera-id")
     value.add_argument("--phone-serial")
@@ -282,15 +305,26 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    selection_source = "explicit" if arguments.calibration else None
     calibration = (
         resolve_calibration_file(arguments.calibration)
         if arguments.calibration
-        else discover_previous_calibration(
-            arguments.artifacts_root,
+        else discover_active_profile_calibration(
+            arguments.profile_root,
             camera_id=arguments.camera_id,
             phone_serial=arguments.phone_serial,
         )
     )
+    if calibration is not None and selection_source is None:
+        selection_source = "active_profile_registry"
+    if calibration is None:
+        calibration = discover_previous_calibration(
+            arguments.artifacts_root,
+            camera_id=arguments.camera_id,
+            phone_serial=arguments.phone_serial,
+        )
+        if calibration is not None:
+            selection_source = "legacy_artifact_fallback"
     if calibration is None:
         _write_result(
             arguments.output,
@@ -314,6 +348,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             minimum_correlation=arguments.minimum_correlation,
             maximum_mae_dn=arguments.maximum_mae_dn,
             sample_frames=arguments.sample_frames,
+        )
+        result["calibration_selection"] = selection_source
+        (arguments.output / "precheck.json").write_text(
+            json.dumps(result, indent=2), encoding="utf-8"
         )
     except Exception as exc:
         _write_result(
