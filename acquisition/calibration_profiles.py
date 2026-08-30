@@ -1,19 +1,21 @@
-"""Versioned calibration profiles scoped by rig, game, and image source."""
+"""Obsolete compatibility surface for pre-registry path-pointer profiles.
+
+Production code must use :mod:`acquisition.profile_registry`. The legacy store
+classes remain importable only so callers receive a precise migration error;
+they can no longer publish or resolve mutable ``current.json`` pointers.
+"""
 
 from __future__ import annotations
 
-import json
-import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional
-
-from .commented_yaml import PROFILE_COMMENTS, PROFILE_HEADER, write_commented_yaml
 
 
-PROFILE_SCHEMA_VERSION = "1.0"
+OBSOLETE_MESSAGE = (
+    "Path-based calibration profile stores are obsolete. Use "
+    "acquisition.profile_registry.ProfileRegistry and active immutable revisions."
+)
 
 
 def _safe_id(value: str) -> str:
@@ -21,13 +23,6 @@ def _safe_id(value: str) -> str:
     if not cleaned:
         raise ValueError("Calibration profile identifiers cannot be empty")
     return cleaned
-
-
-def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
-    os.replace(str(temporary), str(path))
 
 
 @dataclass(frozen=True)
@@ -57,92 +52,10 @@ class CalibrationProfileKey:
 
 
 class CalibrationProfileStore:
-    """Publish immutable revisions and one atomic pointer to the current one."""
+    """Retired mutable-current store; construction always fails."""
 
     def __init__(self, root: Path) -> None:
-        self.root = Path(root)
-
-    def profile_directory(self, key: CalibrationProfileKey) -> Path:
-        return self.root / key.rig_id / key.game_id / key.image_source
-
-    def create_revision_directory(
-        self, key: CalibrationProfileKey, revision_id: Optional[str] = None
-    ) -> Path:
-        revision = _safe_id(
-            revision_id
-            or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        )
-        path = self.profile_directory(key) / "revisions" / revision
-        path.mkdir(parents=True, exist_ok=False)
-        return path
-
-    def publish(
-        self,
-        key: CalibrationProfileKey,
-        revision_directory: Path,
-        artifacts: Mapping[str, Any],
-        *,
-        session_path: Path,
-        rig_calibration_path: Optional[Path] = None,
-        reuse_parent_revision: Optional[str] = None,
-        notes: Optional[Mapping[str, Any]] = None,
-    ) -> dict:
-        revision_directory = Path(revision_directory).resolve()
-        expected_parent = (self.profile_directory(key) / "revisions").resolve()
-        if expected_parent not in revision_directory.parents:
-            raise ValueError("Revision directory is outside its calibration profile")
-        manifest = {
-            "schema_version": PROFILE_SCHEMA_VERSION,
-            "status": "review_required",
-            "created_utc": datetime.now(timezone.utc).isoformat(),
-            "profile": key.as_dict(),
-            "revision_id": revision_directory.name,
-            "session_path": str(Path(session_path).resolve()),
-            "rig_calibration_path": (
-                str(Path(rig_calibration_path).resolve())
-                if rig_calibration_path is not None
-                else None
-            ),
-            "reuse": {
-                "scope": "same rig_id + game_id + image_source only",
-                "small_rig_shift_supported": True,
-                "parent_revision_id": reuse_parent_revision,
-                "rule": (
-                    "A small physical shift creates a new geometry revision. "
-                    "Source-specific observations are never silently reused across sources."
-                ),
-            },
-            "artifacts": dict(artifacts),
-            "notes": dict(notes or {}),
-        }
-        _atomic_json(revision_directory / "profile_revision.json", manifest)
-        write_commented_yaml(
-            revision_directory / "profile_revision.yaml",
-            manifest,
-            header=PROFILE_HEADER,
-            section_comments=PROFILE_COMMENTS,
-        )
-        pointer = {
-            "schema_version": PROFILE_SCHEMA_VERSION,
-            "profile": key.as_dict(),
-            "current_revision_id": revision_directory.name,
-            "current_revision": str(revision_directory),
-            "updated_utc": datetime.now(timezone.utc).isoformat(),
-        }
-        _atomic_json(self.profile_directory(key) / "current.json", pointer)
-        write_commented_yaml(
-            self.profile_directory(key) / "current.yaml",
-            pointer,
-            header=PROFILE_HEADER,
-            section_comments=PROFILE_COMMENTS,
-        )
-        return manifest
-
-    def current(self, key: CalibrationProfileKey) -> Optional[dict]:
-        path = self.profile_directory(key) / "current.json"
-        if not path.is_file():
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        raise RuntimeError(OBSOLETE_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -177,67 +90,7 @@ class ScopedProfileKey:
 
 
 class ScopedCalibrationProfileStore:
-    """Publish independent phone-game and rig-game profile revisions."""
+    """Retired scoped mutable-current store; construction always fails."""
 
     def __init__(self, root: Path) -> None:
-        self.root = Path(root)
-
-    def profile_directory(self, key: ScopedProfileKey) -> Path:
-        return self.root / key.scope_kind / key.owner_id / key.game_id
-
-    def create_revision_directory(
-        self, key: ScopedProfileKey, revision_id: Optional[str] = None
-    ) -> Path:
-        revision = _safe_id(
-            revision_id
-            or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        )
-        path = self.profile_directory(key) / "revisions" / revision
-        path.mkdir(parents=True, exist_ok=False)
-        return path
-
-    def publish(
-        self,
-        key: ScopedProfileKey,
-        revision_directory: Path,
-        document: Mapping[str, Any],
-    ) -> dict:
-        revision_directory = Path(revision_directory).resolve()
-        expected_parent = (self.profile_directory(key) / "revisions").resolve()
-        if expected_parent not in revision_directory.parents:
-            raise ValueError("Revision directory is outside its scoped profile")
-        manifest = {
-            "schema_version": PROFILE_SCHEMA_VERSION,
-            "status": "review_required",
-            "created_utc": datetime.now(timezone.utc).isoformat(),
-            "profile": key.as_dict(),
-            "revision_id": revision_directory.name,
-            **dict(document),
-        }
-        _atomic_json(revision_directory / "profile.json", manifest)
-        write_commented_yaml(
-            revision_directory / "profile.yaml",
-            manifest,
-            header=PROFILE_HEADER,
-            section_comments=PROFILE_COMMENTS,
-        )
-        pointer = {
-            "schema_version": PROFILE_SCHEMA_VERSION,
-            "profile": key.as_dict(),
-            "current_revision_id": revision_directory.name,
-            "current_revision": str(revision_directory),
-            "updated_utc": datetime.now(timezone.utc).isoformat(),
-        }
-        directory = self.profile_directory(key)
-        _atomic_json(directory / "current.json", pointer)
-        write_commented_yaml(
-            directory / "current.yaml",
-            pointer,
-            header=PROFILE_HEADER,
-            section_comments=PROFILE_COMMENTS,
-        )
-        return manifest
-
-    def current(self, key: ScopedProfileKey) -> Optional[dict]:
-        path = self.profile_directory(key) / "current.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        raise RuntimeError(OBSOLETE_MESSAGE)

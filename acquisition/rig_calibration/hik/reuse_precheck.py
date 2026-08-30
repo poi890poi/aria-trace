@@ -29,35 +29,6 @@ def resolve_calibration_file(path: Path) -> Path:
     return value.resolve()
 
 
-def discover_previous_calibration(
-    artifacts_root: Path,
-    *,
-    camera_id: Optional[str] = None,
-    phone_serial: Optional[str] = None,
-) -> Optional[Path]:
-    """Return the newest direct rig bundle matching explicit identities."""
-
-    root = Path(artifacts_root)
-    if not root.is_dir():
-        return None
-    candidates = []
-    for directory in root.glob("hik-calibration-*"):
-        path = directory / "hik_camera_calibration.json"
-        if not path.is_file():
-            continue
-        try:
-            config = json.loads(path.read_text(encoding="utf-8"))
-            if camera_id and str(config["camera"]["device_id"]) != str(camera_id):
-                continue
-            saved_phone = str((config.get("phone") or {}).get("serial") or "")
-            if phone_serial and saved_phone != str(phone_serial):
-                continue
-            candidates.append((path.stat().st_mtime, path.resolve()))
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-    return max(candidates, default=(None, None), key=lambda item: item[0])[1]
-
-
 def discover_active_profile_calibration(
     profile_root: Optional[Path],
     *,
@@ -289,8 +260,11 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description="Reuse a saved HIK rig only when its repeated snapshot is unchanged"
     )
-    value.add_argument("--calibration", type=Path)
-    value.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
+    value.add_argument(
+        "--diagnostic-calibration-override",
+        type=Path,
+        help="explicit diagnostic override; production reuse uses the registry",
+    )
     value.add_argument("--profile-root", type=Path)
     value.add_argument("--output", type=Path, required=True)
     value.add_argument("--camera-id")
@@ -305,10 +279,14 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
-    selection_source = "explicit" if arguments.calibration else None
+    selection_source = (
+        "diagnostic_explicit_path"
+        if arguments.diagnostic_calibration_override
+        else None
+    )
     calibration = (
-        resolve_calibration_file(arguments.calibration)
-        if arguments.calibration
+        resolve_calibration_file(arguments.diagnostic_calibration_override)
+        if arguments.diagnostic_calibration_override
         else discover_active_profile_calibration(
             arguments.profile_root,
             camera_id=arguments.camera_id,
@@ -317,14 +295,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if calibration is not None and selection_source is None:
         selection_source = "active_profile_registry"
-    if calibration is None:
-        calibration = discover_previous_calibration(
-            arguments.artifacts_root,
-            camera_id=arguments.camera_id,
-            phone_serial=arguments.phone_serial,
-        )
-        if calibration is not None:
-            selection_source = "legacy_artifact_fallback"
     if calibration is None:
         _write_result(
             arguments.output,
@@ -335,7 +305,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "camera_adapter_is_calibrated": False,
             },
         )
-        print("Rig precheck: no previous calibration is available.")
+        print("Rig precheck: no active registry calibration is available.")
         return 0
     try:
         result = run_reuse_precheck(

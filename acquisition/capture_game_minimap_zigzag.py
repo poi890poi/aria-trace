@@ -29,6 +29,7 @@ from .game_cross_source_check import (
     orient_hik_source_from_first_adb_frame,
 )
 from .hik_capture import CalibratedHikFrameSource
+from .profile_registry import ProfileContext, ProfileRegistry
 from .recorder import AcquisitionRecorder
 from .rig_calibration.hik.phone import (
     AdbPhoneSession,
@@ -264,6 +265,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--camera-height", type=int, default=2048)
     value.add_argument("--camera-fps", type=float, default=30.0)
     value.add_argument("--mvs-python-path")
+    value.add_argument("--profile-root", type=Path)
     value.add_argument("--phone-serial")
     value.add_argument("--adb")
     value.add_argument("--scrcpy-server", type=Path)
@@ -278,11 +280,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--tail-seconds", type=float, default=1.5)
     value.add_argument("--yes", action="store_true")
     value.add_argument(
-        "--rig-calibration",
+        "--diagnostic-rig-calibration-override",
         type=Path,
         help=(
-            "optional calibration bundle directory or hik_camera_calibration.json; "
-            "when omitted, acquisition records Android only"
+            "explicit calibration for diagnostics; production resolves the active "
+            "rig profile automatically"
         ),
     )
     value.add_argument(
@@ -412,31 +414,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = argument_parser.parse_args(argv)
     if arguments.control_only:
         return _run_control_only(arguments)
-    if arguments.require_hik and arguments.rig_calibration is None:
-        argument_parser.error("--require-hik requires --rig-calibration")
-    rig_calibration = (
-        _resolve_rig_calibration(arguments.rig_calibration)
-        if arguments.rig_calibration is not None
-        else None
-    )
-    rig_config = (
-        json.loads(rig_calibration.read_text(encoding="utf-8"))
-        if rig_calibration is not None
-        else None
-    )
+    adb = resolve_adb_executable(arguments.adb)
+    serial = _select_phone(adb, arguments.phone_serial)
+    rig_calibration = None
+    rig_config = None
+    calibration_revision = None
     hik_adapter = None
     selected_camera = None
     hik_fallback_reason = None
-    if rig_calibration is not None:
-        try:
-            hik_adapter = HikMvsCameraAdapter(
-                sdk_python_path=arguments.mvs_python_path
+    try:
+        hik_adapter = HikMvsCameraAdapter(
+            sdk_python_path=arguments.mvs_python_path
+        )
+        selected_camera = _select_camera(hik_adapter, arguments.camera_id)
+    except Exception as exc:
+        if arguments.require_hik or not _hik_fallback_allowed(exc):
+            raise
+        hik_fallback_reason = "{}: {}".format(type(exc).__name__, exc)
+    if selected_camera is not None:
+        if arguments.diagnostic_rig_calibration_override is not None:
+            rig_calibration = _resolve_rig_calibration(
+                arguments.diagnostic_rig_calibration_override
             )
-            selected_camera = _select_camera(hik_adapter, arguments.camera_id)
-        except Exception as exc:
-            if arguments.require_hik or not _hik_fallback_allowed(exc):
-                raise
-            hik_fallback_reason = "{}: {}".format(type(exc).__name__, exc)
+            calibration_selection = "diagnostic_explicit_path"
+        else:
+            registry = ProfileRegistry(arguments.profile_root)
+            rig_profile = registry.resolve(
+                "rig",
+                ProfileContext(
+                    camera_id=str(selected_camera.device_id),
+                    phone_id=serial,
+                ),
+            )
+            rig_calibration = registry.runtime_file(
+                rig_profile, "hik_camera_calibration"
+            ).resolve()
+            calibration_revision = rig_profile["revision_id"]
+            calibration_selection = "active_profile_registry"
+        rig_config = json.loads(rig_calibration.read_text(encoding="utf-8"))
         if selected_camera is not None:
             calibrated_camera_id = str(rig_config["camera"]["device_id"])
             if str(selected_camera.device_id) != calibrated_camera_id:
@@ -445,8 +460,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         calibrated_camera_id, selected_camera.device_id
                     )
                 )
-    adb = resolve_adb_executable(arguments.adb)
-    serial = _select_phone(adb, arguments.phone_serial)
     calibrated_phone_id = str(
         ((rig_config or {}).get("phone") or {}).get("serial") or ""
     )
@@ -492,8 +505,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pending_path = session_path.with_name(session_path.name + ".pending")
     if selected_camera is not None:
         print("HIK camera: {} ({})".format(selected_camera.label, selected_camera.device_id))
-    elif rig_calibration is None:
-        print("HIK camera: not requested; recording Android only.")
+        print("Rig calibration: {} ({})".format(rig_calibration, calibration_selection))
     else:
         print("HIK camera unavailable; recording Android only: {}".format(hik_fallback_reason))
     print("Phone: {} ({}x{})".format(serial, width, height))
@@ -649,6 +661,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "camera_id": selected_camera.device_id,
             "rig_calibration_used": True,
             "rig_calibration": str(rig_calibration.resolve()),
+            "rig_profile_revision": calibration_revision,
+            "calibration_selection": calibration_selection,
             "stream_id": "hik_phone",
             "output_image_quarter_turns_clockwise_from_calibration_display": (
                 output_image_turns

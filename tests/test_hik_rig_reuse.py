@@ -1,6 +1,5 @@
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -11,7 +10,8 @@ from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
 from acquisition.rig_calibration.hik.reuse_precheck import (
     compare_calibration_snapshots,
     discover_active_profile_calibration,
-    discover_previous_calibration,
+    main as reuse_precheck_main,
+    parser as reuse_precheck_parser,
 )
 from acquisition.profile_registry import ProfileContext, ProfileRegistry
 
@@ -45,6 +45,16 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
+    def test_legacy_calibration_option_is_obsolete(self):
+        with self.assertRaises(SystemExit):
+            reuse_precheck_parser().parse_args(
+                ["--calibration", "legacy.json", "--output", "out"]
+            )
+        with self.assertRaises(SystemExit):
+            reuse_precheck_parser().parse_args(
+                ["--artifacts-root", "artifacts", "--output", "out"]
+            )
+
     def test_active_registry_profile_is_resolved_without_artifact_scanning(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -95,23 +105,25 @@ class HikRigReuseTests(unittest.TestCase):
         self.assertTrue(compare_calibration_snapshots(reference, repeated)["matches"])
         self.assertFalse(compare_calibration_snapshots(reference, moved)["matches"])
 
-    def test_discovery_selects_newest_direct_matching_bundle(self):
+    def test_legacy_artifact_directory_is_not_used_for_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            old = write_calibration(root / "hik-calibration-old")
-            time.sleep(0.02)
-            newest = write_calibration(root / "hik-calibration-new")
-            write_calibration(
-                root / "hik-calibration-other", camera_id="CAM-2", phone_serial="PHONE-2"
-            )
+            write_calibration(root / "artifacts" / "hik-calibration-newest")
+            output = root / "precheck"
             self.assertEqual(
-                newest.resolve(),
-                discover_previous_calibration(
-                    root, camera_id="CAM-1", phone_serial="PHONE-1"
+                0,
+                reuse_precheck_main(
+                    [
+                        "--profile-root",
+                        str(root / "profiles"),
+                        "--output",
+                        str(output),
+                    ]
                 ),
             )
-            self.assertNotEqual(old.resolve(), newest.resolve())
-
+            result = json.loads((output / "precheck.json").read_text(encoding="utf-8"))
+            self.assertEqual("no_previous_calibration", result["status"])
+            self.assertNotIn("calibration", result)
 
 if __name__ == "__main__":
     unittest.main()

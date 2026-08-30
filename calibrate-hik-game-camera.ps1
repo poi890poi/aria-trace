@@ -2,7 +2,7 @@ param(
     [string]$GameId = "genshin-impact",
     [string]$CameraId,
     [string]$PhoneSerial,
-    [string]$RigCalibration,
+    [string]$DiagnosticRigCalibrationOverride,
     [string]$RigOutput,
     [string]$MinimapOutput
 )
@@ -34,10 +34,13 @@ function Invoke-AriaStage {
 try {
     $precheckOutput = "$RigOutput-precheck"
     $precheckArguments = @(
-        "--artifacts-root", (Join-Path $root "artifacts"),
         "--output", $precheckOutput
     )
-    if ($RigCalibration) { $precheckArguments += @("--calibration", $RigCalibration) }
+    if ($DiagnosticRigCalibrationOverride) {
+        $precheckArguments += @(
+            "--diagnostic-calibration-override", $DiagnosticRigCalibrationOverride
+        )
+    }
     if ($CameraId) { $precheckArguments += @("--camera-id", $CameraId) }
     if ($PhoneSerial) { $precheckArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `
@@ -86,9 +89,13 @@ try {
     }
     $captureArguments = @(
         "--game-id", $GameId,
-        "--rig-calibration", $effectiveRigCalibration,
         "--output-root", $captureRoot
     )
+    if ($DiagnosticRigCalibrationOverride) {
+        $captureArguments += @(
+            "--diagnostic-rig-calibration-override", $effectiveRigCalibration
+        )
+    }
     if ($CameraId) { $captureArguments += @("--camera-id", $CameraId) }
     if ($PhoneSerial) { $captureArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `

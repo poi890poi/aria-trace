@@ -51,8 +51,10 @@ class GamePhonePreparationTests(unittest.TestCase):
 
     def test_capture_cli_allows_android_only_and_require_hik_is_explicit(self):
         arguments = capture.parser().parse_args([])
-        self.assertIsNone(arguments.rig_calibration)
+        self.assertIsNone(arguments.diagnostic_rig_calibration_override)
         self.assertFalse(arguments.require_hik)
+        with self.assertRaises(SystemExit):
+            capture.parser().parse_args(["--rig-calibration", "legacy.json"])
 
     def test_visible_game_booster_lock_is_distinct_from_android_keyguard(self):
         phone = FakePhone(False)
@@ -141,7 +143,12 @@ class GamePhonePreparationTests(unittest.TestCase):
                 "builtins.input", side_effect=PreparationCheckpoint
             ):
                 with self.assertRaises(PreparationCheckpoint):
-                    capture.main(["--rig-calibration", str(calibration)])
+                    capture.main(
+                        [
+                            "--diagnostic-rig-calibration-override",
+                            str(calibration),
+                        ]
+                    )
 
         self.assertEqual(2, surface.call_count)
         constructor.assert_called_once_with(
