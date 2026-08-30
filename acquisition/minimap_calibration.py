@@ -1552,14 +1552,14 @@ def calibrate_segment_sessions(
     )
 
 
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("session", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--rotation", nargs=2, type=float, required=True, metavar=("START", "END"))
     parser.add_argument("--movement", nargs=2, type=float, required=True, metavar=("START", "END"))
     parser.add_argument("--config", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     config = json.loads(args.config.read_text(encoding="utf-8")) if args.config else None
     result = calibrate_session(
         args.session,
@@ -1568,7 +1568,8 @@ def main() -> None:
         config,
     )
     print(json.dumps(result, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

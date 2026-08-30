@@ -1,0 +1,11 @@
+flowchart LR
+    Android --> RigCalibration --> RigProfile
+    Android --> ZigzagAcquisition --> Session
+    HIK --> RigCalibration
+    HIK -. optional .-> ZigzagAcquisition
+    Session --> MinimapCalibration --> GameProfile
+    RigProfile --> CameraAdapter
+    GameProfile --> CameraAdapter
+    CameraAdapter --> Full
+    CameraAdapter --> Minimap
+    CameraAdapter --> Dual

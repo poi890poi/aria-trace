@@ -1,0 +1,7 @@
+# Exact CPython 3.12.10 build/runtime set embedded into the three Windows apps.
+# HIK MVS itself remains a vendor-installed camera driver/runtime.
+numpy==2.5.2
+opencv-contrib-python==5.0.0.93
+PyYAML==6.0.3
+zxing-cpp==3.1.1
+PyInstaller==6.22.2

@@ -1,0 +1,106 @@
+# Pipeline and architecture
+
+The diagrams use [Mermaid](https://mermaid.js.org/) text syntax. Mermaid is
+rendered by GitHub, GitLab, many Markdown viewers, and documentation systems;
+the `.mmd` files can also be rendered with Mermaid CLI.
+
+## Operator pipeline
+
+```mermaid
+flowchart LR
+    Phone[Android phone] -->|ADB target display| RigExe[aria-rig-calibration.exe]
+    Hik[HIK MVS camera] -->|native frames| RigExe
+    RigExe -->|rig bundle + evidence| RigProfile[(rig profile)]
+
+    Phone -->|scrcpy frames| Zigzag[aria-zigzag-acquisition.exe]
+    RigProfile -->|optional normalized HIK source| Zigzag
+    Hik -->|optional current-session frames| Zigzag
+    Zigzag -->|session videos + timestamps + YAML spaces| Session[(capture session)]
+
+    Session --> MiniExe[aria-minimap-calibration.exe]
+    MiniExe -->|calibration + review evidence| MiniResult[(mini-map result)]
+
+    RigProfile --> Registry[profile registry]
+    MiniResult --> Registry
+    Registry --> Adapter[import hikcam]
+    Adapter --> Full[rig-normalized phone]
+    Adapter --> Mini[normalized mini-map]
+    Adapter --> Dual[synchronized dual stream]
+```
+
+## Coordinate spaces
+
+```mermaid
+flowchart LR
+    Sensor[Full HIK sensor space] -->|hardware ROI translation| ROI[HIK acquisition ROI]
+    ROI -->|dense remap or homography| Rig[Rig-calibrated phone/display space]
+    Rig <-->|saved rig conversion| ADB[ADB phone/display space]
+    ADB -->|phone-game mini-map crop| ADBMini[ADB normalized mini-map]
+    Rig -->|registered rig-game crop| HIKMini[HIK normalized mini-map]
+
+    classDef raw fill:#fee,stroke:#933;
+    classDef normalized fill:#eef,stroke:#339;
+    class Sensor,ROI raw;
+    class Rig,ADB,ADBMini,HIKMini normalized;
+```
+
+Coordinates and images from different boxes must not be combined directly.
+Every saved capture includes its source-space description; profile transforms
+are resolved before coordinates cross a boundary.
+
+## Components and interfaces
+
+```mermaid
+classDiagram
+    class HikMvsCameraAdapter {
+      +open(CameraConfiguration)
+      +set_roi(xywh)
+      +read() FrameSample
+      +close()
+    }
+    class RectifiedHikCamera {
+      +open()
+      +read() tuple
+      +read_sample() FrameSample
+      +release()
+    }
+    class ProfiledHikGameCamera {
+      +mode full|minimap|dual
+      +read_streams() HikGameFrameSet
+      +read_sample(stream_id)
+      +release()
+    }
+    class HikCamera {
+      +get_frame() ndarray
+      +get_frames() dict
+      +read() tuple
+      +isOpened() bool
+      +release()
+    }
+    class ProfileRegistry {
+      +resolve_adapter(context, request)
+    }
+
+    HikMvsCameraAdapter <|-- RectifiedHikCamera : acquires
+    HikMvsCameraAdapter <|-- ProfiledHikGameCamera : acquires once
+    RectifiedHikCamera <|-- HikCamera : full mode
+    ProfiledHikGameCamera <|-- HikCamera : game modes
+    ProfileRegistry --> HikCamera : resolves once at construction
+```
+
+## Runtime dependencies
+
+```mermaid
+flowchart TD
+    RigExe --> OpenCV
+    RigExe --> MVS[External HIK MVS runtime + driver]
+    RigExe --> ADB[External ADB environment]
+    ZigzagExe --> ADB
+    ZigzagExe --> Scrcpy[External scrcpy-server]
+    ZigzagExe --> FFmpeg[External FFmpeg]
+    ZigzagExe -. optional .-> MVS
+    MiniExe --> OpenCV
+    AdapterSource[Python camera adapter source] --> OpenCV
+    AdapterSource --> MVS
+    AdapterSource --> Profiles[User profiles and calibration maps]
+```

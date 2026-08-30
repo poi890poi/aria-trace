@@ -1,0 +1,6 @@
+flowchart LR
+    Sensor[Full HIK sensor] --> ROI[Hardware ROI]
+    ROI -->|rectification on| Rig[Normalized phone]
+    Rig <-->|rig transform| ADB[ADB display]
+    ADB --> ADBMini[Normalized ADB mini-map]
+    Rig --> HIKMini[Normalized HIK mini-map]

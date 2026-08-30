@@ -1,0 +1,6 @@
+classDiagram
+    HikMvsCameraAdapter <|-- RectifiedHikCamera
+    HikMvsCameraAdapter <|-- ProfiledHikGameCamera
+    RectifiedHikCamera <|-- HikCamera
+    ProfiledHikGameCamera <|-- HikCamera
+    ProfileRegistry --> HikCamera
