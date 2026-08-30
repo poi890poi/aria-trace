@@ -127,6 +127,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(TeleportBehaviorSample, legacy_record)
         self.assertIs(make_teleport_behavior_sample, legacy_make)
 
+    def test_scene_yaw_legacy_export_is_exact_service_alias(self):
+        from acquisition.scene_yaw_calibration import calibrate_scene_yaw_session as legacy
+        from aria_trace.services.calibration.scene_yaw import calibrate_scene_yaw_session
+
+        self.assertIs(calibrate_scene_yaw_session, legacy)
+
 
 if __name__ == "__main__":
     unittest.main()

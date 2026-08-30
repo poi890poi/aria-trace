@@ -62,7 +62,7 @@ from acquisition.recorder import AcquisitionRecorder
 from aria_trace.workflows.route import compile_route_session
 from aria_trace.services.localization.route.tracker import RouteCandidateAdvisor, RouteVisualTracker
 from acquisition.session import SessionReader, input_capture_health
-from acquisition.scene_yaw_calibration import calibrate_scene_yaw_session
+from aria_trace.services.calibration.scene_yaw import calibrate_scene_yaw_session
 from aria_trace.services.tracking.profiles import resolve_tracking_profile
 from aria_trace.workflows.teleport import analyze_teleport_session
 from acquisition.windows import (
