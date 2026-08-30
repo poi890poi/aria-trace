@@ -573,7 +573,7 @@ class TwoRateTrackerTests(unittest.TestCase):
                 self.previous_xy = (float(x), float(y))
                 self.seeded = self.previous_xy
 
-            def track(self, observation, mask):
+            def track(self, observation, mask, timestamp_ns=None):
                 self.calls += 1
                 self.previous_xy = (87.0, 73.0)
                 return {

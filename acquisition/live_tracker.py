@@ -1206,7 +1206,9 @@ class TwoRateRealtimeTracker:
                 state = self.fusion.state
                 self.route_visual_tracker.seed(state.pose.x, state.pose.y)
             try:
-                route_result = self.route_visual_tracker.track(minimap, mask)
+                route_result = self.route_visual_tracker.track(
+                    minimap, mask, timestamp_ns=timestamp_ns
+                )
                 self._last_route_tracking = dict(route_result)
                 route_tracking_fresh = True
                 if route_result.get("measurement_accepted"):

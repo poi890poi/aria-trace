@@ -224,9 +224,18 @@ class RouteVisualTracker:
         )
         self.recovery_top_k = max(1, int(recovery_top_k))
         self.previous_xy = None
+        self.previous_time_ns = None
+        motion = package.manifest.get("motion_envelope") or {}
+        speed_p99 = (motion.get("speed_px_s") or {}).get("p99")
+        self.continuity_speed_limit_px_s = max(
+            120.0, 4.0 * float(speed_p99 or 0.0)
+        )
 
-    def seed(self, x: float, y: float) -> None:
+    def seed(self, x: float, y: float, timestamp_ns=None) -> None:
         self.previous_xy = (float(x), float(y))
+        self.previous_time_ns = (
+            int(timestamp_ns) if timestamp_ns is not None else None
+        )
 
     def _refine(self, observation, mask, center, radius, source, state_index=None):
         result = dict(
@@ -268,7 +277,7 @@ class RouteVisualTracker:
             return None
         return max(hypotheses, key=lambda item: float(item["score"]))
 
-    def track(self, observation, mask) -> dict:
+    def track(self, observation, mask, timestamp_ns=None) -> dict:
         result = None
         if self.previous_xy is not None:
             result = self._refine(
@@ -283,8 +292,35 @@ class RouteVisualTracker:
             if recovered is not None:
                 result = recovered
         measurement_accepted = bool(result and result.get("valid"))
+        continuity_rejected = False
+        if (
+            measurement_accepted
+            and self.previous_xy is not None
+            and self.previous_time_ns is not None
+            and timestamp_ns is not None
+        ):
+            elapsed_s = max(
+                0.0,
+                (int(timestamp_ns) - self.previous_time_ns) / 1.0e9,
+            )
+            step_px = math.hypot(
+                float(result["x"]) - self.previous_xy[0],
+                float(result["y"]) - self.previous_xy[1],
+            )
+            step_limit_px = max(
+                6.0, self.continuity_speed_limit_px_s * elapsed_s
+            )
+            result["measured_x"] = float(result["x"])
+            result["measured_y"] = float(result["y"])
+            result["continuity_step_px"] = float(step_px)
+            result["continuity_step_limit_px"] = float(step_limit_px)
+            if step_px > step_limit_px:
+                measurement_accepted = False
+                continuity_rejected = True
         if measurement_accepted:
             self.previous_xy = (float(result["x"]), float(result["y"]))
+        if (measurement_accepted or continuity_rejected) and timestamp_ns is not None:
+            self.previous_time_ns = int(timestamp_ns)
         pose_available = self.previous_xy is not None
         public = dict(result or {})
         public.update(
@@ -298,11 +334,15 @@ class RouteVisualTracker:
                 "decision": (
                     "accepted-current-frame-map-pose"
                     if measurement_accepted
+                    else "held:continuity-jump"
+                    if continuity_rejected
                     else "held-no-map-measurement"
                     if pose_available
                     else "unlocalized"
                 ),
                 "route_role": "bounded-search-proposal-only",
+                "continuity_rejected": continuity_rejected,
+                "continuity_speed_limit_px_s": self.continuity_speed_limit_px_s,
             }
         )
         return public

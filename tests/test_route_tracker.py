@@ -124,6 +124,50 @@ class RouteTrackerTests(unittest.TestCase):
             self.assertEqual(second["source"], "continuous-local")
             self.assertEqual(map_localizer.centers[-1], (83.0, -4.0))
 
+    def test_visual_tracker_holds_prior_pose_on_implausible_jump(self):
+        class JumpingMap:
+            def __init__(self):
+                self.calls = 0
+
+            def refine_near(
+                self, observation, mask, center, search_radius_px, score_min
+            ):
+                self.calls += 1
+                x = 21.0 if self.calls == 1 else 70.0
+                return {
+                    "valid": True,
+                    "x": x,
+                    "y": 20.0,
+                    "score": 0.85,
+                    "margin": 0.2,
+                    "selected_mode_id": "world",
+                    "pose_authority": "current-frame-map-correlation",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            package, images = self._package(Path(temporary) / "route")
+            tracker = RouteVisualTracker(package, JumpingMap())
+            tracker.seed(20.0, 20.0)
+            first = tracker.track(
+                images[0],
+                np.full((64, 64), 255, np.uint8),
+                timestamp_ns=1_000_000_000,
+            )
+            second = tracker.track(
+                images[0],
+                np.full((64, 64), 255, np.uint8),
+                timestamp_ns=1_010_000_000,
+            )
+
+            self.assertTrue(first["measurement_accepted"])
+            self.assertFalse(second["measurement_accepted"])
+            self.assertTrue(second["pose_available"])
+            self.assertTrue(second["held"])
+            self.assertTrue(second["continuity_rejected"])
+            self.assertEqual(second["decision"], "held:continuity-jump")
+            self.assertEqual((second["x"], second["y"]), (21.0, 20.0))
+            self.assertEqual((second["measured_x"], second["measured_y"]), (70.0, 20.0))
+
     def test_state_estimator_advances_locally_and_projects_to_route(self):
         with tempfile.TemporaryDirectory() as temporary:
             package, images = self._package(Path(temporary) / "route")
