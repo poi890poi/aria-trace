@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
@@ -27,6 +27,11 @@ from aria_trace.apps.workbench.server import (
 )
 from aria_trace.apps.workbench.sources import SourceFactory, parse_adb_devices
 from aria_trace.apps.workbench.jobs import AnalysisJobManager
+from aria_trace.apps.workbench.catalog import (
+    SessionCatalog,
+    archive_existing,
+    session_primary_stream_id,
+)
 
 from replay.alignment import align_session
 from replay.package import compile_replay_package
@@ -192,18 +197,6 @@ def capture_diagnostic_snapshot(reader, input_health: dict, active: dict) -> dic
         "raw_input": raw_input,
         "input_capture": input_health,
     }
-
-
-def session_primary_stream_id(reader) -> str:
-    """Resolve the declared analysis stream while preserving legacy sessions."""
-
-    context = reader.manifest.get("context") or {}
-    declared = str(context.get("primary_stream_id") or "").strip()
-    if declared and declared in reader.frames_by_stream:
-        return declared
-    if "main" in reader.frames_by_stream:
-        return "main"
-    return next(iter(reader.frames_by_stream), "main")
 
 
 def input_failure_message(diagnostics: dict) -> str:
@@ -422,7 +415,11 @@ class AcquisitionWorkbench:
         self._live_tracker_route_points = None
         self._android_control = None
         self._hud_notice = None
-        self._session_summary_cache = {}
+        self._session_catalog = SessionCatalog(
+            self.session_root,
+            self.SESSION_LABELS,
+            self.SESSION_METADATA_FILENAME,
+        )
         self._instance = {
             "service": WORKBENCH_SERVICE,
             "schema_version": "1.0",
@@ -2804,184 +2801,29 @@ class AcquisitionWorkbench:
         return self._experiment_root() / "run_{:02d}".format(run_index)
 
     def _session_key(self, path: Path) -> str:
-        return path.resolve().relative_to(self.session_root.resolve()).as_posix()
+        return self._session_catalog.key(path)
 
     def _session_path(self, session_key: str, require_manifest: bool = True) -> Path:
-        pure = PurePosixPath(str(session_key or ""))
-        if (
-            pure.is_absolute()
-            or len(pure.parts) != 2
-            or any(part in ("", ".", "..") for part in pure.parts)
-            or not re.fullmatch(r"run_\d+", pure.parts[1])
-        ):
-            raise ValueError("Invalid session identifier")
-        root = self.session_root.resolve()
-        path = (root / Path(*pure.parts)).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError:
-            raise ValueError("Session must stay inside the session root")
-        if require_manifest and not (path / "manifest.json").is_file():
-            raise ValueError("Unknown recorded session")
-        return path
+        return self._session_catalog.resolve(session_key, require_manifest)
 
     def _session_metadata(self, path: Path) -> dict:
-        metadata_path = path / self.SESSION_METADATA_FILENAME
-        if not metadata_path.is_file():
-            return {}
-        try:
-            value = json.loads(metadata_path.read_text(encoding="utf-8"))
-            return value if isinstance(value, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+        return self._session_catalog.metadata(path)
 
     def _label_definition(self, label: str) -> dict:
-        for item in self.SESSION_LABELS:
-            if item["value"] == label:
-                return dict(item)
-        raise ValueError("Unknown session label")
+        return self._session_catalog.label_definition(label)
 
     def _describe_session(self, path: Path) -> dict:
-        signature = []
-        for name in (
-            "manifest.json",
-            "annotations.jsonl",
-            self.SESSION_METADATA_FILENAME,
-            "frames.jsonl",
-            "inputs.jsonl",
-        ):
-            item_path = path / name
-            if item_path.is_file():
-                stat = item_path.stat()
-                signature.append((name, stat.st_mtime_ns, stat.st_size))
-        cache_key = str(path.resolve())
-        cached = self._session_summary_cache.get(cache_key)
-        if cached and cached["signature"] == signature:
-            return dict(cached["value"])
-        reader = SessionReader(path)
-        annotations = AnnotationStore(path).list()
-        kinds = [item["kind"] for item in annotations]
-        input_health = input_capture_health(reader.manifest, reader.inputs)
-        metadata = self._session_metadata(path)
-        context = reader.manifest.get("context") or {}
-        primary_stream_id = session_primary_stream_id(reader)
-        if "route_failed" in kinds or "capture_failed" in kinds:
-            status = "failed"
-        elif not input_health["healthy"]:
-            status = "failed"
-        elif (
-            "route_start" in kinds and "route_complete" in kinds
-        ) or (
-            "capture_start" in kinds and "capture_complete" in kinds
-        ):
-            status = "ready"
-        elif "take_start" in kinds and "take_end" in kinds:
-            status = "recorded"
-        else:
-            status = "incomplete"
-        label = metadata.get("label")
-        if label is None:
-            label = context.get("segment_label") or ""
-        value = {
-            "session_key": self._session_key(path),
-            "session_id": reader.manifest.get("session_id"),
-            "experiment_id": context.get("experiment_id") or path.parent.name,
-            "run_index": context.get("run_index"),
-            "game_profile_id": context.get("game_profile_id"),
-            "window_title": (
-                (reader.manifest.get("frame_sources") or [{}])[0].get(
-                    "matched_window_title"
-                )
-                or (reader.manifest.get("frame_sources") or [{}])[0].get(
-                    "window_title_query"
-                )
-            ),
-            "created_utc": reader.manifest.get("created_utc"),
-            "finished_utc": reader.manifest.get("finished_utc"),
-            "duration_s": reader.manifest.get("duration_ns", 0) / 1.0e9,
-            "frames": len(reader.frames_by_stream.get(primary_stream_id, [])),
-            "input_events": len(reader.inputs),
-            "dropped_frames": reader.manifest.get("dropped_frames", {}).get(
-                primary_stream_id, 0
-            ),
-            "status": status,
-            "label": label,
-            "markers": kinds,
-            "input_capture": input_health,
-        }
-        self._session_summary_cache[cache_key] = {
-            "signature": signature,
-            "value": dict(value),
-        }
-        return value
+        return self._session_catalog.describe(path)
 
     def sessions(self) -> List[dict]:
-        values = []
-        paths = []
-        active_path = (
-            Path(self._active["path"]).resolve()
-            if self._active is not None
-            else None
-        )
-        for manifest_path in self.session_root.glob("*/run_*/manifest.json"):
-            if (
-                re.fullmatch(r"run_\d+", manifest_path.parent.name)
-                and manifest_path.parent.resolve() != active_path
-            ):
-                paths.append(manifest_path.parent)
-        for path in paths:
-            try:
-                values.append(self._describe_session(path))
-            except Exception as exc:
-                values.append(
-                    {
-                        "session_key": self._session_key(path),
-                        "status": "invalid",
-                        "label": "",
-                        "error": "{}: {}".format(type(exc).__name__, exc),
-                    }
-                )
-        values.sort(
-            key=lambda item: item.get("finished_utc")
-            or item.get("created_utc")
-            or item.get("session_key", ""),
-            reverse=True,
-        )
-        if self._active is not None:
-            active_key = self._session_key(active_path)
-            values.insert(
-                0,
-                {
-                    "session_key": active_key,
-                    "experiment_id": active_path.parent.name,
-                    "run_index": self._active["run_index"],
-                    "game_profile_id": (self._armed or {}).get(
-                        "game_profile_id"
-                    ),
-                    "created_utc": None,
-                    "duration_s": None,
-                    "frames": None,
-                    "input_events": self._active.get("recorded_input_events", 0),
-                    "dropped_frames": None,
-                    "status": self._active["phase"],
-                    "label": "",
-                },
-            )
-        return values
+        active = None if self._active is None else dict(self._active)
+        if active is not None:
+            active["game_profile_id"] = (self._armed or {}).get("game_profile_id")
+        return self._session_catalog.list(active)
 
     @staticmethod
     def _archive_existing(path: Path) -> None:
-        if not path.exists():
-            return
-        suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        candidate = path.with_name(path.name + ".previous-" + suffix)
-        counter = 1
-        while candidate.exists():
-            candidate = path.with_name(
-                path.name + ".previous-{}-{}".format(suffix, counter)
-            )
-            counter += 1
-        path.rename(candidate)
+        archive_existing(path)
 
     def _slot(self, run_index: int) -> dict:
         path = self._run_path(run_index)
@@ -3701,9 +3543,7 @@ class AcquisitionWorkbench:
                     try:
                         if active["path"].exists():
                             shutil.rmtree(active["path"])
-                        self._session_summary_cache.pop(
-                            str(active["path"].resolve()), None
-                        )
+                        self._session_catalog.invalidate(active["path"])
                     except Exception as exc:
                         with self._lock:
                             cleanup_error = "Could not discard failed capture: {}: {}".format(
@@ -3841,7 +3681,7 @@ class AcquisitionWorkbench:
                 stamp, safe_id(path.parent.name), path.name
             )
             path.rename(target)
-            self._session_summary_cache.pop(str(path.resolve()), None)
+            self._session_catalog.invalidate(path)
             game_profile_id = context.get("game_profile_id")
             if game_profile_id:
                 self._refresh_poc_evidence_index(game_profile_id)
