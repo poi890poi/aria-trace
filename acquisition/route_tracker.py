@@ -200,6 +200,114 @@ class RouteCandidateAdvisor:
         }
 
 
+class RouteVisualTracker:
+    """Track XY from current map pixels, using route states only as proposals."""
+
+    def __init__(
+        self,
+        package: RouteTrackingPackage,
+        map_localizer,
+        *,
+        score_min: float = 0.55,
+        local_radius_px: float = 18.0,
+        recovery_radius_px: float = 55.0,
+        recovery_top_k: int = 3,
+    ) -> None:
+        if not callable(getattr(map_localizer, "refine_near", None)):
+            raise ValueError("Route visual tracking needs local atlas refinement")
+        self.package = package
+        self.map_localizer = map_localizer
+        self.score_min = float(score_min)
+        self.local_radius_px = max(4.0, float(local_radius_px))
+        self.recovery_radius_px = max(
+            self.local_radius_px, float(recovery_radius_px)
+        )
+        self.recovery_top_k = max(1, int(recovery_top_k))
+        self.previous_xy = None
+
+    def seed(self, x: float, y: float) -> None:
+        self.previous_xy = (float(x), float(y))
+
+    def _refine(self, observation, mask, center, radius, source, state_index=None):
+        result = dict(
+            self.map_localizer.refine_near(
+                observation,
+                mask,
+                center,
+                search_radius_px=radius,
+                score_min=self.score_min,
+            )
+        )
+        result.update(
+            {
+                "source": source,
+                "route_state_index": state_index,
+            }
+        )
+        return result
+
+    def _recover(self, observation, mask):
+        descriptor = describe_minimap(observation, mask)
+        candidates = self.package.candidates(
+            descriptor,
+            top_k=self.recovery_top_k,
+        )
+        hypotheses = []
+        for candidate in candidates:
+            result = self._refine(
+                observation,
+                mask,
+                candidate["state"]["canonical_xy"],
+                self.recovery_radius_px,
+                "route-recovery",
+                int(candidate["state_index"]),
+            )
+            if result.get("valid"):
+                hypotheses.append(result)
+        if not hypotheses:
+            return None
+        return max(hypotheses, key=lambda item: float(item["score"]))
+
+    def track(self, observation, mask) -> dict:
+        result = None
+        if self.previous_xy is not None:
+            result = self._refine(
+                observation,
+                mask,
+                self.previous_xy,
+                self.local_radius_px,
+                "continuous-local",
+            )
+        if result is None or not result.get("valid"):
+            recovered = self._recover(observation, mask)
+            if recovered is not None:
+                result = recovered
+        measurement_accepted = bool(result and result.get("valid"))
+        if measurement_accepted:
+            self.previous_xy = (float(result["x"]), float(result["y"]))
+        pose_available = self.previous_xy is not None
+        public = dict(result or {})
+        public.update(
+            {
+                "valid": measurement_accepted,
+                "measurement_accepted": measurement_accepted,
+                "pose_available": pose_available,
+                "held": bool(pose_available and not measurement_accepted),
+                "x": self.previous_xy[0] if pose_available else None,
+                "y": self.previous_xy[1] if pose_available else None,
+                "decision": (
+                    "accepted-current-frame-map-pose"
+                    if measurement_accepted
+                    else "held-no-map-measurement"
+                    if pose_available
+                    else "unlocalized"
+                ),
+                "route_role": "bounded-search-proposal-only",
+            }
+        )
+        return public
+
+
 class RouteLockedStateEstimator:
     """Collapse live position onto a directed route with bounded progress."""
 

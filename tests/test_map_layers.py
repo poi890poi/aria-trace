@@ -193,6 +193,48 @@ class MapLayerTests(unittest.TestCase):
                 town_result["canonical_xy_read_only"], [200.0, 160.0]
             )
 
+    def test_local_refinement_returns_current_frame_pose_not_search_center(self):
+        canonical, layer = self._mosaics()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            world = root / "world-stitch"
+            town = root / "town-stitch"
+            output = root / "atlas"
+            self._write_stitch(world, canonical, "cal-world")
+            self._write_stitch(town, layer, "cal-town")
+            build_map_atlas(
+                [
+                    {"mode_id": "world", "stitch_root": world},
+                    {"mode_id": "town", "stitch_root": town},
+                ],
+                output,
+                canonical_mode_id="world",
+            )
+            localizer = LayeredGlobalLocalizer(output)
+            observation = layer[76:176, 118:218].copy()
+            mask = np.zeros((100, 100), np.uint8)
+            cv2.circle(mask, (50, 50), 47, 255, -1)
+            actual = ((118 + 50) / 0.7, (76 + 50) / 0.7)
+            proposal = (actual[0] + 12.0, actual[1] - 9.0)
+            try:
+                result = localizer.refine_near(
+                    observation,
+                    mask,
+                    proposal,
+                    search_radius_px=30.0,
+                    score_min=0.50,
+                )
+            finally:
+                localizer.close()
+
+            self.assertTrue(result["valid"])
+            self.assertAlmostEqual(result["x"], actual[0], delta=5.0)
+            self.assertAlmostEqual(result["y"], actual[1], delta=5.0)
+            self.assertGreater(abs(result["x"] - proposal[0]), 5.0)
+            self.assertEqual(
+                result["pose_authority"], "current-frame-map-correlation"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

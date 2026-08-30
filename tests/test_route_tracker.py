@@ -9,6 +9,7 @@ from acquisition.route_tracker import (
     RouteCandidateAdvisor,
     RouteGlobalLocalizer,
     RouteLockedStateEstimator,
+    RouteVisualTracker,
 )
 from replay.route_tracking import (
     RouteTrackingPackage,
@@ -83,6 +84,45 @@ class RouteTrackerTests(unittest.TestCase):
             self.assertIn(8, proposal["cluster_state_indexes"])
             self.assertGreater(proposal["cluster_candidate_count"], 1)
             self.assertGreaterEqual(proposal["radius_px"], 50.0)
+
+    def test_visual_tracker_uses_route_as_proposal_and_map_as_pose(self):
+        class RefiningMap:
+            def __init__(self):
+                self.centers = []
+
+            def refine_near(
+                self, observation, mask, center, search_radius_px, score_min
+            ):
+                self.centers.append(tuple(center))
+                return {
+                    "valid": True,
+                    "x": float(center[0]) + 3.0,
+                    "y": float(center[1]) - 4.0,
+                    "score": 0.8,
+                    "margin": 0.2,
+                    "selected_mode_id": "world",
+                    "pose_authority": "current-frame-map-correlation",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            package, images = self._package(Path(temporary) / "route")
+            map_localizer = RefiningMap()
+            tracker = RouteVisualTracker(
+                package, map_localizer, recovery_top_k=1
+            )
+
+            first = tracker.track(
+                images[8], np.full((64, 64), 255, np.uint8)
+            )
+            second = tracker.track(
+                images[8], np.full((64, 64), 255, np.uint8)
+            )
+
+            self.assertTrue(first["measurement_accepted"])
+            self.assertEqual((first["x"], first["y"]), (83.0, -4.0))
+            self.assertEqual(first["route_role"], "bounded-search-proposal-only")
+            self.assertEqual(second["source"], "continuous-local")
+            self.assertEqual(map_localizer.centers[-1], (83.0, -4.0))
 
     def test_state_estimator_advances_locally_and_projects_to_route(self):
         with tempfile.TemporaryDirectory() as temporary:

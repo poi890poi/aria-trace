@@ -555,6 +555,97 @@ class LayeredGlobalLocalizer:
             "pose_authority": "none",
         }
 
+    def refine_near(
+        self,
+        observation: np.ndarray,
+        mask: np.ndarray,
+        canonical_xy,
+        search_radius_px: float = 18.0,
+        score_min: float = 0.55,
+        mode_ids=None,
+    ) -> dict:
+        """Return a current-frame map pose near a proposed canonical position.
+
+        Unlike ``observe_modes``, this method has explicit XY pose authority.
+        The caller supplies only a bounded search proposal; the returned pose is
+        the peak measured from the current mini-map against atlas pixels.
+        """
+
+        started = time.perf_counter()
+        if canonical_xy is None:
+            raise ValueError("Local map refinement requires a canonical proposal")
+        gray = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
+        gray = gray.astype(np.float32)
+        gradient = cv2.magnitude(
+            cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3),
+            cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3),
+        )
+        selected_ids = tuple(mode_ids or self.localizers)
+        hypotheses = []
+        diagnostics = {}
+        for mode_id in selected_ids:
+            match = self._observe_one_mode(
+                self.localizers[mode_id],
+                gradient,
+                mask,
+                canonical_xy,
+                search_radius_px,
+            )
+            diagnostics[str(mode_id)] = match
+            if not match.get("valid"):
+                continue
+            offset = match["best_offset_canonical_xy"]
+            hypotheses.append(
+                {
+                    "x": float(canonical_xy[0]) + float(offset[0]),
+                    "y": float(canonical_xy[1]) + float(offset[1]),
+                    "score": float(match["score"]),
+                    "mode_id": str(mode_id),
+                    "coverage_fraction": float(match["coverage_fraction"]),
+                }
+            )
+        hypotheses.sort(key=lambda item: item["score"], reverse=True)
+        if not hypotheses:
+            return {
+                "valid": False,
+                "x": None,
+                "y": None,
+                "score": 0.0,
+                "margin": 0.0,
+                "selected_mode_id": None,
+                "reason": "no-covered-local-map-hypothesis",
+                "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+                "pose_authority": "current-frame-map-correlation",
+                "modes": diagnostics,
+            }
+        best = hypotheses[0]
+        distinct_scores = [
+            item["score"]
+            for item in hypotheses[1:]
+            if math.hypot(item["x"] - best["x"], item["y"] - best["y"])
+            >= 8.0
+        ]
+        second = max(distinct_scores, default=0.0)
+        valid = bool(best["score"] >= float(score_min))
+        return {
+            "valid": valid,
+            "x": best["x"] if valid else None,
+            "y": best["y"] if valid else None,
+            "score": best["score"],
+            "margin": best["score"] - second,
+            "selected_mode_id": best["mode_id"],
+            "coverage_fraction": best["coverage_fraction"],
+            "reason": None if valid else "correlation-below-threshold",
+            "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+            "pose_authority": "current-frame-map-correlation",
+            "search_center_canonical_xy": [
+                float(canonical_xy[0]),
+                float(canonical_xy[1]),
+            ],
+            "search_radius_canonical_px": float(search_radius_px),
+            "modes": diagnostics,
+        }
+
     def localize_all(
         self,
         observation: np.ndarray,
