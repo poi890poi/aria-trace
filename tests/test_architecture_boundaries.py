@@ -85,6 +85,19 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(CursorPoseEstimator, legacy_pose)
         self.assertIs(CursorPoseProcessExecutor, legacy_worker)
 
+    def test_minimap_legacy_exports_are_exact_service_aliases(self):
+        from acquisition.minimap_calibration import (
+            calibrate_minimap_boundary_frames as legacy_boundary,
+        )
+        from acquisition.minimap_transition import TransitionController as legacy_transition
+        from aria_trace.services.calibration.minimap import (
+            TransitionController,
+            calibrate_minimap_boundary_frames,
+        )
+
+        self.assertIs(calibrate_minimap_boundary_frames, legacy_boundary)
+        self.assertIs(TransitionController, legacy_transition)
+
 
 if __name__ == "__main__":
     unittest.main()

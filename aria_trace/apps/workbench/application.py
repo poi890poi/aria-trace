@@ -39,7 +39,7 @@ from acquisition.annotations import AnnotationStore
 from acquisition.map_stitching import load_localization_reference_candidates, stitch_map_session
 from acquisition.map_layers import LayeredGlobalLocalizer, build_map_atlas
 from acquisition.map_layer_references import transition_endpoint_references
-from acquisition.minimap_transition_analysis import analyze_transition_session
+from aria_trace.services.calibration.minimap.transition_analysis import analyze_transition_session
 from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
 from acquisition.frame_pump import LatestFramePump
 from acquisition.live_tracker import (
@@ -50,12 +50,12 @@ from acquisition.live_tracker import (
     render_minimap_route_overlay,
 )
 from acquisition.live_tracking_evidence import LiveTrackingEvidenceRecorder
-from acquisition.minimap_calibration import (
+from aria_trace.services.calibration.minimap.calibration import (
     ORDINARY_MOTION_SEGMENT_LABELS,
     calibrate_segment_sessions,
     calibrate_session,
 )
-from acquisition.minimap_verification import verify_forward_session
+from aria_trace.services.calibration.minimap.verification import verify_forward_session
 from acquisition.poc_evidence import build_poc_evidence_index
 from acquisition.profiles import ProfileCatalog
 from acquisition.recorder import AcquisitionRecorder

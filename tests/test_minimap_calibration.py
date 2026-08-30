@@ -292,10 +292,10 @@ class MinimapCalibrationTests(unittest.TestCase):
             frames = np.zeros((2, 32, 32, 3), np.uint8)
 
             with patch(
-                "acquisition.minimap_calibration._read_video_segment",
+                "aria_trace.services.calibration.minimap.calibration._read_video_segment",
                 return_value=(frames, 30.0),
             ), patch(
-                "acquisition.minimap_calibration.calibrate_minimap_frames",
+                "aria_trace.services.calibration.minimap.calibration.calibrate_minimap_frames",
                 side_effect=lambda *args, **kwargs: kwargs["provenance"],
             ):
                 provenance = calibrate_segment_sessions(

@@ -15,8 +15,8 @@ from aria_trace.services.vision import KltAngularYawEstimator, camera_matrix
 
 from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
 from aria_trace.services.calibration.cursor.worker import CursorPoseProcessExecutor
-from .minimap_transition import TransitionController
-from .minimap_verification import estimate_masked_shift
+from aria_trace.services.calibration.minimap.transition import TransitionController
+from aria_trace.services.calibration.minimap.verification import estimate_masked_shift
 
 
 def _gradient(image: np.ndarray) -> np.ndarray:
