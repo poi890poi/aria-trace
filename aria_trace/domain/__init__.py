@@ -3,6 +3,11 @@
 from .artifacts import ArtifactRef
 from .envelope import DataEnvelope, DiagnosticValue, EnvelopeIdentity
 from .errors import ComponentError, FailureKind
+from .execution import (
+    ComponentInvocation,
+    FailureRecord,
+    InvocationStatus,
+)
 from .frames import ImageFrame
 from .provenance import (
     ConfigurationRef,
@@ -19,13 +24,16 @@ __all__ = [
     "ArtifactRef",
     "CheckStatus",
     "ComponentError",
+    "ComponentInvocation",
     "ConfigurationRef",
     "DataEnvelope",
     "Decision",
     "DiagnosticValue",
     "EnvelopeIdentity",
     "FailureKind",
+    "FailureRecord",
     "ImageFrame",
+    "InvocationStatus",
     "ProducerRef",
     "ProvenanceInfo",
     "QualityCheck",

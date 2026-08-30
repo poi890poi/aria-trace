@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, Mapping, Optional, TypeVar
 
-from aria_trace.domain import ArtifactRef, DataEnvelope
+from aria_trace.domain import ArtifactRef, ComponentInvocation, DataEnvelope
 
 I = TypeVar("I")
 O = TypeVar("O")
@@ -82,4 +82,10 @@ class Repository(ABC, Generic[Q, T]):
 
     @abstractmethod
     def save(self, value: T) -> T:
+        raise NotImplementedError
+
+
+class InvocationSink(ABC):
+    @abstractmethod
+    def record(self, value: ComponentInvocation) -> None:
         raise NotImplementedError
