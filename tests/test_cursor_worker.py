@@ -8,7 +8,7 @@ class CursorWorkerTests(unittest.TestCase):
     def test_process_executor_uses_spawn_and_one_worker(self):
         pool = MagicMock()
         with patch(
-            "acquisition.cursor_worker.ProcessPoolExecutor",
+            "aria_trace.services.calibration.cursor.worker.ProcessPoolExecutor",
             return_value=pool,
         ) as constructor:
             worker = CursorPoseProcessExecutor(

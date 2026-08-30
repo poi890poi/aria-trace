@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .cursor_pose import (
+from aria_trace.services.calibration.cursor.pose import (
     CursorPoseEstimator,
     circular_difference_degrees,
     timing_summary_ms,

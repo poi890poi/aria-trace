@@ -40,7 +40,7 @@ from acquisition.map_stitching import load_localization_reference_candidates, st
 from acquisition.map_layers import LayeredGlobalLocalizer, build_map_atlas
 from acquisition.map_layer_references import transition_endpoint_references
 from acquisition.minimap_transition_analysis import analyze_transition_session
-from acquisition.cursor_pose import CursorPoseEstimator
+from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
 from acquisition.frame_pump import LatestFramePump
 from acquisition.live_tracker import (
     GlobalMapLocalizer,

@@ -13,8 +13,8 @@ import numpy as np
 from aria_trace.services.tracking import FusionConfig, Pose2D, PoseFusionGate
 from aria_trace.services.vision import KltAngularYawEstimator, camera_matrix
 
-from .cursor_pose import CursorPoseEstimator
-from .cursor_worker import CursorPoseProcessExecutor
+from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
+from aria_trace.services.calibration.cursor.worker import CursorPoseProcessExecutor
 from .minimap_transition import TransitionController
 from .minimap_verification import estimate_masked_shift
 

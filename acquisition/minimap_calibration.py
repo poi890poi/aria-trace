@@ -20,7 +20,7 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .cursor_shape_model import fit_symmetric_polygon
+from aria_trace.services.calibration.cursor.shape import fit_symmetric_polygon
 from .session import SessionReader
 
 
@@ -1048,7 +1048,7 @@ def calibrate_minimap_frames(
     # Validate pose estimation on the reviewed movement-only segment using the
     # just-written calibration model. This remains screen pose until a separate
     # world-heading reference is supplied.
-    from .cursor_pose import estimate_cursor_pose_frames
+    from aria_trace.services.calibration.cursor.pose import estimate_cursor_pose_frames
 
     if progress:
         progress("Verifying cursor pose across the movement session")
@@ -1076,8 +1076,8 @@ def calibrate_minimap_frames(
     if ordinary_frames is not None:
         if progress:
             progress("Measuring cursor turning dynamics from standard sessions")
-        from .cursor_dynamics import summarize_cursor_dynamics
-        from .cursor_pose import (
+        from aria_trace.services.calibration.cursor.dynamics import summarize_cursor_dynamics
+        from aria_trace.services.calibration.cursor.pose import (
             CursorPoseEstimator,
             estimate_cursor_pose_sequence,
             timing_summary_ms,

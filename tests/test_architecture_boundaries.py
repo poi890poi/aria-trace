@@ -74,6 +74,17 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(application.make_handler, legacy.make_handler)
         self.assertIs(application.main, legacy.main)
 
+    def test_cursor_legacy_exports_are_exact_service_aliases(self):
+        from acquisition.cursor_pose import CursorPoseEstimator as legacy_pose
+        from acquisition.cursor_worker import CursorPoseProcessExecutor as legacy_worker
+        from aria_trace.services.calibration.cursor import (
+            CursorPoseEstimator,
+            CursorPoseProcessExecutor,
+        )
+
+        self.assertIs(CursorPoseEstimator, legacy_pose)
+        self.assertIs(CursorPoseProcessExecutor, legacy_worker)
+
 
 if __name__ == "__main__":
     unittest.main()
