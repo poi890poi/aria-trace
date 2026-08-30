@@ -57,7 +57,12 @@ class PhoneDisplayPowerSession:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="Stream the calibrated phone-display ROI from HIK MVS.")
-    value.add_argument("calibration", type=Path, help="hik_camera_calibration.json")
+    value.add_argument(
+        "calibration",
+        type=Path,
+        nargs="?",
+        help="explicit hik_camera_calibration.json override; omit for registry resolution",
+    )
     value.add_argument(
         "--minimap-calibration",
         type=Path,
@@ -67,9 +72,23 @@ def parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("minimap", "full", "dual"),
         default="full",
-        help="profiled adapter stream mode; requires --minimap-calibration",
+        help=(
+            "adapter stream mode; explicit paths require --minimap-calibration "
+            "for minimap/dual, registry mode resolves it automatically"
+        ),
     )
     value.add_argument("--mvs-python-path")
+    value.add_argument("--profile-root", type=Path)
+    value.add_argument("--game-id")
+    value.add_argument("--camera-id")
+    value.add_argument("--phone-serial")
+    value.add_argument("--color-order", choices=("RGB", "BGR"), default="BGR")
+    value.add_argument(
+        "--color-policy",
+        choices=("auto", "rig_locked", "game_matched", "unadjusted"),
+        default="auto",
+    )
+    value.add_argument("--minimap-margin-px", type=int, default=6)
     value.add_argument("--gui", action="store_true", help="Show live rectified frames; Q/Esc closes")
     value.add_argument(
         "--no-rectify",
@@ -86,14 +105,36 @@ def parser() -> argparse.ArgumentParser:
 
 
 def open_camera(
-    calibration: Path,
+    calibration: Optional[Path] = None,
     mvs_python_path: Optional[str] = None,
     rectify: bool = True,
     minimap_calibration: Optional[Path] = None,
     mode: str = "full",
+    profile_root: Optional[Path] = None,
+    game_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+    color_order: str = "BGR",
+    color_policy: str = "auto",
+    minimap_margin_px: int = 6,
 ):
     """Public UVC-like constructor for application code (read/release/isOpened)."""
 
+    if calibration is None:
+        return HikCamera(
+            config={
+                "profile_root": profile_root,
+                "game_id": game_id,
+                "camera_id": camera_id,
+                "phone_id": phone_serial,
+                "mode": mode,
+                "rectify": rectify,
+                "color_order": color_order,
+                "color_policy": color_policy,
+                "minimap_margin_px": minimap_margin_px,
+                "mvs_python_path": mvs_python_path,
+            }
+        ).open()
     if minimap_calibration is None and mode != "full":
         raise ValueError("--mode {} requires --minimap-calibration".format(mode))
     adapter = HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
@@ -114,16 +155,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.manage_phone_display and not arguments.gui:
         parser().error("--manage-phone-display requires --gui")
-    if arguments.minimap_calibration is None and arguments.mode != "full":
+    if (
+        arguments.calibration is not None
+        and arguments.minimap_calibration is None
+        and arguments.mode != "full"
+    ):
         parser().error("--mode {} requires --minimap-calibration".format(arguments.mode))
     display = None
     camera = None
     windows = []
     try:
-        if arguments.manage_phone_display:
+        if arguments.calibration is None:
+            camera = HikCamera(
+                config={
+                    "profile_root": arguments.profile_root,
+                    "game_id": arguments.game_id,
+                    "camera_id": arguments.camera_id,
+                    "phone_id": arguments.phone_serial,
+                    "mode": arguments.mode,
+                    "rectify": not arguments.no_rectify,
+                    "color_order": arguments.color_order,
+                    "color_policy": arguments.color_policy,
+                    "minimap_margin_px": arguments.minimap_margin_px,
+                    "mvs_python_path": arguments.mvs_python_path,
+                }
+            )
+            configuration = camera.calibration
+        else:
             configuration = json.loads(
                 arguments.calibration.read_text(encoding="utf-8")
             )
+        if arguments.manage_phone_display:
             serial = str(configuration.get("phone", {}).get("serial", "")).strip()
             if serial:
                 try:
@@ -148,17 +210,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         .format(exc),
                         flush=True,
                     )
-        camera = open_camera(
-            arguments.calibration,
-            arguments.mvs_python_path,
-            rectify=not arguments.no_rectify,
-            minimap_calibration=arguments.minimap_calibration,
-            mode=arguments.mode,
-        )
+        if camera is None:
+            camera = open_camera(
+                arguments.calibration,
+                arguments.mvs_python_path,
+                rectify=not arguments.no_rectify,
+                minimap_calibration=arguments.minimap_calibration,
+                mode=arguments.mode,
+                color_order=arguments.color_order,
+                color_policy=arguments.color_policy,
+                minimap_margin_px=arguments.minimap_margin_px,
+            )
+        elif not camera.is_open:
+            camera.open()
         if not arguments.gui:
             print("Rectified stream configured. Use open_camera(...) from Python, or pass --gui.")
             return 0
-        profiled = arguments.minimap_calibration is not None
+        profiled = bool(
+            arguments.minimap_calibration is not None
+            or getattr(camera, "config", {}).get("minimap_calibration")
+        )
         stream_names = (
             ["full", "minimap"]
             if profiled and arguments.mode == "dual"
@@ -174,8 +245,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
         while True:
             if profiled and arguments.mode == "dual":
-                frame_set = camera.read_streams()
-                displayed = frame_set.streams
+                if hasattr(camera, "get_frames"):
+                    displayed = camera.get_frames()
+                else:
+                    frame_set = camera.read_streams()
+                    displayed = frame_set.streams
             else:
                 ok, frame = camera.read()
                 displayed = {stream_names[0]: frame} if ok and frame is not None else {}

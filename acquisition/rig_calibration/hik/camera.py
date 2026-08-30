@@ -7,8 +7,10 @@ Usage is intentionally shaped like the common ``hik_camera.hik_camera`` module::
     with hikcam.HikCamera(config={"calibration": "...json"}) as cam:
         rgb = cam.get_frame()
 
-Set ``ARIA_HIK_CALIBRATION`` to omit the config argument. Construction does not
-claim hardware; the context manager (or ``open``) owns the camera lifecycle.
+Set ``ARIA_HIK_CALIBRATION`` to omit the config argument. Without an explicit
+path, the production profile registry resolves the connected camera and the
+requested game/mode once during construction. The context manager (or ``open``)
+owns the camera lifecycle; registry resolution never runs per frame.
 """
 
 from __future__ import annotations
@@ -29,23 +31,99 @@ from .spaces import RigCalibratedSpaceConverter
 CalibrationPath = Union[str, Path]
 
 
-def _calibration_from_arguments(
+def _configured_calibration_from_arguments(
     ip: Optional[str], config: Mapping[str, Any]
-) -> Path:
+) -> Optional[Path]:
     configured = config.get("calibration") or os.environ.get("ARIA_HIK_CALIBRATION")
     if configured is None and ip:
         candidate = Path(str(ip))
         if candidate.is_file() or candidate.suffix.lower() == ".json":
             configured = candidate
     if configured is None:
-        raise ValueError(
-            "Saved calibration is required in config['calibration'], as the first "
-            "argument, or in ARIA_HIK_CALIBRATION"
-        )
+        return None
     path = Path(configured).resolve()
     if not path.is_file():
         raise FileNotFoundError("HIK calibration does not exist: {}".format(path))
     return path
+
+
+def _camera_id_for_registry(
+    ip: Optional[str], config: Mapping[str, Any]
+) -> str:
+    configured = config.get("camera_id")
+    if configured:
+        return str(configured)
+    if ip:
+        candidate = Path(str(ip))
+        if not candidate.is_file() and candidate.suffix.lower() != ".json":
+            return str(ip)
+    adapter = HikMvsCameraAdapter(sdk_python_path=config.get("mvs_python_path"))
+    devices = list(adapter.devices(probe=True))
+    if not devices:
+        raise RuntimeError("No connected HIK camera was found for profile resolution")
+    if len(devices) != 1:
+        raise RuntimeError(
+            "Multiple HIK cameras are connected; set config['camera_id']: {}".format(
+                ", ".join(str(device.device_id) for device in devices)
+            )
+        )
+    return str(devices[0].device_id)
+
+
+def _registry_configuration(
+    ip: Optional[str], config: Mapping[str, Any]
+) -> tuple[Path, Dict[str, Any], Dict[str, Any]]:
+    from acquisition.profile_registry import (
+        AdapterRequest,
+        ProfileContext,
+        ProfileRegistry,
+    )
+
+    camera_id = _camera_id_for_registry(ip, config)
+    game_id = config.get("game_id") or os.environ.get("ARIA_GAME_ID")
+    normalization = config.get("normalization")
+    if normalization is None:
+        normalization = "auto" if bool(config.get("rectify", True)) else "none"
+    context = ProfileContext(
+        game_id=str(game_id) if game_id else None,
+        platform=str(config.get("platform", "android")),
+        package=config.get("package"),
+        game_version=config.get("game_version"),
+        camera_adapter="hik_mvs",
+        camera_id=camera_id,
+        phone_id=config.get("phone_id") or config.get("phone_serial"),
+        phone_model=config.get("phone_model"),
+        panel_display=config.get("panel_display") or {},
+        game_display=config.get("game_display") or {},
+    )
+    request = AdapterRequest(
+        purpose=str(config.get("purpose", "application")),
+        mode=str(config.get("mode", "full")),
+        normalization=str(normalization),
+        color_order=str(config.get("color_order", "RGB")),
+        color_policy=str(config.get("color_policy", "auto")),
+        roi_policy=str(config.get("roi_policy", "auto")),
+        minimap_margin_px=int(config.get("minimap_margin_px", 6)),
+        frame_rate_policy=str(config.get("frame_rate_policy", "calibrated")),
+        frame_rate=(
+            float(config["frame_rate"]) if config.get("frame_rate") is not None else None
+        ),
+    )
+    registry = ProfileRegistry(
+        Path(config["profile_root"]) if config.get("profile_root") else None
+    )
+    resolved = registry.resolve_adapter(context, request)
+    effective = dict(config)
+    effective.update(
+        calibration=resolved["paths"]["rig_calibration"],
+        mode=resolved["adapter_plan"]["mode"],
+        rectify=bool(resolved["adapter_plan"]["rectify"]),
+        color_order=resolved["adapter_plan"]["color_order"],
+        minimap_margin_px=resolved["adapter_plan"]["minimap_margin_px"],
+    )
+    if resolved["paths"]["rig_game_profile"]:
+        effective["minimap_calibration"] = resolved["paths"]["rig_game_profile"]
+    return Path(effective["calibration"]).resolve(), effective, resolved
 
 
 class HikCamera:
@@ -71,7 +149,33 @@ class HikCamera:
             ip_candidate
             and (ip_candidate.is_file() or ip_candidate.suffix.lower() == ".json")
         )
-        self.calibration_path = _calibration_from_arguments(ip, self.config)
+        explicit_calibration = _configured_calibration_from_arguments(ip, self.config)
+        self.resolved_config: Dict[str, Any]
+        if explicit_calibration is None:
+            self.calibration_path, self.config, self.resolved_config = (
+                _registry_configuration(ip, self.config)
+            )
+        else:
+            self.calibration_path = explicit_calibration
+            self.resolved_config = {
+                "schema_version": "explicit-path",
+                "selection": "explicit_calibration_override",
+                "paths": {
+                    "rig_calibration": str(explicit_calibration),
+                    "rig_game_profile": (
+                        str(Path(self.config["minimap_calibration"]).resolve())
+                        if self.config.get("minimap_calibration")
+                        else None
+                    ),
+                },
+                "adapter_plan": {
+                    "mode": str(self.config.get("mode", "full")),
+                    "rectify": bool(self.config.get("rectify", True)),
+                    "color_order": str(self.config.get("color_order", "RGB")).upper(),
+                    "registry_reads_per_frame": 0,
+                    "phone_operations": "none",
+                },
+            }
         self.calibration = json.loads(self.calibration_path.read_text(encoding="utf-8"))
         camera = self.calibration["camera"]
         self._ip = str(camera.get("device_id", ip or ""))
@@ -201,6 +305,8 @@ class HikCamera:
                 mode=str(self.config.get("mode", "minimap")),
                 rectify_minimap=bool(self.config.get("rectify", True)),
                 minimap_margin_px=int(self.config.get("minimap_margin_px", 6)),
+                apply_game_color=str(self.config.get("color_policy", "auto"))
+                not in ("rig_locked", "unadjusted"),
             )
         return RectifiedHikCamera(
             self.calibration_path, rectify=self._rectify_enabled

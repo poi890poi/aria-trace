@@ -47,6 +47,14 @@ class HikStreamCliTests(unittest.TestCase):
         self.assertEqual("dual", arguments.mode)
         self.assertEqual(Path("current.json"), arguments.minimap_calibration)
 
+    def test_parser_allows_registry_selected_game_without_calibration_path(self):
+        arguments = stream.parser().parse_args(
+            ["--game-id", "game-1", "--mode", "dual", "--gui"]
+        )
+        self.assertIsNone(arguments.calibration)
+        self.assertEqual("game-1", arguments.game_id)
+        self.assertEqual("dual", arguments.mode)
+
 
 if __name__ == "__main__":
     unittest.main()

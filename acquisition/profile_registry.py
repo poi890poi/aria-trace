@@ -106,6 +106,8 @@ def _normalized_display(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     if source.get("refresh_hz") is not None:
         # Millihertz precision avoids signatures changing from float noise.
         normalized["refresh_millihz"] = int(round(float(source["refresh_hz"]) * 1000.0))
+    elif source.get("refresh_millihz") is not None:
+        normalized["refresh_millihz"] = int(source["refresh_millihz"])
     for name in ("ui_layout_id", "content_layout_id"):
         if source.get(name) is not None:
             normalized[name] = str(source[name])

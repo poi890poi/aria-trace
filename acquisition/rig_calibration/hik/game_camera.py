@@ -162,19 +162,27 @@ class ProfiledHikGameCamera:
         rectify_minimap: bool = True,
         adapter: Optional[HikMvsCameraAdapter] = None,
         minimap_margin_px: int = 6,
+        apply_game_color: bool = True,
     ) -> None:
         if mode not in self.MODES:
             raise ValueError("HIK game stream mode must be minimap, full, or dual")
         self.rig_path, self.rig = _load_json(
             rig_calibration, ("hik_camera_calibration.json",)
         )
-        self.minimap_path, self.minimap = _load_json(
+        self.minimap_path, loaded_minimap = _load_json(
             minimap_calibration,
             ("profile.json", "minimap_calibration.json", "calibration.json"),
+        )
+        payload = loaded_minimap.get("payload")
+        self.minimap = (
+            {**loaded_minimap, **dict(payload)}
+            if isinstance(payload, Mapping)
+            else loaded_minimap
         )
         self.mode = mode
         self.rectify_minimap = bool(rectify_minimap)
         self.minimap_margin_px = int(minimap_margin_px)
+        self.apply_game_color = bool(apply_game_color)
         self.adapter = adapter or HikMvsCameraAdapter(
             sdk_python_path=self.rig.get("mvs_python_path")
         )
@@ -231,6 +239,8 @@ class ProfiledHikGameCamera:
         )
         conversion = self.minimap.get("hik_bayer_conversion") or {}
         if (
+            self.apply_game_color
+            and
             isinstance(conversion, Mapping)
             and conversion.get("status") == "selected"
         ):
