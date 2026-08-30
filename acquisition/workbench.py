@@ -40,6 +40,7 @@ from .map_layer_references import transition_endpoint_references
 from .minimap_transition_analysis import analyze_transition_session
 from .cursor_pose import CursorPoseEstimator
 from .frame_pump import LatestFramePump
+from .hik_capture import CalibratedHikFrameSource, NativeHikFrameSource
 from .live_tracker import (
     GlobalMapLocalizer,
     MinimapExtractor,
@@ -448,6 +449,16 @@ class SourceFactory:
             "label": "Android device (scrcpy)",
             "status": "available",
         },
+        {
+            "adapter": "hik_mvs",
+            "label": "HIK camera (native sensor)",
+            "status": "available",
+        },
+        {
+            "adapter": "hik_rig_calibrated",
+            "label": "HIK camera (rig calibrated)",
+            "status": "available",
+        },
         {"adapter": "uvc", "label": "UVC camera", "status": "available"},
         {"adapter": "adb_screenshot", "label": "ADB screenshot", "status": "available"},
     )
@@ -484,10 +495,17 @@ class SourceFactory:
         },
     )
 
-    def __init__(self, desktop_api=None, xinput_api=None, raw_input_api=None) -> None:
+    def __init__(
+        self,
+        desktop_api=None,
+        xinput_api=None,
+        raw_input_api=None,
+        hik_adapter_factory=None,
+    ) -> None:
         self.desktop_api = desktop_api
         self.xinput_api = xinput_api
         self.raw_input_api = raw_input_api
+        self.hik_adapter_factory = hik_adapter_factory
 
     @staticmethod
     def _adb(config: dict) -> Path:
@@ -514,6 +532,30 @@ class SourceFactory:
             creationflags=creationflags,
         )
         return parse_adb_devices(output)
+
+    def hik_devices(self) -> List[dict]:
+        """Enumerate HIK devices without opening or changing camera state."""
+
+        if self.hik_adapter_factory is None:
+            from .rig_calibration.hik.driver import HikMvsCameraAdapter
+
+            adapter = HikMvsCameraAdapter()
+        else:
+            adapter = self.hik_adapter_factory()
+        try:
+            return [
+                {
+                    "camera_id": str(device.device_id),
+                    "label": str(device.label),
+                    "metadata": dict(device.metadata),
+                    "available": True,
+                }
+                for device in adapter.devices(probe=True)
+            ]
+        finally:
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
 
     def capture_sources(self, frame_config: dict, input_config: dict):
         """Build a synchronized frame/input pair for one recorder lifetime."""
@@ -581,6 +623,30 @@ class SourceFactory:
                 serial=config.get("serial"),
                 stream_id=config.get("stream_id", "main"),
                 fps=float(config.get("fps", 2.0)),
+            )
+        if adapter == "hik_mvs":
+            camera_id = str(config.get("camera_id") or "").strip()
+            if not camera_id:
+                raise ValueError("Choose a connected HIK camera")
+            return NativeHikFrameSource(
+                camera_id,
+                stream_id=config.get("stream_id", "main"),
+                width_px=int(config.get("width_px") or 2448),
+                height_px=int(config.get("height_px") or 2048),
+                fps=float(config.get("fps") or 30.0),
+                sdk_python_path=config.get("mvs_python_path"),
+            )
+        if adapter == "hik_rig_calibrated":
+            calibration = str(config.get("calibration") or "").strip()
+            if not calibration:
+                raise ValueError("Choose a HIK rig calibration")
+            return CalibratedHikFrameSource(
+                Path(calibration),
+                stream_id=config.get("stream_id", "main"),
+                rectify=True,
+                output_quarter_turns_clockwise=int(
+                    config.get("output_quarter_turns_clockwise") or 0
+                ),
             )
         if adapter == "android_scrcpy":
             raise RuntimeError(
@@ -2612,12 +2678,26 @@ class AcquisitionWorkbench:
             }
             frame_config = dict(value.get("frame_source") or {})
             adapter = frame_config.get("adapter")
-            if adapter not in ("windows_window", "android_scrcpy"):
-                raise ValueError("Choose a Windows game window or Android capture source")
+            if adapter not in (
+                "windows_window",
+                "android_scrcpy",
+                "hik_mvs",
+                "hik_rig_calibrated",
+            ):
+                raise ValueError(
+                    "Choose a Windows window, Android phone, or HIK camera source"
+                )
             if adapter == "windows_window" and not frame_config.get("window_title"):
                 raise ValueError("Choose the exact game window for live tracking")
             if adapter == "android_scrcpy" and not frame_config.get("serial"):
                 raise ValueError("Choose an Android device for live tracking")
+            if adapter == "hik_mvs" and not frame_config.get("camera_id"):
+                raise ValueError("Choose a HIK camera for live tracking")
+            if adapter == "hik_rig_calibrated":
+                rig = self._checked_rig_calibration(
+                    frame_config.get("calibration")
+                )
+                frame_config["calibration"] = rig["path"]
             global_interval_s = float(resolved_profile["global_interval_s"])
             frame_source, _ = self.sources.capture_sources(
                 frame_config, {"adapter": "none"}
@@ -3018,6 +3098,27 @@ class AcquisitionWorkbench:
                     )
                 frame_config["serial"] = serial
                 if input_config.get("adapter") == "adb_getevent":
+                    input_config["serial"] = serial
+            elif frame_config.get("adapter") in (
+                "hik_mvs",
+                "hik_rig_calibrated",
+            ):
+                if frame_config["adapter"] == "hik_mvs" and not str(
+                    frame_config.get("camera_id") or ""
+                ).strip():
+                    raise ValueError("Choose a connected HIK camera")
+                if frame_config["adapter"] == "hik_rig_calibrated" and not str(
+                    frame_config.get("calibration") or ""
+                ).strip():
+                    raise ValueError("Choose a HIK rig calibration")
+                if input_config.get("adapter") not in ("adb_getevent", "none"):
+                    raise ValueError(
+                        "HIK phone capture supports Android getevent or no input capture"
+                    )
+                if input_config.get("adapter") == "adb_getevent":
+                    serial = str(input_config.get("serial") or "").strip()
+                    if not serial:
+                        raise ValueError("Choose the Android phone used by the HIK rig")
                     input_config["serial"] = serial
 
             capture_kind = str(value.get("capture_kind") or "route")
@@ -3457,6 +3558,104 @@ class AcquisitionWorkbench:
                 "error": "{}: {}".format(type(exc).__name__, exc),
             }
 
+    def _rig_artifact_root(self) -> Path:
+        """Return the workspace artifact root without assuming one deployment layout."""
+
+        return (
+            self.artifact_root.parent
+            if self.artifact_root.name == "workbench"
+            else self.artifact_root
+        )
+
+    def rig_calibrations(self) -> List[dict]:
+        """Describe saved HIK rig calibrations without opening camera hardware."""
+
+        values = []
+        root = self._rig_artifact_root()
+        if not root.is_dir():
+            return values
+        for directory in sorted(
+            root.glob("hik-calibration-*"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        ):
+            path = directory / "hik_camera_calibration.json"
+            if not path.is_file():
+                continue
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+                camera = document.get("camera") or {}
+                phone = document.get("phone") or {}
+                normalization = document.get("normalization") or {}
+                dense_name = str(normalization.get("dense_map_file") or "")
+                dense_path = directory / dense_name if dense_name else None
+                valid_mask = directory / "valid_screen_mask.png"
+                usable = bool(
+                    camera.get("device_id")
+                    and phone.get("serial")
+                    and dense_path is not None
+                    and dense_path.is_file()
+                    and valid_mask.is_file()
+                )
+                metadata = camera.get("metadata") or {}
+                values.append(
+                    {
+                        "calibration_id": directory.name,
+                        "path": str(path.resolve()),
+                        "camera_id": str(camera.get("device_id") or ""),
+                        "camera_model": str(
+                            metadata.get("model")
+                            or camera.get("model")
+                            or "HIK camera"
+                        ),
+                        "phone_serial": str(phone.get("serial") or ""),
+                        "phone_model": str(phone.get("model") or "Android phone"),
+                        "usable": usable,
+                        "status": "adapter_ready" if usable else "incomplete",
+                        "updated_utc": datetime.fromtimestamp(
+                            path.stat().st_mtime, timezone.utc
+                        ).isoformat(),
+                    }
+                )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                values.append(
+                    {
+                        "calibration_id": directory.name,
+                        "path": str(path.resolve()),
+                        "usable": False,
+                        "status": "invalid",
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+        return values
+
+    def capture_source_inventory(self) -> dict:
+        """Enumerate selectable phones, HIK cameras, and calibrated HIK rigs."""
+
+        android = self.android_devices()
+        try:
+            hik_devices = self.sources.hik_devices()
+            hik_error = None
+        except Exception as exc:
+            hik_devices = []
+            hik_error = "{}: {}".format(type(exc).__name__, exc)
+        return {
+            "android_devices": android["devices"],
+            "android_error": android["error"],
+            "hik_cameras": hik_devices,
+            "hik_error": hik_error,
+            "rig_calibrations": self.rig_calibrations(),
+        }
+
+    def _checked_rig_calibration(self, value: object) -> dict:
+        selected = Path(str(value or "")).resolve()
+        for calibration in self.rig_calibrations():
+            if Path(calibration["path"]).resolve() == selected:
+                if not calibration.get("usable"):
+                    raise ValueError("The selected HIK rig calibration is incomplete")
+                return calibration
+        raise ValueError("Choose a HIK rig calibration from this workspace")
+
     def run_android_straight_forward(self, value: dict) -> dict:
         """Hold one exact touchscreen vector through ADB motion events."""
         try:
@@ -3586,7 +3785,12 @@ class AcquisitionWorkbench:
             or (game or {}).get("default_frame_source", {}).get("adapter")
             or "windows_window"
         )
-        if capture_adapter not in ("windows_window", "android_scrcpy"):
+        if capture_adapter not in (
+            "windows_window",
+            "android_scrcpy",
+            "hik_mvs",
+            "hik_rig_calibrated",
+        ):
             raise ValueError("Unsupported recorder capture adapter: {}".format(capture_adapter))
         window_title = value.get("window_title") or (
             (game or {}).get("default_frame_source", {}).get("window_title")
@@ -3608,6 +3812,37 @@ class AcquisitionWorkbench:
                 "bit_rate": int(value.get("bit_rate") or 16_000_000),
             }
             input_source = {"adapter": input_adapter, "serial": serial}
+            window_title = None
+        elif capture_adapter in ("hik_mvs", "hik_rig_calibrated"):
+            if input_adapter not in ("adb_getevent", "none"):
+                raise ValueError(
+                    "HIK phone sessions support Android getevent or no input capture"
+                )
+            fps = float(value.get("fps") or 30)
+            if capture_adapter == "hik_mvs":
+                camera_id = str(value.get("camera_id") or "").strip()
+                if not camera_id:
+                    raise ValueError("Choose a connected HIK camera")
+                frame_source = {
+                    "adapter": "hik_mvs",
+                    "camera_id": camera_id,
+                    "fps": fps,
+                }
+            else:
+                rig = self._checked_rig_calibration(value.get("rig_calibration"))
+                frame_source = {
+                    "adapter": "hik_rig_calibrated",
+                    "camera_id": rig["camera_id"],
+                    "calibration": rig["path"],
+                    "fps": fps,
+                }
+                if not serial:
+                    serial = rig["phone_serial"]
+            if input_adapter == "adb_getevent" and not serial:
+                raise ValueError("Choose the Android phone used by the HIK rig")
+            input_source = {"adapter": input_adapter}
+            if input_adapter == "adb_getevent":
+                input_source["serial"] = serial
             window_title = None
         else:
             self._preflight_input_integrity(window_title, input_adapter)
@@ -4285,6 +4520,8 @@ def make_handler(state: AcquisitionWorkbench):
                     self._json(200, state.instance_descriptor())
                 elif path == "/api/android/devices":
                     self._json(200, state.android_devices())
+                elif path == "/api/capture-sources":
+                    self._json(200, state.capture_source_inventory())
                 elif path == "/api/hud":
                     self._json(200, state.hud_descriptor())
                 elif path == "/api/minimap-calibration/image":

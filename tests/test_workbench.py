@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
@@ -909,7 +910,14 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIsNone(factory.input({"adapter": "none"}))
         self.assertEqual(
             {item["adapter"] for item in factory.descriptor()["frame_adapters"]},
-            {"windows_window", "android_scrcpy", "uvc", "adb_screenshot"},
+            {
+                "windows_window",
+                "android_scrcpy",
+                "hik_mvs",
+                "hik_rig_calibrated",
+                "uvc",
+                "adb_screenshot",
+            },
         )
         xinput = next(
             item
@@ -917,6 +925,66 @@ class WorkbenchTests(unittest.TestCase):
             if item["adapter"] == "windows_xinput"
         )
         self.assertEqual(xinput["status"], "recommended_pc_mvp")
+
+    def test_hik_source_factory_exposes_native_and_rig_calibrated_sources(self):
+        factory = SourceFactory()
+        native = object()
+        calibrated = object()
+        with patch(
+            "acquisition.workbench.NativeHikFrameSource", return_value=native
+        ) as native_type, patch(
+            "acquisition.workbench.CalibratedHikFrameSource",
+            return_value=calibrated,
+        ) as calibrated_type:
+            self.assertIs(
+                factory.frame(
+                    {
+                        "adapter": "hik_mvs",
+                        "camera_id": "HIK123",
+                        "fps": 25,
+                    }
+                ),
+                native,
+            )
+            self.assertIs(
+                factory.frame(
+                    {
+                        "adapter": "hik_rig_calibrated",
+                        "calibration": "rig/hik_camera_calibration.json",
+                    }
+                ),
+                calibrated,
+            )
+        self.assertEqual(native_type.call_args[0][0], "HIK123")
+        self.assertEqual(native_type.call_args[1]["stream_id"], "main")
+        self.assertEqual(
+            calibrated_type.call_args[0][0],
+            Path("rig/hik_camera_calibration.json"),
+        )
+
+    def test_hik_device_discovery_does_not_open_camera(self):
+        closed = []
+
+        class Adapter:
+            def devices(self, probe=False):
+                self.assert_probe = probe
+                return (
+                    SimpleNamespace(
+                        device_id="HIK123",
+                        label="USB3 MV-CS016 HIK123",
+                        metadata={"model": "MV-CS016"},
+                    ),
+                )
+
+            def close(self):
+                closed.append(True)
+
+        adapter = Adapter()
+        factory = SourceFactory(hik_adapter_factory=lambda: adapter)
+        devices = factory.hik_devices()
+        self.assertTrue(adapter.assert_probe)
+        self.assertEqual(devices[0]["camera_id"], "HIK123")
+        self.assertEqual([True], closed)
 
     def test_parses_available_and_unavailable_adb_devices(self):
         devices = parse_adb_devices(
@@ -985,6 +1053,127 @@ class WorkbenchTests(unittest.TestCase):
                     "adb_getevent",
                 )
                 self.assertEqual(descriptor["armed"]["start_trigger"], "first_input")
+            finally:
+                state.close()
+
+    @staticmethod
+    def _write_usable_rig_calibration(root: Path) -> Path:
+        directory = root / "hik-calibration-test"
+        directory.mkdir(parents=True)
+        (directory / "rectification_maps.npz").write_bytes(b"maps")
+        (directory / "valid_screen_mask.png").write_bytes(b"mask")
+        path = directory / "hik_camera_calibration.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "camera": {
+                        "device_id": "HIK123",
+                        "metadata": {"model": "MV-CS016"},
+                    },
+                    "phone": {"serial": "ANDROID123", "model": "Phone 1"},
+                    "normalization": {"dense_map_file": "rectification_maps.npz"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_capture_inventory_lists_phone_hik_camera_and_saved_rig(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calibration = self._write_usable_rig_calibration(root / "artifacts")
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            state.android_devices = lambda: {
+                "devices": [
+                    {
+                        "serial": "ANDROID123",
+                        "model": "Phone 1",
+                        "available": True,
+                    }
+                ],
+                "error": None,
+            }
+            state.sources.hik_devices = lambda: [
+                {
+                    "camera_id": "HIK123",
+                    "label": "USB3 MV-CS016 HIK123",
+                    "metadata": {},
+                    "available": True,
+                }
+            ]
+            try:
+                inventory = state.capture_source_inventory()
+            finally:
+                state.close()
+            self.assertEqual(
+                inventory["android_devices"][0]["serial"], "ANDROID123"
+            )
+            self.assertEqual(inventory["hik_cameras"][0]["camera_id"], "HIK123")
+            rig = inventory["rig_calibrations"][0]
+            self.assertEqual(rig["path"], str(calibration.resolve()))
+            self.assertTrue(rig["usable"])
+            self.assertEqual(rig["phone_serial"], "ANDROID123")
+
+    def test_simple_hik_rig_session_uses_calibrated_adapter_and_rig_phone(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calibration = self._write_usable_rig_calibration(root / "artifacts")
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.queue_next_take = state.descriptor
+                descriptor = state.start_session(
+                    {
+                        "game_profile_id": "genshin-impact-android",
+                        "capture_adapter": "hik_rig_calibrated",
+                        "rig_calibration": str(calibration),
+                        "input_adapter": "adb_getevent",
+                        "capture_duration_s": 20,
+                    }
+                )
+                frame = descriptor["armed"]["frame_source"]
+                captured_input = descriptor["armed"]["input_source"]
+                self.assertEqual(frame["adapter"], "hik_rig_calibrated")
+                self.assertEqual(frame["camera_id"], "HIK123")
+                self.assertEqual(frame["calibration"], str(calibration.resolve()))
+                self.assertEqual(captured_input["adapter"], "adb_getevent")
+                self.assertEqual(captured_input["serial"], "ANDROID123")
+            finally:
+                state.close()
+
+    def test_simple_native_hik_session_selects_camera_without_rig(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                state.queue_next_take = state.descriptor
+                descriptor = state.start_session(
+                    {
+                        "game_profile_id": "genshin-impact-android",
+                        "capture_adapter": "hik_mvs",
+                        "camera_id": "HIK123",
+                        "input_adapter": "none",
+                        "capture_duration_s": 20,
+                    }
+                )
+                frame = descriptor["armed"]["frame_source"]
+                self.assertEqual(frame["adapter"], "hik_mvs")
+                self.assertEqual(frame["camera_id"], "HIK123")
+                self.assertNotIn("calibration", frame)
             finally:
                 state.close()
 
