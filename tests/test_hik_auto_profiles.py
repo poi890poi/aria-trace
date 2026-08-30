@@ -117,6 +117,19 @@ class HikAutoProfileTests(unittest.TestCase):
             apply_game_color=False,
         )
 
+    def test_facade_rejects_transform_policy_it_cannot_enforce(self):
+        with self.assertRaisesRegex(ValueError, "not implemented"):
+            hikcam.HikCamera(
+                config={
+                    "profile_root": self.root / "profiles",
+                    "camera_id": "CAM-1",
+                    "phone_id": "PHONE-1",
+                    "panel_display": self.context.panel_display,
+                    "mode": "full",
+                    "normalization": "homography",
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

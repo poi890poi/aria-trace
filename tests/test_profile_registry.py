@@ -137,7 +137,9 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual(rig["revision_id"], first["profiles"]["rig"])
         self.assertEqual(rig["revision_id"], second["profiles"]["rig"])
         self.assertTrue(first["adapter_plan"]["rectify"])
+        self.assertEqual("auto", first["adapter_plan"]["normalization"])
         self.assertFalse(second["adapter_plan"]["rectify"])
+        self.assertEqual("none", second["adapter_plan"]["normalization"])
 
 
 if __name__ == "__main__":

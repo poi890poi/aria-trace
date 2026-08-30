@@ -84,6 +84,11 @@ def _registry_configuration(
     normalization = config.get("normalization")
     if normalization is None:
         normalization = "auto" if bool(config.get("rectify", True)) else "none"
+    if normalization not in ("auto", "none"):
+        raise ValueError(
+            "HikCamera supports normalization='auto' or 'none'; explicit "
+            "dense_remap/homography selection is not implemented"
+        )
     context = ProfileContext(
         game_id=str(game_id) if game_id else None,
         platform=str(config.get("platform", "android")),

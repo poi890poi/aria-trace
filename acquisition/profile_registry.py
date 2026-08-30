@@ -677,8 +677,6 @@ class ProfileRegistry:
             else None
         )
         normalization = request.normalization
-        if normalization == "auto":
-            normalization = "dense_remap"
         result = {
             "schema_version": SCHEMA_VERSION,
             "resolved_utc": datetime.now(timezone.utc).isoformat(),
