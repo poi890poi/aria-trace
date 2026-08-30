@@ -4,13 +4,15 @@ Usage is intentionally shaped like the common ``hik_camera.hik_camera`` module::
 
     import acquisition.rig_calibration.hik.camera as hikcam
 
-    with hikcam.HikCamera(config={"calibration": "...json"}) as cam:
+    with hikcam.HikCamera(config={"game_id": "genshin-impact"}) as cam:
         rgb = cam.get_frame()
 
-Set ``ARIA_HIK_CALIBRATION`` to omit the config argument. Without an explicit
-path, the production profile registry resolves the connected camera and the
-requested game/mode once during construction. The context manager (or ``open``)
-owns the camera lifecycle; registry resolution never runs per frame.
+The production profile registry resolves the connected camera and requested
+game/mode once during construction. Arbitrary paths and ``latest artifact``
+selection are intentionally unsupported. A direct file may be supplied only as
+``diagnostic_calibration_override`` for an explicit diagnostic run. The context
+manager (or ``open``) owns the camera lifecycle; registry resolution never runs
+per frame.
 """
 
 from __future__ import annotations
@@ -31,14 +33,13 @@ from .spaces import RigCalibratedSpaceConverter
 CalibrationPath = Union[str, Path]
 
 
-def _configured_calibration_from_arguments(
-    ip: Optional[str], config: Mapping[str, Any]
-) -> Optional[Path]:
-    configured = config.get("calibration") or os.environ.get("ARIA_HIK_CALIBRATION")
-    if configured is None and ip:
-        candidate = Path(str(ip))
-        if candidate.is_file() or candidate.suffix.lower() == ".json":
-            configured = candidate
+def _diagnostic_calibration_override(config: Mapping[str, Any]) -> Optional[Path]:
+    if config.get("calibration") is not None:
+        raise ValueError(
+            "config['calibration'] is obsolete; production selection is automatic. "
+            "Use config['diagnostic_calibration_override'] only for diagnostics."
+        )
+    configured = config.get("diagnostic_calibration_override")
     if configured is None:
         return None
     path = Path(configured).resolve()
@@ -149,12 +150,12 @@ class HikCamera:
         config: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.config: Dict[str, Any] = dict(config or {})
-        ip_candidate = Path(str(ip)) if ip else None
-        ip_is_calibration_path = bool(
-            ip_candidate
-            and (ip_candidate.is_file() or ip_candidate.suffix.lower() == ".json")
-        )
-        explicit_calibration = _configured_calibration_from_arguments(ip, self.config)
+        if ip and (Path(str(ip)).is_file() or Path(str(ip)).suffix.lower() == ".json"):
+            raise ValueError(
+                "Passing a calibration path as HikCamera(ip) is obsolete; use the "
+                "profile registry or diagnostic_calibration_override"
+            )
+        explicit_calibration = _diagnostic_calibration_override(self.config)
         self.resolved_config: Dict[str, Any]
         if explicit_calibration is None:
             self.calibration_path, self.config, self.resolved_config = (
@@ -164,7 +165,7 @@ class HikCamera:
             self.calibration_path = explicit_calibration
             self.resolved_config = {
                 "schema_version": "explicit-path",
-                "selection": "explicit_calibration_override",
+                "selection": "diagnostic_calibration_override",
                 "paths": {
                     "rig_calibration": str(explicit_calibration),
                     "rig_game_profile": (
@@ -184,7 +185,7 @@ class HikCamera:
         self.calibration = json.loads(self.calibration_path.read_text(encoding="utf-8"))
         camera = self.calibration["camera"]
         self._ip = str(camera.get("device_id", ip or ""))
-        if ip and not ip_is_calibration_path and str(ip) != self._ip:
+        if ip and str(ip) != self._ip:
             raise ValueError(
                 "Requested camera {!r} does not match calibrated camera {!r}".format(
                     ip, self._ip
@@ -278,10 +279,6 @@ class HikCamera:
     def get_all_ips(cls, sdk_python_path: Optional[str] = None) -> list[str]:
         """Return HIK device identifiers without opening any camera."""
 
-        calibration = os.environ.get("ARIA_HIK_CALIBRATION")
-        if calibration and Path(calibration).is_file():
-            value = json.loads(Path(calibration).read_text(encoding="utf-8"))
-            return [str(value["camera"]["device_id"])]
         adapter = HikMvsCameraAdapter(sdk_python_path=sdk_python_path)
         return [device.device_id for device in adapter.devices(probe=True)]
 

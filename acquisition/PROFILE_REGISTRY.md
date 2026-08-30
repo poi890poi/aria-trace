@@ -58,8 +58,8 @@ comparison confirms that the rig has not moved.
 
 ## Camera adapter
 
-An explicit calibration path remains the highest-priority diagnostic override.
-For production use, omit it and supply the observed context:
+Production use does not accept arbitrary calibration paths. Supply observed
+context and let the registry select the active immutable revisions:
 
 ```python
 import acquisition.rig_calibration.hik.camera as hikcam
@@ -98,8 +98,26 @@ touches, launches, or powers off the phone.
 accepted by the current facade because it cannot yet enforce that distinction.
 
 The registry root defaults to `profiles/`. Set `ARIA_PROFILE_ROOT` or pass
-`profile_root` to use another store. `ARIA_HIK_CALIBRATION` or an explicit
-`calibration` config value bypasses registry selection.
+`profile_root` to use another store. `ARIA_HIK_CALIBRATION`, positional
+calibration paths, and the old `calibration` config value are obsolete and
+rejected. A diagnostic that genuinely needs to bypass selection must use the
+deliberately conspicuous `diagnostic_calibration_override` config value or the
+corresponding `--diagnostic-...-override` stream options.
+
+The same policy applies to supporting commands:
+
+- rig reuse checks only the active registry revision; it never scans
+  `artifacts/hik-calibration-*` or chooses the newest directory;
+- `wake-game-display.bat` resolves the connected HIK camera through the
+  registry and no longer searches artifacts;
+- zigzag dual-source capture automatically resolves the rig revision for its
+  selected camera and phone, while absence/ownership failures still fall back
+  to ADB-only capture;
+- `demo-hik-camera.bat` treats its optional first argument only as a game ID;
+  it never guesses whether the value is a file or directory;
+- mutable `current.json` profile stores and recursive pointer-following are
+  obsolete. SQLite activation plus exact immutable dependencies are the only
+  production selection authority.
 
 ## Inspection
 

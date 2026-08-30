@@ -26,27 +26,24 @@ PathLike = Union[str, Path]
 def _load_json(value: PathLike, names: Sequence[str]) -> tuple[Path, dict]:
     path = Path(value)
     if path.is_dir():
-        matches = [path / name for name in names if (path / name).is_file()]
-        if not matches:
-            raise FileNotFoundError(
-                "Calibration directory contains none of: {}".format(
-                    ", ".join(names)
-                )
+        raise ValueError(
+            "Directory-based calibration selection is obsolete; pass the exact "
+            "immutable revision file"
+        )
+    if not path.is_file():
+        raise FileNotFoundError(
+            "Calibration file does not exist: {} (expected {})".format(
+                path, ", ".join(names)
             )
-        path = matches[0]
+        )
     document = json.loads(path.read_text(encoding="utf-8"))
-    current_revision = document.get("current_revision")
-    if current_revision:
-        revision = Path(current_revision)
-        if not revision.is_absolute():
-            revision = path.parent / revision
-        return _load_json(revision, names)
-    artifact = (document.get("artifacts") or {}).get("minimap_calibration")
-    if artifact:
-        artifact_path = Path(artifact)
-        if not artifact_path.is_absolute():
-            artifact_path = path.parent / artifact_path
-        return _load_json(artifact_path, names)
+    if document.get("current_revision") or (document.get("artifacts") or {}).get(
+        "minimap_calibration"
+    ):
+        raise ValueError(
+            "Mutable current/artifact profile pointers are obsolete; resolve an "
+            "active immutable revision through ProfileRegistry"
+        )
     return path, document
 
 

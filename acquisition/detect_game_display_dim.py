@@ -14,7 +14,8 @@ import cv2
 import numpy as np
 
 from .android_capture import find_scrcpy_server
-from .rig_calibration.hik.driver import RectifiedHikCamera
+from .profile_registry import ProfileContext, ProfileRegistry
+from .rig_calibration.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from .rig_calibration.hik.phone import AdbPhoneSession, resolve_adb_executable
 from .scrcpy_control import ScrcpyTouchController
 
@@ -26,6 +27,35 @@ def _calibration_file(value: Path) -> Path:
     if not path.is_file():
         raise FileNotFoundError("HIK calibration does not exist: {}".format(path))
     return path.resolve()
+
+
+def _active_rig_calibration(
+    profile_root: Optional[Path],
+    *,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+    mvs_python_path: Optional[str] = None,
+) -> Path:
+    selected_camera = camera_id
+    if not selected_camera:
+        devices = list(
+            HikMvsCameraAdapter(sdk_python_path=mvs_python_path).devices(probe=True)
+        )
+        if not devices:
+            raise RuntimeError("No connected HIK camera was found")
+        if len(devices) != 1:
+            raise RuntimeError(
+                "Multiple HIK cameras are connected; pass --camera-id: {}".format(
+                    ", ".join(str(device.device_id) for device in devices)
+                )
+            )
+        selected_camera = str(devices[0].device_id)
+    registry = ProfileRegistry(profile_root)
+    profile = registry.resolve(
+        "rig",
+        ProfileContext(camera_id=str(selected_camera), phone_id=phone_serial),
+    )
+    return registry.runtime_file(profile, "hik_camera_calibration").resolve()
 
 
 def _screenshot(adb: str, serial: str) -> np.ndarray:
@@ -96,7 +126,14 @@ def parser() -> argparse.ArgumentParser:
             "non-toggling wake event and, if needed, the Samsung unlock drag."
         )
     )
-    value.add_argument("calibration", type=Path)
+    value.add_argument("--profile-root", type=Path)
+    value.add_argument("--camera-id")
+    value.add_argument("--mvs-python-path")
+    value.add_argument(
+        "--diagnostic-calibration-override",
+        type=Path,
+        help="explicit file for diagnostics; production uses the active registry profile",
+    )
     value.add_argument("--adb")
     value.add_argument("--phone-serial")
     value.add_argument("--scrcpy-server", type=Path)
@@ -107,7 +144,16 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
-    calibration_file = _calibration_file(arguments.calibration)
+    calibration_file = (
+        _calibration_file(arguments.diagnostic_calibration_override)
+        if arguments.diagnostic_calibration_override is not None
+        else _active_rig_calibration(
+            arguments.profile_root,
+            camera_id=arguments.camera_id,
+            phone_serial=arguments.phone_serial,
+            mvs_python_path=arguments.mvs_python_path,
+        )
+    )
     calibration = json.loads(calibration_file.read_text(encoding="utf-8"))
     serial = str(
         arguments.phone_serial or (calibration.get("phone") or {}).get("serial") or ""
@@ -125,6 +171,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     camera = RectifiedHikCamera(calibration_file, rectify=False)
     result = {
         "calibration": str(calibration_file),
+        "calibration_selection": (
+            "diagnostic_explicit_path"
+            if arguments.diagnostic_calibration_override is not None
+            else "active_profile_registry"
+        ),
         "phone_serial": serial,
         "camera_controls": "saved calibration; exposure/gain/WB are not adjusted",
         "android_mutation": (

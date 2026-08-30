@@ -58,23 +58,21 @@ class PhoneDisplayPowerSession:
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="Stream the calibrated phone-display ROI from HIK MVS.")
     value.add_argument(
-        "calibration",
+        "--diagnostic-calibration-override",
         type=Path,
-        nargs="?",
-        help="explicit hik_camera_calibration.json override; omit for registry resolution",
+        help="explicit rig JSON for a diagnostic run; production uses the registry",
     )
     value.add_argument(
-        "--minimap-calibration",
+        "--diagnostic-rig-game-profile-override",
         type=Path,
-        help="rig-game current.json/profile.json for mini-map or dual output",
+        help="explicit immutable rig-game profile for a diagnostic run",
     )
     value.add_argument(
         "--mode",
         choices=("minimap", "full", "dual"),
         default="full",
         help=(
-            "adapter stream mode; explicit paths require --minimap-calibration "
-            "for minimap/dual, registry mode resolves it automatically"
+            "adapter stream mode; the registry resolves all required profiles"
         ),
     )
     value.add_argument("--mvs-python-path")
@@ -105,10 +103,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def open_camera(
-    calibration: Optional[Path] = None,
+    diagnostic_calibration_override: Optional[Path] = None,
     mvs_python_path: Optional[str] = None,
     rectify: bool = True,
-    minimap_calibration: Optional[Path] = None,
+    diagnostic_rig_game_profile_override: Optional[Path] = None,
     mode: str = "full",
     profile_root: Optional[Path] = None,
     game_id: Optional[str] = None,
@@ -120,7 +118,11 @@ def open_camera(
 ):
     """Public UVC-like constructor for application code (read/release/isOpened)."""
 
-    if calibration is None:
+    if diagnostic_calibration_override is None:
+        if diagnostic_rig_game_profile_override is not None:
+            raise ValueError(
+                "A diagnostic rig-game profile requires a diagnostic rig calibration"
+            )
         return HikCamera(
             config={
                 "profile_root": profile_root,
@@ -135,19 +137,22 @@ def open_camera(
                 "mvs_python_path": mvs_python_path,
             }
         ).open()
-    if minimap_calibration is None and mode != "full":
-        raise ValueError("--mode {} requires --minimap-calibration".format(mode))
+    if diagnostic_rig_game_profile_override is None and mode != "full":
+        raise ValueError(
+            "Diagnostic --mode {} requires --diagnostic-rig-game-profile-override"
+            .format(mode)
+        )
     adapter = HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
-    if minimap_calibration is not None:
+    if diagnostic_rig_game_profile_override is not None:
         return ProfiledHikGameCamera(
-            calibration,
-            minimap_calibration,
+            diagnostic_calibration_override,
+            diagnostic_rig_game_profile_override,
             mode=mode,
             rectify_minimap=rectify,
             adapter=adapter,
         ).open()
     return RectifiedHikCamera(
-        calibration, adapter=adapter, rectify=rectify
+        diagnostic_calibration_override, adapter=adapter, rectify=rectify
     ).open()
 
 
@@ -156,16 +161,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if arguments.manage_phone_display and not arguments.gui:
         parser().error("--manage-phone-display requires --gui")
     if (
-        arguments.calibration is not None
-        and arguments.minimap_calibration is None
+        arguments.diagnostic_calibration_override is not None
+        and arguments.diagnostic_rig_game_profile_override is None
         and arguments.mode != "full"
     ):
-        parser().error("--mode {} requires --minimap-calibration".format(arguments.mode))
+        parser().error(
+            "Diagnostic --mode {} requires "
+            "--diagnostic-rig-game-profile-override".format(arguments.mode)
+        )
+    if (
+        arguments.diagnostic_calibration_override is None
+        and arguments.diagnostic_rig_game_profile_override is not None
+    ):
+        parser().error(
+            "--diagnostic-rig-game-profile-override requires "
+            "--diagnostic-calibration-override"
+        )
     display = None
     camera = None
     windows = []
     try:
-        if arguments.calibration is None:
+        if arguments.diagnostic_calibration_override is None:
             camera = HikCamera(
                 config={
                     "profile_root": arguments.profile_root,
@@ -182,8 +198,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             configuration = camera.calibration
         else:
+            print(
+                "Warning: diagnostic calibration override bypasses automatic "
+                "profile selection.",
+                flush=True,
+            )
             configuration = json.loads(
-                arguments.calibration.read_text(encoding="utf-8")
+                arguments.diagnostic_calibration_override.read_text(encoding="utf-8")
             )
         if arguments.manage_phone_display:
             serial = str(configuration.get("phone", {}).get("serial", "")).strip()
@@ -212,10 +233,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     )
         if camera is None:
             camera = open_camera(
-                arguments.calibration,
+                arguments.diagnostic_calibration_override,
                 arguments.mvs_python_path,
                 rectify=not arguments.no_rectify,
-                minimap_calibration=arguments.minimap_calibration,
+                diagnostic_rig_game_profile_override=(
+                    arguments.diagnostic_rig_game_profile_override
+                ),
                 mode=arguments.mode,
                 color_order=arguments.color_order,
                 color_policy=arguments.color_policy,
@@ -227,7 +250,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("Rectified stream configured. Use open_camera(...) from Python, or pass --gui.")
             return 0
         profiled = bool(
-            arguments.minimap_calibration is not None
+            arguments.diagnostic_rig_game_profile_override is not None
             or getattr(camera, "config", {}).get("minimap_calibration")
         )
         stream_names = (

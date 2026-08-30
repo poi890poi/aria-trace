@@ -90,7 +90,12 @@ class HikSpaceConversionTests(unittest.TestCase):
             path = Path(directory) / "hik_camera_calibration.json"
             path.write_text(json.dumps(calibration_document()), encoding="utf-8")
             rectified = RectifiedHikCamera(path)
-            facade = HikCamera(config={"calibration": str(path), "color_order": "BGR"})
+            facade = HikCamera(
+                config={
+                    "diagnostic_calibration_override": str(path),
+                    "color_order": "BGR",
+                }
+            )
             expected = np.asarray([[10, 20], [39, 59]], dtype=np.float64)
             for camera in (rectified, facade):
                 mapped = camera.camera_adapter_to_adb_points([[0, 0], [29, 39]], 1)

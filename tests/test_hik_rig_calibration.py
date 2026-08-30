@@ -1503,7 +1503,10 @@ class HikCompatibleFacadeTests(unittest.TestCase):
             path = self._config_path(directory)
             FakeFacadeReader.instances = []
             camera = hikcam.HikCamera(
-                config={"calibration": path, "reader_factory": FakeFacadeReader}
+                config={
+                    "diagnostic_calibration_override": path,
+                    "reader_factory": FakeFacadeReader,
+                }
             )
             self.assertIs(hikcam.Camera, hikcam.HikCamera)
             self.assertEqual(FakeFacadeReader.instances, [])
@@ -1545,24 +1548,38 @@ class HikCompatibleFacadeTests(unittest.TestCase):
                 hikcam, "RectifiedHikCamera", return_value=reader
             ) as factory:
                 camera = hikcam.HikCamera(
-                    config={"calibration": path, "rectify": False}
+                    config={
+                        "diagnostic_calibration_override": path,
+                        "rectify": False,
+                    }
                 )
                 self.assertEqual(camera.get_shape(), (8, 8, 3))
                 camera.open()
             factory.assert_called_once_with(path.resolve(), rectify=False)
             camera.close()
 
-    def test_calibration_can_be_first_argument_or_environment_default(self):
+    def test_legacy_implicit_path_selection_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._config_path(directory)
-            first_argument = hikcam.HikCamera(
-                str(path), config={"reader_factory": FakeFacadeReader}
+            with self.assertRaisesRegex(ValueError, "obsolete"):
+                hikcam.HikCamera(
+                    str(path), config={"reader_factory": FakeFacadeReader}
+                )
+            with self.assertRaisesRegex(ValueError, "obsolete"):
+                hikcam.HikCamera(
+                    config={"calibration": path, "reader_factory": FakeFacadeReader}
+                )
+
+    def test_explicitly_named_diagnostic_override_is_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config_path(directory)
+            camera = hikcam.HikCamera(
+                config={
+                    "diagnostic_calibration_override": path,
+                    "reader_factory": FakeFacadeReader,
+                }
             )
-            self.assertEqual(first_argument.ip, "CAMERA-1")
-            with mock.patch.dict("os.environ", {"ARIA_HIK_CALIBRATION": str(path)}):
-                self.assertEqual(hikcam.HikCamera.get_all_ips(), ["CAMERA-1"])
-                default = hikcam.HikCamera(config={"reader_factory": FakeFacadeReader})
-                self.assertEqual(default.ip, "CAMERA-1")
+            self.assertEqual(camera.ip, "CAMERA-1")
 
     def test_explicit_camera_identifier_must_match_saved_calibration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1570,7 +1587,10 @@ class HikCompatibleFacadeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 hikcam.HikCamera(
                     "OTHER-CAMERA",
-                    config={"calibration": path, "reader_factory": FakeFacadeReader},
+                    config={
+                        "diagnostic_calibration_override": path,
+                        "reader_factory": FakeFacadeReader,
+                    },
                 )
 
 
