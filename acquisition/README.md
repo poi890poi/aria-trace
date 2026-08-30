@@ -234,36 +234,6 @@ missing, invalid, or unavailable rig always falls back to full calibration.
 Use `-RigCalibration PATH` to check one explicit prior bundle. The check and its
 images are retained beside the requested rig output in a `-precheck` directory.
 
-To repeat that exact headless entry point without repair or retry logic, use:
-
-```powershell
-.\stress-test-hik-calibration.bat
-```
-
-It performs three isolated runs by default. `-Runs 10` increases the stress
-count, `-PauseSeconds 0` removes the settling interval, and `-StopOnFailure`
-stops after retaining the first failed or review-required run. Every line is
-UTC timestamped. Each run retains its complete log, calibration outputs, new
-session paths, copied review images, failure tail, top-level stage durations,
-and observed internal milestone intervals. The final `report.md` and
-`summary.json` calculate
-end-to-end repeatability across successful runs and separately labels partial
-stage observations from failed or `review_required` runs. A zero-exit pipeline
-whose mini-map result requires review is reported separately and is not counted
-as a passed calibration. No failed stage is fixed or rerun.
-
-The existing capture tool wakes the phone, launches the configured game, and
-dismisses Samsung Game Booster before its preparation checkpoint. The stress
-harness waits 20 seconds for game settling/reconnection and then confirms that
-checkpoint without human input. Change this bounded wait with
-`-GamePreparationSeconds 30`. Its measured duration is included separately in
-the time breakdown.
-
-It calls the existing headless rig calibration, synchronized zigzag capture, and
-automatic mini-map localization tools. It does not publish a profile or run the
-profiled adapter demo. Use `-GameId`, `-CameraId`, and `-PhoneSerial` only when
-defaults cannot select the intended setup.
-
 With the game awake and ready and an existing rig result, run capture with:
 
 ```powershell
@@ -344,33 +314,11 @@ image is not rotated. If it differs, the quarter-turn is a new saved-video
 space and its exact matrix is composed into `coordinate_spaces.yaml`; image
 dimensions and transformed bounds are validated before the YAML is written.
 
-Capture and calibration are deliberately separate commands. First record one
-fresh Android or dual-source zigzag session, then pass that completed session to automatic
-mini-map discovery:
-
-```powershell
-.\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
-.\calibrate-game-minimap.bat .\sessions\calibration\<fresh-zigzag-session>
-```
-
-Automatic discovery runs only in the complete Android/display frame and then
-calls the verified `acquisition.minimap_calibration` boundary-fitting backend.
-Its default bounds are broad and resolution-relative: center in the upper-left
-35% by 35%, radius from 7% through 22% of the shorter display dimension, and at
-least 85% of the candidate circumference visible. Configure them with
-`--android-center-region`, `--android-radius-fraction`, and
-`--android-min-visible`; no game-specific center, radius, scale, or orientation
-is built in.
-
-The HIK stream is never searched or calibrated independently. Its session-local
-mini-map polygon is obtained only by projecting the fitted Android boundary
-through the same fresh session's `coordinate_spaces.yaml`. Host capture
-timestamps select synchronized Android/HIK review frames, while
-`cross_source_check/summary.json` supplies non-gating image evidence. If the
-current session is Android-only, localization ends after producing the verified
-Android boundary and records HIK projection as not applicable. If a HIK stream
-is present but its registration is absent, calibration stops instead of
-guessing camera position, scale, crop, or orientation.
+Mini-map boundary calibration has one implementation:
+`acquisition.minimap_calibration.calibrate_minimap_boundary_frames`. The caller
+selects and supplies an `N x H x W x C` image array. The calibrator has no
+knowledge of the device, acquisition session, controls, or image-selection
+protocol.
 
 The calibrated camera adapter exposes the same base-space conversion without
 opening hardware:
@@ -392,31 +340,6 @@ Game control uses the reusable `ScrcpyTouchController` in
 socket for the gesture instead of starting one ADB process per touch event.
 Acquisition ends only after the controller reports the complete DOWN/MOVE/UP
 sequence and the configured tail has elapsed; incomplete control is rejected.
-
-This POC stage writes one
-`artifacts/session-minimap-localization-*` directory containing the Android
-backend evidence, the exact Android shift mask, the projected HIK mask and
-overlay, a synchronized registration triptych, `minimap_geometry.npz`, and
-commented `localization_summary.yaml`. Synchronized flat mini-map pixels also
-fit MVS Bayer-conversion gamma and an RGB 3x3 color-correction matrix. The
-review strip shows warped ADB target, identity HIK, adjusted HIK, and both
-absolute differences. A color-fit failure is non-gating. This stage does not
-publish a runtime profile.
-
-The downstream production result boundaries remain deliberately separate:
-
-- `artifacts/game-minimap-calibration-*` contains source-specific mini-map
-  results, stacked heatmaps, complete fitted boundaries, and exact shift masks.
-- `profiles/phone_game/<phone>/<game>` stores the camera-independent mini-map
-  crop in the phone's natural display coordinates.
-- `profiles/rig_game/<rig>/<game>` is created only when a base rig calibration
-  is supplied. It references the base rig and phone-game revision and adds no
-  optical transform.
-
-Profile publication consumes a reviewed localization result in a later stage;
-it is not part of `session_minimap_localization`. All localization results
-remain `review_required`; cursor, pose, tracking, game modeling, and north
-estimation are outside this stage.
 
 The production HIK adapter consumes the base rig plus the optional rig-game
 profile:

@@ -3,8 +3,7 @@ param(
     [string]$CameraId,
     [string]$PhoneSerial,
     [string]$DiagnosticRigCalibrationOverride,
-    [string]$RigOutput,
-    [string]$MinimapOutput
+    [string]$RigOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,9 +11,6 @@ $root = $PSScriptRoot
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 if (-not $RigOutput) {
     $RigOutput = Join-Path $root "artifacts\hik-calibration-$timestamp"
-}
-if (-not $MinimapOutput) {
-    $MinimapOutput = Join-Path $root "artifacts\game-minimap-calibration-$timestamp"
 }
 $captureRoot = Join-Path $root "sessions\calibration"
 function Invoke-AriaStage {
@@ -44,7 +40,7 @@ try {
     if ($CameraId) { $precheckArguments += @("--camera-id", $CameraId) }
     if ($PhoneSerial) { $precheckArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `
-        "[0/5] Check whether the saved HIK rig calibration is still valid" `
+        "[0/4] Check whether the saved HIK rig calibration is still valid" `
         (Join-Path $root "precheck-hik-rig.bat") `
         $precheckArguments
 
@@ -73,7 +69,7 @@ try {
         if ($CameraId) { $rigArguments += @("--camera-id", $CameraId) }
         if ($PhoneSerial) { $rigArguments += @("--phone-serial", $PhoneSerial) }
         Invoke-AriaStage `
-            "[1-2/5] Wake phone and calibrate the HIK rig" `
+            "[1-2/4] Wake phone and calibrate the HIK rig" `
             (Join-Path $root "calibrate-hik-rig.bat") `
             $rigArguments
         $effectiveRigCalibration = Join-Path $RigOutput "hik_camera_calibration.json"
@@ -99,7 +95,7 @@ try {
     if ($CameraId) { $captureArguments += @("--camera-id", $CameraId) }
     if ($PhoneSerial) { $captureArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `
-        "[3-4/5] Launch game, run the zigzag, and retain dual-source audit evidence" `
+        "[3-4/4] Launch game and retain dual-source source data" `
         (Join-Path $root "capture-game-minimap-zigzag.bat") `
         $captureArguments
 
@@ -113,25 +109,11 @@ try {
     }
     $sessionPath = $freshSessions[0].FullName
 
-    $minimapArguments = @(
-        $sessionPath,
-        "--output", $MinimapOutput
-    )
-    Invoke-AriaStage `
-        "[5/5] Discover the Android mini-map and project it through session registration" `
-        (Join-Path $root "calibrate-game-minimap.bat") `
-        $minimapArguments
-
-    $summaryPath = Join-Path $MinimapOutput "localization_summary.json"
-    if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
-        throw "Mini-map calibration did not produce $summaryPath"
-    }
     Write-Host ""
-    Write-Host "Fresh POC localization succeeded." -ForegroundColor Green
+    Write-Host "Rig calibration and source capture succeeded." -ForegroundColor Green
     Write-Host "Rig:      $effectiveRigCalibration"
     Write-Host "Session:  $sessionPath"
-    Write-Host "Mini-map: $summaryPath"
-    Write-Host "Profile:  not published by this POC-only localization stage"
+    Write-Host "Mini-map: not run; the caller must select and feed image frames"
     exit 0
 }
 catch {
