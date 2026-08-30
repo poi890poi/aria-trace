@@ -2791,7 +2791,11 @@ class AcquisitionWorkbench:
                     else None
                 ),
                 route_visual_tracker=(
-                    RouteVisualTracker(route_package, localizer)
+                    RouteVisualTracker(
+                        route_package,
+                        localizer,
+                        score_min=float(resolved_profile["route_map_score_min"]),
+                    )
                     if tracking_mode == "route-assisted"
                     else None
                 ),

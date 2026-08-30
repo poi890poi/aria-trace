@@ -1184,6 +1184,9 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(engine.kwargs["route_visual_tracker"])
                     self.assertEqual(
+                        engine.kwargs["route_visual_tracker"].score_min, 0.50
+                    )
+                    self.assertEqual(
                         engine.kwargs["cursor_pose_process_config"][
                             "opencv_threads"
                         ],

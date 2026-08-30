@@ -15,6 +15,7 @@ TRACKING_PROFILES = {
         "pose_confidence_min": 0.45,
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
+        "route_map_score_min": 0.50,
     },
     "fast": {
         "cursor_pose_method": "cascade",
@@ -26,6 +27,7 @@ TRACKING_PROFILES = {
         "pose_confidence_min": 0.50,
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
+        "route_map_score_min": 0.50,
     },
     "accurate": {
         "cursor_pose_method": "vectorized_grid",
@@ -37,6 +39,7 @@ TRACKING_PROFILES = {
         "pose_confidence_min": 0.40,
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
+        "route_map_score_min": 0.50,
     },
     "offline": {
         "cursor_pose_method": "vectorized_grid",
@@ -48,6 +51,7 @@ TRACKING_PROFILES = {
         "pose_confidence_min": 0.0,
         "cursor_worker_process": True,
         "cursor_opencv_threads": 2,
+        "route_map_score_min": 0.50,
     },
 }
 
@@ -79,4 +83,6 @@ def resolve_tracking_profile(
         raise ValueError("pose_confidence_min must be within 0..1")
     if int(value["cursor_opencv_threads"]) < 1:
         raise ValueError("cursor_opencv_threads must be at least one")
+    if not 0.0 <= float(value["route_map_score_min"]) <= 1.0:
+        raise ValueError("route_map_score_min must be within 0..1")
     return value

@@ -19,6 +19,8 @@ class TrackingProfileTests(unittest.TestCase):
         self.assertTrue(realtime["cursor_worker_process"])
         self.assertEqual(realtime["cursor_opencv_threads"], 1)
         self.assertEqual(offline["cursor_opencv_threads"], 2)
+        self.assertEqual(realtime["route_map_score_min"], 0.50)
+        self.assertEqual(offline["route_map_score_min"], 0.50)
 
     def test_explicit_developer_override_is_visible(self):
         value = resolve_tracking_profile(
@@ -32,6 +34,12 @@ class TrackingProfileTests(unittest.TestCase):
             resolve_tracking_profile("turbo")
         with self.assertRaisesRegex(ValueError, "Unknown tracking-profile override"):
             resolve_tracking_profile("fast", {"magic": True})
+
+    def test_route_map_threshold_is_validated(self):
+        with self.assertRaisesRegex(ValueError, "route_map_score_min"):
+            resolve_tracking_profile(
+                "real-time", {"route_map_score_min": 1.1}
+            )
 
 
 if __name__ == "__main__":
