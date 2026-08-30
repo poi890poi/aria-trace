@@ -69,11 +69,23 @@ HIK_CONFIG_HEADER = """# AriaTrace HIK camera adapter configuration.
 # data for existing consumers."""
 
 HIK_CONFIG_COMMENTS = {
-    "camera": "Camera identity, effective full-sensor mode, controls, and transport ROI.",
+    "camera": (
+        "Camera identity and controls. calibration_input_roi_xywh is reset to the "
+        "zero-origin full sensor before rig calibration; hardware_roi_xywh belongs "
+        "only to the production camera adapter."
+    ),
     "phone": "Phone identity, raster, orientation, refresh, brightness, and physical scale.",
     "imaging": "Locked exposure, gain, black level, and white balance owned by this rig.",
     "geometry": "Measured camera-sensor to phone-display coordinate relationship.",
     "normalization": "Runtime mapping from HIK sensor pixels to the normalized visible-phone image.",
+    "coordinate_spaces": (
+        "Two HIK acquisition spaces are intentional.\n"
+        "full_sensor_image is used only to fit rig calibration after resetting "
+        "persistent camera ROI state.\n"
+        "camera_adapter_roi_image is the reduced production transport image. Its "
+        "matrices include the ROI origin, so ROI-local pixels must never be passed "
+        "through a full-sensor matrix directly."
+    ),
     "results": "Calibration and diagnostic evidence; these fields do not change runtime coordinates.",
 }
 

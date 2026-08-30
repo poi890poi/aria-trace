@@ -36,6 +36,7 @@ from .algorithms import (
     charuco_orientation_evidence,
     choose_black_level,
     choose_exposure,
+    hik_image_space_conversions,
     detect_focus_pose_frame,
     estimate_focus_target_pose,
     laplacian_sharpness,
@@ -1216,6 +1217,27 @@ class HikRigCalibrationSession:
                         backend="hik_mvs",
                     )
                 )
+            )
+            calibration_input_roi = list(
+                map(int, self.camera.reset_full_sensor_roi())
+            )
+            if calibration_input_roi[:2] != [0, 0]:
+                raise RuntimeError(
+                    "Rig calibration requires a zero-origin full-sensor HIK ROI; got {}"
+                    .format(calibration_input_roi)
+                )
+            self.camera_metadata.update(
+                {
+                    "width_px": calibration_input_roi[2],
+                    "height_px": calibration_input_roi[3],
+                    "calibration_input_roi_xywh": calibration_input_roi,
+                    "calibration_input_space": "hik_full_sensor_bgr_pixels",
+                }
+            )
+            self.progress(
+                "Reset HIK acquisition to full-sensor ROI x=0 y=0 w={} h={} px; "
+                "the reduced ROI is reserved for the saved camera adapter."
+                .format(calibration_input_roi[2], calibration_input_roi[3])
             )
             self.camera_controls = dict(self.camera.controls())
             self.progress(
@@ -2927,6 +2949,14 @@ class HikRigCalibrationSession:
                 "output_y_axis": "app_down",
             }
             normalization_matrix = np.asarray(calibration["normalization"]["matrix_3x3"], dtype=np.float64)
+            coordinate_spaces = hik_image_space_conversions(
+                geometry.matrix_3x3,
+                geometry.inverse_matrix_3x3,
+                normalization_matrix,
+                full_size,
+                camera_roi,
+                [width, height],
+            )
             maps = self._rectification_maps(normalization_matrix, [width, height])
             try:
                 cross_source_check = self._save_cross_source_check(
@@ -2966,6 +2996,15 @@ class HikRigCalibrationSession:
                         "fps": float(self.camera_metadata.get("fps", self.options.camera_fps)),
                     },
                     "hardware_roi_xywh": camera_roi,
+                    "calibration_input_roi_xywh": list(
+                        map(
+                            int,
+                            self.camera_metadata.get(
+                                "calibration_input_roi_xywh",
+                                [0, 0, full_size[0], full_size[1]],
+                            ),
+                        )
+                    ),
                 },
                 "phone": phone_value,
                 "imaging": {
@@ -3003,6 +3042,7 @@ class HikRigCalibrationSession:
                         "output_y_axis": "app_down",
                     },
                 },
+                "coordinate_spaces": coordinate_spaces,
                 "results": {
                     "hik_one_shot_auto_seed": self.auto_imaging_seed,
                     "exposure_observations": [

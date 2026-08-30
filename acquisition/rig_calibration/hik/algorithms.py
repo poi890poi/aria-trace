@@ -405,6 +405,122 @@ def compose_hardware_roi_homography(
     return matrix / matrix[2, 2]
 
 
+def hik_image_space_conversions(
+    full_sensor_camera_to_screen_3x3: Sequence[Sequence[float]],
+    screen_to_full_sensor_camera_3x3: Sequence[Sequence[float]],
+    full_sensor_camera_to_output_3x3: Sequence[Sequence[float]],
+    full_sensor_size_px: Sequence[int],
+    camera_adapter_roi_xywh: Sequence[int],
+    calibrated_output_size_px: Sequence[int],
+) -> dict:
+    """Describe full-sensor and runtime-ROI image spaces without ambiguity."""
+
+    full_width, full_height = map(int, full_sensor_size_px)
+    roi_x, roi_y, roi_width, roi_height = map(int, camera_adapter_roi_xywh)
+    output_width, output_height = map(int, calibrated_output_size_px)
+    if min(full_width, full_height, roi_width, roi_height, output_width, output_height) <= 0:
+        raise ValueError("HIK image-space dimensions must be positive")
+    if min(roi_x, roi_y) < 0 or roi_x + roi_width > full_width or roi_y + roi_height > full_height:
+        raise ValueError("Camera-adapter ROI must be contained by the full sensor")
+
+    full_to_screen = np.asarray(full_sensor_camera_to_screen_3x3, dtype=np.float64)
+    screen_to_full = np.asarray(screen_to_full_sensor_camera_3x3, dtype=np.float64)
+    full_to_output = np.asarray(full_sensor_camera_to_output_3x3, dtype=np.float64)
+    roi_to_full = np.asarray(
+        [[1.0, 0.0, roi_x], [0.0, 1.0, roi_y], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    full_to_roi = np.linalg.inv(roi_to_full)
+    roi_to_screen = full_to_screen.dot(roi_to_full)
+    screen_to_roi = full_to_roi.dot(screen_to_full)
+    roi_to_output = full_to_output.dot(roi_to_full)
+
+    def matrix(value: np.ndarray) -> list:
+        normalized = np.asarray(value, dtype=np.float64) / float(value[2, 2])
+        normalized[np.abs(normalized) < 1.0e-12] = 0.0
+        return normalized.tolist()
+
+    return {
+        "coordinate_convention": {
+            "coordinates": "pixel_center_xy",
+            "origin": "top_left_pixel_center_is_[0,0]",
+            "axes": "+X_right_+Y_down",
+            "matrices": "column_homogeneous_[x,y,1]",
+        },
+        "spaces": {
+            "full_sensor_image": {
+                "id": "hik_full_sensor_bgr_pixels",
+                "size_px": [full_width, full_height],
+                "acquisition_roi_xywh": [0, 0, full_width, full_height],
+                "owner": "rig_calibration_only",
+            },
+            "camera_adapter_roi_image": {
+                "id": "hik_camera_adapter_hardware_roi_bgr_pixels",
+                "size_px": [roi_width, roi_height],
+                "roi_in_full_sensor_xywh": [roi_x, roi_y, roi_width, roi_height],
+                "owner": "production_camera_adapter_only",
+            },
+            "calibrated_output_image": {
+                "id": "hik_rig_rectified_visible_phone_pixels",
+                "size_px": [output_width, output_height],
+                "owner": "production_camera_adapter_output",
+            },
+        },
+        "conversions": {
+            "full_sensor_image_to_phone_display_3x3": matrix(full_to_screen),
+            "phone_display_to_full_sensor_image_3x3": matrix(screen_to_full),
+            "full_sensor_image_to_calibrated_output_3x3": matrix(full_to_output),
+            "camera_adapter_roi_image_to_full_sensor_image_3x3": matrix(roi_to_full),
+            "full_sensor_image_to_camera_adapter_roi_image_3x3": matrix(full_to_roi),
+            "camera_adapter_roi_image_to_phone_display_3x3": matrix(roi_to_screen),
+            "phone_display_to_camera_adapter_roi_image_3x3": matrix(screen_to_roi),
+            "camera_adapter_roi_image_to_calibrated_output_3x3": matrix(roi_to_output),
+            "calibrated_output_image_to_camera_adapter_roi_image_3x3": matrix(
+                np.linalg.inv(roi_to_output)
+            ),
+        },
+        "runtime_rule": (
+            "Rig calibration acquires the reset full-sensor image. The production "
+            "adapter applies camera.hardware_roi_xywh, then uses the ROI-image "
+            "conversion whose origin already includes that crop."
+        ),
+    }
+
+
+def camera_adapter_roi_to_output_homography(
+    calibration: dict, effective_roi_xywh: Sequence[int]
+) -> np.ndarray:
+    """Use the saved ROI-local conversion when it matches the effective ROI."""
+
+    effective = list(map(int, effective_roi_xywh))
+    spaces = calibration.get("coordinate_spaces") or {}
+    roi_space = (spaces.get("spaces") or {}).get("camera_adapter_roi_image") or {}
+    saved_roi = roi_space.get("roi_in_full_sensor_xywh")
+    saved_matrix = (spaces.get("conversions") or {}).get(
+        "camera_adapter_roi_image_to_calibrated_output_3x3"
+    )
+    if saved_roi is not None and saved_matrix is not None:
+        if list(map(int, saved_roi)) == effective:
+            return np.asarray(saved_matrix, dtype=np.float64)
+    normalization = calibration["normalization"]
+    full_to_output = normalization.get("full_sensor_camera_to_output_3x3")
+    if full_to_output is None:
+        origin_x, origin_y = map(
+            float, normalization.get("origin_screen_xy", [0, 0])
+        )
+        screen_to_output = np.asarray(
+            [[1, 0, -origin_x], [0, 1, -origin_y], [0, 0, 1]],
+            dtype=np.float64,
+        )
+        full_to_output = screen_to_output.dot(
+            np.asarray(
+                calibration["geometry"]["full_sensor_camera_to_screen_3x3"],
+                dtype=np.float64,
+            )
+        )
+    return compose_hardware_roi_homography(full_to_output, effective)
+
+
 def laplacian_sharpness(image: np.ndarray) -> float:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     return float(np.var(cv2.Laplacian(gray, cv2.CV_64F)))

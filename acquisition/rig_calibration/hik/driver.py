@@ -17,7 +17,7 @@ import numpy as np
 
 from ..app.device_adapters import CameraAdapter, CameraConfiguration, CameraDevice
 from ..contracts import FrameSample
-from .algorithms import compose_hardware_roi_homography
+from .algorithms import camera_adapter_roi_to_output_homography
 from .spaces import RigCalibratedSpaceConverter
 
 
@@ -926,6 +926,53 @@ class HikMvsCameraAdapter(CameraAdapter):
         ]
         return effective
 
+    def reset_full_sensor_roi(self) -> list[int]:
+        """Clear persistent HIK crop state before full-sensor rig calibration."""
+
+        was_open = self._opened
+        if was_open:
+            self.backend.stop()
+        try:
+            # HIK stores Width/Height/Offset nodes in the device. Offsets must
+            # be cleared before the dynamic Width/Height maxima expose the
+            # complete sensor again.
+            self.backend.set_int("OffsetX", 0)
+            self.backend.set_int("OffsetY", 0)
+            width_limits = dict(self.backend.int_range("Width"))
+            height_limits = dict(self.backend.int_range("Height"))
+            sensor_width = int(self.backend.get_int("SensorWidth"))
+            sensor_height = int(self.backend.get_int("SensorHeight"))
+            width = self._aligned(
+                min(sensor_width, int(width_limits["maximum"])),
+                width_limits,
+                lower=True,
+            )
+            height = self._aligned(
+                min(sensor_height, int(height_limits["maximum"])),
+                height_limits,
+                lower=True,
+            )
+            self.backend.set_int("Width", width)
+            self.backend.set_int("Height", height)
+            self.backend.set_int("OffsetX", 0)
+            self.backend.set_int("OffsetY", 0)
+        finally:
+            if was_open:
+                self.backend.start()
+        effective = [
+            self.backend.get_int("OffsetX"),
+            self.backend.get_int("OffsetY"),
+            self.backend.get_int("Width"),
+            self.backend.get_int("Height"),
+        ]
+        if effective[:2] != [0, 0]:
+            raise RuntimeError(
+                "HIK full-sensor reset retained non-zero offsets: {}".format(
+                    effective
+                )
+            )
+        return effective
+
 
 def create_camera_adapter() -> HikMvsCameraAdapter:
     """Zero-argument factory compatible with the desktop app plugin loader."""
@@ -975,8 +1022,8 @@ class RectifiedHikCamera:
         effective_roi = self.adapter.set_roi(camera["hardware_roi_xywh"])
         normalization = self.config["normalization"]
         if self._rectify_enabled:
-            self._matrix = compose_hardware_roi_homography(
-                normalization["full_sensor_camera_to_output_3x3"], effective_roi
+            self._matrix = camera_adapter_roi_to_output_homography(
+                self.config, effective_roi
             )
             self._output_size = tuple(map(int, normalization["output_size_px"]))
             dense_file = normalization.get("dense_map_file")

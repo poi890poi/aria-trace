@@ -12,7 +12,11 @@ import numpy as np
 
 from ..app.device_adapters import CameraConfiguration
 from ..contracts import FrameSample
-from .algorithms import camera_roi_for_screen_region, compose_hardware_roi_homography
+from .algorithms import (
+    camera_adapter_roi_to_output_homography,
+    camera_roi_for_screen_region,
+    compose_hardware_roi_homography,
+)
 from .driver import HikMvsCameraAdapter
 
 
@@ -273,16 +277,8 @@ class ProfiledHikGameCamera:
             self._minimap_size = (crop_width, crop_height)
 
             normalization = self.rig["normalization"]
-            full_to_output = np.asarray(
-                normalization.get("full_sensor_camera_to_output_3x3")
-                or _translation(
-                    -float(normalization.get("origin_screen_xy", [0, 0])[0]),
-                    -float(normalization.get("origin_screen_xy", [0, 0])[1]),
-                ).dot(camera_to_screen),
-                dtype=np.float64,
-            )
-            self._full_matrix = compose_hardware_roi_homography(
-                full_to_output, self._effective_roi
+            self._full_matrix = camera_adapter_roi_to_output_homography(
+                self.rig, self._effective_roi
             )
             self._full_size = tuple(map(int, normalization["output_size_px"]))
             dense_file = normalization.get("dense_map_file")
