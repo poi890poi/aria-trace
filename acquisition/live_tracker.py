@@ -491,6 +491,7 @@ class TwoRateRealtimeTracker:
         recovery_consensus_count: int = 2,
         global_candidate_advisor=None,
         cursor_pose_process_config=None,
+        representation_interval_s: float = 0.25,
     ) -> None:
         self.extractor = MinimapExtractor(
             minimap_config["crop_xywh"], minimap_calibration
@@ -534,6 +535,12 @@ class TwoRateRealtimeTracker:
         )
         self._active_map_mode_id = None
         self._last_map_transition = None
+        self._last_representation_observation = None
+        self._representation_error = None
+        self.representation_interval_ns = int(
+            max(0.0, float(representation_interval_s)) * 1.0e9
+        )
+        self.last_representation_ns = None
         self.fusion = PoseFusionGate(
             FusionConfig(
                 initial_position_sigma_m=3.0,
@@ -562,6 +569,14 @@ class TwoRateRealtimeTracker:
         self._last_global_diagnostics = None
         self.global_candidate_advisor = global_candidate_advisor
         self._last_route_assistance = None
+        observe_modes = getattr(self.localizer, "observe_modes", None)
+        if self.transition_controller is not None and callable(observe_modes):
+            self._representation_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="aria-map-representation"
+            )
+        else:
+            self._representation_executor = None
+        self._representation_future = None
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
         if cursor_pose_estimator is not None and cursor_pose_process_config is not None:
@@ -608,12 +623,14 @@ class TwoRateRealtimeTracker:
         self._last_cursor_search = None
 
     def close(self) -> None:
+        self._global_executor.shutdown(wait=False)
+        if self._representation_executor is not None:
+            self._representation_executor.shutdown(wait=False)
+        if self._cursor_executor is not None:
+            self._cursor_executor.shutdown(wait=False)
         close_localizer = getattr(self.localizer, "close", None)
         if close_localizer is not None:
             close_localizer()
-        self._global_executor.shutdown(wait=False)
-        if self._cursor_executor is not None:
-            self._cursor_executor.shutdown(wait=False)
 
     def take_global_diagnostics(self):
         diagnostics = self._last_global_diagnostics
@@ -753,22 +770,65 @@ class TwoRateRealtimeTracker:
             or {}
         )
 
+    def _activate_map_mode(self, mode_id: str, *, update_scale: bool) -> None:
+        self._active_map_mode_id = str(mode_id)
+        if self.transition_controller is not None:
+            self.transition_controller.set_active_mode(self._active_map_mode_id)
+        setter = getattr(self.localizer, "set_active_mode", None)
+        if callable(setter):
+            setter(self._active_map_mode_id)
+        if update_scale:
+            scale_for_mode = getattr(self.localizer, "map_scale_for_mode", None)
+            if callable(scale_for_mode):
+                self.map_scale = float(scale_for_mode(self._active_map_mode_id))
+
     def _initialize_map_mode(self, fixes) -> None:
         modes = [self._fix_mode(item) for item in fixes]
         modes = [str(item) for item in modes if item]
         if not modes:
             return
-        self._active_map_mode_id = modes[-1]
-        if self.transition_controller is not None:
-            self.transition_controller.set_active_mode(self._active_map_mode_id)
+        self._activate_map_mode(modes[-1], update_scale=True)
 
-    def _observe_map_transition(self, fix: GlobalFix):
-        if self.transition_controller is None or not fix.valid:
-            return None
-        likelihoods = self._fix_mode_likelihoods(fix)
-        if len(likelihoods) < 2:
-            return None
-        return self.transition_controller.update(likelihoods)
+    def _consume_representation_observation(self, timestamp_ns: int) -> bool:
+        """Apply representation evidence without granting it pose authority."""
+
+        if self._representation_future is None or not self._representation_future.done():
+            return False
+        try:
+            observation = self._representation_future.result()
+            self._representation_error = None
+        except Exception as exc:
+            self._representation_error = "{}: {}".format(type(exc).__name__, exc)
+            self._representation_future = None
+            return False
+        self._representation_future = None
+        controller_result = None
+        if observation.get("valid") and self.transition_controller is not None:
+            controller_result = self.transition_controller.update(
+                observation.get("likelihoods") or {}
+            )
+        self._last_representation_observation = dict(observation)
+        self._last_representation_observation["controller"] = controller_result
+        if not controller_result or not controller_result.get("switched"):
+            return True
+        previous_mode = self._active_map_mode_id
+        next_mode = str(controller_result["active_mode_id"])
+        self._activate_map_mode(next_mode, update_scale=True)
+        self.previous_minimap = None
+        self._last_map_transition = {
+            "from_mode_id": previous_mode,
+            "to_mode_id": next_mode,
+            "host_time_ns": timestamp_ns,
+            "position_policy": "held-continuous-pose",
+            "evidence_source": "continuous-local-representation-observer",
+            "reset_local_reference": True,
+            "mode_likelihoods": dict(observation.get("likelihoods") or {}),
+            "raw_correlation_scores": dict(
+                observation.get("raw_correlation_scores") or {}
+            ),
+            "observation_elapsed_ms": observation.get("elapsed_ms"),
+        }
+        return True
 
     def _recovery_requested(self) -> bool:
         if self.fusion._state is None:
@@ -796,6 +856,9 @@ class TwoRateRealtimeTracker:
         self._ensure_scene_estimator(frame)
         yaw = self.scene_estimator.update(frame)
         minimap, mask = self.extractor.extract(frame)
+        representation_observation_fresh = self._consume_representation_observation(
+            timestamp_ns
+        )
         local_shift = (0.0, 0.0)
         local_response = 0.0
         local_accepted = False
@@ -983,7 +1046,6 @@ class TwoRateRealtimeTracker:
             self.last_cursor_ns = timestamp_ns
 
         global_fix = None
-        transition_observation = None
         decision = None
         if self._global_future is not None and self._global_future.done():
             try:
@@ -1001,8 +1063,6 @@ class TwoRateRealtimeTracker:
                     global_fix.rejection_reasons
                 )
             else:
-                transition_observation = self._observe_map_transition(global_fix)
-                hypothesis = Pose2D(global_fix.x, global_fix.y, global_fix.yaw_deg)
                 if self.fusion._state is None:
                     if self._initial_hypotheses:
                         previous = self._initial_hypotheses[-1]
@@ -1067,95 +1127,15 @@ class TwoRateRealtimeTracker:
                                 and self._active_map_mode_id
                                 and recovery_mode != self._active_map_mode_id
                             )
-                            transition_confirmed = bool(
-                                transition_observation
-                                and transition_observation.get("active_mode_id")
-                                == recovery_mode
-                            )
-                            transition_pose = self._mean_fix(rows)
-                            current_pose = self.fusion.state.pose
-                            transition_position_error = math.hypot(
-                                transition_pose.x - current_pose.x,
-                                transition_pose.y - current_pose.y,
-                            )
-                            transition_yaw_error = abs(
-                                _angle_difference_deg(
-                                    transition_pose.yaw_deg, current_pose.yaw_deg
-                                )
-                            )
-                            if (
-                                mode_changed
-                                and self.transition_controller is not None
-                                and not transition_confirmed
-                            ):
-                                decision = "awaiting-scale-transition-confirmation"
-                                self._recovery_hypotheses = rows[-1:]
+                            if mode_changed:
+                                decision = "rejected:map-mode-mismatch"
+                                self._recovery_hypotheses = []
                                 fusion_metrics = {
                                     "accepted": False,
                                     "reason": decision,
                                 }
                                 rows = None
-                            elif (
-                                mode_changed
-                                and transition_confirmed
-                                and (
-                                    transition_position_error > 35.0
-                                    or transition_yaw_error > 20.0
-                                )
-                            ):
-                                decision = "rejected:scale-transition-discontinuity"
-                                self.transition_controller.set_active_mode(
-                                    self._active_map_mode_id
-                                )
-                                self._recovery_hypotheses = []
-                                fusion_metrics = {
-                                    "accepted": False,
-                                    "reason": decision,
-                                    "predicted_position_innovation_map_px": (
-                                        transition_position_error
-                                    ),
-                                    "predicted_yaw_innovation_deg": (
-                                        transition_yaw_error
-                                    ),
-                                    "applied_position_change_map_px": 0.0,
-                                    "applied_yaw_change_deg": 0.0,
-                                }
-                                rows = None
-                            elif mode_changed and transition_confirmed:
-                                self.map_scale = float(
-                                    np.mean([item.scale for item in rows])
-                                )
-                                self._local_rejections = 0
-                                self._clear_recovery_request()
-                                previous_mode = self._active_map_mode_id
-                                self._active_map_mode_id = str(recovery_mode)
-                                self.previous_minimap = None
-                                decision = "scale-transition-held-position"
-                                self._last_map_transition = {
-                                    "from_mode_id": previous_mode,
-                                    "to_mode_id": self._active_map_mode_id,
-                                    "host_time_ns": timestamp_ns,
-                                    "position_policy": "held-continuous-pose",
-                                    "evidence_source": (
-                                        "live-minimap-layer-likelihoods"
-                                    ),
-                                    "reset_local_reference": True,
-                                    "mode_likelihoods": self._fix_mode_likelihoods(
-                                        rows[-1]
-                                    ),
-                                }
-                                self._recovery_hypotheses = []
-                                fusion_metrics = {
-                                    "accepted": True,
-                                    "reason": decision,
-                                    "predicted_position_innovation_map_px": None,
-                                    "predicted_yaw_innovation_deg": None,
-                                    "applied_position_change_map_px": 0.0,
-                                    "applied_yaw_change_deg": 0.0,
-                                }
-                            if rows is not None and not (
-                                mode_changed and transition_confirmed
-                            ):
+                            if rows is not None:
                                 recovery_pose = self._mean_fix(rows)
                                 correction = self.fusion.consider_absolute(recovery_pose)
                                 decision = (
@@ -1164,9 +1144,10 @@ class TwoRateRealtimeTracker:
                                     else "rejected:" + correction.reason
                                 )
                                 if correction.accepted:
-                                    self.map_scale = float(
-                                        np.mean([item.scale for item in rows])
-                                    )
+                                    if self._active_map_mode_id is None:
+                                        self.map_scale = float(
+                                            np.mean([item.scale for item in rows])
+                                        )
                                     self._local_rejections = 0
                                     self._clear_recovery_request()
                                 self._recovery_hypotheses = []
@@ -1235,6 +1216,31 @@ class TwoRateRealtimeTracker:
                 search_radius,
             )
             self.last_global_ns = timestamp_ns
+        representation_due = (
+            self.last_representation_ns is None
+            or timestamp_ns - self.last_representation_ns
+            >= self.representation_interval_ns
+        )
+        if (
+            self.fusion._state is not None
+            and self._active_map_mode_id is not None
+            and representation_due
+            and self._representation_future is None
+            and self._representation_executor is not None
+        ):
+            state = self.fusion.state
+            canonical_xy = (float(state.pose.x), float(state.pose.y))
+            search_radius = float(
+                np.clip(state.position_sigma_m * 3.0, 40.0, 150.0)
+            )
+            self._representation_future = self._representation_executor.submit(
+                self.localizer.observe_modes,
+                minimap.copy(),
+                mask.copy(),
+                canonical_xy,
+                search_radius,
+            )
+            self.last_representation_ns = timestamp_ns
         self.sequence += 1
         cursor_pose_output = (
             dict(self._last_cursor_pose) if self._last_cursor_pose else None
@@ -1327,6 +1333,18 @@ class TwoRateRealtimeTracker:
             "map_transition": dict(self._last_map_transition)
             if self._last_map_transition
             else None,
+            "map_representation_observation": dict(
+                self._last_representation_observation
+            )
+            if self._last_representation_observation
+            else None,
+            "map_representation_observation_fresh": (
+                representation_observation_fresh
+            ),
+            "map_representation_observation_running": (
+                self._representation_future is not None
+            ),
+            "map_representation_error": self._representation_error,
             "cursor_pose": cursor_pose_output,
             "cursor_pose_fresh": cursor_pose_fresh,
             "cursor_pose_running": self._cursor_future is not None,

@@ -172,6 +172,27 @@ class MapLayerTests(unittest.TestCase):
                 "shared_source_identity",
             )
 
+            localizer = LayeredGlobalLocalizer(output)
+            try:
+                world_observation = canonical[80:180, 120:220].copy()
+                world_result = localizer.observe_modes(
+                    world_observation, mask, (170.0, 130.0), 20.0
+                )
+                town_result = localizer.observe_modes(
+                    town_reference, mask, (200.0, 160.0), 20.0
+                )
+            finally:
+                localizer.close()
+
+            self.assertTrue(world_result["valid"])
+            self.assertEqual(world_result["selected_mode_id"], "world")
+            self.assertTrue(town_result["valid"])
+            self.assertEqual(town_result["selected_mode_id"], "town")
+            self.assertEqual(town_result["pose_authority"], "none")
+            self.assertEqual(
+                town_result["canonical_xy_read_only"], [200.0, 160.0]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

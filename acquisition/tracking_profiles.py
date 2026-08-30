@@ -10,6 +10,7 @@ TRACKING_PROFILES = {
         "cursor_validation_policy": "ambiguous",
         "cursor_interval_s": 0.05,
         "global_interval_s": 2.0,
+        "representation_interval_s": 0.25,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.45,
         "cursor_worker_process": True,
@@ -20,6 +21,7 @@ TRACKING_PROFILES = {
         "cursor_validation_policy": "minimal",
         "cursor_interval_s": 0.10,
         "global_interval_s": 3.0,
+        "representation_interval_s": 0.35,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.50,
         "cursor_worker_process": True,
@@ -30,6 +32,7 @@ TRACKING_PROFILES = {
         "cursor_validation_policy": "full",
         "cursor_interval_s": 0.15,
         "global_interval_s": 1.5,
+        "representation_interval_s": 0.15,
         "temporal_pose_search": True,
         "pose_confidence_min": 0.40,
         "cursor_worker_process": True,
@@ -40,6 +43,7 @@ TRACKING_PROFILES = {
         "cursor_validation_policy": "full",
         "cursor_interval_s": 0.0,
         "global_interval_s": 0.5,
+        "representation_interval_s": 0.0,
         "temporal_pose_search": False,
         "pose_confidence_min": 0.0,
         "cursor_worker_process": True,
@@ -69,6 +73,8 @@ def resolve_tracking_profile(
         raise ValueError("cursor_interval_s cannot be negative")
     if not 0.5 <= float(value["global_interval_s"]) <= 30.0:
         raise ValueError("global_interval_s must be 0.5–30 seconds")
+    if float(value["representation_interval_s"]) < 0.0:
+        raise ValueError("representation_interval_s cannot be negative")
     if not 0.0 <= float(value["pose_confidence_min"]) <= 1.0:
         raise ValueError("pose_confidence_min must be within 0..1")
     if int(value["cursor_opencv_threads"]) < 1:

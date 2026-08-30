@@ -2773,6 +2773,9 @@ class AcquisitionWorkbench:
                 minimap,
                 scene_yaw,
                 global_interval_s=global_interval_s,
+                representation_interval_s=float(
+                    resolved_profile["representation_interval_s"]
+                ),
                 localizer=localizer,
                 cursor_pose_process_config=cursor_pose_process_config,
                 cursor_interval_s=float(resolved_profile["cursor_interval_s"]),
@@ -2808,6 +2811,9 @@ class AcquisitionWorkbench:
                 "frame_size_wh": None,
                 "minimap_crop_xywh": list(minimap_config["crop_xywh"]),
                 "global_interval_s": global_interval_s,
+                "representation_interval_s": float(
+                    resolved_profile["representation_interval_s"]
+                ),
                 "cursor_pose_method": gaussian_fit_method,
                 "tracking_profile": tracking_profile_name,
                 "resolved_tracking_profile": resolved_profile,

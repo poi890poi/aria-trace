@@ -420,31 +420,50 @@ class TwoRateTrackerTests(unittest.TestCase):
 
             def __init__(self):
                 self.calls = 0
+                self.observations = 0
+                self.active_mode_id = None
 
             def localize(self, observation, mask, yaw_prior_deg=None):
                 self.calls += 1
-                world = self.calls == 1
-                mode = "world" if world else "town"
-                likelihoods = (
-                    {"world": 0.92, "town": 0.08}
-                    if world
-                    else {"world": 0.05, "town": 0.95}
-                )
                 return GlobalFix(
-                    80.0 if world else 82.0,
-                    70.0 if world else 71.0,
+                    80.0,
+                    70.0,
                     15.0,
-                    2.64 if world else 0.88,
+                    2.64,
                     0.91,
                     0.12,
                     8.0,
                     diagnostics={
                         "map_layer": {
-                            "selected_mode_id": mode,
-                            "mode_likelihoods": likelihoods,
+                            "selected_mode_id": "world",
+                            "mode_likelihoods": {"world": 0.92, "town": 0.08},
                         }
                     },
                 )
+
+            def observe_modes(
+                self, observation, mask, canonical_xy, search_radius_px
+            ):
+                self.observations += 1
+                likelihoods = (
+                    {"world": 1.0, "town": 0.1}
+                    if self.observations == 1
+                    else {"world": 0.1, "town": 1.0}
+                )
+                return {
+                    "valid": True,
+                    "likelihoods": likelihoods,
+                    "raw_correlation_scores": likelihoods,
+                    "elapsed_ms": 1.0,
+                    "pose_authority": "none",
+                }
+
+            def set_active_mode(self, mode_id):
+                self.active_mode_id = mode_id
+
+            @staticmethod
+            def map_scale_for_mode(mode_id):
+                return 2.64 if mode_id == "world" else 0.88
 
         localizer = ScaleTransitionLocalizer()
         tracker = TwoRateRealtimeTracker(
@@ -457,6 +476,7 @@ class TwoRateTrackerTests(unittest.TestCase):
             initial_consensus_count=1,
             relocalize_after_rejections=1,
             recovery_consensus_count=2,
+            representation_interval_s=0.001,
         )
         frame = np.random.RandomState(15).randint(
             0, 255, (100, 100, 3), dtype=np.uint8
@@ -465,7 +485,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         try:
             with patch(
                 "acquisition.live_tracker.estimate_masked_shift",
-                return_value=((0.0, 0.0), 0.05),
+                return_value=((0.0, 0.0), 0.90),
             ):
                 for index in range(200):
                     result = tracker.update(frame, index * 10_000_000 + 1)
@@ -481,13 +501,17 @@ class TwoRateTrackerTests(unittest.TestCase):
             )
             self.assertEqual(
                 result["map_transition"]["evidence_source"],
-                "live-minimap-layer-likelihoods",
+                "continuous-local-representation-observer",
             )
             self.assertAlmostEqual(result["pose"]["x"], 80.0)
             self.assertAlmostEqual(result["pose"]["y"], 70.0)
             self.assertAlmostEqual(tracker.map_scale, 0.88)
             self.assertAlmostEqual(result["map_scale"], 0.88)
-            self.assertIsNone(tracker.previous_minimap)
+            self.assertEqual(localizer.active_mode_id, "town")
+            self.assertEqual(
+                result["map_representation_observation"]["pose_authority"],
+                "none",
+            )
         finally:
             tracker.close()
 

@@ -3,6 +3,7 @@
 import json
 import math
 import shutil
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -379,6 +380,7 @@ class LayeredGlobalLocalizer:
         )
         self.transition_model = self.manifest.get("transition_model")
         self.localizers = {}
+        self.map_scales = {}
         for layer in self.manifest["layers"]:
             mode_id = str(layer["mode_id"])
             self.localizers[mode_id] = GlobalMapLocalizer(
@@ -392,6 +394,9 @@ class LayeredGlobalLocalizer:
                 ),
                 layer["localization_to_canonical_3x3"],
             )
+            scale = layer.get("map_pixels_per_minimap_pixel")
+            if scale is not None:
+                self.map_scales[mode_id] = float(scale)
         self.active_mode_id = None
         self.last_mode_likelihoods = {}
         self.last_selected_mode_id = None
@@ -404,6 +409,151 @@ class LayeredGlobalLocalizer:
         if mode_id is not None and mode_id not in self.localizers:
             raise ValueError("Unknown map-layer mode: {}".format(mode_id))
         self.active_mode_id = mode_id
+
+    def map_scale_for_mode(self, mode_id: str) -> float:
+        """Return the atlas-declared map scale for a representation mode."""
+
+        value = self.map_scales.get(str(mode_id))
+        if value is None or not math.isfinite(value) or value <= 0.0:
+            raise ValueError("Map layer has no valid declared scale: {}".format(mode_id))
+        return value
+
+    @staticmethod
+    def _observe_one_mode(
+        localizer: GlobalMapLocalizer,
+        observation_gradient: np.ndarray,
+        mask: np.ndarray,
+        canonical_xy,
+        search_radius_px: float,
+    ) -> dict:
+        """Score one normalized layer near a known pose without returning a pose."""
+
+        height, width = observation_gradient.shape[:2]
+        center_x, center_y = localizer._localization_xy(canonical_xy)
+        scale_x = math.hypot(
+            localizer.original_to_localization[0, 0],
+            localizer.original_to_localization[1, 0],
+        )
+        scale_y = math.hypot(
+            localizer.original_to_localization[0, 1],
+            localizer.original_to_localization[1, 1],
+        )
+        radius = max(4.0, float(search_radius_px) * (scale_x + scale_y) / 2.0)
+        left = max(0, int(math.floor(center_x - radius - width / 2.0)))
+        top = max(0, int(math.floor(center_y - radius - height / 2.0)))
+        right = min(
+            localizer.map_gradient.shape[1],
+            int(math.ceil(center_x + radius + width / 2.0)),
+        )
+        bottom = min(
+            localizer.map_gradient.shape[0],
+            int(math.ceil(center_y + radius + height / 2.0)),
+        )
+        search = localizer.map_gradient[top:bottom, left:right]
+        if search.shape[0] < height or search.shape[1] < width:
+            return {
+                "valid": False,
+                "score": 0.0,
+                "coverage_fraction": 0.0,
+                "reason": "insufficient-local-map-area",
+            }
+        response = cv2.matchTemplate(
+            search,
+            observation_gradient,
+            cv2.TM_CCORR_NORMED,
+            mask=mask,
+        )
+        response = np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        _, score, _, location = cv2.minMaxLoc(response)
+        match_left = left + int(location[0])
+        match_top = top + int(location[1])
+        coverage_patch = localizer.coverage[
+            match_top : match_top + height,
+            match_left : match_left + width,
+        ]
+        selected = mask > 0
+        coverage_fraction = float(
+            np.mean(coverage_patch[selected] > 0) if np.any(selected) else 0.0
+        )
+        match_center_local = (
+            match_left + width / 2.0,
+            match_top + height / 2.0,
+        )
+        match_center_canonical = localizer._original_xy(match_center_local)
+        offset = (
+            float(match_center_canonical[0] - canonical_xy[0]),
+            float(match_center_canonical[1] - canonical_xy[1]),
+        )
+        valid = bool(math.isfinite(score) and score >= 0.0 and coverage_fraction >= 0.75)
+        return {
+            "valid": valid,
+            "score": max(0.0, float(score)) if valid else 0.0,
+            "coverage_fraction": coverage_fraction,
+            "best_offset_canonical_xy": list(offset),
+            "search_bounds_localization_xyxy": [left, top, right, bottom],
+            "reason": None if valid else "insufficient-observed-coverage",
+        }
+
+    def observe_modes(
+        self,
+        observation: np.ndarray,
+        mask: np.ndarray,
+        canonical_xy,
+        search_radius_px: float = 40.0,
+    ) -> dict:
+        """Compare every rendered scale locally while keeping pose read-only.
+
+        This is deliberately separate from global localization.  The returned
+        best offsets are diagnostics only; callers may use the scores to change
+        representation, but never to correct position or yaw.
+        """
+
+        started = time.perf_counter()
+        if canonical_xy is None:
+            raise ValueError("Mode observation requires an established canonical pose")
+        gray = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
+        gray = gray.astype(np.float32)
+        gradient = cv2.magnitude(
+            cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3),
+            cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3),
+        )
+        diagnostics = {
+            mode_id: self._observe_one_mode(
+                localizer,
+                gradient,
+                mask,
+                canonical_xy,
+                search_radius_px,
+            )
+            for mode_id, localizer in self.localizers.items()
+        }
+        raw_scores = {
+            mode_id: float(value["score"])
+            for mode_id, value in diagnostics.items()
+            if value["valid"]
+        }
+        best_score = max(raw_scores.values(), default=0.0)
+        likelihoods = {
+            mode_id: score / best_score
+            for mode_id, score in raw_scores.items()
+            if best_score > 0.0
+        }
+        ordered = sorted(likelihoods.items(), key=lambda item: item[1], reverse=True)
+        return {
+            "valid": len(likelihoods) >= 2,
+            "likelihoods": likelihoods,
+            "raw_correlation_scores": raw_scores,
+            "score_normalization": "relative_to_best_correlation",
+            "selected_mode_id": ordered[0][0] if ordered else None,
+            "score_margin": (
+                float(ordered[0][1] - ordered[1][1]) if len(ordered) >= 2 else 0.0
+            ),
+            "canonical_xy_read_only": [float(canonical_xy[0]), float(canonical_xy[1])],
+            "search_radius_canonical_px": float(search_radius_px),
+            "modes": diagnostics,
+            "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+            "pose_authority": "none",
+        }
 
     def localize_all(
         self,
