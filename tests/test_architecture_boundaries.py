@@ -92,6 +92,17 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_result, FrameSample)
         self.assertIs(legacy_hik, HikMvsCameraAdapter)
 
+        from acquisition.dual_source_spaces import write_dual_source_space_yaml as legacy_spaces
+        from acquisition.game_cross_source_check import GameCrossSourceEvidenceRecorder as legacy_cross
+        from acquisition.hik_bayer_color_match import optimize_mvs_bayer_conversion as legacy_color
+        from aria_trace.services.calibration.rig.cross_source import GameCrossSourceEvidenceRecorder
+        from aria_trace.services.calibration.rig.dual_source_spaces import write_dual_source_space_yaml
+        from aria_trace.services.calibration.rig.hik.color_match import optimize_mvs_bayer_conversion
+
+        self.assertIs(legacy_spaces, write_dual_source_space_yaml)
+        self.assertIs(legacy_cross, GameCrossSourceEvidenceRecorder)
+        self.assertIs(legacy_color, optimize_mvs_bayer_conversion)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

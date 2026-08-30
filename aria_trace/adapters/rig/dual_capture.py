@@ -14,8 +14,8 @@ from aria_trace.adapters.android.capture import (
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
-from acquisition.dual_source_spaces import write_dual_source_space_yaml
-from acquisition.game_cross_source_check import (
+from aria_trace.services.calibration.rig.dual_source_spaces import write_dual_source_space_yaml
+from aria_trace.services.calibration.rig.cross_source import (
     GameCrossSourceEvidenceRecorder,
     orient_hik_source_from_first_adb_frame,
 )
