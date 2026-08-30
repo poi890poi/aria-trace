@@ -411,6 +411,58 @@ def _circular_summary_deg(values: Sequence[float]) -> dict:
     return {"mean_deg": mean, "circular_std_deg": std}
 
 
+def _arrival_observation(fix, record: Mapping) -> Optional[dict]:
+    """Return strict localization or a tightly guarded offline geometric candidate."""
+
+    source = "strict_feature_correlation"
+    x = float(fix.x)
+    y = float(fix.y)
+    if not fix.valid:
+        allowed_rejections = {
+            "low-correlation",
+            "ambiguous-correlation",
+            "feature-correlation-disagreement",
+        }
+        reasons = set(fix.rejection_reasons)
+        diagnostics = fix.diagnostics or {}
+        feature_xy = diagnostics.get("feature_center_original_xy")
+        reprojection = fix.reprojection_p95_px
+        if (
+            not reasons
+            or not reasons.issubset(allowed_rejections)
+            or fix.inlier_count < 8
+            or fix.inlier_ratio < 0.75
+            or reprojection is None
+            or not math.isfinite(float(reprojection))
+            or float(reprojection) > 2.0
+            or not diagnostics.get("feature_center_covered")
+            or not isinstance(feature_xy, (list, tuple))
+            or len(feature_xy) != 2
+        ):
+            return None
+        x, y = _finite_xy(feature_xy)
+        source = "geometric_consensus_fallback"
+    return {
+        "time_s": _time_s(record),
+        "frame_index": int(record["frame_index"]),
+        "x": x,
+        "y": y,
+        "yaw_deg": float(fix.yaw_deg),
+        "score": float(fix.score),
+        "margin": float(fix.margin),
+        "inlier_count": int(fix.inlier_count),
+        "inlier_ratio": float(fix.inlier_ratio),
+        "reprojection_p95_px": (
+            float(fix.reprojection_p95_px)
+            if fix.reprojection_p95_px is not None
+            else None
+        ),
+        "localization_source": source,
+        "strict_fix_valid": bool(fix.valid),
+        "strict_rejection_reasons": list(fix.rejection_reasons),
+    }
+
+
 def _arrival_consensus(
     frames: _RecordedFrames,
     start_s: float,
@@ -428,20 +480,9 @@ def _arrival_consensus(
             fix = localizer.localize(observation, mask)
         except (RuntimeError, ValueError):
             continue
-        if not fix.valid:
-            continue
-        observations.append(
-            {
-                "time_s": time_s,
-                "frame_index": int(record["frame_index"]),
-                "x": float(fix.x),
-                "y": float(fix.y),
-                "yaw_deg": float(fix.yaw_deg),
-                "score": float(fix.score),
-                "margin": float(fix.margin),
-                "inlier_count": int(fix.inlier_count),
-            }
-        )
+        candidate = _arrival_observation(fix, record)
+        if candidate is not None:
+            observations.append(candidate)
     consensus_start = None
     for index in range(2, len(observations)):
         window = observations[index - 2 : index + 1]
@@ -467,6 +508,15 @@ def _arrival_consensus(
         else np.zeros((2, 2), dtype=np.float64)
     )
     radii = np.linalg.norm(points - center, axis=1)
+    source_counts = {}
+    for item in arrival:
+        source = str(item["localization_source"])
+        source_counts[source] = source_counts.get(source, 0) + 1
+    arrival_reprojection = [
+        item["reprojection_p95_px"]
+        for item in arrival
+        if item["reprojection_p95_px"] is not None
+    ]
     return {
         "destination_global_xy": _finite_xy(center),
         "world_ready": dict(world_ready),
@@ -481,6 +531,16 @@ def _arrival_consensus(
             "yaw": _circular_summary_deg([item["yaw_deg"] for item in arrival]),
             "median_score": float(np.median([item["score"] for item in arrival])),
             "median_margin": float(np.median([item["margin"] for item in arrival])),
+            "median_inlier_count": float(
+                np.median([item["inlier_count"] for item in arrival])
+            ),
+            "median_inlier_ratio": float(
+                np.median([item["inlier_ratio"] for item in arrival])
+            ),
+            "median_reprojection_p95_px": float(
+                np.median(arrival_reprojection)
+            ) if arrival_reprojection else None,
+            "localization_source_counts": source_counts,
         },
     }
 
@@ -761,6 +821,9 @@ def analyze_teleport_session(
             ),
             "arrival_localization_median_margin": float(
                 arrival["arrival_model"]["median_margin"]
+            ),
+            "arrival_localization_source_counts": dict(
+                arrival["arrival_model"]["localization_source_counts"]
             ),
             "generalization_status": "single_observed_episode",
             "human_review_required": True,

@@ -7,9 +7,11 @@ import numpy as np
 
 from acquisition.teleport_analysis import (
     TELEPORT_BEHAVIOR_MODEL,
+    _arrival_consensus,
     _target_change_component,
     parse_teleport_inputs,
 )
+from acquisition.live_tracker import GlobalFix
 from acquisition.teleport_behavior import (
     make_teleport_behavior_sample,
     save_teleport_behavior_sample,
@@ -109,6 +111,96 @@ class TeleportBehaviorTests(unittest.TestCase):
         result = _target_change_component(before, after)
         self.assertAlmostEqual(result["screen_xy"][0], 199.5, delta=3.0)
         self.assertAlmostEqual(result["screen_xy"][1], 159.5, delta=3.0)
+
+    def test_arrival_uses_repeated_covered_geometric_evidence_offline(self):
+        class Frames:
+            def iter_from(self, _start_s, stride=10):
+                del stride
+                for index in range(3):
+                    yield np.zeros((32, 32, 3), np.uint8), {
+                        "frame_index": index,
+                        "session_time_ns": index * 300_000_000,
+                    }
+
+        class Extractor:
+            def extract(self, frame):
+                return frame, np.full(frame.shape[:2], 255, np.uint8)
+
+        class Localizer:
+            def localize(self, _observation, _mask):
+                return GlobalFix(
+                    900.0,
+                    800.0,
+                    12.0,
+                    1.0,
+                    0.49,
+                    0.01,
+                    2.0,
+                    valid=False,
+                    rejection_reasons=(
+                        "low-correlation",
+                        "ambiguous-correlation",
+                        "feature-correlation-disagreement",
+                    ),
+                    ratio_match_count=14,
+                    inlier_count=12,
+                    inlier_ratio=0.86,
+                    reprojection_p95_px=0.8,
+                    center_agreement_px=220.0,
+                    diagnostics={
+                        "feature_center_original_xy": (1068.0, 256.0),
+                        "feature_center_covered": True,
+                    },
+                )
+
+        result = _arrival_consensus(Frames(), 0.0, Extractor(), Localizer())
+        self.assertEqual(result["destination_global_xy"], [1068.0, 256.0])
+        self.assertEqual(
+            result["arrival_model"]["localization_source_counts"],
+            {"geometric_consensus_fallback": 3},
+        )
+        self.assertFalse(result["world_ready"]["strict_fix_valid"])
+
+    def test_arrival_does_not_weaken_live_localization_rejections(self):
+        class Frames:
+            def iter_from(self, _start_s, stride=10):
+                del stride
+                for index in range(3):
+                    yield np.zeros((32, 32, 3), np.uint8), {
+                        "frame_index": index,
+                        "session_time_ns": index * 300_000_000,
+                    }
+
+        class Extractor:
+            def extract(self, frame):
+                return frame, np.full(frame.shape[:2], 255, np.uint8)
+
+        class Localizer:
+            def localize(self, _observation, _mask):
+                return GlobalFix(
+                    0.0,
+                    0.0,
+                    0.0,
+                    2.0,
+                    0.7,
+                    0.2,
+                    2.0,
+                    valid=False,
+                    rejection_reasons=("scale-out-of-range",),
+                    ratio_match_count=14,
+                    inlier_count=12,
+                    inlier_ratio=0.9,
+                    reprojection_p95_px=0.5,
+                    diagnostics={
+                        "feature_center_original_xy": (1068.0, 256.0),
+                        "feature_center_covered": True,
+                    },
+                )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "No stable post-load destination localization consensus"
+        ):
+            _arrival_consensus(Frames(), 0.0, Extractor(), Localizer())
 
 
 if __name__ == "__main__":

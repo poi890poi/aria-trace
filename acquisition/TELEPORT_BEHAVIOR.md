@@ -32,3 +32,11 @@ with the calibrated mini-map, and writes three review images plus the reusable
 JSON record. Quality is reported with direct measurements (feature inliers,
 reprojection error, localization scores, arrival sample count, and arrival
 spread); it does not synthesize a proprietary confidence score from them.
+
+Arrival localization prefers the normal feature-plus-correlation fix. An offline
+fallback may use the feature-proposed center only when correlation is the sole
+rejection source, the center is inside observed coverage, each proposal has at
+least 8 inliers, 0.75 inlier ratio, and at most 2 px p95 reprojection error, and
+three sampled frames agree within 12 px over no more than 2 seconds. The artifact
+records which source supplied every accepted arrival sample. This fallback is not
+used by live tracking and does not weaken its localization gates.

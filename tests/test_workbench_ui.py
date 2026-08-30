@@ -93,6 +93,10 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
             self.source,
         )
 
+    def test_teleport_review_exposes_arrival_localization_source(self):
+        self.assertIn("arrival_localization_source_counts", self.source)
+        self.assertIn("geometric fallback", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

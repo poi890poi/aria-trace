@@ -318,6 +318,22 @@ class GlobalMapLocalizer:
                 {"x": original_x, "y": original_y, "score": peak_score}
             )
         original_x, original_y = self._original_xy(correlation_center)
+        feature_original_x, feature_original_y = self._original_xy(center)
+        feature_center_in_bounds = bool(
+            0.0 <= center[0] < self.coverage.shape[1]
+            and 0.0 <= center[1] < self.coverage.shape[0]
+        )
+        feature_center_covered = False
+        if feature_center_in_bounds:
+            feature_center_x = int(
+                np.clip(round(center[0]), 0, self.coverage.shape[1] - 1)
+            )
+            feature_center_y = int(
+                np.clip(round(center[1]), 0, self.coverage.shape[0] - 1)
+            )
+            feature_center_covered = bool(
+                self.coverage[feature_center_y, feature_center_x]
+            )
         map_scale_x = math.hypot(
             self.localization_to_original[0, 0], self.localization_to_original[1, 0]
         )
@@ -388,6 +404,14 @@ class GlobalMapLocalizer:
             "search_region": search_region,
             "correlation_heatmap": correlation_heatmap,
             "candidate_overlay": candidate_overlay,
+            # This remains diagnostic evidence: GlobalMapLocalizer acceptance
+            # still requires correlation verification. Offline consumers may
+            # independently require repeated geometric consensus.
+            "feature_center_original_xy": (
+                float(feature_original_x),
+                float(feature_original_y),
+            ),
+            "feature_center_covered": feature_center_covered,
         }
         return GlobalFix(
             original_x,
