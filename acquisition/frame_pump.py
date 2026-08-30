@@ -2,13 +2,14 @@
 
 import threading
 import time
-from typing import Optional
-
-from .models import FramePacket
+from typing import Generic, Optional, TypeVar
 
 
-class LatestFramePump:
-    """Capture independently and expose only the newest undelivered frame."""
+T = TypeVar("T")
+
+
+class LatestFramePump(Generic[T]):
+    """Read independently and expose only the newest undelivered source value."""
 
     def __init__(self, source) -> None:
         self.source = source
@@ -61,7 +62,7 @@ class LatestFramePump:
             with self._condition:
                 self._condition.notify_all()
 
-    def read_latest(self, timeout_s: float = 0.25) -> Optional[FramePacket]:
+    def read_latest(self, timeout_s: float = 0.25) -> Optional[T]:
         deadline = time.monotonic() + max(0.0, float(timeout_s))
         with self._condition:
             while (
