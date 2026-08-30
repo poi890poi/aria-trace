@@ -74,6 +74,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(application.make_handler, legacy.make_handler)
         self.assertIs(application.main, legacy.main)
 
+        from aria_trace.apps.workbench.api import make_handler as api_handler
+
+        self.assertIs(api_handler, application.make_handler)
+
     def test_cursor_legacy_exports_are_exact_service_aliases(self):
         from acquisition.cursor_pose import CursorPoseEstimator as legacy_pose
         from acquisition.cursor_worker import CursorPoseProcessExecutor as legacy_worker
