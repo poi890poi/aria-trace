@@ -1,7 +1,8 @@
-"""Localize a mini-map in one completed dual-source zigzag session.
+"""Localize a mini-map in one completed Android or Android/HIK zigzag session.
 
 Android discovery and fitting are delegated directly to minimap_calibration.
-HIK geometry is only projected through the same session's declared transform.
+When HIK exists, its geometry is only projected through the same session's
+declared transform. Android-only sessions require no camera or camera prior.
 """
 
 from __future__ import annotations
@@ -30,8 +31,8 @@ from .session import SessionReader
 
 HEADER = """# AriaTrace current-session mini-map localization.
 #
-# Android geometry is fitted in the complete logical display. HIK geometry is
-# only a projection through this capture session's declared registration."""
+# Android geometry is fitted in the complete logical display. Optional HIK
+# geometry is only a projection through this session's declared registration."""
 
 COMMENTS = {
     "scope": "The single responsibility and explicit exclusions of this stage.",
@@ -226,20 +227,24 @@ def localize_session_minimap(
         raise ValueError("Localization requires a complete session")
     if context.get("capture_kind") != "zigzag_minimap_source_data":
         raise ValueError("Session is not zigzag mini-map source data")
-    if not {"android_phone", "hik_phone"}.issubset(session.frames_by_stream):
-        raise ValueError("Session requires android_phone and registered hik_phone")
+    if "android_phone" not in session.frames_by_stream:
+        raise ValueError("Session requires the android_phone stream")
+    has_hik = "hik_phone" in session.frames_by_stream
 
     output_path.mkdir(parents=True)
     android_output = output_path / "android"
     hik_output = output_path / "hik_session"
     android_output.mkdir()
-    hik_output.mkdir()
+    if has_hik:
+        hik_output.mkdir()
     android_frames, android_times = read_representative_frames(
         session, "android_phone", maximum_frames
     )
-    hik_frames, hik_times = read_representative_frames(
-        session, "hik_phone", maximum_frames
-    )
+    hik_frames = hik_times = None
+    if has_hik:
+        hik_frames, hik_times = read_representative_frames(
+            session, "hik_phone", maximum_frames
+        )
     discovery = android_minimap_discovery_config(android_discovery)
     try:
         fitted = calibrate_minimap_boundary_frames(
@@ -266,15 +271,6 @@ def localize_session_minimap(
         raise
 
     android_height, android_width = android_frames.shape[1:3]
-    hik_height, hik_width = hik_frames.shape[1:3]
-    registration = load_session_registration(
-        session_path, [android_width, android_height], [hik_width, hik_height]
-    )
-    synchronization = nearest_synchronized_pair(android_times, hik_times)
-    projection = project_android_boundary(
-        fitted["outer_boundary"], registration["matrix"], [hik_width, hik_height]
-    )
-
     boundary = fitted["outer_boundary"]
     android_mask = np.zeros((android_height, android_width), np.uint8)
     cv2.circle(
@@ -285,56 +281,6 @@ def localize_session_minimap(
         -1,
     )
     cv2.imwrite(str(android_output / "actual_shift_estimation_mask.png"), android_mask)
-    cv2.imwrite(str(hik_output / "projected_shift_estimation_mask.png"), projection["mask"])
-
-    ai = synchronization["android_frame_array_index"]
-    hi = synchronization["hik_frame_array_index"]
-    android_image, hik_image = android_frames[ai], hik_frames[hi]
-    warped = cv2.warpPerspective(
-        android_image, registration["matrix"], (hik_width, hik_height)
-    )
-    cv2.imwrite(
-        str(hik_output / "synchronized_registration_triptych.png"),
-        np.hstack((warped, hik_image, cv2.absdiff(warped, hik_image))),
-    )
-    overlay = hik_image.copy()
-    cv2.polylines(overlay, [projection["polygon"]], True, (255, 0, 255), 3, cv2.LINE_AA)
-    cv2.imwrite(str(hik_output / "mapped_boundary_overlay.png"), overlay)
-
-    try:
-        bayer_conversion, color_evidence = optimize_mvs_bayer_conversion(
-            android_frames,
-            android_times,
-            hik_frames,
-            hik_times,
-            registration["matrix"],
-            projection["mask"],
-        )
-        for name, image in color_evidence.items():
-            cv2.imwrite(str(hik_output / name), image)
-        bayer_conversion["evidence"] = [
-            "hik_session/{}".format(name) for name in color_evidence
-        ]
-    except Exception as exc:
-        # Boundary calibration remains useful even when synchronized game
-        # content is too sparse or delayed for a trustworthy color fit.
-        bayer_conversion = {
-            "schema_version": "1.0",
-            "status": "unavailable",
-            "reason": str(exc),
-            "non_gating": True,
-            "runtime_application": {
-                "additional_frame_passes": 0,
-                "additional_frame_copies": 0,
-            },
-        }
-
-    check_path = session_path / "cross_source_check" / "summary.json"
-    check = (
-        json.loads(check_path.read_text(encoding="utf-8"))
-        if check_path.is_file()
-        else None
-    )
     discovered = fitted["model"].get("discovery") or {}
     result = {
         "schema_version": "1.0",
@@ -344,8 +290,7 @@ def localize_session_minimap(
             "includes": [
                 "Android mini-map discovery",
                 "verified boundary fit",
-                "current-session HIK projection",
-            ],
+            ] + (["current-session HIK projection"] if has_hik else []),
             "excludes": [
                 "rig calibration",
                 "acquisition",
@@ -361,10 +306,11 @@ def localize_session_minimap(
             "session_path": str(session_path),
             "session_id": session.manifest.get("session_id"),
             "android_stream_id": "android_phone",
-            "hik_stream_id": "hik_phone",
+            "hik_stream_id": "hik_phone" if has_hik else None,
+            "capture_mode": "android_hik" if has_hik else "android_only",
             "representative_frame_count": {
                 "android_phone": len(android_frames),
-                "hik_phone": len(hik_frames),
+                **({"hik_phone": len(hik_frames)} if has_hik else {}),
             },
         },
         "android_discovery": {
@@ -384,6 +330,88 @@ def localize_session_minimap(
             ],
         },
         "cross_source_registration": {
+            "status": "not_applicable",
+            "reason": "android_only_session",
+        },
+        "hik_session_observation": {
+            "status": "not_available",
+            "reason": "capture_contains_no_hik_stream",
+        },
+        "hik_bayer_conversion": {
+            "status": "not_available",
+            "reason": "capture_contains_no_hik_stream",
+        },
+        "evidence": {
+            "android_shift_mask": "android/actual_shift_estimation_mask.png",
+        },
+    }
+    geometry_arrays = {
+        "android_boundary": np.asarray(
+            [boundary["center_x"], boundary["center_y"], boundary["radius"]]
+        ),
+        "android_mask": android_mask,
+    }
+    if has_hik:
+        hik_height, hik_width = hik_frames.shape[1:3]
+        registration = load_session_registration(
+            session_path, [android_width, android_height], [hik_width, hik_height]
+        )
+        synchronization = nearest_synchronized_pair(android_times, hik_times)
+        projection = project_android_boundary(
+            boundary, registration["matrix"], [hik_width, hik_height]
+        )
+        cv2.imwrite(
+            str(hik_output / "projected_shift_estimation_mask.png"),
+            projection["mask"],
+        )
+        ai = synchronization["android_frame_array_index"]
+        hi = synchronization["hik_frame_array_index"]
+        android_image, hik_image = android_frames[ai], hik_frames[hi]
+        warped = cv2.warpPerspective(
+            android_image, registration["matrix"], (hik_width, hik_height)
+        )
+        cv2.imwrite(
+            str(hik_output / "synchronized_registration_triptych.png"),
+            np.hstack((warped, hik_image, cv2.absdiff(warped, hik_image))),
+        )
+        overlay = hik_image.copy()
+        cv2.polylines(
+            overlay, [projection["polygon"]], True, (255, 0, 255), 3, cv2.LINE_AA
+        )
+        cv2.imwrite(str(hik_output / "mapped_boundary_overlay.png"), overlay)
+        try:
+            bayer_conversion, color_evidence = optimize_mvs_bayer_conversion(
+                android_frames,
+                android_times,
+                hik_frames,
+                hik_times,
+                registration["matrix"],
+                projection["mask"],
+            )
+            for name, image in color_evidence.items():
+                cv2.imwrite(str(hik_output / name), image)
+            bayer_conversion["evidence"] = [
+                "hik_session/{}".format(name) for name in color_evidence
+            ]
+        except Exception as exc:
+            bayer_conversion = {
+                "schema_version": "1.0",
+                "status": "unavailable",
+                "reason": str(exc),
+                "non_gating": True,
+                "runtime_application": {
+                    "additional_frame_passes": 0,
+                    "additional_frame_copies": 0,
+                },
+            }
+        check_path = session_path / "cross_source_check" / "summary.json"
+        check = (
+            json.loads(check_path.read_text(encoding="utf-8"))
+            if check_path.is_file()
+            else None
+        )
+        result["cross_source_registration"] = {
+            "status": "available",
             "method": "current_session_coordinate_spaces_yaml",
             "file": str(registration["path"]),
             "android_to_hik_3x3": registration["matrix"].tolist(),
@@ -394,35 +422,36 @@ def localize_session_minimap(
                 "metrics": check.get("metrics") if check is not None else None,
                 "non_gating": True,
             },
-        },
-        "hik_session_observation": {
+        }
+        result["hik_session_observation"] = {
+            "status": "available",
             "coordinate_space": "hik_session_aligned_visible_phone_pixels",
             "frame_size_px": [hik_width, hik_height],
             "center_xy": projection["center_xy"],
             "boundary_polygon_xy": projection["polygon_xy"],
             "bounding_xywh": projection["bounding_xywh"],
-            "visible_circumference_fraction": projection["visible_circumference_fraction"],
+            "visible_circumference_fraction": projection[
+                "visible_circumference_fraction"
+            ],
             "projected_ellipse": projection["projected_ellipse"],
             "session_local": True,
             "reusable_camera_prior": False,
-        },
-        "hik_bayer_conversion": bayer_conversion,
-        "evidence": {
-            "android_shift_mask": "android/actual_shift_estimation_mask.png",
-            "hik_projected_shift_mask": "hik_session/projected_shift_estimation_mask.png",
-            "hik_mapped_boundary_overlay": "hik_session/mapped_boundary_overlay.png",
-            "synchronized_registration_triptych": "hik_session/synchronized_registration_triptych.png",
-        },
-    }
+        }
+        result["hik_bayer_conversion"] = bayer_conversion
+        result["evidence"].update(
+            {
+                "hik_projected_shift_mask": "hik_session/projected_shift_estimation_mask.png",
+                "hik_mapped_boundary_overlay": "hik_session/mapped_boundary_overlay.png",
+                "synchronized_registration_triptych": "hik_session/synchronized_registration_triptych.png",
+            }
+        )
+        geometry_arrays.update(
+            hik_boundary_polygon=projection["polygon"],
+            hik_mask=projection["mask"],
+            android_to_hik_3x3=registration["matrix"],
+        )
     np.savez_compressed(
-        str(output_path / "minimap_geometry.npz"),
-        android_boundary=np.asarray(
-            [boundary["center_x"], boundary["center_y"], boundary["radius"]]
-        ),
-        android_mask=android_mask,
-        hik_boundary_polygon=projection["polygon"],
-        hik_mask=projection["mask"],
-        android_to_hik_3x3=registration["matrix"],
+        str(output_path / "minimap_geometry.npz"), **geometry_arrays
     )
     _atomic_json(output_path / "localization_summary.json", result)
     write_commented_yaml(
@@ -436,7 +465,7 @@ def localize_session_minimap(
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
-        description="Localize a mini-map in one completed dual-source session"
+        description="Localize a mini-map in one completed Android or Android/HIK session"
     )
     value.add_argument("session", type=Path)
     value.add_argument("--output", type=Path)

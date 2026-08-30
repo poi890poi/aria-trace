@@ -32,6 +32,18 @@ DUAL_SOURCE_SPACES_COMMENTS = {
     "usage": "Short operational rules for downstream developers.",
 }
 
+ANDROID_SOURCE_SPACES_HEADER = """# AriaTrace Android-only coordinate space.
+#
+# This session intentionally contains no HIK stream. Coordinates are Android
+# logical-display pixel centers with top-left [0, 0], +X right, and +Y down."""
+
+ANDROID_SOURCE_SPACES_COMMENTS = {
+    "spaces": "The single saved Android raster and its orientation.",
+    "streams": "Video filename, size, and timestamp authority.",
+    "conversions": "No cross-source conversion exists in an Android-only session.",
+    "usage": "Rules for the one-time phone-game mini-map calibration input.",
+}
+
 
 def build_dual_source_media_registry(
     session_path: Path, document: Mapping[str, object]
@@ -398,4 +410,72 @@ def write_dual_source_space_yaml(
         document,
         header=DUAL_SOURCE_SPACES_HEADER,
         section_comments=DUAL_SOURCE_SPACES_COMMENTS,
+    )
+
+
+def write_android_source_space_yaml(
+    session_path: Path,
+    phone_surface_orientation: Mapping[str, object],
+    manifest: Mapping[str, object],
+) -> Path:
+    """Write the explicit one-space authority for an ADB-only zigzag."""
+
+    session_path = Path(session_path)
+    first_android = None
+    frames_file = session_path / "frames.jsonl"
+    if frames_file.is_file():
+        with frames_file.open(encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                if str(frame.get("stream_id")) == "android_phone":
+                    first_android = frame
+                    break
+    if first_android is None:
+        raise RuntimeError("ADB-only session has no Android frame metadata")
+    size = [int(first_android["width"]), int(first_android["height"])]
+    video = (manifest.get("videos") or {}).get("android_phone")
+    document = {
+        "schema_version": "1.0",
+        "capture_mode": "android_only",
+        "spaces": {
+            "android_logical_display_pixels": {
+                "size_px": size,
+                "origin": "top_left_pixel_center",
+                "x_axis": "right",
+                "y_axis": "down",
+                "quarter_turns_clockwise_from_phone_natural": int(
+                    phone_surface_orientation.get(
+                        "quarter_turns_clockwise_from_natural", 0
+                    )
+                ),
+            }
+        },
+        "streams": {
+            "android_phone": {
+                "video": video,
+                "space": "android_logical_display_pixels",
+                "stored_size_px": size,
+                "timestamp_authority": (
+                    "frames.jsonl host_capture_time_ns mapped from Android CLOCK_MONOTONIC"
+                ),
+            }
+        },
+        "conversions": {
+            "cross_source": None,
+            "reason": "No HIK stream was acquired for this session",
+        },
+        "usage": {
+            "mini_map_calibration": (
+                "Use android_phone directly for one-time phone-game mini-map discovery."
+            ),
+            "hik_projection": "Unavailable; acquire a synchronized HIK stream later if needed.",
+        },
+    }
+    return write_commented_yaml(
+        session_path / "coordinate_spaces.yaml",
+        document,
+        header=ANDROID_SOURCE_SPACES_HEADER,
+        section_comments=ANDROID_SOURCE_SPACES_COMMENTS,
     )

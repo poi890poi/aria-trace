@@ -20,7 +20,10 @@ from .android_capture import (
 )
 from .android_game_launcher import launch_android_game
 from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
-from .dual_source_spaces import write_dual_source_space_yaml
+from .dual_source_spaces import (
+    write_android_source_space_yaml,
+    write_dual_source_space_yaml,
+)
 from .game_cross_source_check import (
     GameCrossSourceEvidenceRecorder,
     orient_hik_source_from_first_adb_frame,
@@ -154,6 +157,28 @@ def _select_camera(adapter: HikMvsCameraAdapter, configured: Optional[str]):
     raise RuntimeError("Pass --camera-id when multiple HIK cameras are connected")
 
 
+def _hik_fallback_allowed(exc: Exception) -> bool:
+    """Recognize hardware absence/ownership failures, not bad calibration."""
+
+    message = "{}: {}".format(type(exc).__name__, exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "no connected hik camera",
+            "no hik camera",
+            "camera was not found",
+            "configured hik camera was not found",
+            "open camera failed",
+            "create camera handle failed",
+            "access denied",
+            "permission denied",
+            "device is busy",
+            "resource busy",
+            "mvs runtime is unavailable",
+        )
+    )
+
+
 def _game_booster_lock_showing(phone: AdbPhoneSession) -> bool:
     """Detect Samsung's game touch-protection overlay, not Android keyguard."""
 
@@ -222,8 +247,9 @@ def _dismiss_game_booster_lock(
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
-            "Record Android and rig-normalized HIK streams during one continuous "
-            "horizon-returning zigzag. No calibration is run or published."
+            "Record Android and, when available, rig-normalized HIK streams during "
+            "one continuous horizon-returning zigzag. No calibration is run or "
+            "published."
         )
     )
     value.add_argument("--game-id", default="genshin-impact")
@@ -255,9 +281,14 @@ def parser() -> argparse.ArgumentParser:
         "--rig-calibration",
         type=Path,
         help=(
-            "required calibration bundle directory or hik_camera_calibration.json; "
-            "the HIK stream is rectified and oriented from this result"
+            "optional calibration bundle directory or hik_camera_calibration.json; "
+            "when omitted, acquisition records Android only"
         ),
+    )
+    value.add_argument(
+        "--require-hik",
+        action="store_true",
+        help="fail instead of falling back when the HIK camera is absent or occupied",
     )
     value.add_argument(
         "--control-only",
@@ -381,22 +412,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = argument_parser.parse_args(argv)
     if arguments.control_only:
         return _run_control_only(arguments)
-    if arguments.rig_calibration is None:
-        parser().error("--rig-calibration is required for dual-source capture")
-    rig_calibration = _resolve_rig_calibration(arguments.rig_calibration)
-    rig_config = json.loads(rig_calibration.read_text(encoding="utf-8"))
-    hik_adapter = HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
-    selected_camera = _select_camera(hik_adapter, arguments.camera_id)
-    calibrated_camera_id = str(rig_config["camera"]["device_id"])
-    if str(selected_camera.device_id) != calibrated_camera_id:
-        raise RuntimeError(
-            "Rig calibration is for HIK camera {}, but {} was selected".format(
-                calibrated_camera_id, selected_camera.device_id
+    if arguments.require_hik and arguments.rig_calibration is None:
+        argument_parser.error("--require-hik requires --rig-calibration")
+    rig_calibration = (
+        _resolve_rig_calibration(arguments.rig_calibration)
+        if arguments.rig_calibration is not None
+        else None
+    )
+    rig_config = (
+        json.loads(rig_calibration.read_text(encoding="utf-8"))
+        if rig_calibration is not None
+        else None
+    )
+    hik_adapter = None
+    selected_camera = None
+    hik_fallback_reason = None
+    if rig_calibration is not None:
+        try:
+            hik_adapter = HikMvsCameraAdapter(
+                sdk_python_path=arguments.mvs_python_path
             )
-        )
+            selected_camera = _select_camera(hik_adapter, arguments.camera_id)
+        except Exception as exc:
+            if arguments.require_hik or not _hik_fallback_allowed(exc):
+                raise
+            hik_fallback_reason = "{}: {}".format(type(exc).__name__, exc)
+        if selected_camera is not None:
+            calibrated_camera_id = str(rig_config["camera"]["device_id"])
+            if str(selected_camera.device_id) != calibrated_camera_id:
+                raise RuntimeError(
+                    "Rig calibration is for HIK camera {}, but {} was selected".format(
+                        calibrated_camera_id, selected_camera.device_id
+                    )
+                )
     adb = resolve_adb_executable(arguments.adb)
     serial = _select_phone(adb, arguments.phone_serial)
-    calibrated_phone_id = str((rig_config.get("phone") or {}).get("serial") or "")
+    calibrated_phone_id = str(
+        ((rig_config or {}).get("phone") or {}).get("serial") or ""
+    )
     if calibrated_phone_id and str(serial) != calibrated_phone_id:
         raise RuntimeError(
             "Rig calibration is for Android phone {}, but {} was selected".format(
@@ -437,7 +490,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         arguments.game_id, timestamp
     )
     pending_path = session_path.with_name(session_path.name + ".pending")
-    print("HIK camera: {} ({})".format(selected_camera.label, selected_camera.device_id))
+    if selected_camera is not None:
+        print("HIK camera: {} ({})".format(selected_camera.label, selected_camera.device_id))
+    elif rig_calibration is None:
+        print("HIK camera: not requested; recording Android only.")
+    else:
+        print("HIK camera unavailable; recording Android only: {}".format(hik_fallback_reason))
     print("Phone: {} ({}x{})".format(serial, width, height))
     print("Phone display awakened electronically through ADB; the physical power button is not used.")
     if preparation.get("keyguard_after") is True:
@@ -472,114 +530,160 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     android = AndroidRoiFrameSource(
         hub, AndroidRoiSpec("android_phone", 0, 0, 0, 0)
     )
-    hik = CalibratedHikFrameSource(
-        rig_calibration,
-        "hik_phone",
-        rectify=True,
-        output_quarter_turns_clockwise=0,
-        reader=RectifiedHikCamera(rig_calibration, adapter=hik_adapter),
-    )
-    print(
-        "Matching HIK orientation from the first game ADB/HIK images...",
-        flush=True,
-    )
-    try:
-        orientation_match, orientation_images = (
-            orient_hik_source_from_first_adb_frame(
-                android,
-                hik,
-                rig_calibration,
-                android_reported_quarter_turns=surface[
-                    "quarter_turns_clockwise_from_natural"
-                ],
+    hik = None
+    orientation_match = None
+    output_image_turns = None
+    frame_processors = []
+    aligned_surface = dict(surface)
+    aligned_surface["source"] = "adb_surface_orientation_at_capture"
+    if selected_camera is not None:
+        hik_reader = RectifiedHikCamera(rig_calibration, adapter=hik_adapter)
+        try:
+            # Claim the camera before starting scrcpy. Absence or exclusive
+            # ownership failure is the only automatic fallback boundary.
+            hik_reader.open()
+        except Exception as exc:
+            try:
+                hik_reader.release()
+            except Exception:
+                pass
+            if arguments.require_hik or not _hik_fallback_allowed(exc):
+                raise
+            hik_fallback_reason = "{}: {}".format(type(exc).__name__, exc)
+            selected_camera = None
+            hik_adapter = None
+            print(
+                "HIK camera unavailable or occupied; continuing with Android only: {}"
+                .format(hik_fallback_reason),
+                flush=True,
             )
-        )
-    except Exception:
-        hik.stop()
-        android.stop()
-        raise
-    selected_surface_turns = int(
-        orientation_match[
-            "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
-        ]
-    )
-    output_image_turns = int(
-        orientation_match[
-            "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
-        ]
-    )
-    print(
-        "ADB surface: {} degrees clockwise from phone-natural; calibrated "
-        "HIK output rotation: {} degrees from rig-calibration display "
-        "(image confidence {:.3f}, margin {}).".format(
-            selected_surface_turns * 90,
-            output_image_turns * 90,
-            float(orientation_match["selected_confidence"]),
-            (
-                "n/a"
-                if orientation_match["confidence_margin"] is None
-                else "{:.3f}".format(
-                    float(orientation_match["confidence_margin"])
+        else:
+            hik = CalibratedHikFrameSource(
+                rig_calibration,
+                "hik_phone",
+                rectify=True,
+                output_quarter_turns_clockwise=0,
+                reader=hik_reader,
+            )
+            print(
+                "Matching HIK orientation from the first game ADB/HIK images...",
+                flush=True,
+            )
+            try:
+                orientation_match, orientation_images = (
+                    orient_hik_source_from_first_adb_frame(
+                        android,
+                        hik,
+                        rig_calibration,
+                        android_reported_quarter_turns=surface[
+                            "quarter_turns_clockwise_from_natural"
+                        ],
+                    )
                 )
-            ),
-        ),
-        flush=True,
-    )
-    if orientation_match.get("warning"):
-        print("Orientation warning: {}".format(orientation_match["warning"]), flush=True)
-    aligned_surface = {
-        **dict(surface),
-        "quarter_turns_clockwise_from_natural": selected_surface_turns,
-        "degrees_clockwise_from_natural": selected_surface_turns * 90,
-        "source": "first_game_adb_and_hik_image_evidence",
-        "android_reported_quarter_turns_clockwise_from_natural": surface[
-            "quarter_turns_clockwise_from_natural"
-        ],
-        "orientation_evidence": (
-            "cross_source_check/orientation_match/summary.json"
-        ),
-    }
-    cross_source_check = GameCrossSourceEvidenceRecorder(
-        rig_calibration,
-        aligned_surface,
-        orientation_match=orientation_match,
-        orientation_evidence_images=orientation_images,
-    )
-    controller = ScrcpyTouchController(adb, server, serial, [width, height])
-    control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
-    recorder = AcquisitionRecorder(
-        pending_path,
-        [android, hik],
-        [control],
-        video_fps=30.0,
-        video_crf=16,
-        frame_processors=[cross_source_check],
-        session_context={
-            "capture_kind": "zigzag_minimap_source_data",
-            "game_id": arguments.game_id,
-            "image_sources": ["android_scrcpy", "hik_mvs_rig_rectified"],
-            "hik_capture": {
-                "mode": "rig_rectified_phone_view",
-                "camera_id": selected_camera.device_id,
-                "rig_calibration_used": True,
-                "rig_calibration": str(rig_calibration.resolve()),
-                "stream_id": "hik_phone",
-                "output_image_quarter_turns_clockwise_from_calibration_display": (
-                    output_image_turns
-                ),
-                "output_orientation_selection": {
-                    "basis": orientation_match["selection_basis"],
-                    "status": orientation_match["status"],
-                    "confidence": orientation_match["selected_confidence"],
-                    "confidence_margin": orientation_match["confidence_margin"],
-                    "evidence": (
-                        "cross_source_check/orientation_match/summary.json"
+            except Exception:
+                hik.stop()
+                android.stop()
+                raise
+            selected_surface_turns = int(
+                orientation_match[
+                    "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
+                ]
+            )
+            output_image_turns = int(
+                orientation_match[
+                    "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                ]
+            )
+            print(
+                "ADB surface: {} degrees clockwise from phone-natural; calibrated "
+                "HIK output rotation: {} degrees from rig-calibration display "
+                "(image confidence {:.3f}, margin {}).".format(
+                    selected_surface_turns * 90,
+                    output_image_turns * 90,
+                    float(orientation_match["selected_confidence"]),
+                    (
+                        "n/a"
+                        if orientation_match["confidence_margin"] is None
+                        else "{:.3f}".format(
+                            float(orientation_match["confidence_margin"])
+                        )
                     ),
-                },
+                ),
+                flush=True,
+            )
+            if orientation_match.get("warning"):
+                print(
+                    "Orientation warning: {}".format(orientation_match["warning"]),
+                    flush=True,
+                )
+            aligned_surface = {
+                **dict(surface),
+                "quarter_turns_clockwise_from_natural": selected_surface_turns,
+                "degrees_clockwise_from_natural": selected_surface_turns * 90,
+                "source": "first_game_adb_and_hik_image_evidence",
                 "android_reported_quarter_turns_clockwise_from_natural": surface[
                     "quarter_turns_clockwise_from_natural"
                 ],
+                "orientation_evidence": (
+                    "cross_source_check/orientation_match/summary.json"
+                ),
+            }
+            frame_processors.append(
+                GameCrossSourceEvidenceRecorder(
+                    rig_calibration,
+                    aligned_surface,
+                    orientation_match=orientation_match,
+                    orientation_evidence_images=orientation_images,
+                )
+            )
+    controller = ScrcpyTouchController(adb, server, serial, [width, height])
+    control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
+    frame_sources = [android] + ([hik] if hik is not None else [])
+    image_sources = ["android_scrcpy"] + (
+        ["hik_mvs_rig_rectified"] if hik is not None else []
+    )
+    hik_context = (
+        {
+            "mode": "rig_rectified_phone_view",
+            "status": "active",
+            "camera_id": selected_camera.device_id,
+            "rig_calibration_used": True,
+            "rig_calibration": str(rig_calibration.resolve()),
+            "stream_id": "hik_phone",
+            "output_image_quarter_turns_clockwise_from_calibration_display": (
+                output_image_turns
+            ),
+            "output_orientation_selection": {
+                "basis": orientation_match["selection_basis"],
+                "status": orientation_match["status"],
+                "confidence": orientation_match["selected_confidence"],
+                "confidence_margin": orientation_match["confidence_margin"],
+                "evidence": "cross_source_check/orientation_match/summary.json",
             },
+            "android_reported_quarter_turns_clockwise_from_natural": surface[
+                "quarter_turns_clockwise_from_natural"
+            ],
+        }
+        if hik is not None
+        else {
+            "mode": "android_only",
+            "status": "not_requested" if rig_calibration is None else "fallback",
+            "reason": hik_fallback_reason,
+            "rig_calibration_used": False,
+        }
+    )
+    recorder = AcquisitionRecorder(
+        pending_path,
+        frame_sources,
+        [control],
+        video_fps=30.0,
+        video_crf=16,
+        frame_processors=frame_processors,
+        session_context={
+            "capture_kind": "zigzag_minimap_source_data",
+            "game_id": arguments.game_id,
+            "image_sources": image_sources,
+            "hik_capture": hik_context,
             "phone_surface_orientation": aligned_surface,
             "phone_preparation": preparation,
             "game_launch": game_launch,
@@ -626,15 +730,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if (
             manifest.get("status") != "complete"
             or int(counts.get("android_phone", 0)) <= 0
-            or int(counts.get("hik_phone", 0)) <= 0
+            or (hik is not None and int(counts.get("hik_phone", 0)) <= 0)
         ):
-            raise RuntimeError("Recording did not complete with both frame streams")
-        write_dual_source_space_yaml(
-            pending_path,
-            rig_calibration,
-            aligned_surface,
-            manifest,
-        )
+            raise RuntimeError(
+                "Recording did not complete with the requested frame streams"
+            )
+        if hik is not None:
+            write_dual_source_space_yaml(
+                pending_path,
+                rig_calibration,
+                aligned_surface,
+                manifest,
+            )
+        else:
+            write_android_source_space_yaml(
+                pending_path,
+                aligned_surface,
+                manifest,
+            )
         manifest["coordinate_spaces"] = "coordinate_spaces.yaml"
         manifest_path = pending_path / "manifest.json"
         temporary_manifest = pending_path / "manifest.json.tmp"
@@ -648,8 +761,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             shutil.rmtree(str(pending_path))
         raise
     print(
-        "Captured {}-event zigzag with both streams: {}".format(
-            control.expected_event_count, session_path.resolve()
+        "Captured {}-event zigzag with {}: {}".format(
+            control.expected_event_count,
+            "ADB and HIK" if hik is not None else "ADB only",
+            session_path.resolve(),
         )
     )
     return 0

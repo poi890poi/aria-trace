@@ -2,10 +2,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 from acquisition.session_minimap_localization import (
+    localize_session_minimap,
     load_session_registration,
     nearest_synchronized_pair,
     parser,
@@ -14,6 +16,47 @@ from acquisition.session_minimap_localization import (
 
 
 class SessionMinimapLocalizationTests(unittest.TestCase):
+    def test_android_only_session_runs_verified_boundary_without_hik_projection(self):
+        frames = np.zeros((12, 120, 200, 3), np.uint8)
+        times = np.arange(12, dtype=np.int64) * 1_000_000
+        fitted = {
+            "outer_boundary": {
+                "center_x": 30.0,
+                "center_y": 28.0,
+                "radius": 18.0,
+                "confidence": 0.8,
+            },
+            "model": {"discovery": {"method": "automatic", "selected": {}}},
+            "evidence": [],
+        }
+        fake_session = mock.Mock()
+        fake_session.manifest = {
+            "status": "complete",
+            "session_id": "adb-only",
+            "context": {"capture_kind": "zigzag_minimap_source_data"},
+        }
+        fake_session.frames_by_stream = {"android_phone": [{}] * 12}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "acquisition.session_minimap_localization.SessionReader",
+            return_value=fake_session,
+        ), mock.patch(
+            "acquisition.session_minimap_localization.read_representative_frames",
+            return_value=(frames, times),
+        ), mock.patch(
+            "acquisition.session_minimap_localization.calibrate_minimap_boundary_frames",
+            return_value=fitted,
+        ):
+            output = Path(temporary) / "result"
+            result = localize_session_minimap(Path(temporary), output)
+            with np.load(str(output / "minimap_geometry.npz")) as saved:
+                saved_files = set(saved.files)
+        self.assertEqual("android_only", result["provenance"]["capture_mode"])
+        self.assertEqual(
+            "not_applicable", result["cross_source_registration"]["status"]
+        )
+        self.assertEqual("not_available", result["hik_session_observation"]["status"])
+        self.assertEqual({"android_boundary", "android_mask"}, saved_files)
+
     def test_registration_uses_only_current_session_yaml(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

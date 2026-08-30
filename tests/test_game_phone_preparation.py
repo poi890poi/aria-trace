@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from acquisition import capture_game_minimap_zigzag as capture
 from acquisition.capture_game_minimap_zigzag import (
     _game_booster_lock_showing,
+    _hik_fallback_allowed,
     _keyguard_showing,
     _wake_phone_for_preparation,
 )
@@ -34,6 +35,25 @@ class FakePhone:
 
 
 class GamePhonePreparationTests(unittest.TestCase):
+    def test_hik_fallback_is_limited_to_absence_or_ownership_failures(self):
+        self.assertTrue(
+            _hik_fallback_allowed(RuntimeError("open camera failed with MVS status 0x80000203"))
+        )
+        self.assertTrue(
+            _hik_fallback_allowed(RuntimeError("Configured HIK camera was not found"))
+        )
+        self.assertFalse(
+            _hik_fallback_allowed(RuntimeError("Rig calibration is for another camera"))
+        )
+        self.assertFalse(
+            _hik_fallback_allowed(RuntimeError("Saved HIK bundle is incomplete"))
+        )
+
+    def test_capture_cli_allows_android_only_and_require_hik_is_explicit(self):
+        arguments = capture.parser().parse_args([])
+        self.assertIsNone(arguments.rig_calibration)
+        self.assertFalse(arguments.require_hik)
+
     def test_visible_game_booster_lock_is_distinct_from_android_keyguard(self):
         phone = FakePhone(False)
         phone.shell = Mock(

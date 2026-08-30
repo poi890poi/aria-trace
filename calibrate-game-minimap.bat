@@ -15,7 +15,7 @@ if not exist "%ARIA_MINIMAP_PYTHON%" set "ARIA_MINIMAP_PYTHON=python"
 
 if "%~1"=="" (
   echo Usage: calibrate-game-minimap.bat SESSION [options]
-  echo This analyzes one completed fresh dual-source zigzag session.
+  echo This analyzes one completed fresh Android or Android-plus-HIK zigzag session.
   exit /b 2
 )
 

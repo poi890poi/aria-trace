@@ -6,7 +6,10 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from acquisition.dual_source_spaces import write_dual_source_space_yaml
+from acquisition.dual_source_spaces import (
+    write_android_source_space_yaml,
+    write_dual_source_space_yaml,
+)
 from acquisition.rig_calibration.hik.camera import HikCamera
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
 from acquisition.rig_calibration.hik.spaces import RigCalibratedSpaceConverter
@@ -44,6 +47,28 @@ def calibration_document():
 
 
 class HikSpaceConversionTests(unittest.TestCase):
+    def test_android_only_yaml_declares_no_cross_source_conversion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            (session / "frames.jsonl").write_text(
+                json.dumps(
+                    {"stream_id": "android_phone", "width": 2400, "height": 1080}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            path = write_android_source_space_yaml(
+                session,
+                {"quarter_turns_clockwise_from_natural": 1},
+                {"videos": {"android_phone": "video_android_phone.mkv"}},
+            )
+            result = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertEqual("android_only", result["capture_mode"])
+        self.assertIsNone(result["conversions"]["cross_source"])
+        self.assertEqual(
+            [2400, 1080], result["streams"]["android_phone"]["stored_size_px"]
+        )
+
     def test_forward_inverse_and_bounds_match_rotated_adb_pixels(self):
         converter = RigCalibratedSpaceConverter(calibration_document(), 1)
         mapped = converter.camera_adapter_to_adb_points([[0, 0], [29, 39]])

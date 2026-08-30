@@ -1095,6 +1095,8 @@ class RectifiedHikCamera:
             return False
 
     def open(self) -> "RectifiedHikCamera":
+        if self._opened:
+            return self
         if not self.is_calibrated():
             raise RuntimeError(
                 "Saved HIK bundle is incomplete and cannot configure the camera adapter"

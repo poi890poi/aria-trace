@@ -216,7 +216,7 @@ finalized session, pushes it to the phone, and prints the resulting device path.
 The ZIP contains the videos plus `frames.jsonl`, `inputs.jsonl`, and the clock
 mapping; copying only a video would discard the synchronization authority.
 
-### Synchronized Android + HIK mini-map calibration
+### Android and synchronized Android + HIK mini-map calibration
 
 For fresh HIK rig calibration followed by synchronized source-data capture, use:
 
@@ -259,7 +259,7 @@ checkpoint without human input. Change this bounded wait with
 `-GamePreparationSeconds 30`. Its measured duration is included separately in
 the time breakdown.
 
-It calls the existing headless rig calibration, dual-source zigzag capture, and
+It calls the existing headless rig calibration, synchronized zigzag capture, and
 automatic mini-map localization tools. It does not publish a profile or run the
 profiled adapter demo. Use `-GameId`, `-CameraId`, and `-PhoneSerial` only when
 defaults cannot select the intended setup.
@@ -270,9 +270,18 @@ With the game awake and ready and an existing rig result, run capture with:
 .\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
 ```
 
-The command waits for Enter before it injects input. Acquisition always opens
-the HIK camera through the saved rig-calibrated adapter and simultaneously
-records the full Android logical display. The continuous gesture sweeps
+For the one-time phone/game calibration when HIK is unavailable or occupied,
+omit the rig argument:
+
+```powershell
+.\capture-game-minimap-zigzag.bat
+```
+
+The command waits for Enter before it injects input. With a rig argument it
+tries to open HIK through the saved rig-calibrated adapter while recording the
+full Android logical display. A missing or busy HIK camera falls back to the
+Android stream automatically; an invalid or mismatched calibration remains a
+hard error. Add `--require-hik` when fallback is not acceptable. The continuous gesture sweeps
 horizontally while alternating horizon/sky/horizon/ground returns.
 
 Each long diagonal stroke starts on the unobstructed central look-control
@@ -301,12 +310,17 @@ To record source data without analysis, use:
 .\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
 ```
 
-Dual-source capture requires the saved rig bundle. The `android_phone` stream
-keeps the complete Android logical display. The `hik_phone` stream uses the
+The `android_phone` stream always keeps the complete Android logical display.
+When available, the optional `hik_phone` stream uses the
 calibrated HIK adapter, so it contains only the camera-visible phone region,
 rectified by the saved rig geometry and quarter-turned into the same logical
 game orientation as ADB. Odd dimensions are padded only at the video encoder
 edge and the unpadded content size remains in frame metadata.
+
+An Android-only session has a commented `coordinate_spaces.yaml` declaring its
+single Android logical-display space and timestamps; it deliberately declares
+no camera conversion. A dual-source session retains the full registration
+authority described below.
 
 Each session also contains `cross_source_check/`. At a low sampling rate it
 crops ADB with the saved rig-visible rectangle and reuses the rig calibration's
@@ -331,7 +345,7 @@ space and its exact matrix is composed into `coordinate_spaces.yaml`; image
 dimensions and transformed bounds are validated before the YAML is written.
 
 Capture and calibration are deliberately separate commands. First record one
-fresh dual-source zigzag session, then pass that completed session to automatic
+fresh Android or dual-source zigzag session, then pass that completed session to automatic
 mini-map discovery:
 
 ```powershell
@@ -353,8 +367,10 @@ mini-map polygon is obtained only by projecting the fitted Android boundary
 through the same fresh session's `coordinate_spaces.yaml`. Host capture
 timestamps select synchronized Android/HIK review frames, while
 `cross_source_check/summary.json` supplies non-gating image evidence. If the
-current session does not declare that registration, calibration stops instead
-of guessing camera position, scale, crop, or orientation.
+current session is Android-only, localization ends after producing the verified
+Android boundary and records HIK projection as not applicable. If a HIK stream
+is present but its registration is absent, calibration stops instead of
+guessing camera position, scale, crop, or orientation.
 
 The calibrated camera adapter exposes the same base-space conversion without
 opening hardware:
