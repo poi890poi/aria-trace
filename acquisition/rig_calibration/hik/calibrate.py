@@ -31,6 +31,12 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--output", type=Path, help="New calibration bundle directory")
     value.add_argument("--adb", help="ADB executable; normally auto-detected")
     value.add_argument("--mvs-python-path")
+    value.add_argument("--profile-root", type=Path)
+    value.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="save the calibration bundle without publishing its active rig profile",
+    )
     value.add_argument("--list-cameras", action="store_true")
     value.add_argument("--camera-width", type=int, default=2448)
     value.add_argument("--camera-height", type=int, default=2048)
@@ -179,6 +185,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     result = HikRigCalibrationSession(options, camera=camera, phone=phone).run()
     if result is None:
         print("Calibration ended without saving.")
+    elif not arguments.no_profile:
+        from acquisition.profile_manager import publish_rig_calibration
+
+        profile = publish_rig_calibration(
+            result, profile_root=arguments.profile_root, activate=True
+        )
+        print(
+            "Active rig profile: {} ({})".format(
+                profile["revision_id"], profile["publication"]
+            )
+        )
     return 0
 
 
