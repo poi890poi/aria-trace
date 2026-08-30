@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "profile_id": "combat-master-pc",
+  "display_name": "Combat Master (PC POC)",
+  "platform": "windows_pc",
+  "status": "poc_candidate",
+  "install_url": "https://store.steampowered.com/app/2281730/",
+  "launch_uri": "steam://rungameid/2281730",
+  "default_frame_source": {
+    "adapter": "windows_window",
+    "window_title": "Combat Master",
+    "fps": 30.0
+  },
+  "default_input_source": {
+    "adapter": "windows_xinput",
+    "poll_hz": 250.0,
+    "user_index": 0
+  },
+  "control_profile": {
+    "locomotion": "first_person_ground",
+    "locomotion_input": "left_stick",
+    "camera_input": "right_stick",
+    "input_fidelity": "raw_and_normalized_axes_buttons_triggers"
+  },
+  "limitations": [
+    "Use a private or offline session and exclude combat from the route.",
+    "Use a connected XInput controller so locomotion, camera, actions, magnitude, and timing are all preserved.",
+    "Keyboard/mouse fallback does not preserve raw relative mouse motion and is not valid for full-behavior FPS evidence."
+  ]
+}

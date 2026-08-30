@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "route_profile_id": "combat-master-highrise-a",
+  "display_name": "Highrise short traversal A",
+  "game_profile_id": "combat-master-pc",
+  "route_id": "highrise-short-a",
+  "target_runs": 3,
+  "capture_duration_s": 30,
+  "setup_steps": [
+    "Open a private or offline custom game.",
+    "Select Highrise and disable bots if the current menu permits it.",
+    "Use the same spawn side, window size, graphics settings, controller, and initial view in every take.",
+    "Queue the take, return focus to the game, and perform the route naturally without recorder commands."
+  ],
+  "post_take_policy": "Confirm or correct route boundaries and derive visual reference observations only after gameplay.",
+  "completion_evidence": "The same chosen finish cover is centered in view.",
+  "claims_boundary": "Representative FPS plumbing and route-alignment POC; no combat validation."
+}

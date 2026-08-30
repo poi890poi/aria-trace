@@ -1,0 +1,360 @@
+{
+  "schema_version": "1.0",
+  "profile_id": "genshin-impact-pc",
+  "display_name": "Genshin Impact (PC POC)",
+  "platform": "windows_pc",
+  "status": "first_poc_game",
+  "default_frame_source": {
+    "adapter": "windows_window",
+    "window_title": "Genshin Impact",
+    "fps": 30.0
+  },
+  "default_input_source": {
+    "adapter": "windows_raw_keyboard_mouse",
+    "poll_hz": 125.0
+  },
+  "control_profile": {
+    "status": "human_confirmation_required",
+    "locomotion": "third_person_ground",
+    "input_fidelity": "raw_keyboard_transitions_mouse_buttons_relative_camera_motion"
+  },
+  "profile_editor": {
+    "controls": [
+      {
+        "id": "move_forward",
+        "label": "Move forward",
+        "binding": "W",
+        "activation": "hold"
+      },
+      {
+        "id": "move_left",
+        "label": "Move left",
+        "binding": "A",
+        "activation": "hold"
+      },
+      {
+        "id": "move_backward",
+        "label": "Move backward",
+        "binding": "S",
+        "activation": "hold"
+      },
+      {
+        "id": "move_right",
+        "label": "Move right",
+        "binding": "D",
+        "activation": "hold"
+      },
+      {
+        "id": "camera",
+        "label": "Camera",
+        "binding": "Mouse movement",
+        "activation": "relative_axis"
+      },
+      {
+        "id": "jump",
+        "label": "Jump",
+        "binding": "Space",
+        "activation": "press"
+      },
+      {
+        "id": "dash",
+        "label": "Dash / sprint",
+        "binding": "Right Mouse or Left Shift",
+        "activation": "confirm_click_or_hold"
+      },
+      {
+        "id": "interact",
+        "label": "Interact",
+        "binding": "F",
+        "activation": "press"
+      },
+      {
+        "id": "open_map",
+        "label": "Open map",
+        "binding": "M",
+        "activation": "press"
+      },
+      {
+        "id": "close_map",
+        "label": "Close map",
+        "binding": "Escape",
+        "activation": "press"
+      },
+      {
+        "id": "map_pan",
+        "label": "Pan map",
+        "binding": "Left Mouse drag",
+        "activation": "hold_and_drag"
+      },
+      {
+        "id": "map_zoom",
+        "label": "Zoom map",
+        "binding": "Mouse wheel",
+        "activation": "wheel"
+      }
+    ]
+  },
+  "poc_workflow": [
+    {
+      "stage_id": "control-cruise",
+      "display_name": "1. Record ordinary movement and camera control",
+      "capture_kind": "game_profile",
+      "capture_id": "genshin-control-cruise",
+      "target_runs": 1,
+      "capture_duration_s": 12,
+      "segment_label": "ordinary_cruise",
+      "segment_semantics": {
+        "locomotion": "natural_ground_cruise",
+        "camera_turning": "allowed",
+        "label_source": "capture_plan"
+      },
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional",
+      "confirmation_label": "ordinary cruise is visible",
+      "instructions": [
+        "Confirm the editable bindings below against the current in-game settings.",
+        "Start in a safe open area with the normal gameplay UI and mini-map visible.",
+        "After the automatic countdown begins, take a short cruise using ordinary movement and camera control together."
+      ]
+    },
+    {
+      "stage_id": "scene-rotation-360",
+      "display_name": "2. Slowly turn the view horizontally through at least 360 degrees",
+      "capture_kind": "scene_yaw_calibration",
+      "capture_id": "genshin-scene-rotation-360",
+      "target_runs": 1,
+      "capture_duration_s": 30,
+      "segment_label": "scene_rotation_360",
+      "segment_semantics": {
+        "locomotion": "stationary",
+        "camera_axis": "horizontal_only",
+        "camera_turning": "slow_continuous_at_least_360_degrees",
+        "calibration_use": "precise_relative_scene_yaw",
+        "label_source": "capture_plan"
+      },
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional",
+      "confirmation_label": "the stationary view turns slowly through at least one full revolution",
+      "instructions": [
+        "Stand still in a visually textured, safe location.",
+        "Turn the camera slowly in one horizontal direction through at least 360 degrees.",
+        "Do not move the character, reverse direction, or add vertical camera motion."
+      ]
+    },
+    {
+      "stage_id": "minimap-rotation-only",
+      "display_name": "3. Rotate the camera while standing still",
+      "capture_kind": "minimap_calibration",
+      "capture_id": "genshin-minimap-rotation-only",
+      "target_runs": 1,
+      "capture_duration_s": 10,
+      "segment_label": "rotation_only",
+      "segment_semantics": {
+        "locomotion": "stationary",
+        "camera_turning": "continuous",
+        "expected_minimap_motion": "rotation",
+        "label_source": "capture_plan"
+      },
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional",
+      "confirmation_label": "camera rotates while the character stays still",
+      "instructions": [
+        "Stand still in the same safe open area with the mini-map visible.",
+        "When recording starts, rotate the camera smoothly without pressing a movement key."
+      ]
+    },
+    {
+      "stage_id": "minimap-movement-only",
+      "display_name": "4. Move in several directions without turning the camera",
+      "capture_kind": "minimap_calibration",
+      "capture_id": "genshin-minimap-movement-only",
+      "target_runs": 1,
+      "capture_duration_s": 12,
+      "segment_label": "movement_only",
+      "segment_semantics": {
+        "locomotion": "several_directions_with_stops",
+        "camera_turning": "none",
+        "expected_cursor_motion": "heading_changes",
+        "label_source": "capture_plan"
+      },
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional",
+      "confirmation_label": "several movement directions are visible with no camera turn",
+      "instructions": [
+        "Keep the camera completely still.",
+        "Move in several directions with brief stops so the cursor exposes its pivot and heading changes."
+      ]
+    },
+    {
+      "stage_id": "minimap-forward-no-turn",
+      "display_name": "5. Run straight forward without turning",
+      "capture_kind": "minimap_calibration",
+      "capture_id": "genshin-minimap-forward-no-turn",
+      "target_runs": 1,
+      "capture_duration_s": 10,
+      "segment_label": "forward_no_turn",
+      "segment_semantics": {
+        "locomotion": "forward_run",
+        "movement_direction": "cursor_heading",
+        "camera_turning": "none",
+        "expected_minimap_motion": "notable_translation",
+        "calibration_use": "cursor_heading_to_minimap_shift_direction",
+        "label_source": "capture_plan"
+      },
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional",
+      "confirmation_label": "one straight forward run produces a notable mini-map shift",
+      "instructions": [
+        "Face into a long, safe, unobstructed path and keep the camera completely still.",
+        "When recording starts, hold forward and run far enough to create a clearly visible mini-map shift.",
+        "Do not turn the camera or steer during the segment."
+      ]
+    },
+    {
+      "stage_id": "full-map",
+      "display_name": "6. Record complete full-map viewer coverage",
+      "capture_kind": "full_map",
+      "capture_id": "genshin-full-map",
+      "target_runs": 1,
+      "capture_duration_s": 300,
+      "confirmation_label": "all accessible map regions and layers were covered",
+      "instructions": [
+        "Open the full in-game map viewer.",
+        "Use a zoom level with more effective detail than the mini-map.",
+        "For this first evidence take, pan systematically with generous overlap and visit every accessible region/layer.",
+        "Pause briefly at coverage boundaries and note locked or undiscovered areas after the take."
+      ]
+    },
+    {
+      "stage_id": "teleport-behavior",
+      "display_name": "7. Record one complete teleport behavior",
+      "capture_kind": "game_behavior",
+      "capture_id": "genshin-teleport-behavior",
+      "target_runs": 1,
+      "capture_duration_s": 30,
+      "segment_label": "teleportation",
+      "segment_semantics": {
+        "behavior_type": "teleportation",
+        "sequence": [
+          "normal_gameplay",
+          "open_global_map",
+          "select_teleport_target",
+          "confirm_teleport",
+          "loading_transition",
+          "destination_world_ready"
+        ],
+        "required_learned_coordinates": [
+          "teleport_target_global_xy",
+          "destination_global_xy"
+        ],
+        "coordinate_space": "canonical_global_map",
+        "label_source": "capture_plan"
+      },
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "required",
+      "confirmation_label": "one complete map-selected teleport reaches the destination world",
+      "instructions": [
+        "Begin in normal gameplay with the current position visible on the mini-map.",
+        "After recording starts, open the global map, click one teleport target, and confirm the teleport.",
+        "Do not stop recording during loading; wait until normal gameplay is fully visible at the destination.",
+        "The later analyzer will retain the selected target and observed destination in the canonical global-map coordinate space."
+      ]
+    },
+    {
+      "stage_id": "route",
+      "display_name": "8. Record the repeatable gameplay route",
+      "capture_kind": "route",
+      "capture_id": "genshin-poc-short-route",
+      "route_profile_id": "genshin-poc-short-route",
+      "target_runs": 3,
+      "capture_duration_s": 60,
+      "confirmation_label": "full demonstrated route boundary",
+      "instructions": [
+        "Choose one safe, short, repeatable non-combat route and use the same start state for every take.",
+        "Run 1 is the reference demonstration; later runs are held out.",
+        "Play naturally without recorder hotkeys or authoring actions.",
+        "Confirm each full take after returning to the workbench."
+      ]
+    }
+  ],
+  "limitations": [
+    "This profile is a human-confirmed POC draft; bindings may differ in the selected account and must be reviewed.",
+    "Short calibration captures are labeled by their selected capture plan; confirmation only checks that the requested motion is visible.",
+    "Use a safe non-combat area and do not circumvent game security or anti-cheat systems."
+  ],
+  "scene_yaw_calibration": {
+    "sample_fps": 15.0,
+    "focal_ratio_min": 0.55,
+    "focal_ratio_max": 1.45,
+    "focal_ratio_steps": 10,
+    "min_tracks": 24,
+    "max_corners": 1200,
+    "use_essential_gate": true,
+    "excluded_rects": [
+      [0.0, 0.0, 0.24, 0.30],
+      [0.72, 0.0, 1.0, 0.28],
+      [0.0, 0.76, 1.0, 1.0]
+    ]
+  },
+  "minimap_calibration": {
+    "crop_xywh": [
+      0,
+      0,
+      220,
+      180
+    ],
+    "boundary": {
+      "expected_center_xy": [
+        111.0,
+        83.0
+      ],
+      "center_search_radius_px": 14.0,
+      "radius_range_px": [
+        62.0,
+        75.0
+      ]
+    },
+    "cursor": {
+      "hsv_lower": [
+        88,
+        160,
+        175
+      ],
+      "hsv_upper": [
+        98,
+        255,
+        255
+      ],
+      "search_radius_px": 25.0,
+      "component_area_px": [
+        20,
+        240
+      ],
+      "shape_persistence_threshold": 0.72
+    },
+    "evidence_roles": {
+      "ordinary_cruise": [
+        "normal cursor turn-rate and angular-acceleration distribution",
+        "runtime temporal-search envelope with source provenance"
+      ],
+      "rotation_only": [
+        "outer boundary radial evidence",
+        "screen-fixed cursor shape and polar template"
+      ],
+      "movement_only": [
+        "cursor centroid orbit and rotation center",
+        "cursor-pivot-centered polar pose and Gaussian-fit validation"
+      ],
+      "forward_no_turn": [
+        "cursor heading to observed mini-map shift direction",
+        "pose-orientation sign and angular-offset reference"
+      ]
+    }
+  }
+}

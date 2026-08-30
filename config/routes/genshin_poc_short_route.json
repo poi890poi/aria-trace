@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "route_profile_id": "genshin-poc-short-route",
+  "display_name": "Genshin safe short route POC",
+  "game_profile_id": "genshin-impact-pc",
+  "route_id": "genshin-poc-short-route",
+  "target_runs": 3,
+  "capture_duration_s": 60,
+  "setup_steps": [
+    "Choose a safe, short, repeatable non-combat route with the mini-map continuously visible.",
+    "Use the same starting position, character, window size, graphics settings, UI scale, and initial camera direction for every take.",
+    "Queue the take, return focus to Genshin Impact, and perform the route naturally without recorder commands."
+  ],
+  "post_take_policy": "Confirm or correct the complete route boundary after each take.",
+  "completion_evidence": "The same selected endpoint and surrounding scene are visible.",
+  "claims_boundary": "Genshin PC acquisition and route-descriptor POC; no autonomous replay or combat validation."
+}

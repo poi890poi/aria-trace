@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "profile_id": "genshin-impact-android",
+  "display_name": "Genshin Impact (Android capture)",
+  "platform": "android",
+  "status": "capture_ready_calibration_pending",
+  "default_frame_source": {
+    "adapter": "android_scrcpy",
+    "max_fps": 60.0,
+    "bit_rate": 16000000
+  },
+  "default_input_source": {
+    "adapter": "adb_getevent"
+  },
+  "control_profile": {
+    "locomotion": "third_person_ground",
+    "input_fidelity": "raw_android_getevent",
+    "straight_forward_assist": {
+      "method": "adb_touchscreen_motionevent_down_move_hold_up",
+      "coordinate_space": "current_device_display_pixels",
+      "requires_user_coordinates": true
+    }
+  },
+  "poc_workflow": [
+    {
+      "stage_id": "control-cruise",
+      "display_name": "1. Record ordinary Android gameplay",
+      "capture_kind": "game_profile",
+      "capture_id": "genshin-android-control-cruise",
+      "target_runs": 1,
+      "capture_duration_s": 30,
+      "segment_label": "ordinary_cruise",
+      "start_trigger": "first_input",
+      "start_delay_s": 3.0,
+      "input_requirement": "required"
+    },
+    {
+      "stage_id": "scene-rotation-360",
+      "display_name": "2. Slowly turn the view horizontally through at least 360 degrees",
+      "capture_kind": "scene_yaw_calibration",
+      "capture_id": "genshin-android-scene-rotation-360",
+      "target_runs": 1,
+      "capture_duration_s": 30,
+      "segment_label": "scene_rotation_360",
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional"
+    },
+    {
+      "stage_id": "minimap-rotation-only",
+      "display_name": "3. Rotate the camera while standing still",
+      "capture_kind": "minimap_calibration",
+      "capture_id": "genshin-android-minimap-rotation-only",
+      "target_runs": 1,
+      "capture_duration_s": 10,
+      "segment_label": "rotation_only",
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional"
+    },
+    {
+      "stage_id": "minimap-movement-only",
+      "display_name": "4. Move in several directions without turning the camera",
+      "capture_kind": "minimap_calibration",
+      "capture_id": "genshin-android-minimap-movement-only",
+      "target_runs": 1,
+      "capture_duration_s": 12,
+      "segment_label": "movement_only",
+      "start_trigger": "settled_timer",
+      "start_delay_s": 3.0,
+      "input_requirement": "optional"
+    },
+    {
+      "stage_id": "minimap-forward-no-turn",
+      "display_name": "5. Hold one exact straight-forward touch vector",
+      "capture_kind": "minimap_calibration",
+      "capture_id": "genshin-android-minimap-forward-no-turn",
+      "target_runs": 1,
+      "capture_duration_s": 10,
+      "segment_label": "forward_no_turn",
+      "start_trigger": "first_input",
+      "start_delay_s": 3.0,
+      "input_requirement": "required"
+    },
+    {
+      "stage_id": "full-map",
+      "display_name": "6. Record full-map viewer coverage",
+      "capture_kind": "full_map",
+      "capture_id": "genshin-android-full-map",
+      "target_runs": 1,
+      "capture_duration_s": 300,
+      "start_trigger": "first_input",
+      "start_delay_s": 3.0,
+      "input_requirement": "required"
+    }
+  ],
+  "limitations": [
+    "Android mini-map crop and cursor thresholds are intentionally not copied from the PC profile.",
+    "Record Android calibration evidence first; derive and verify Android-specific geometry before enabling analysis for this profile.",
+    "Touch coordinates are device- and layout-specific and must be supplied by the user; the Workbench does not guess them."
+  ],
+  "scene_yaw_calibration": {
+    "sample_fps": 15.0,
+    "focal_ratio_min": 0.55,
+    "focal_ratio_max": 1.45,
+    "focal_ratio_steps": 10,
+    "min_tracks": 24,
+    "max_corners": 1200,
+    "use_essential_gate": true
+  }
+}
