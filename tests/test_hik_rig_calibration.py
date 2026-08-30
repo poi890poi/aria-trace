@@ -343,6 +343,23 @@ class HikAlgorithmTests(unittest.TestCase):
         match = AdbDisplayTarget._rotation_match(target, screenshot)
         self.assertLess(match["matching_pixel_fraction"], 0.999)
 
+    def test_stable_correlated_target_is_not_rejected_by_fixed_system_pixels(self):
+        target = AdbDisplayTarget(
+            mock.Mock(),
+            minimum_screenshot_correlation=0.98,
+            minimum_matching_pixel_fraction=0.995,
+            minimum_stable_frame_fraction=0.9995,
+            minimum_ui_settle_seconds=1.0,
+        )
+        evidence = {
+            "correlation": 0.9844,
+            "matching_pixel_fraction": 0.926878,
+        }
+        self.assertTrue(target._presentation_is_stable(evidence, 1.0, 1.0))
+        self.assertFalse(target._presentation_is_stable(evidence, 0.99, 1.0))
+        evidence["correlation"] = 0.97
+        self.assertFalse(target._presentation_is_stable(evidence, 1.0, 1.0))
+
     def test_phone_charuco_layout_fills_portrait_and_landscape(self):
         portrait = screen_filling_charuco_layout((1080, 2400))
         landscape = screen_filling_charuco_layout((2400, 1080))
@@ -941,8 +958,56 @@ class HikPhoneTests(unittest.TestCase):
         phone.wake_and_hold_display()
         evidence = phone.ensure_display_on()
         self.assertEqual(evidence["state"], "ON")
+        self.assertFalse(evidence["gating"])
+        self.assertEqual(
+            evidence["visual_verification"], "required_from_adb_and_camera"
+        )
         self.assertTrue(runner.display_on)
         phone.cleanup(turn_display_off=True)
+
+    def test_samsung_stale_override_does_not_override_awake_default_display(self):
+        class SamsungDisplayRunner(FakeAdbRunner):
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:3] == ["shell", "dumpsys", "display"]:
+                    self.commands.append(args)
+                    return "\n".join(
+                        [
+                            "Display State=ON",
+                            'mBaseDisplayInfo=DisplayInfo{displayId 0, state ON, type INTERNAL}',
+                            'mOverrideDisplayInfo=DisplayInfo{displayId 0, state OFF, type INTERNAL}',
+                            "mScreenState=ON",
+                            "mActualState=ON",
+                        ]
+                    )
+                return super().__call__(command, timeout)
+
+        phone = AdbPhoneSession(
+            "SERIAL-1", runner=SamsungDisplayRunner(), sleeper=lambda _seconds: None
+        )
+        self.assertEqual(phone.display_state(), "ON")
+        evidence = phone.ensure_display_on(timeout_seconds=0.5)
+        self.assertTrue(evidence["android_reported_on"])
+
+    def test_android_off_report_defers_to_adb_and_camera_visual_checks(self):
+        class AlwaysOffRunner(FakeAdbRunner):
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:3] == ["shell", "dumpsys", "display"]:
+                    self.commands.append(args)
+                    return "Display State=OFF\nmActualState=OFF"
+                return super().__call__(command, timeout)
+
+        phone = AdbPhoneSession(
+            "SERIAL-1", runner=AlwaysOffRunner(), sleeper=lambda _seconds: None
+        )
+        evidence = phone.ensure_display_on(timeout_seconds=0.5)
+        self.assertEqual(evidence["state"], "OFF")
+        self.assertFalse(evidence["android_reported_on"])
+        self.assertFalse(evidence["gating"])
+        self.assertEqual(
+            evidence["visual_verification"], "required_from_adb_and_camera"
+        )
 
     def test_metrics_report_current_display_orientation_and_app_viewport(self):
         class LandscapeRunner(FakeAdbRunner):

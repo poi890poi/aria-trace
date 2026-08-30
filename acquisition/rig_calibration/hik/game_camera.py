@@ -349,6 +349,8 @@ class ProfiledHikGameCamera:
         return image[top : top + mini_height, left : left + mini_width].copy()
 
     def _full_from_acquisition(self, image: np.ndarray) -> np.ndarray:
+        if not self.rectify_minimap:
+            return image
         if self._full_map_x is not None and self._full_map_y is not None:
             return cv2.remap(
                 image,
@@ -391,7 +393,11 @@ class ProfiledHikGameCamera:
             full = self._full_from_acquisition(sample.image)
             streams = {
                 "full": full,
-                "minimap": self._minimap_from_full(full),
+                "minimap": (
+                    self._minimap_from_full(full)
+                    if self.rectify_minimap
+                    else self._minimap_from_acquisition(sample.image)
+                ),
             }
         frame_number = sample.metadata.get("frame_number")
         return HikGameFrameSet(
@@ -403,9 +409,14 @@ class ProfiledHikGameCamera:
                 **dict(sample.metadata),
                 "mode": self.mode,
                 "rectified_minimap": self.rectify_minimap,
+                "rectified_full": bool(
+                    self.rectify_minimap and self.mode != "minimap"
+                ),
                 "acquisition_roi_xywh": list(self._effective_roi),
                 "minimap_sensor_roi_xywh": list(self._minimap_sensor_roi),
-                "full_output_normalized_by_base_rig": self.mode != "minimap",
+                "full_output_normalized_by_base_rig": bool(
+                    self.rectify_minimap and self.mode != "minimap"
+                ),
                 "minimap_crop_in_full_output_xywh": list(self._minimap_in_full_xywh),
                 "one_acquisition_for_all_streams": True,
             },

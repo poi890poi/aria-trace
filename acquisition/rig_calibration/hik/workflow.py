@@ -233,6 +233,7 @@ class HikCalibrationOptions:
     data_matrix_trials_per_size: int = DATA_MATRIX_DEFAULT_TRIALS
     data_matrix_initial_module_px: int = 1
     complete_grader_plugin: Optional[str] = None
+    strict_display_screenshot_verification: bool = False
 
     def __post_init__(self) -> None:
         if self.maximum_shutter_multiplier not in (2, 3):
@@ -277,6 +278,9 @@ class HikRigCalibrationSession:
             self.phone,
             component=options.display_component,
             presentation_timeout_seconds=options.operation_timeout_seconds,
+            strict_screenshot_verification=(
+                options.strict_display_screenshot_verification
+            ),
         )
         self.progress = progress
         self.phone_metrics: Optional[PhoneMetrics] = None

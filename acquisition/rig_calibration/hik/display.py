@@ -32,6 +32,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         minimum_stable_frame_fraction: float = 0.9995,
         minimum_ui_settle_seconds: float = 1.0,
         stable_probe_count: int = 3,
+        strict_screenshot_verification: bool = False,
     ) -> None:
         self.phone = phone
         self.component = component
@@ -44,12 +45,14 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self.minimum_stable_frame_fraction = float(minimum_stable_frame_fraction)
         self.minimum_ui_settle_seconds = max(0.0, float(minimum_ui_settle_seconds))
         self.stable_probe_count = max(1, int(stable_probe_count))
+        self.strict_screenshot_verification = bool(strict_screenshot_verification)
         self._layout: Optional[CharucoLayout] = None
         self._charuco: Optional[np.ndarray] = None
         self._temporary: Optional[tempfile.TemporaryDirectory] = None
         self._revision = 0
         self._remote_files = []
         self._acknowledgements = []
+        self._warnings = []
         self._viewer: Dict[str, Any] = {}
         self.last_target: Optional[np.ndarray] = None
         self.last_screenshot: Optional[np.ndarray] = None
@@ -149,6 +152,25 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             raise RuntimeError("Android Display screenshot was empty")
         return screenshot
 
+    def _presentation_is_stable(
+        self,
+        match: Mapping[str, Any],
+        stable_frame_fraction: float,
+        elapsed_seconds: float,
+    ) -> bool:
+        """Gate composition without treating fixed system pixels as failure.
+
+        Exact matching remains diagnostic. Cutouts, rounded corners, and stable
+        SystemUI pixels can lower it even when the requested raster is clearly
+        composed. Physical presentation is verified later from HIK ChArUco.
+        """
+
+        return bool(
+            float(match["correlation"]) >= self.minimum_screenshot_correlation
+            and float(stable_frame_fraction) >= self.minimum_stable_frame_fraction
+            and float(elapsed_seconds) >= self.minimum_ui_settle_seconds
+        )
+
     @staticmethod
     def _rotate_quarter_turns_clockwise(
         image: np.ndarray, quarter_turns: int
@@ -224,6 +246,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         stable_probes = 0
         stable_frame_fraction = 0.0
         orientation_changed = False
+        verification_error = None
         for orientation_attempt in range(1, 5):
             intended_orientation = int(display_orientation) % 4
             displayed_image, display_rotation = self._logical_target(
@@ -231,7 +254,11 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             )
             self._launch_target(displayed_image, revision, orientation_attempt)
             self.phone.sleeper(self.settle_seconds)
-            screenshot = self._capture_screenshot(revision)
+            try:
+                screenshot = self._capture_screenshot(revision)
+            except Exception as exc:
+                verification_error = "{}: {}".format(type(exc).__name__, exc)
+                break
             probes += 1
             observed_orientation = self.phone.display_orientation_quarter_turns()
             orientation_attempts.append(
@@ -262,7 +289,11 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             orientation_changed = False
             while time.monotonic() < deadline:
                 self.phone.sleeper(self.settle_seconds)
-                screenshot = self._capture_screenshot(revision)
+                try:
+                    screenshot = self._capture_screenshot(revision)
+                except Exception as exc:
+                    verification_error = "{}: {}".format(type(exc).__name__, exc)
+                    break
                 probes += 1
                 observed_orientation = self.phone.display_orientation_quarter_turns()
                 if observed_orientation != intended_orientation:
@@ -285,27 +316,29 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                 else:
                     stable_frame_fraction = 0.0
                 previous_screenshot = screenshot.copy()
-                complete = (
-                    match["correlation"] >= self.minimum_screenshot_correlation
-                    and match["matching_pixel_fraction"]
-                    >= self.minimum_matching_pixel_fraction
-                    and stable_frame_fraction >= self.minimum_stable_frame_fraction
-                    and time.monotonic() - tap_time >= self.minimum_ui_settle_seconds
+                complete = self._presentation_is_stable(
+                    match,
+                    stable_frame_fraction,
+                    time.monotonic() - tap_time,
                 )
                 stable_probes = stable_probes + 1 if complete else 0
                 if stable_probes >= self.stable_probe_count:
                     break
             if stable_probes >= self.stable_probe_count:
                 break
+            if verification_error is not None:
+                break
             if not orientation_changed:
                 break
-        if screenshot is None or stable_probes < self.stable_probe_count:
-            self.last_target = displayed_image.copy()
-            self.last_screenshot = None if screenshot is None else screenshot.copy()
-            raise RuntimeError(
+        presentation_verified = bool(
+            screenshot is not None and stable_probes >= self.stable_probe_count
+        )
+        warning = None
+        if not presentation_verified:
+            warning = (
                 "Android Display did not show target {} within {:.1f}s: "
                 "last correlation {:.4f}, matching pixels {:.4%}, stable frame {:.4%}, "
-                "stable probes {}/{}, orientation attempts {}"
+                "stable probes {}/{}, orientation attempts {}, probe error {}"
                 .format(
                     label,
                     self.presentation_timeout_seconds,
@@ -315,10 +348,23 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                     stable_probes,
                     self.stable_probe_count,
                     orientation_attempts,
+                    verification_error or "none",
                 )
             )
+            if self.strict_screenshot_verification:
+                self.last_target = displayed_image.copy()
+                self.last_screenshot = (
+                    None if screenshot is None else screenshot.copy()
+                )
+                raise RuntimeError(warning)
+            self._warnings.append(warning)
+            print(
+                "Warning: {} Continuing; camera-observed calibration evidence "
+                "remains authoritative.".format(warning),
+                flush=True,
+            )
         self.last_target = displayed_image.copy()
-        self.last_screenshot = screenshot.copy()
+        self.last_screenshot = None if screenshot is None else screenshot.copy()
         for old_remote in self._remote_files[:-1]:
             try:
                 self.phone.shell("rm", "-f", old_remote)
@@ -327,11 +373,12 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._remote_files = self._remote_files[-1:]
         elapsed_ms = (time.monotonic_ns() - issued) / 1.0e6
         self.phone.viewer_activity = self.component
+        canvas = screenshot if screenshot is not None else displayed_image
         self._viewer = {
             "adapter_id": self.adapter_id,
             "activity": self.component,
-            "canvas_width": int(screenshot.shape[1]),
-            "canvas_height": int(screenshot.shape[0]),
+            "canvas_width": int(canvas.shape[1]),
+            "canvas_height": int(canvas.shape[0]),
             "fullscreen": True,
             "presentation_elapsed_ms": elapsed_ms,
             "screenshot_probe_count": probes,
@@ -339,6 +386,9 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             "required_stable_screenshot_probe_count": self.stable_probe_count,
             "stable_frame_fraction": stable_frame_fraction,
             "minimum_ui_settle_seconds": self.minimum_ui_settle_seconds,
+            "screenshot_verification_strict": self.strict_screenshot_verification,
+            "screenshot_presentation_verified": presentation_verified,
+            "screenshot_verification_warning": warning,
             "physical_display": physical_display,
             "canonical_orientation_quarter_turns": int(
                 self._canonical_orientation_quarter_turns
@@ -358,8 +408,8 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                 "revision": revision,
                 "token": token,
                 "painted": True,
-                "canvas_width": int(screenshot.shape[1]),
-                "canvas_height": int(screenshot.shape[0]),
+                "canvas_width": int(canvas.shape[1]),
+                "canvas_height": int(canvas.shape[0]),
                 "fullscreen": True,
                 "presentation_elapsed_ms": elapsed_ms,
                 "screenshot_probe_count": probes,
@@ -367,6 +417,9 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                 "required_stable_screenshot_probe_count": self.stable_probe_count,
                 "stable_frame_fraction": stable_frame_fraction,
                 "minimum_ui_settle_seconds": self.minimum_ui_settle_seconds,
+                "screenshot_verification_strict": self.strict_screenshot_verification,
+                "screenshot_presentation_verified": presentation_verified,
+                "screenshot_verification_warning": warning,
                 "physical_display": physical_display,
                 "canonical_orientation_quarter_turns": int(
                     self._canonical_orientation_quarter_turns
@@ -421,6 +474,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         return {
             "viewer": dict(self._viewer),
             "acknowledgements": list(self._acknowledgements),
+            "warnings": list(self._warnings),
         }
 
     def stop(self) -> None:

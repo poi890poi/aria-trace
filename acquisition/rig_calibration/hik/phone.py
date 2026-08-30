@@ -184,18 +184,27 @@ class AdbPhoneSession:
         return self.run("shell", *args)
 
     def display_state(self) -> str:
-        """Return the physical/default display power state reported by Android."""
+        """Return Android's best-effort default-display power report.
+
+        This value is telemetry, not proof that the panel is visibly presenting
+        pixels.  Samsung can retain a stale ``mOverrideDisplayInfo`` state while
+        the default display and its physical device are already ON.
+        """
 
         display_text = self.shell("dumpsys", "display")
         patterns = (
+            r"(?im)^\s*Display State\s*=\s*(ON|OFF|DOZE|DOZE_SUSPEND)\s*$",
+            r"(?im)^\s*mActualState\s*=\s*(ON|OFF|DOZE|DOZE_SUSPEND)\s*$",
+            r"mBaseDisplayInfo=.*?\bdisplayId\s+0\b.*?\bstate\s+(ON|OFF|DOZE|DOZE_SUSPEND)",
+            r"DisplayDeviceInfo.*?\bstate\s+(ON|OFF|DOZE|DOZE_SUSPEND).*?FLAG_ALLOWED_TO_BE_DEFAULT_DISPLAY",
+            # Older Android releases may expose no better state.  Keep this
+            # strictly last because Samsung can leave it stale after wake.
             r"mOverrideDisplayInfo=.*?\bstate\s+(ON|OFF|DOZE|DOZE_SUSPEND)",
-            r"mBaseDisplayInfo=.*?\bstate\s+(ON|OFF|DOZE|DOZE_SUSPEND)",
-            r"DisplayDeviceInfo.*?\bstate\s+(ON|OFF|DOZE|DOZE_SUSPEND)",
         )
         for pattern in patterns:
-            match = re.search(pattern, display_text, re.DOTALL)
+            match = re.search(pattern, display_text, re.DOTALL | re.IGNORECASE)
             if match:
-                return match.group(1)
+                return match.group(1).upper()
         try:
             power_text = self.shell("dumpsys", "power")
         except RuntimeError:
@@ -208,7 +217,12 @@ class AdbPhoneSession:
         return match.group(1).upper() if match else "unknown"
 
     def ensure_display_on(self, timeout_seconds: float = 5.0) -> Dict[str, Any]:
-        """Wake and verify the physical panel; a screenshot is not sufficient proof."""
+        """Request wake and return Android telemetry without making it a gate.
+
+        Android power metadata is not a reliable physical-panel oracle on every
+        device.  Callers that need visible output must verify the composed target
+        with ADB screencaps and its physical presentation with the camera.
+        """
 
         started = time.monotonic_ns()
         deadline = time.monotonic() + max(0.5, float(timeout_seconds))
@@ -221,6 +235,9 @@ class AdbPhoneSession:
             if last_state == "ON":
                 return {
                     "state": "ON",
+                    "android_reported_on": True,
+                    "gating": False,
+                    "visual_verification": "required_from_adb_and_camera",
                     "probes": probes,
                     "elapsed_ms": (time.monotonic_ns() - started) / 1.0e6,
                 }
@@ -230,10 +247,14 @@ class AdbPhoneSession:
                 self.shell("wm", "dismiss-keyguard")
                 next_wakeup = now + 0.75
             self.sleeper(0.2)
-        raise RuntimeError(
-            "Android physical display did not report ON within {:.1f}s; last state {}"
-            .format(timeout_seconds, last_state)
-        )
+        return {
+            "state": last_state,
+            "android_reported_on": False,
+            "gating": False,
+            "visual_verification": "required_from_adb_and_camera",
+            "probes": probes,
+            "elapsed_ms": (time.monotonic_ns() - started) / 1.0e6,
+        }
 
     def _get_setting(self, namespace: str, name: str) -> Optional[str]:
         value = self.shell("settings", "get", namespace, name).strip()

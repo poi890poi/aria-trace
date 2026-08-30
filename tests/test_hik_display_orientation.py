@@ -138,6 +138,31 @@ class HikDisplayOrientationTests(unittest.TestCase):
         self.assertIn(("input", "tap", "50", "100"), phone.commands)
         target.stop()
 
+    def test_screenshot_probe_failure_is_diagnostic_by_default(self):
+        phone = OrientationChangingPhone([0, 0, 0, 0])
+        target = self._target(phone)
+        canonical = np.zeros((200, 100, 3), np.uint8)
+        with mock.patch.object(target, "_launch_target"), mock.patch.object(
+            target, "_capture_screenshot", side_effect=RuntimeError("probe unavailable")
+        ):
+            target._show(canonical, "image", "target", "non-gating-test")
+        viewer = target.telemetry()["viewer"]
+        self.assertFalse(viewer["screenshot_presentation_verified"])
+        self.assertIn("probe unavailable", viewer["screenshot_verification_warning"])
+        self.assertIsNone(target.last_screenshot)
+        target.stop()
+
+    def test_strict_screenshot_probe_remains_available_for_harnesses(self):
+        phone = OrientationChangingPhone([0, 0, 0, 0])
+        target = self._target(phone)
+        target.strict_screenshot_verification = True
+        canonical = np.zeros((200, 100, 3), np.uint8)
+        with mock.patch.object(target, "_launch_target"), mock.patch.object(
+            target, "_capture_screenshot", side_effect=RuntimeError("probe unavailable")
+        ), self.assertRaisesRegex(RuntimeError, "probe unavailable"):
+            target._show(canonical, "image", "target", "strict-test")
+        target.stop()
+
     def test_workflow_accepts_rotated_logical_canvas_for_canonical_target(self):
         telemetry = {
             "canvas_width": 2400,

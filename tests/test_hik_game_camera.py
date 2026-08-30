@@ -149,6 +149,18 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertTrue(frame_set.metadata["one_acquisition_for_all_streams"])
         self.assertTrue(frame_set.metadata["full_output_normalized_by_base_rig"])
 
+    def test_dual_mode_can_disable_all_geometric_rectification(self):
+        adapter = FakeAdapter()
+        camera = self.camera("dual", False, adapter).open()
+        frame_set = camera.read_streams()
+        self.assertEqual((80, 100, 3), frame_set.streams["full"].shape)
+        self.assertEqual((20, 30, 3), frame_set.streams["minimap"].shape)
+        self.assertEqual(10, int(frame_set.streams["minimap"][0, 0, 0]))
+        self.assertEqual(20, int(frame_set.streams["minimap"][0, 0, 1]))
+        self.assertFalse(frame_set.metadata["rectified_full"])
+        self.assertFalse(frame_set.metadata["rectified_minimap"])
+        self.assertFalse(frame_set.metadata["full_output_normalized_by_base_rig"])
+
     def test_full_mode_returns_only_normalized_visible_phone_stream(self):
         adapter = FakeAdapter()
         camera = self.camera("full", False, adapter).open()

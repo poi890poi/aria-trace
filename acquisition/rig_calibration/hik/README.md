@@ -55,12 +55,15 @@ Targets are pushed as full-resolution PNG files and opened with Android's
 built-in Gallery/Display activity. The presenter captures an Android screenshot
 after each change. The initial ChArUco square counts follow the display aspect
 ratio, filling the raster without stretching cells (`9x20` on a `1080x2400`
-display). A target is accepted only after the physical display reports `ON` and
-three consecutive screenshots correlate with the target while at least 99.95%
-of consecutive screenshot pixels are stable and at least 99.5% match the target.
+display). Android's power-state report is best-effort telemetry and never gates
+calibration. A target is accepted only after three consecutive ADB screenshots
+correlate with the target while at least 99.95% of consecutive screenshot pixels
+are stable. Exact pixel-match coverage remains review evidence rather than a gate.
 The small target tolerance permits fixed display cutouts and rounded corners;
 the consecutive-frame check and minimum post-tap delay reject transient system
-bars. The accepted presentation also records any viewer quarter-turn. Use
+bars. HIK ChArUco detection then proves that the composed target is physically
+visible to the camera. The accepted presentation also records any viewer
+quarter-turn. Use
 `--display-component package/.Activity` only when automatic built-in-viewer
 selection is ambiguous. Chrome or another browser is not part of this flow.
 

@@ -14,10 +14,11 @@ import re
 import shutil
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
 from .commented_yaml import write_commented_yaml
 
@@ -85,7 +86,18 @@ def default_profile_root(explicit: Optional[Path] = None) -> Path:
     configured = os.environ.get("ARIA_PROFILE_ROOT")
     if configured:
         return Path(configured).resolve()
-    return (Path(__file__).resolve().parent.parent / "profiles").resolve()
+    module_path = Path(__file__).resolve()
+    for parent in module_path.parents:
+        if (parent / "release-manifest.yaml").is_file():
+            return (parent / "profiles").resolve()
+    source_root = module_path.parent.parent
+    if (source_root / ".git").exists():
+        return (source_root / "profiles").resolve()
+    raise RuntimeError(
+        "Profile root is not configured. Set ARIA_PROFILE_ROOT, pass "
+        "profile_root, or keep release-manifest.yaml beside the release "
+        "profiles directory."
+    )
 
 
 def _normalized_display(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -323,12 +335,17 @@ class ProfileRegistry:
         self.registry_directory.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(str(self.database), timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:

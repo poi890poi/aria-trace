@@ -80,6 +80,14 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     value.add_argument("--settle-frames", type=int, default=3)
+    value.add_argument(
+        "--strict-display-screenshot-verification",
+        action="store_true",
+        help=(
+            "testing only: fail when the ADB screenshot probe cannot prove target "
+            "presentation; product runs keep it as diagnostic evidence"
+        ),
+    )
     value.add_argument("--headless", action="store_true", help="Skip interactive focus UI")
     value.add_argument(
         "--test",
@@ -180,6 +188,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         data_matrix_trials_per_size=arguments.data_matrix_trials,
         data_matrix_initial_module_px=arguments.data_matrix_initial_module_px,
         complete_grader_plugin=arguments.complete_grader_plugin,
+        strict_display_screenshot_verification=(
+            arguments.strict_display_screenshot_verification
+        ),
     )
     phone = AdbPhoneSession(arguments.phone_serial, adb_executable=adb)
     result = HikRigCalibrationSession(options, camera=camera, phone=phone).run()
