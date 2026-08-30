@@ -11,24 +11,24 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from acquisition.android_capture import (
+from aria_trace.adapters.android.capture import (
     AndroidRoiFrameSource,
     AndroidRoiSpec,
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
-from acquisition.hik_capture import CalibratedHikFrameSource, NativeHikFrameSource
-from acquisition.rig_dual_capture import (
+from aria_trace.adapters.hik.capture import CalibratedHikFrameSource, NativeHikFrameSource
+from aria_trace.adapters.rig.dual_capture import (
     build_calibrated_rig_recording_bundle,
     single_source_recording_bundle,
 )
-from acquisition.sources import (
+from aria_trace.adapters.sources import (
     AdbClockMapper,
     AdbGetEventSource,
     AdbScreenshotFrameSource,
     OpenCvCameraFrameSource,
 )
-from acquisition.windows import (
+from aria_trace.adapters.windows import (
     WindowsKeyboardMouseSource,
     WindowsRawKeyboardMouseSource,
     WindowsWindowFrameSource,

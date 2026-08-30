@@ -7,7 +7,7 @@ import shutil
 
 from .recorder import AcquisitionRecorder
 from .features import OnlineSiftRecorder
-from .sources import (
+from aria_trace.adapters.sources import (
     AdbClockMapper,
     AdbGetEventSource,
     AdbScreenshotFrameSource,
@@ -15,14 +15,14 @@ from .sources import (
     SyntheticInputSource,
     VideoFileFrameSource,
 )
-from .android_capture import (
+from aria_trace.adapters.android.capture import (
     AndroidRoiFrameSource,
     ScrcpyCaptureHub,
     find_scrcpy_server,
     parse_android_roi,
     push_session_archive_to_device,
 )
-from .windows import (
+from aria_trace.adapters.windows import (
     WindowsKeyboardMouseSource,
     WindowsRawKeyboardMouseSource,
     WindowsWindowFrameSource,

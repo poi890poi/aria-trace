@@ -12,14 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .android_capture import (
+from aria_trace.adapters.android.capture import (
     AndroidRoiFrameSource,
     AndroidRoiSpec,
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
 from .android_game_launcher import launch_android_game
-from .android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
+from aria_trace.adapters.android.zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from .dual_source_spaces import (
     write_android_source_space_yaml,
     write_dual_source_space_yaml,
@@ -28,7 +28,7 @@ from .game_cross_source_check import (
     GameCrossSourceEvidenceRecorder,
     orient_hik_source_from_first_adb_frame,
 )
-from .hik_capture import CalibratedHikFrameSource
+from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
 from .profile_registry import ProfileContext, ProfileRegistry
 from .recorder import AcquisitionRecorder
 from .rig_calibration.hik.phone import (
@@ -37,8 +37,8 @@ from .rig_calibration.hik.phone import (
     resolve_adb_executable,
 )
 from .rig_calibration.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
-from .scrcpy_control import ScrcpyTouchController
-from .sources import AdbClockMapper
+from aria_trace.adapters.android.control import ScrcpyTouchController
+from aria_trace.adapters.sources import AdbClockMapper
 
 
 def _select_phone(adb: Path, configured: Optional[str]) -> str:

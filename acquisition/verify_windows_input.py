@@ -14,7 +14,7 @@ import numpy as np
 from .models import FramePacket
 from .recorder import AcquisitionRecorder
 from .session import SessionReader
-from .windows import WindowsRawKeyboardMouseSource
+from aria_trace.adapters.windows import WindowsRawKeyboardMouseSource
 
 
 class _VerificationFrameSource:

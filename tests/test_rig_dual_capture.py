@@ -64,28 +64,28 @@ class RigDualCaptureTests(unittest.TestCase):
                 "source": "test",
             }
             with patch(
-                "acquisition.rig_dual_capture.AdbClockMapper", return_value=clock
+                "aria_trace.adapters.rig.dual_capture.AdbClockMapper", return_value=clock
             ) as clock_type, patch(
-                "acquisition.rig_dual_capture.find_scrcpy_server",
+                "aria_trace.adapters.rig.dual_capture.find_scrcpy_server",
                 return_value=Path("scrcpy-server"),
             ), patch(
-                "acquisition.rig_dual_capture.ScrcpyCaptureHub", return_value=hub
+                "aria_trace.adapters.rig.dual_capture.ScrcpyCaptureHub", return_value=hub
             ) as hub_type, patch(
-                "acquisition.rig_dual_capture.AndroidRoiFrameSource",
+                "aria_trace.adapters.rig.dual_capture.AndroidRoiFrameSource",
                 return_value=android,
             ) as android_type, patch(
-                "acquisition.rig_dual_capture.CalibratedHikFrameSource",
+                "aria_trace.adapters.rig.dual_capture.CalibratedHikFrameSource",
                 return_value=hik,
             ) as hik_type, patch(
-                "acquisition.rig_dual_capture._phone_surface", return_value=surface
+                "aria_trace.adapters.rig.dual_capture._phone_surface", return_value=surface
             ), patch(
-                "acquisition.rig_dual_capture.orient_hik_source_from_first_adb_frame",
+                "aria_trace.adapters.rig.dual_capture.orient_hik_source_from_first_adb_frame",
                 return_value=(orientation, {"first.png": object()}),
             ) as orient, patch(
-                "acquisition.rig_dual_capture.GameCrossSourceEvidenceRecorder",
+                "aria_trace.adapters.rig.dual_capture.GameCrossSourceEvidenceRecorder",
                 return_value=processor,
             ) as processor_type, patch(
-                "acquisition.rig_dual_capture.AdbGetEventSource",
+                "aria_trace.adapters.rig.dual_capture.AdbGetEventSource",
                 return_value=input_source,
             ) as input_type:
                 bundle = build_calibrated_rig_recording_bundle(
@@ -135,20 +135,20 @@ class RigDualCaptureTests(unittest.TestCase):
             android = FakeSource("android_phone")
             hik = FakeSource("hik_phone")
             with patch(
-                "acquisition.rig_dual_capture.AdbClockMapper", return_value=object()
+                "aria_trace.adapters.rig.dual_capture.AdbClockMapper", return_value=object()
             ), patch(
-                "acquisition.rig_dual_capture.find_scrcpy_server",
+                "aria_trace.adapters.rig.dual_capture.find_scrcpy_server",
                 return_value=Path("scrcpy-server"),
             ), patch(
-                "acquisition.rig_dual_capture.ScrcpyCaptureHub", return_value=object()
+                "aria_trace.adapters.rig.dual_capture.ScrcpyCaptureHub", return_value=object()
             ), patch(
-                "acquisition.rig_dual_capture.AndroidRoiFrameSource",
+                "aria_trace.adapters.rig.dual_capture.AndroidRoiFrameSource",
                 return_value=android,
             ), patch(
-                "acquisition.rig_dual_capture.CalibratedHikFrameSource",
+                "aria_trace.adapters.rig.dual_capture.CalibratedHikFrameSource",
                 return_value=hik,
             ), patch(
-                "acquisition.rig_dual_capture._phone_surface",
+                "aria_trace.adapters.rig.dual_capture._phone_surface",
                 return_value={
                     "quarter_turns_clockwise_from_natural": 0,
                     "degrees_clockwise_from_natural": 0,
@@ -157,7 +157,7 @@ class RigDualCaptureTests(unittest.TestCase):
                     "source": "test",
                 },
             ), patch(
-                "acquisition.rig_dual_capture.orient_hik_source_from_first_adb_frame",
+                "aria_trace.adapters.rig.dual_capture.orient_hik_source_from_first_adb_frame",
                 return_value=(
                     {
                         "selected_adb_surface_quarter_turns_clockwise_from_phone_natural": 0,
@@ -170,7 +170,7 @@ class RigDualCaptureTests(unittest.TestCase):
                     {},
                 ),
             ), patch(
-                "acquisition.rig_dual_capture.GameCrossSourceEvidenceRecorder",
+                "aria_trace.adapters.rig.dual_capture.GameCrossSourceEvidenceRecorder",
                 return_value=object(),
             ):
                 bundle = build_calibrated_rig_recording_bundle(
@@ -183,7 +183,7 @@ class RigDualCaptureTests(unittest.TestCase):
                 "frame_counts": {"android_phone": 4, "hik_phone": 3},
             }
             with patch(
-                "acquisition.rig_dual_capture.write_dual_source_space_yaml"
+                "aria_trace.adapters.rig.dual_capture.write_dual_source_space_yaml"
             ) as write_spaces:
                 bundle.finalize(root, manifest)
             write_spaces.assert_called_once()

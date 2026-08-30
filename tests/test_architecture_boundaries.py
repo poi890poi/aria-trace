@@ -18,6 +18,18 @@ def imports_in(path):
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_legacy_hardware_exports_are_exact_adapter_aliases(self):
+        from acquisition.android_capture import ScrcpyCaptureHub as legacy_android
+        from acquisition.hik_capture import CalibratedHikFrameSource as legacy_hik
+        from acquisition.windows import WindowsWindowFrameSource as legacy_windows
+        from aria_trace.adapters.android.capture import ScrcpyCaptureHub
+        from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
+        from aria_trace.adapters.windows import WindowsWindowFrameSource
+
+        self.assertIs(legacy_android, ScrcpyCaptureHub)
+        self.assertIs(legacy_hik, CalibratedHikFrameSource)
+        self.assertIs(legacy_windows, WindowsWindowFrameSource)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

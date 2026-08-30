@@ -13,11 +13,11 @@ from typing import Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .android_capture import find_scrcpy_server
+from aria_trace.adapters.android.capture import find_scrcpy_server
 from .profile_registry import ProfileContext, ProfileRegistry
 from .rig_calibration.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from .rig_calibration.hik.phone import AdbPhoneSession, resolve_adb_executable
-from .scrcpy_control import ScrcpyTouchController
+from aria_trace.adapters.android.control import ScrcpyTouchController
 
 
 def _calibration_file(value: Path) -> Path:
