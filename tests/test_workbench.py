@@ -13,7 +13,7 @@ from unittest.mock import patch
 import cv2
 
 from acquisition.annotations import AnnotationStore
-from acquisition.hud import _HudWindow
+from acquisition.hud import _HudWindow, _UrlStatusProvider
 from acquisition.models import FramePacket, InputPacket
 from acquisition.poc_evidence import build_poc_evidence_index
 from acquisition.profiles import ProfileCatalog
@@ -314,6 +314,106 @@ class WorkbenchTests(unittest.TestCase):
             _HudWindow._target_is_foreground(user32, "Popular Game A")
         )
         self.assertFalse(_HudWindow._target_is_foreground(user32, None))
+
+    def test_hud_visibility_debounces_brief_focus_loss_but_not_explicit_hide(self):
+        hud = _HudWindow(lambda: {}, foreground_loss_grace_s=0.8)
+        self.assertTrue(hud._debounced_visibility(True, True, False, now_s=10.0))
+        self.assertTrue(hud._debounced_visibility(True, False, True, now_s=10.7))
+        self.assertFalse(hud._debounced_visibility(True, False, True, now_s=10.9))
+        self.assertTrue(hud._debounced_visibility(True, True, False, now_s=11.0))
+        self.assertFalse(hud._debounced_visibility(False, True, True, now_s=11.1))
+        self.assertFalse(hud._debounced_visibility(True, False, False, now_s=11.2))
+
+    def test_hud_provider_keeps_last_status_and_images_across_transient_misses(self):
+        class Response:
+            def __init__(self, value):
+                self.value = value
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self):
+                return self.value
+
+        active = json.dumps(
+            {
+                "visible": True,
+                "window_title": "Popular Game A",
+                "map_overlay_url": "/api/tracker/overlay",
+                "minimap_route_overlay_url": "/api/tracker/route",
+            }
+        ).encode("utf-8")
+        provider = _UrlStatusProvider("http://127.0.0.1:8765/api/hud")
+        missed = urllib.error.URLError("transient timeout")
+        with patch(
+            "acquisition.hud.urllib.request.urlopen",
+            side_effect=[
+                Response(active),
+                Response(b"map-frame"),
+                Response(b"route-frame"),
+                Response(active),
+                missed,
+                missed,
+                missed,
+            ],
+        ):
+            first = provider()
+            missed_images = provider()
+            missed_status = provider()
+
+        self.assertTrue(first["visible"])
+        self.assertEqual(
+            first["map_overlay_png_base64"],
+            missed_images["map_overlay_png_base64"],
+        )
+        self.assertEqual(
+            first["minimap_route_overlay_png_base64"],
+            missed_images["minimap_route_overlay_png_base64"],
+        )
+        self.assertEqual(missed_images, missed_status)
+        self.assertEqual(provider.failures, 1)
+
+    def test_hud_provider_hides_immediately_on_explicit_state_and_after_outage(self):
+        class Response:
+            def __init__(self, value):
+                self.value = value
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self):
+                return self.value
+
+        provider = _UrlStatusProvider("http://127.0.0.1:8765/api/hud")
+        active = json.dumps(
+            {
+                "visible": True,
+                "map_overlay_url": "/api/tracker/overlay",
+            }
+        ).encode("utf-8")
+        hidden = json.dumps({"visible": False}).encode("utf-8")
+        with patch(
+            "acquisition.hud.urllib.request.urlopen",
+            side_effect=[Response(active), Response(b"map-frame"), Response(hidden)],
+        ):
+            self.assertIn("map_overlay_png_base64", provider())
+            deliberately_hidden = provider()
+        self.assertFalse(deliberately_hidden["visible"])
+        self.assertNotIn("map_overlay_png_base64", deliberately_hidden)
+        provider.failures = 19
+        with patch(
+            "acquisition.hud.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("sustained outage"),
+        ):
+            failed = provider()
+        self.assertFalse(failed["visible"])
+        self.assertTrue(failed["shutdown"])
 
     def test_first_input_trigger_ignores_controls_outside_game_focus(self):
         background = InputPacket(

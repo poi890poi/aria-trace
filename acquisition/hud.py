@@ -5,6 +5,7 @@ import base64
 import ctypes
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urljoin
@@ -16,6 +17,7 @@ HUD_HEIGHT = 92
 MAP_HUD_WIDTH = 390
 MAP_HUD_HEIGHT = 350
 HUD_MARGIN = 22
+FOREGROUND_LOSS_GRACE_S = 0.8
 TRANSPARENT_KEY = "#ff00ff"
 
 GWL_EXSTYLE = -20
@@ -37,12 +39,15 @@ class _HudWindow:
         self,
         status_provider: Callable[[], dict],
         refresh_ms: int = 200,
+        foreground_loss_grace_s: float = FOREGROUND_LOSS_GRACE_S,
     ) -> None:
         self.status_provider = status_provider
         self.refresh_ms = int(refresh_ms)
+        self.foreground_loss_grace_s = float(foreground_loss_grace_s)
         self._error: Optional[BaseException] = None
         self._hwnd = None
         self.display_affinity = None
+        self._last_target_foreground_s = None
 
     def run_forever(self) -> None:
         """Run Tk on the current thread; used by the isolated HUD process."""
@@ -89,6 +94,29 @@ class _HudWindow:
             return False
         target = user32.FindWindowW(None, str(window_title))
         return bool(target and user32.GetForegroundWindow() == target)
+
+    def _debounced_visibility(
+        self,
+        requested_visible: bool,
+        target_foreground: bool,
+        currently_visible: bool,
+        now_s: Optional[float] = None,
+    ) -> bool:
+        """Ignore one-off foreground misses without delaying deliberate hiding."""
+
+        if not requested_visible:
+            self._last_target_foreground_s = None
+            return False
+        now_s = time.monotonic() if now_s is None else float(now_s)
+        if target_foreground:
+            self._last_target_foreground_s = now_s
+            return True
+        if not currently_visible or self._last_target_foreground_s is None:
+            return False
+        return (
+            now_s - self._last_target_foreground_s
+            <= self.foreground_loss_grace_s
+        )
 
     @staticmethod
     def _target_client_rect(user32, window_title: Optional[str]):
@@ -268,8 +296,12 @@ class _HudWindow:
                     if value.get("shutdown"):
                         root.destroy()
                         return
-                    should_show = bool(value.get("visible")) and self._target_is_foreground(
-                        user32, value.get("window_title")
+                    should_show = self._debounced_visibility(
+                        bool(value.get("visible")),
+                        self._target_is_foreground(
+                            user32, value.get("window_title")
+                        ),
+                        visible,
                     )
                     if should_show:
                         title.config(text=str(value.get("title") or "ARIATRACE"))
@@ -410,6 +442,8 @@ class _UrlStatusProvider:
     def __init__(self, state_url: str) -> None:
         self.state_url = state_url
         self.failures = 0
+        self._last_value = None
+        self._media_cache = {}
 
     def __call__(self) -> dict:
         try:
@@ -424,21 +458,29 @@ class _UrlStatusProvider:
             ):
                 overlay_url = value.get(url_key)
                 if not overlay_url:
+                    self._media_cache.pop(data_key, None)
                     continue
                 try:
                     with urllib.request.urlopen(
                         urljoin(self.state_url, str(overlay_url)), timeout=0.75
                     ) as response:
-                        value[data_key] = base64.b64encode(
+                        self._media_cache[data_key] = base64.b64encode(
                             response.read()
                         ).decode("ascii")
                 except (OSError, ValueError, urllib.error.URLError):
-                    # Keep text status visible if a single overlay frame is missed.
+                    # A missed refresh must not remove an already visible overlay.
+                    # The next successful fetch replaces this cached frame.
                     pass
+                cached = self._media_cache.get(data_key)
+                if cached:
+                    value[data_key] = cached
             self.failures = 0
+            self._last_value = dict(value)
             return value
         except (OSError, ValueError, urllib.error.URLError):
             self.failures += 1
+            if self.failures < 20 and self._last_value is not None:
+                return dict(self._last_value)
             return {
                 "visible": False,
                 "shutdown": self.failures >= 20,
