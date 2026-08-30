@@ -59,6 +59,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(server.is_client_disconnect, legacy.is_client_disconnect)
         self.assertIs(server.occupied_port_message, legacy.occupied_port_message)
 
+    def test_workbench_source_legacy_exports_are_exact_compatibility_aliases(self):
+        from acquisition import workbench as legacy
+        from aria_trace.apps.workbench import sources
+
+        self.assertIs(sources.SourceFactory, legacy.SourceFactory)
+        self.assertIs(sources.parse_adb_devices, legacy.parse_adb_devices)
+
 
 if __name__ == "__main__":
     unittest.main()

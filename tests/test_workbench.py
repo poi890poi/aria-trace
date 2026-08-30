@@ -1032,9 +1032,10 @@ class WorkbenchTests(unittest.TestCase):
         native = object()
         calibrated = object()
         with patch(
-            "acquisition.workbench.NativeHikFrameSource", return_value=native
+            "aria_trace.apps.workbench.sources.NativeHikFrameSource",
+            return_value=native,
         ) as native_type, patch(
-            "acquisition.workbench.CalibratedHikFrameSource",
+            "aria_trace.apps.workbench.sources.CalibratedHikFrameSource",
             return_value=calibrated,
         ) as calibrated_type:
             self.assertIs(
@@ -1168,10 +1169,16 @@ class WorkbenchTests(unittest.TestCase):
         )()
         input_source = object()
         factory._adb = lambda _config: Path("adb")
-        with patch("acquisition.workbench.AdbClockMapper", return_value=clock), patch(
-            "acquisition.workbench.find_scrcpy_server", return_value=Path("server")
-        ), patch("acquisition.workbench.ScrcpyCaptureHub", return_value=hub) as hub_type, patch(
-            "acquisition.workbench.AdbGetEventSource", return_value=input_source
+        with patch(
+            "aria_trace.apps.workbench.sources.AdbClockMapper", return_value=clock
+        ), patch(
+            "aria_trace.apps.workbench.sources.find_scrcpy_server",
+            return_value=Path("server"),
+        ), patch(
+            "aria_trace.apps.workbench.sources.ScrcpyCaptureHub", return_value=hub
+        ) as hub_type, patch(
+            "aria_trace.apps.workbench.sources.AdbGetEventSource",
+            return_value=input_source,
         ) as input_type:
             frame, captured_input = factory.capture_sources(
                 {"adapter": "android_scrcpy", "serial": "ANDROID123"},
