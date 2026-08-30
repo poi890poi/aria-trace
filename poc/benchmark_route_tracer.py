@@ -143,11 +143,7 @@ class CausalRouteTracer:
                 "Unknown continuity clock: {}".format(continuity_clock)
             )
         self.continuity_clock = continuity_clock
-        if correlation_feature != "gradient":
-            for localizer in self.atlas.localizers.values():
-                localizer.map_gradient = _correlation_feature(
-                    localizer.mosaic, correlation_feature
-                )
+        self._correlation_feature_configured = correlation_feature == "gradient"
         self.previous_xy = None
         self.previous_time_ns = None
         self.previous_mode_id = None
@@ -165,6 +161,15 @@ class CausalRouteTracer:
         self.recovery_policy = recovery_policy
         self.rejection_streak = 0
         self.global_recovery_hypotheses = []
+
+    def _configure_correlation_feature(self) -> None:
+        if self._correlation_feature_configured:
+            return
+        for localizer in self.atlas.localizers.values():
+            localizer.map_gradient = _correlation_feature(
+                localizer.mosaic, self.correlation_feature
+            )
+        self._correlation_feature_configured = True
 
     def _route_candidates(self, descriptor, top_k: int):
         # No previous_state_index: the replay may pause, reverse, deviate, or
@@ -229,6 +234,9 @@ class CausalRouteTracer:
         )
 
     def track(self, observation, mask, session_time_ns=None) -> TraceResult:
+        # Keep the atlas's canonical gradient representation intact for any
+        # independent global initialization performed before the first frame.
+        self._configure_correlation_feature()
         if self.variant == "route_descriptor":
             candidates = self._route_candidates(
                 describe_minimap(observation, mask), top_k=2

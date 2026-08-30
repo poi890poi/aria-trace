@@ -197,6 +197,40 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
             self.assertEqual(feature.shape, (32, 40))
             self.assertEqual(feature.dtype, np.float32)
 
+    def test_experimental_feature_does_not_corrupt_global_initialization_map(self):
+        package = _Package()
+        mosaic = np.random.RandomState(4).randint(
+            0, 255, (48, 52, 3), dtype=np.uint8
+        )
+        canonical_gradient = np.full((48, 52), 17.0, np.float32)
+        localizer = SimpleNamespace(
+            mosaic=mosaic,
+            map_gradient=canonical_gradient.copy(),
+        )
+        atlas = Mock(localizers={"world": localizer})
+        atlas._observe_one_mode.return_value = {
+            "valid": True,
+            "score": 0.8,
+            "best_offset_canonical_xy": [0.0, 0.0],
+        }
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "route_refine_top1",
+            correlation_feature="intensity",
+        )
+
+        np.testing.assert_array_equal(localizer.map_gradient, canonical_gradient)
+        tracer.track(
+            np.zeros((32, 32, 3), np.uint8),
+            np.full((32, 32), 255, np.uint8),
+        )
+
+        np.testing.assert_array_equal(
+            localizer.map_gradient,
+            _correlation_feature(mosaic, "intensity"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
