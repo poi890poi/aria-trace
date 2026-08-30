@@ -488,12 +488,27 @@ def detect_charuco_correspondences(
         raise ValueError("ChArUco input image is empty")
     aruco, dictionary, board = _charuco_board(layout)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    marker_corners, marker_ids, rejected = aruco.detectMarkers(gray, dictionary)
+    if hasattr(aruco, "ArucoDetector") and hasattr(aruco, "CharucoDetector"):
+        marker_corners, marker_ids, rejected = aruco.ArucoDetector(
+            dictionary
+        ).detectMarkers(gray)
+        if marker_ids is None or len(marker_ids) == 0:
+            raise RuntimeError("No ChArUco markers were detected")
+        charuco_corners, charuco_ids, marker_corners, marker_ids = (
+            aruco.CharucoDetector(board).detectBoard(
+                gray, None, None, marker_corners, marker_ids
+            )
+        )
+        count = 0 if charuco_ids is None else len(charuco_ids)
+    else:
+        marker_corners, marker_ids, rejected = aruco.detectMarkers(gray, dictionary)
+        if marker_ids is None or len(marker_ids) == 0:
+            raise RuntimeError("No ChArUco markers were detected")
+        count, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
+            marker_corners, marker_ids, gray, board
+        )
     if marker_ids is None or len(marker_ids) == 0:
         raise RuntimeError("No ChArUco markers were detected")
-    count, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
-        marker_corners, marker_ids, gray, board
-    )
     if charuco_ids is None or charuco_corners is None or int(count) < 4:
         raise RuntimeError("Fewer than four ChArUco corners were detected")
     ids = charuco_ids.reshape(-1).astype(int)
