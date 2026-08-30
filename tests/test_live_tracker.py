@@ -341,7 +341,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         try:
             tracker.update(frame, 1)
             with patch(
-                "acquisition.live_tracker.estimate_masked_shift",
+                "aria_trace.services.tracking.runtime.estimate_masked_shift",
                 return_value=((50.0, -40.0), 0.95),
             ):
                 result = tracker.update(frame, 2)
@@ -366,7 +366,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         try:
             tracker.update(frame, 1)
             with patch(
-                "acquisition.live_tracker.estimate_masked_shift",
+                "aria_trace.services.tracking.runtime.estimate_masked_shift",
                 return_value=((2.0, 1.0), 0.05),
             ):
                 result = tracker.update(frame, 2)
@@ -485,7 +485,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         result = None
         try:
             with patch(
-                "acquisition.live_tracker.estimate_masked_shift",
+                "aria_trace.services.tracking.runtime.estimate_masked_shift",
                 return_value=((0.0, 0.0), 0.90),
             ):
                 for index in range(200):
@@ -667,7 +667,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         result = None
         try:
             with patch(
-                "acquisition.live_tracker.estimate_masked_shift"
+                "aria_trace.services.tracking.runtime.estimate_masked_shift"
             ) as phase_shift:
                 for index in range(100):
                     result = tracker.update(frame, index * 2_000_000 + 1)

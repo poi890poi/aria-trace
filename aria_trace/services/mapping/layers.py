@@ -12,7 +12,7 @@ from typing import Iterable, Mapping, Optional
 import cv2
 import numpy as np
 
-from acquisition.live_tracker import GlobalFix, GlobalMapLocalizer
+from aria_trace.services.tracking.runtime import GlobalFix, GlobalMapLocalizer
 
 
 SCHEMA_VERSION = "1.0"

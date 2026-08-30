@@ -9,7 +9,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .live_tracker import GlobalMapLocalizer, MinimapExtractor
+from aria_trace.services.tracking.runtime import GlobalMapLocalizer, MinimapExtractor
 from .session import SessionReader
 from .teleport_behavior import make_teleport_behavior_sample, save_teleport_behavior_sample
 

@@ -17,7 +17,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from acquisition.live_tracker import MinimapExtractor, _gradient
+from aria_trace.services.tracking.runtime import MinimapExtractor, _gradient
 from aria_trace.services.mapping.layers import LayeredGlobalLocalizer
 from acquisition.session import SessionReader
 from replay.route_similarity import route_similarity_report

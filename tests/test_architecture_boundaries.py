@@ -106,6 +106,18 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(LayeredGlobalLocalizer, legacy_localizer)
         self.assertIs(stitch_map_session, legacy_stitch)
 
+    def test_tracking_legacy_exports_are_exact_layer_aliases(self):
+        from acquisition.frame_pump import LatestFramePump as legacy_pump
+        from acquisition.live_tracker import TwoRateRealtimeTracker as legacy_tracker
+        from acquisition.route_tracker import RouteVisualTracker as legacy_route
+        from aria_trace.services.capture import LatestFramePump
+        from aria_trace.services.localization.route import RouteVisualTracker
+        from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker
+
+        self.assertIs(LatestFramePump, legacy_pump)
+        self.assertIs(TwoRateRealtimeTracker, legacy_tracker)
+        self.assertIs(RouteVisualTracker, legacy_route)
+
 
 if __name__ == "__main__":
     unittest.main()

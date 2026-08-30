@@ -41,15 +41,15 @@ from aria_trace.services.mapping.layers import LayeredGlobalLocalizer, build_map
 from aria_trace.services.mapping.references import transition_endpoint_references
 from aria_trace.services.calibration.minimap.transition_analysis import analyze_transition_session
 from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
-from acquisition.frame_pump import LatestFramePump
-from acquisition.live_tracker import (
+from aria_trace.services.capture.frame_pump import LatestFramePump
+from aria_trace.services.tracking.runtime import (
     GlobalMapLocalizer,
     MinimapExtractor,
     TwoRateRealtimeTracker,
     render_map_overlay,
     render_minimap_route_overlay,
 )
-from acquisition.live_tracking_evidence import LiveTrackingEvidenceRecorder
+from aria_trace.evidence.tracking import LiveTrackingEvidenceRecorder
 from aria_trace.services.calibration.minimap.calibration import (
     ORDINARY_MOTION_SEGMENT_LABELS,
     calibrate_segment_sessions,
@@ -59,11 +59,11 @@ from aria_trace.services.calibration.minimap.verification import verify_forward_
 from acquisition.poc_evidence import build_poc_evidence_index
 from acquisition.profiles import ProfileCatalog
 from acquisition.recorder import AcquisitionRecorder
-from acquisition.route_compilation import compile_route_session
-from acquisition.route_tracker import RouteCandidateAdvisor, RouteVisualTracker
+from aria_trace.workflows.route import compile_route_session
+from aria_trace.services.localization.route.tracker import RouteCandidateAdvisor, RouteVisualTracker
 from acquisition.session import SessionReader, input_capture_health
 from acquisition.scene_yaw_calibration import calibrate_scene_yaw_session
-from acquisition.tracking_profiles import resolve_tracking_profile
+from aria_trace.services.tracking.profiles import resolve_tracking_profile
 from acquisition.teleport_analysis import analyze_teleport_session
 from acquisition.windows import (
     WindowsDesktopApi,
