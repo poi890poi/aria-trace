@@ -42,15 +42,6 @@ DEFAULT_CONFIG = {
     },
 }
 
-# Broad, resolution-relative discovery bounds for a complete Android/display
-# frame.  They deliberately encode no game, device, crop, scale, or orientation.
-DEFAULT_ANDROID_MINIMAP_DISCOVERY = {
-    "center_region_xyxy_fraction": [0.0, 0.0, 0.35, 0.35],
-    "radius_fraction_range": [0.07, 0.22],
-    "minimum_circle_visible_fraction": 0.85,
-}
-
-
 def _atomic_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -166,170 +157,6 @@ def _algebraic_circle(points: np.ndarray, weights=None) -> np.ndarray:
     center_x, center_y = -d / 2.0, -e / 2.0
     radius = math.sqrt(max(1.0e-9, center_x ** 2 + center_y ** 2 - f))
     return np.array([center_x, center_y, radius], dtype=np.float64)
-
-
-def android_minimap_discovery_config(value: Optional[dict] = None) -> dict:
-    """Validate broad Android/display discovery bounds."""
-
-    result = json.loads(json.dumps(DEFAULT_ANDROID_MINIMAP_DISCOVERY))
-    result.update(value or {})
-    center = [float(item) for item in result["center_region_xyxy_fraction"]]
-    radius = [float(item) for item in result["radius_fraction_range"]]
-    visible = float(result["minimum_circle_visible_fraction"])
-    if len(center) != 4 or not (
-        0.0 <= center[0] < center[2] <= 1.0
-        and 0.0 <= center[1] < center[3] <= 1.0
-    ):
-        raise ValueError(
-            "Android mini-map center region must be ordered x0,y0,x1,y1 fractions within [0, 1]"
-        )
-    if len(radius) != 2 or not (0.0 < radius[0] < radius[1] <= 0.5):
-        raise ValueError(
-            "Android mini-map radius fractions must be ordered within (0, 0.5]"
-        )
-    if not 0.0 <= visible <= 1.0:
-        raise ValueError(
-            "Android mini-map minimum visible circumference must be within [0, 1]"
-        )
-    return {
-        "center_region_xyxy_fraction": center,
-        "radius_fraction_range": radius,
-        "minimum_circle_visible_fraction": visible,
-    }
-
-
-def discover_android_minimap_seed(
-    frames: np.ndarray, config: Optional[dict] = None
-) -> dict:
-    """Find one broad circle seed in a complete Android/display frame sequence.
-
-    This function only supplies the initial circle to the existing radial
-    boundary fitter.  The fitted boundary and its confidence remain owned by
-    :func:`calibrate_minimap_boundary_frames`.
-    """
-
-    if frames.ndim != 4 or len(frames) < 12:
-        raise ValueError("Android mini-map discovery needs at least 12 color frames")
-    bounds = android_minimap_discovery_config(config)
-    average = frames.mean(axis=0).astype(np.uint8)
-    gray = cv2.cvtColor(average, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (7, 7), 1.4)
-    equalized = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
-    heat = cv2.GaussianBlur(_stacked_difference_heatmap(frames), (0, 0), 2.0)
-    heat_u8 = cv2.normalize(heat, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    height, width = gray.shape
-    shorter = min(width, height)
-    minimum_radius = max(
-        8, int(math.floor(shorter * bounds["radius_fraction_range"][0]))
-    )
-    maximum_radius = max(
-        minimum_radius + 2,
-        int(math.ceil(shorter * bounds["radius_fraction_range"][1])),
-    )
-    center_fraction = bounds["center_region_xyxy_fraction"]
-    center_bounds = [
-        center_fraction[0] * width,
-        center_fraction[1] * height,
-        center_fraction[2] * width,
-        center_fraction[3] * height,
-    ]
-
-    detected = []
-    for source, edge_threshold, vote_threshold in (
-        (gray, 80.0, 20.0),
-        (equalized, 70.0, 16.0),
-        (heat_u8, 55.0, 14.0),
-    ):
-        circles = cv2.HoughCircles(
-            source,
-            cv2.HOUGH_GRADIENT,
-            dp=1.25,
-            minDist=max(24, minimum_radius),
-            param1=edge_threshold,
-            param2=vote_threshold,
-            minRadius=minimum_radius,
-            maxRadius=maximum_radius,
-        )
-        if circles is not None:
-            detected.extend(circles[0].tolist())
-
-    average_edge = cv2.magnitude(
-        cv2.Sobel(equalized, cv2.CV_32F, 1, 0, ksize=3),
-        cv2.Sobel(equalized, cv2.CV_32F, 0, 1, ksize=3),
-    )
-    heat_edge = cv2.magnitude(
-        cv2.Sobel(heat, cv2.CV_32F, 1, 0, ksize=3),
-        cv2.Sobel(heat, cv2.CV_32F, 0, 1, ksize=3),
-    )
-    yy, xx = np.ogrid[:height, :width]
-    candidates = []
-    angles = np.linspace(0.0, 2.0 * np.pi, 360, endpoint=False)
-    for center_x, center_y, radius in detected:
-        center_x, center_y, radius = map(float, (center_x, center_y, radius))
-        if not (
-            center_bounds[0] <= center_x <= center_bounds[2]
-            and center_bounds[1] <= center_y <= center_bounds[3]
-            and minimum_radius <= radius <= maximum_radius
-        ):
-            continue
-        visible = (
-            (center_x + np.cos(angles) * radius >= 0.0)
-            & (center_x + np.cos(angles) * radius < width)
-            & (center_y + np.sin(angles) * radius >= 0.0)
-            & (center_y + np.sin(angles) * radius < height)
-        )
-        visible_fraction = float(np.mean(visible))
-        if visible_fraction < bounds["minimum_circle_visible_fraction"]:
-            continue
-        if any(
-            math.hypot(
-                center_x - candidate["center_x"],
-                center_y - candidate["center_y"],
-            )
-            < max(5.0, radius * 0.12)
-            and abs(radius - candidate["radius"]) < max(4.0, radius * 0.10)
-            for candidate in candidates
-        ):
-            continue
-        distance = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
-        ring = np.abs(distance - radius) <= max(2.0, radius * 0.055)
-        inner = distance <= radius * 0.78
-        outer = (distance >= radius * 1.12) & (distance <= radius * 1.38)
-        if not ring.any() or not inner.any() or not outer.any():
-            continue
-        ring_edge = float(np.mean(average_edge[ring]))
-        ring_motion_edge = float(np.mean(heat_edge[ring]))
-        inner_motion = float(np.mean(heat[inner]))
-        outer_motion = float(np.mean(heat[outer]))
-        stable_disc_contrast = max(0.0, outer_motion - inner_motion)
-        score = ring_edge * math.sqrt(max(stable_disc_contrast, 0.01))
-        candidates.append(
-            {
-                "center_x": center_x,
-                "center_y": center_y,
-                "radius": radius,
-                "visible_circumference_fraction": visible_fraction,
-                "ring_edge": ring_edge,
-                "ring_motion_edge": ring_motion_edge,
-                "inner_motion": inner_motion,
-                "outer_motion": outer_motion,
-                "stable_disc_contrast": stable_disc_contrast,
-                "score": float(score),
-            }
-        )
-    candidates.sort(key=lambda item: item["score"], reverse=True)
-    if not candidates:
-        raise RuntimeError(
-            "No circular mini-map candidate satisfied the configured Android discovery bounds"
-        )
-    return {
-        "method": "broad_android_display_circle_discovery",
-        "config": bounds,
-        "frame_size_px": [width, height],
-        "selected": dict(candidates[0]),
-        "candidates": candidates[:24],
-        "heatmap": heat,
-    }
 
 
 def _initial_circle(average: np.ndarray, config: dict) -> np.ndarray:
@@ -511,18 +338,7 @@ def _fit_one_channel(observation: dict, initial: np.ndarray, key: str) -> np.nda
 def _boundary_model(rotation_frames: np.ndarray, config: dict) -> dict:
     average = rotation_frames.mean(axis=0).astype(np.uint8)
     temporal_std = rotation_frames.astype(np.float32).std(axis=0).mean(axis=2)
-    discovery = None
-    if config.get("expected_center_xy") is None:
-        discovery = discover_android_minimap_seed(
-            rotation_frames, config.get("discovery")
-        )
-        selected = discovery["selected"]
-        initial = np.asarray(
-            [selected["center_x"], selected["center_y"], selected["radius"]],
-            dtype=np.float64,
-        )
-    else:
-        initial = _initial_circle(average, config)
+    initial = _initial_circle(average, config)
     observation = _radial_observations(average, temporal_std, initial)
     fitted = _fit_radial_circle(observation, initial)
     circle = fitted["circle"]
@@ -614,7 +430,6 @@ def _boundary_model(rotation_frames: np.ndarray, config: dict) -> dict:
         "observation": observation,
         "fit": fitted,
         "chunk_circles": chunk_circles,
-        "discovery": discovery,
         "metrics": {
             "center_x": float(circle[0]),
             "center_y": float(circle[1]),
@@ -926,35 +741,6 @@ def _write_evidence(
     fit = boundary["fit"]
     observation = boundary["observation"]
     average = boundary["average"]
-    discovery = boundary.get("discovery")
-    if discovery is not None:
-        discovery_overlay = average.copy()
-        frame_width, frame_height = discovery["frame_size_px"]
-        x0, y0, x1, y1 = discovery["config"][
-            "center_region_xyxy_fraction"
-        ]
-        cv2.rectangle(
-            discovery_overlay,
-            (round(x0 * frame_width), round(y0 * frame_height)),
-            (round(x1 * frame_width), round(y1 * frame_height)),
-            (255, 255, 0),
-            2,
-        )
-        for index, candidate in enumerate(discovery["candidates"][:12]):
-            cv2.circle(
-                discovery_overlay,
-                (round(candidate["center_x"]), round(candidate["center_y"])),
-                round(candidate["radius"]),
-                (0, 255, 0) if index == 0 else (80, 80, 80),
-                3 if index == 0 else 1,
-                cv2.LINE_AA,
-            )
-        save(
-            "boundary_discovery_candidates.png",
-            discovery_overlay,
-            "Broad Android mini-map discovery bounds and candidates",
-            "boundary",
-        )
     save(
         "minimap_stacked_difference_heatmap.png",
         _color_heatmap(_stacked_difference_heatmap(rotation_frames)),
@@ -1158,35 +944,22 @@ def calibrate_minimap_boundary_frames(
 ) -> dict:
     """Run the verified mini-map boundary calibration on prepared frame arrays.
 
-    Game control and image acquisition belong outside this function. With no
-    precise boundary config, it discovers a broad seed in the complete Android
-    frame and feeds that seed directly into the same radial fitter used by
-    :func:`calibrate_minimap_frames`.
+    Game control, image acquisition, frame selection, and cropping belong
+    outside this function. The boundary fit and review evidence always come
+    from the same implementation used by :func:`calibrate_minimap_frames`.
     """
 
     if frames.ndim != 4:
         raise ValueError("Calibration frames must be N x H x W x C arrays")
-    supplied = dict(config or {})
-    precise_keys = {
-        "expected_center_xy",
-        "center_search_radius_px",
-        "radius_range_px",
-    }
-    if precise_keys.intersection(supplied):
-        boundary_config = json.loads(json.dumps(DEFAULT_CONFIG["boundary"]))
-        boundary_config.update(supplied)
-    else:
-        discovery_value = supplied.pop("discovery", supplied)
-        if supplied is discovery_value:
-            supplied = {}
-        if supplied:
-            raise ValueError(
-                "Automatic boundary calibration accepts only Android discovery bounds"
+    unknown_config = set(config or {}) - set(DEFAULT_CONFIG["boundary"])
+    if unknown_config:
+        raise ValueError(
+            "Unsupported mini-map boundary config keys: {}".format(
+                ", ".join(sorted(unknown_config))
             )
-        boundary_config = {
-            "expected_center_xy": None,
-            "discovery": android_minimap_discovery_config(discovery_value),
-        }
+        )
+    boundary_config = json.loads(json.dumps(DEFAULT_CONFIG["boundary"]))
+    boundary_config.update(config or {})
     if progress:
         progress("Fitting the circular mini-map boundary")
     boundary = _boundary_model(frames, boundary_config)
