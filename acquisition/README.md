@@ -224,12 +224,35 @@ For fresh HIK rig calibration followed by synchronized source-data capture, use:
 .\calibrate-hik-game-camera.bat
 ```
 
-It calls the existing headless rig calibration and dual-source zigzag capture
-tools, then stops with the fresh session intact. Automatic mini-map candidate
-selection, profile publication, and the profiled adapter demo are deprecated
-because the automatic boundary has not been verified. The command does not
-publish a mini-map result. Use `-GameId`, `-CameraId`, and `-PhoneSerial` only
-when defaults cannot select the intended setup.
+To repeat that exact headless entry point without repair or retry logic, use:
+
+```powershell
+.\stress-test-hik-calibration.bat
+```
+
+It performs three isolated runs by default. `-Runs 10` increases the stress
+count, `-PauseSeconds 0` removes the settling interval, and `-StopOnFailure`
+stops after retaining the first failed or review-required run. Every line is
+UTC timestamped. Each run retains its complete log, calibration outputs, new
+session paths, copied review images, failure tail, top-level stage durations,
+and observed internal milestone intervals. The final `report.md` and
+`summary.json` calculate
+end-to-end repeatability across successful runs and separately labels partial
+stage observations from failed or `review_required` runs. A zero-exit pipeline
+whose mini-map result requires review is reported separately and is not counted
+as a passed calibration. No failed stage is fixed or rerun.
+
+The existing capture tool wakes the phone, launches the configured game, and
+dismisses Samsung Game Booster before its preparation checkpoint. The stress
+harness waits 20 seconds for game settling/reconnection and then confirms that
+checkpoint without human input. Change this bounded wait with
+`-GamePreparationSeconds 30`. Its measured duration is included separately in
+the time breakdown.
+
+It calls the existing headless rig calibration, dual-source zigzag capture, and
+automatic mini-map localization tools. It does not publish a profile or run the
+profiled adapter demo. Use `-GameId`, `-CameraId`, and `-PhoneSerial` only when
+defaults cannot select the intended setup.
 
 With the game awake and ready and an existing rig result, run capture with:
 
