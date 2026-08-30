@@ -1028,9 +1028,9 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
             state.sources.capture_sources = lambda frame, inputs: (source, None)
             try:
                 with patch(
-                    "aria_trace.apps.workbench.application.TwoRateRealtimeTracker", FakeLiveEngine
+                    "aria_trace.apps.workbench.live_tracking.TwoRateRealtimeTracker", FakeLiveEngine
                 ), patch(
-                    "aria_trace.apps.workbench.application.CursorPoseEstimator",
+                    "aria_trace.apps.workbench.live_tracking.CursorPoseEstimator",
                     return_value=object(),
                 ) as cursor_constructor:
                     cursor_constructor.GAUSSIAN_FIT_METHODS = (
@@ -1204,9 +1204,9 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
             state.sources.capture_sources = lambda frame, inputs: (source, None)
             try:
                 with patch(
-                    "aria_trace.apps.workbench.application.TwoRateRealtimeTracker", FakeLiveEngine
+                    "aria_trace.apps.workbench.live_tracking.TwoRateRealtimeTracker", FakeLiveEngine
                 ), patch(
-                    "aria_trace.apps.workbench.application.CursorPoseEstimator",
+                    "aria_trace.apps.workbench.live_tracking.CursorPoseEstimator",
                     return_value=object(),
                 ) as cursor_constructor:
                     cursor_constructor.GAUSSIAN_FIT_METHODS = (

@@ -1386,7 +1386,7 @@ class WorkbenchTests(unittest.TestCase):
                             "duration_s": 8,
                         }
                     )
-                with patch("aria_trace.apps.workbench.application.subprocess.check_call", side_effect=capture):
+                with patch("aria_trace.apps.workbench.capture.subprocess.check_call", side_effect=capture):
                     state.run_android_straight_forward(
                         {
                             "start_x": 420,
@@ -2227,9 +2227,9 @@ class WorkbenchTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "aria_trace.apps.workbench.application.calibrate_segment_sessions",
+                    "aria_trace.apps.workbench.analysis.calibrate_segment_sessions",
                     side_effect=fake_calibration,
-                ), patch("aria_trace.apps.workbench.application.verify_forward_session") as verify:
+                ), patch("aria_trace.apps.workbench.analysis.verify_forward_session") as verify:
                     descriptor = state.run_minimap_calibration(
                         {
                             "game_profile_id": "genshin-impact-pc",
@@ -2271,7 +2271,7 @@ class WorkbenchTests(unittest.TestCase):
                     }
 
                 with patch(
-                    "aria_trace.apps.workbench.application.verify_forward_session",
+                    "aria_trace.apps.workbench.analysis.verify_forward_session",
                     side_effect=fake_verification,
                 ):
                     descriptor = state.run_pose_verification(
@@ -2317,7 +2317,7 @@ class WorkbenchTests(unittest.TestCase):
                     }
 
                 with patch(
-                    "aria_trace.apps.workbench.application.calibrate_scene_yaw_session",
+                    "aria_trace.apps.workbench.analysis.calibrate_scene_yaw_session",
                     side_effect=fake_scene_yaw,
                 ):
                     descriptor = state.run_scene_yaw_calibration(
@@ -2419,7 +2419,7 @@ class WorkbenchTests(unittest.TestCase):
                     "movement_session_relative_path": "optional-motion/run_02",
                 }
                 with patch(
-                    "aria_trace.apps.workbench.application.calibrate_segment_sessions",
+                    "aria_trace.apps.workbench.analysis.calibrate_segment_sessions",
                     side_effect=fake_calibration,
                 ):
                     descriptor = state.run_minimap_calibration(request)
@@ -2578,7 +2578,7 @@ class WorkbenchTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "aria_trace.apps.workbench.application.analyze_teleport_session",
+                    "aria_trace.apps.workbench.analysis.analyze_teleport_session",
                     side_effect=fake_analysis,
                 ):
                     descriptor = state.run_teleport_analysis(
@@ -2631,7 +2631,7 @@ class WorkbenchTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with patch(
-                    "aria_trace.apps.workbench.application.analyze_teleport_session"
+                    "aria_trace.apps.workbench.analysis.analyze_teleport_session"
                 ) as blocked_analysis:
                     with self.assertRaisesRegex(
                         ValueError,
@@ -2793,7 +2793,7 @@ class WorkbenchTests(unittest.TestCase):
                     }
 
                 with patch(
-                    "aria_trace.apps.workbench.application.stitch_map_session",
+                    "aria_trace.apps.workbench.analysis.stitch_map_session",
                     side_effect=fake_stitch,
                 ):
                     descriptor = state.run_map_stitch(
@@ -2869,7 +2869,7 @@ class WorkbenchTests(unittest.TestCase):
                     return result
 
                 with patch(
-                    "aria_trace.apps.workbench.application.build_map_atlas", side_effect=fake_atlas
+                    "aria_trace.apps.workbench.analysis.build_map_atlas", side_effect=fake_atlas
                 ):
                     descriptor = state.run_map_atlas(
                         {
@@ -2929,7 +2929,7 @@ class WorkbenchTests(unittest.TestCase):
                         "route_id": "route-a",
                     },
                 ), patch(
-                    "aria_trace.apps.workbench.application.compile_route_session",
+                    "aria_trace.apps.workbench.analysis.compile_route_session",
                     side_effect=fake_compile,
                 ):
                     descriptor = state.run_route_tracking_compile(
@@ -3041,12 +3041,12 @@ class WorkbenchTests(unittest.TestCase):
                         "label": "minimap_transition",
                     },
                 ), patch(
-                    "aria_trace.apps.workbench.application.transition_endpoint_references",
+                    "aria_trace.apps.workbench.analysis.transition_endpoint_references",
                     return_value={"source": source, "target": target},
                 ), patch(
-                    "aria_trace.apps.workbench.application.build_map_atlas", side_effect=fake_atlas
+                    "aria_trace.apps.workbench.analysis.build_map_atlas", side_effect=fake_atlas
                 ), patch(
-                    "aria_trace.apps.workbench.application.analyze_transition_session",
+                    "aria_trace.apps.workbench.analysis.analyze_transition_session",
                     return_value={
                         "quality": {"confidence": 0.9},
                         "evidence_file": "transition_scale_timeline.png",

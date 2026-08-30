@@ -171,6 +171,25 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
         self.assertIs(api_handler, application.make_handler)
 
+    def test_workbench_shell_contains_no_algorithm_or_transport_implementation(self):
+        path = ROOT / "aria_trace" / "apps" / "workbench" / "application.py"
+        imported = imports_in(path)
+        forbidden = ("cv2", "aria_trace.services.calibration", "aria_trace.services.mapping")
+        self.assertEqual(
+            [],
+            [value for value in imported if value.startswith(forbidden)],
+        )
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        workbench = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AcquisitionWorkbench"
+        )
+        methods = [
+            node.name for node in workbench.body if isinstance(node, ast.FunctionDef)
+        ]
+        self.assertEqual(["__init__"], methods)
+
     def test_cursor_legacy_exports_are_exact_service_aliases(self):
         from acquisition.cursor_pose import CursorPoseEstimator as legacy_pose
         from acquisition.cursor_worker import CursorPoseProcessExecutor as legacy_worker
