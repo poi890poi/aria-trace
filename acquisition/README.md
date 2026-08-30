@@ -289,6 +289,24 @@ forward/inverse 3x3 matrices, timestamp authorities, and direct HIK-video crop
 placement in the full ADB raster. The explanatory comments make the file usable
 without importing AriaTrace.
 
+Automatic mini-map discovery is anchored in the full Android/display image, not
+in a saved camera crop. Its default prior is deliberately broad and
+resolution-relative: the circle center is searched in the upper-left 35% of the
+display, its radius may span 7% through 22% of the shorter display dimension,
+and at least 85% of its circumference must be visible. These bounds are
+configuration, not a Genshin pixel coordinate: use `--android-center-region`,
+`--android-radius-fraction`, and `--android-min-visible` to change them, or
+`--android-discovery unrestricted` to remove the relative prior. Existing
+`--android-crop` and `--hik-crop` overrides remain accepted for diagnostics.
+
+After the Android circle is refined, synchronized full-frame evidence estimates
+the current Android-to-HIK homography and projects the circle into whichever HIK
+stream this recording contains. The resulting HIK polygon, visible mask, and
+crop are review evidence for this session only. Camera movement invalidates
+them, so they are never treated as a reusable positioning prior. Reusable
+runtime geometry remains the phone-space crop plus the separately calibrated
+rig transformation.
+
 The calibrated camera adapter exposes the same base-space conversion without
 opening hardware:
 

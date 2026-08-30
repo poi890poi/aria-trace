@@ -264,7 +264,34 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--profiles-root", type=Path, default=Path("profiles"))
     value.add_argument("--calibration-output", type=Path)
     value.add_argument("--android-crop")
-    value.add_argument("--hik-crop")
+    value.add_argument(
+        "--hik-crop",
+        help=(
+            "legacy diagnostic override; automatic analysis derives the current "
+            "HIK observation from Android and does not persist this crop"
+        ),
+    )
+    value.add_argument(
+        "--android-discovery",
+        choices=("relative-prior", "unrestricted", "legacy-hint"),
+        default="relative-prior",
+    )
+    value.add_argument(
+        "--android-center-region",
+        default="0,0,0.35,0.35",
+        help="relative x0,y0,x1,y1 bounds for automatic Android circle centers",
+    )
+    value.add_argument(
+        "--android-radius-fraction",
+        default="0.07,0.22",
+        help="minimum,maximum radius as fractions of the shorter Android dimension",
+    )
+    value.add_argument(
+        "--android-min-visible",
+        type=float,
+        default=0.85,
+        help="minimum visible circumference fraction for Android candidates",
+    )
     value.add_argument(
         "--control-only",
         action="store_true",
@@ -591,6 +618,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if arguments.analyze:
         from .automated_minimap_calibration import (
             _parse_crop,
+            android_discovery_config,
             calibrate_zigzag_session,
         )
 
@@ -605,6 +633,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             rig_calibration=arguments.rig_calibration,
             android_selected_crop_xywh=_parse_crop(arguments.android_crop),
             hik_selected_crop_xywh=_parse_crop(arguments.hik_crop),
+            android_discovery=android_discovery_config(
+                arguments.android_discovery,
+                arguments.android_center_region,
+                arguments.android_radius_fraction,
+                arguments.android_min_visible,
+            ),
         )
         print("Mini-map calibration: {}".format(calibration_output.resolve()))
         print("Phone-game profile: {}".format(result["summary"]["phone_game_profile"]))

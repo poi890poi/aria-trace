@@ -1,9 +1,10 @@
-"""Headless mini-map calibration from native HIK and synchronized ADB frames.
+"""Headless mini-map calibration from synchronized Android and HIK frames.
 
-The only learned geometry in this module is the mini-map crop and circular
-boundary in each source's own pixel coordinates.  Supplying a rig calibration
-composes its existing camera-to-phone mapping with the phone-game result; it
-never fits or replaces optical rig geometry.
+Reusable mini-map geometry is learned in phone/display coordinates. HIK
+geometry is projected through a transform estimated from the current recording
+and is retained only as session-local review evidence. Supplying a rig
+calibration composes its existing camera-to-phone mapping with the phone-game
+result; it never replaces the optical rig geometry.
 """
 
 from __future__ import annotations
@@ -33,6 +34,14 @@ from .session import SessionReader
 
 
 SCHEMA_VERSION = "1.0"
+
+
+DEFAULT_ANDROID_DISCOVERY = {
+    "strategy": "relative_prior",
+    "center_region_xyxy_fraction": [0.0, 0.0, 0.35, 0.35],
+    "radius_fraction_range": [0.07, 0.22],
+    "minimum_circle_visible_fraction": 0.85,
+}
 
 
 MINIMAP_HEADER = """# AriaTrace mini-map calibration result.
@@ -69,6 +78,57 @@ def _parse_crop(value: Optional[str]) -> Optional[list[int]]:
     if len(crop) != 4:
         raise argparse.ArgumentTypeError("crop must be x,y,width,height")
     return crop
+
+
+def _fraction_list(
+    value: object, count: int, label: str
+) -> list[float]:
+    if isinstance(value, str):
+        values = [float(item.strip()) for item in value.split(",")]
+    elif isinstance(value, Sequence):
+        values = [float(item) for item in value]
+    else:
+        raise ValueError("{} must contain {} comma-separated fractions".format(label, count))
+    if len(values) != count:
+        raise ValueError("{} must contain {} fractions".format(label, count))
+    if not all(math.isfinite(item) for item in values):
+        raise ValueError("{} fractions must be finite".format(label))
+    return values
+
+
+def android_discovery_config(
+    strategy: str = "relative_prior",
+    center_region_xyxy_fraction: object = (0.0, 0.0, 0.35, 0.35),
+    radius_fraction_range: object = (0.07, 0.22),
+    minimum_circle_visible_fraction: float = 0.85,
+) -> dict:
+    """Validate configurable, resolution-relative Android discovery limits."""
+
+    normalized_strategy = str(strategy).strip().lower().replace("-", "_")
+    if normalized_strategy not in ("relative_prior", "unrestricted", "legacy_hint"):
+        raise ValueError(
+            "Android discovery strategy must be relative_prior, unrestricted, or legacy_hint"
+        )
+    center = _fraction_list(
+        center_region_xyxy_fraction, 4, "Android center region"
+    )
+    radius = _fraction_list(radius_fraction_range, 2, "Android radius range")
+    if not (
+        0.0 <= center[0] < center[2] <= 1.0
+        and 0.0 <= center[1] < center[3] <= 1.0
+    ):
+        raise ValueError("Android center region must be ordered within [0, 1]")
+    if not (0.0 < radius[0] < radius[1] <= 0.5):
+        raise ValueError("Android radius fractions must be ordered within (0, 0.5]")
+    visible = float(minimum_circle_visible_fraction)
+    if not 0.0 <= visible <= 1.0:
+        raise ValueError("Minimum visible circle fraction must be within [0, 1]")
+    return {
+        "strategy": normalized_strategy,
+        "center_region_xyxy_fraction": center,
+        "radius_fraction_range": radius,
+        "minimum_circle_visible_fraction": visible,
+    }
 
 
 def logical_crop_to_natural(
@@ -171,7 +231,9 @@ def _known_android_hint(game_id: str, frame_size: Sequence[int]) -> Optional[lis
 
 
 def _circle_candidates(
-    frames: np.ndarray, expected: Optional[Sequence[float]] = None
+    frames: np.ndarray,
+    expected: Optional[Sequence[float]] = None,
+    discovery: Optional[Mapping[str, object]] = None,
 ) -> list[dict]:
     average = frames.mean(axis=0).astype(np.uint8)
     gray = cv2.GaussianBlur(cv2.cvtColor(average, cv2.COLOR_BGR2GRAY), (7, 7), 1.4)
@@ -179,8 +241,45 @@ def _circle_candidates(
     heat = cv2.GaussianBlur(_stacked_difference_heatmap(frames), (0, 0), 2.0)
     heat_image = cv2.normalize(heat, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     height, width = gray.shape
-    minimum_radius = max(18, int(round(min(width, height) * 0.025)))
-    maximum_radius = max(minimum_radius + 2, int(round(min(width, height) * 0.22)))
+    relative = None
+    if discovery is not None:
+        relative = android_discovery_config(
+            discovery.get("strategy", "relative_prior"),
+            discovery.get(
+                "center_region_xyxy_fraction",
+                DEFAULT_ANDROID_DISCOVERY["center_region_xyxy_fraction"],
+            ),
+            discovery.get(
+                "radius_fraction_range",
+                DEFAULT_ANDROID_DISCOVERY["radius_fraction_range"],
+            ),
+            discovery.get(
+                "minimum_circle_visible_fraction",
+                DEFAULT_ANDROID_DISCOVERY["minimum_circle_visible_fraction"],
+            ),
+        )
+        if relative["strategy"] != "relative_prior":
+            relative = None
+    shorter = min(width, height)
+    if relative is None:
+        minimum_radius = max(18, int(round(shorter * 0.025)))
+        maximum_radius = max(minimum_radius + 2, int(round(shorter * 0.22)))
+        center_bounds = [0.0, 0.0, float(width), float(height)]
+        minimum_visible = 0.0
+    else:
+        radius_fractions = relative["radius_fraction_range"]
+        minimum_radius = max(18, int(round(shorter * radius_fractions[0])))
+        maximum_radius = max(
+            minimum_radius + 2, int(round(shorter * radius_fractions[1]))
+        )
+        center_fractions = relative["center_region_xyxy_fraction"]
+        center_bounds = [
+            center_fractions[0] * width,
+            center_fractions[1] * height,
+            center_fractions[2] * width,
+            center_fractions[3] * height,
+        ]
+        minimum_visible = float(relative["minimum_circle_visible_fraction"])
     detected = []
     for source, edge_threshold, center_threshold in (
         (gray, 80.0, 20.0),
@@ -206,6 +305,24 @@ def _circle_candidates(
     yy, xx = np.ogrid[:height, :width]
     candidates = []
     for center_x, center_y, radius in detected:
+        if radius < minimum_radius or radius > maximum_radius:
+            continue
+        if not (
+            center_bounds[0] <= center_x <= center_bounds[2]
+            and center_bounds[1] <= center_y <= center_bounds[3]
+        ):
+            continue
+        angles = np.linspace(0.0, 2.0 * np.pi, 180, endpoint=False)
+        visible_fraction = float(
+            np.mean(
+                (center_x + np.cos(angles) * radius >= 0.0)
+                & (center_x + np.cos(angles) * radius < width)
+                & (center_y + np.sin(angles) * radius >= 0.0)
+                & (center_y + np.sin(angles) * radius < height)
+            )
+        )
+        if visible_fraction < minimum_visible:
+            continue
         if any(
             math.hypot(center_x - item["center_x"], center_y - item["center_y"])
             < max(5.0, 0.12 * radius)
@@ -222,9 +339,15 @@ def _circle_candidates(
         motion_inside = float(np.mean(heat[inside]))
         motion_outside = float(np.mean(heat[outside]))
         ring_edge = float(np.mean(edge[ring]))
-        score = ring_edge * math.sqrt(max(motion_inside, 0.01)) / (
-            1.0 + 0.25 * max(motion_outside - motion_inside, 0.0)
-        )
+        if relative is None:
+            score = ring_edge * math.sqrt(max(motion_inside, 0.01)) / (
+                1.0 + 0.25 * max(motion_outside - motion_inside, 0.0)
+            )
+            score_kind = "legacy_motion_inside"
+        else:
+            stable_disc_contrast = max(0.0, motion_outside - motion_inside)
+            score = ring_edge * math.sqrt(max(stable_disc_contrast, 0.01))
+            score_kind = "stable_disc_boundary"
         if expected is not None:
             expected_x, expected_y, expected_radius = map(float, expected)
             distance_error = math.hypot(center_x - expected_x, center_y - expected_y) / max(expected_radius, 1.0)
@@ -239,6 +362,9 @@ def _circle_candidates(
                 "ring_edge": ring_edge,
                 "motion_inside": motion_inside,
                 "motion_outside": motion_outside,
+                "stable_disc_contrast": max(0.0, motion_outside - motion_inside),
+                "visible_circle_fraction": visible_fraction,
+                "score_kind": score_kind,
             }
         )
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
@@ -263,6 +389,7 @@ def calibrate_source_frames(
     coordinate_space_id: str,
     selected_crop_xywh: Optional[Sequence[int]] = None,
     expected_circle_xy_radius: Optional[Sequence[float]] = None,
+    discovery_config: Optional[Mapping[str, object]] = None,
     phone_surface_orientation: Optional[Mapping[str, object]] = None,
     provenance: Optional[Mapping[str, object]] = None,
 ) -> dict:
@@ -271,7 +398,9 @@ def calibrate_source_frames(
     if frames.ndim != 4 or len(frames) < 12:
         raise ValueError("Zigzag calibration needs at least 12 color frames")
     height, width = frames.shape[1:3]
-    candidates = _circle_candidates(frames, expected_circle_xy_radius)
+    candidates = _circle_candidates(
+        frames, expected_circle_xy_radius, discovery=discovery_config
+    )
     if selected_crop_xywh is not None:
         crop = list(map(int, selected_crop_xywh))
         method = "user_selected_crop_then_verified_boundary_fit"
@@ -287,7 +416,13 @@ def calibrate_source_frames(
     elif candidates:
         seed = candidates[0]
         crop = _crop_from_circle(seed, (width, height))
-        method = "automatic_ranked_circle_search_then_verified_boundary_fit"
+        method = (
+            "relative_prior_ranked_circle_search_then_verified_boundary_fit"
+            if discovery_config is not None
+            and str(discovery_config.get("strategy", "")).replace("-", "_")
+            == "relative_prior"
+            else "automatic_ranked_circle_search_then_verified_boundary_fit"
+        )
     else:
         raise RuntimeError("No circular mini-map candidate was found; pass a selected crop")
     if len(crop) != 4:
@@ -388,6 +523,9 @@ def calibrate_source_frames(
         "selection": {
             "method": method,
             "expected_circle_xy_radius": list(map(float, expected_circle_xy_radius)) if expected_circle_xy_radius is not None else None,
+            "discovery_config": (
+                dict(discovery_config) if discovery_config is not None else None
+            ),
             "candidate_count": len(candidates),
             "ranked_candidates": candidates[:12],
         },
@@ -423,6 +561,325 @@ def calibrate_source_frames(
     return result
 
 
+def estimate_current_cross_source_homography(
+    android_frames: np.ndarray, hik_frames: np.ndarray
+) -> dict:
+    """Estimate this recording's Android-to-HIK mapping without saved geometry."""
+
+    if android_frames.ndim != 4 or hik_frames.ndim != 4:
+        raise ValueError("Cross-source alignment requires two color-frame sequences")
+    android_average = android_frames.mean(axis=0).astype(np.uint8)
+    hik_average = hik_frames.mean(axis=0).astype(np.uint8)
+    android_gray = cv2.cvtColor(android_average, cv2.COLOR_BGR2GRAY)
+    hik_gray = cv2.cvtColor(hik_average, cv2.COLOR_BGR2GRAY)
+    if not hasattr(cv2, "SIFT_create"):
+        raise RuntimeError("Current cross-source alignment requires OpenCV SIFT")
+    detector = cv2.SIFT_create(
+        nfeatures=8000, contrastThreshold=0.02, edgeThreshold=12
+    )
+    android_keypoints, android_descriptors = detector.detectAndCompute(
+        android_gray, None
+    )
+    hik_keypoints, hik_descriptors = detector.detectAndCompute(hik_gray, None)
+    if android_descriptors is None or hik_descriptors is None:
+        raise RuntimeError("Cross-source alignment found no matchable descriptors")
+    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(
+        android_descriptors, hik_descriptors, k=2
+    )
+    matches = [
+        first for first, second in pairs if first.distance < 0.72 * second.distance
+    ]
+    if len(matches) < 8:
+        raise RuntimeError(
+            "Cross-source alignment needs at least 8 ratio-test matches; got {}".format(
+                len(matches)
+            )
+        )
+    source = np.float32(
+        [android_keypoints[item.queryIdx].pt for item in matches]
+    ).reshape((-1, 1, 2))
+    target = np.float32([hik_keypoints[item.trainIdx].pt for item in matches]).reshape(
+        (-1, 1, 2)
+    )
+    robust_method = getattr(cv2, "USAC_MAGSAC", cv2.RANSAC)
+    matrix, mask = cv2.findHomography(
+        source,
+        target,
+        robust_method,
+        3.0,
+        maxIters=10000,
+        confidence=0.999,
+    )
+    if matrix is None or mask is None or not np.isfinite(matrix).all():
+        raise RuntimeError("Cross-source alignment could not fit a finite homography")
+    inliers = mask.ravel().astype(bool)
+    inlier_count = int(inliers.sum())
+    inlier_rate = float(inliers.mean())
+    if inlier_count < 8 or inlier_rate < 0.25:
+        raise RuntimeError(
+            "Cross-source alignment is ambiguous: {} inliers, {:.1%} rate".format(
+                inlier_count, inlier_rate
+            )
+        )
+    projected = cv2.perspectiveTransform(source, matrix)
+    errors = np.linalg.norm(
+        projected.reshape((-1, 2)) - target.reshape((-1, 2)), axis=1
+    )
+    median_error = float(np.median(errors[inliers]))
+    p95_error = float(np.percentile(errors[inliers], 95))
+    if median_error > 4.0 or p95_error > 10.0:
+        raise RuntimeError(
+            "Cross-source alignment reprojection is too large: median {:.2f}px, p95 {:.2f}px".format(
+                median_error, p95_error
+            )
+        )
+    confidence = float(
+        min(1.0, inlier_count / 40.0)
+        * min(1.0, inlier_rate / 0.70)
+        * math.exp(-((median_error / 2.5) ** 2))
+    )
+    inlier_matches = [
+        item for item, accepted in zip(matches, inliers.tolist()) if accepted
+    ]
+    match_visualization = cv2.drawMatches(
+        android_average,
+        android_keypoints,
+        hik_average,
+        hik_keypoints,
+        inlier_matches[:160],
+        None,
+        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
+    )
+    return {
+        "method": "sift_average_ratio_test_usac_homography",
+        "android_to_hik_3x3": matrix,
+        "android_keypoints": len(android_keypoints),
+        "hik_keypoints": len(hik_keypoints),
+        "ratio_match_count": len(matches),
+        "inlier_count": inlier_count,
+        "inlier_rate": inlier_rate,
+        "median_inlier_reprojection_px": median_error,
+        "p95_inlier_reprojection_px": p95_error,
+        "confidence": confidence,
+        "android_average": android_average,
+        "hik_average": hik_average,
+        "match_visualization": match_visualization,
+    }
+
+
+def create_current_hik_observation(
+    phone_result: Mapping[str, object],
+    hik_frames: np.ndarray,
+    alignment: Mapping[str, object],
+    output_path: Path,
+    *,
+    image_source: str,
+    coordinate_space_id: str,
+    provenance: Optional[Mapping[str, object]] = None,
+) -> dict:
+    """Project canonical session geometry into the current, possibly clipped HIK view."""
+
+    height, width = hik_frames.shape[1:3]
+    phone_boundary = phone_result["outer_boundary"]
+    phone_center = np.asarray(phone_boundary["source_center_xy"], np.float64)
+    phone_radius = float(phone_boundary["radius"])
+    angles = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
+    phone_points = np.column_stack(
+        (
+            phone_center[0] + np.cos(angles) * phone_radius,
+            phone_center[1] + np.sin(angles) * phone_radius,
+        )
+    )
+    matrix = np.asarray(alignment["android_to_hik_3x3"], np.float64)
+    projected = _transform_points(phone_points, matrix)
+    projected_center = _transform_points([phone_center], matrix)[0]
+    projected_radius = float(
+        np.mean(np.linalg.norm(projected - projected_center[None, :], axis=1))
+    )
+    visible_boundary = (
+        (projected[:, 0] >= 0.0)
+        & (projected[:, 0] < width)
+        & (projected[:, 1] >= 0.0)
+        & (projected[:, 1] < height)
+    )
+    visible_boundary_fraction = float(visible_boundary.mean())
+    polygon = np.round(projected).astype(np.int32)
+    mask = np.zeros((height, width), np.uint8)
+    cv2.fillPoly(mask, [polygon], 255, cv2.LINE_AA)
+    nonzero = cv2.findNonZero(mask)
+    if nonzero is None:
+        raise RuntimeError("The mapped mini-map does not intersect the current HIK view")
+    full_area = max(abs(float(cv2.contourArea(projected.astype(np.float32)))), 1.0)
+    visible_area_fraction = float(np.count_nonzero(mask) / full_area)
+    bound_x, bound_y, bound_width, bound_height = cv2.boundingRect(nonzero)
+    margin = max(4, int(math.ceil(projected_radius * 0.08)))
+    left = max(0, bound_x - margin)
+    top = max(0, bound_y - margin)
+    right = min(width, bound_x + bound_width + margin)
+    bottom = min(height, bound_y + bound_height + margin)
+    crop = [left, top, right - left, bottom - top]
+    crop_mask = mask[top:bottom, left:right]
+    average = np.asarray(alignment["hik_average"], np.uint8)
+    heat = _stacked_difference_heatmap(hik_frames)
+    overlay = average.copy()
+    cv2.polylines(overlay, [polygon], True, (255, 0, 255), 4, cv2.LINE_AA)
+    cv2.drawMarker(
+        overlay,
+        tuple(np.round(projected_center).astype(int)),
+        (255, 0, 255),
+        cv2.MARKER_CROSS,
+        34,
+        4,
+        cv2.LINE_AA,
+    )
+    cv2.rectangle(
+        overlay, (left, top), (right - 1, bottom - 1), (255, 255, 0), 2
+    )
+    warped_android = cv2.warpPerspective(
+        np.asarray(alignment["android_average"], np.uint8), matrix, (width, height)
+    )
+    valid = cv2.warpPerspective(
+        np.full(alignment["android_average"].shape[:2], 255, np.uint8),
+        matrix,
+        (width, height),
+    )
+    blend = average.copy()
+    blend[valid > 0] = cv2.addWeighted(
+        average[valid > 0], 0.5, warped_android[valid > 0], 0.5, 0
+    )
+    ellipse = cv2.fitEllipse(projected.astype(np.float32))
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    evidence = {
+        "source_average": "source_average.png",
+        "source_stacked_difference_heatmap": "source_stacked_difference_heatmap.png",
+        "mapped_boundary_overlay": "mapped_boundary_overlay.png",
+        "cross_source_matches": "cross_source_matches.png",
+        "cross_source_warp_blend": "cross_source_warp_blend.png",
+        "actual_shift_estimation_mask": "actual_shift_estimation_mask.png",
+        "cropped_minimap": "cropped_minimap.png",
+        "cropped_minimap_mask": "cropped_minimap_mask.png",
+    }
+    images = {
+        evidence["source_average"]: average,
+        evidence["source_stacked_difference_heatmap"]: _color_heatmap(heat),
+        evidence["mapped_boundary_overlay"]: overlay,
+        evidence["cross_source_matches"]: np.asarray(
+            alignment["match_visualization"], np.uint8
+        ),
+        evidence["cross_source_warp_blend"]: blend,
+        evidence["actual_shift_estimation_mask"]: mask,
+        evidence["cropped_minimap"]: average[top:bottom, left:right],
+        evidence["cropped_minimap_mask"]: crop_mask,
+    }
+    for filename, image in images.items():
+        if not cv2.imwrite(str(output_path / filename), image):
+            raise RuntimeError("Could not save HIK observation evidence {}".format(filename))
+    np.savez_compressed(
+        str(output_path / "model.npz"),
+        minimap_mask=mask,
+        crop_mask=crop_mask,
+        boundary=np.asarray(
+            [projected_center[0], projected_center[1], projected_radius]
+        ),
+        boundary_polygon=projected,
+    )
+    alignment_metrics = {
+        key: alignment[key]
+        for key in (
+            "method",
+            "android_keypoints",
+            "hik_keypoints",
+            "ratio_match_count",
+            "inlier_count",
+            "inlier_rate",
+            "median_inlier_reprojection_px",
+            "p95_inlier_reprojection_px",
+            "confidence",
+        )
+    }
+    alignment_metrics["android_to_hik_3x3"] = matrix.tolist()
+    ellipse_center, ellipse_axes, ellipse_angle = ellipse
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "review_required",
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "calibration_kind": "current_session_mapped_minimap_observation",
+        "scope": {
+            "includes": [
+                "current HIK mini-map observation",
+                "projected boundary polygon",
+                "visible shift-estimation mask",
+            ],
+            "excludes": [
+                "reusable HIK crop",
+                "camera positioning prior",
+                "cursor",
+                "pose",
+                "tracking",
+                "game north",
+            ],
+        },
+        "image_source": image_source,
+        "coordinate_space": {
+            "id": coordinate_space_id,
+            "frame_size_px": [width, height],
+            "origin": "top_left_pixel_center",
+            "axes": "+X right, +Y down",
+        },
+        "selection": {
+            "method": "current_cross_source_homography_from_android_boundary",
+            "candidate_count": 0,
+            "ranked_candidates": [],
+            "cross_source_alignment": alignment_metrics,
+        },
+        "crop_xywh": crop,
+        "outer_boundary": {
+            "center_x": float(projected_center[0] - left),
+            "center_y": float(projected_center[1] - top),
+            "radius": projected_radius,
+            "source_center_xy": projected_center.tolist(),
+            "geometry": "projected_phone_circle",
+            "source_boundary_polygon_xy": projected[::10].tolist(),
+            "projected_ellipse": {
+                "center_xy": [float(ellipse_center[0]), float(ellipse_center[1])],
+                "diameter_xy": [float(ellipse_axes[0]), float(ellipse_axes[1])],
+                "angle_deg": float(ellipse_angle),
+            },
+            "confidence": float(
+                float(phone_boundary.get("confidence", 1.0))
+                * float(alignment["confidence"])
+                * math.sqrt(max(visible_boundary_fraction, 0.0))
+            ),
+        },
+        "visibility": {
+            "boundary_fraction": visible_boundary_fraction,
+            "area_fraction": min(1.0, visible_area_fraction),
+            "clipped_by_source_frame": visible_boundary_fraction < 0.999,
+        },
+        "shift_estimation": {
+            "mask_file": evidence["actual_shift_estimation_mask"],
+            "crop_mask_file": evidence["cropped_minimap_mask"],
+            "mask_semantics": "255 inside the visible projection of the phone-space mini-map",
+        },
+        "reuse": {
+            "persistent": False,
+            "rule": "Recompute after camera movement; never reuse this HIK crop.",
+        },
+        "evidence": evidence,
+        "model_file": "model.npz",
+        "provenance": dict(provenance or {}),
+    }
+    _atomic_json(output_path / "minimap_calibration.json", result)
+    write_commented_yaml(
+        output_path / "minimap_calibration.yaml",
+        result,
+        header=MINIMAP_HEADER,
+        section_comments=MINIMAP_COMMENTS,
+    )
+    return result
+
+
 def _load_rig(path_value: Path) -> tuple[Path, dict]:
     path = Path(path_value)
     if path.is_dir():
@@ -448,18 +905,49 @@ def compose_rig_game_profile(
     matrix = rig["geometry"]["full_sensor_camera_to_screen_3x3"]
     hik_center = hik_result["outer_boundary"]["source_center_xy"]
     radius = float(hik_result["outer_boundary"]["radius"])
-    mapped = _transform_points(
-        [hik_center, [hik_center[0] + radius, hik_center[1]], [hik_center[0], hik_center[1] + radius]],
-        matrix,
-    )
-    mapped_radius = float(
-        np.mean([np.linalg.norm(mapped[1] - mapped[0]), np.linalg.norm(mapped[2] - mapped[0])])
-    )
     phone_center = np.asarray(
         phone_result["outer_boundary"]["canonical_phone_center_xy"], np.float64
     )
-    center_error = float(np.linalg.norm(mapped[0] - phone_center))
     phone_radius = float(phone_result["outer_boundary"]["radius"])
+    hik_coordinate_space = (hik_result.get("coordinate_space") or {}).get(
+        "id", "native_hik_sensor_bgr_pixels"
+    )
+    if hik_coordinate_space == "native_hik_sensor_bgr_pixels":
+        mapped = _transform_points(
+            [
+                hik_center,
+                [hik_center[0] + radius, hik_center[1]],
+                [hik_center[0], hik_center[1] + radius],
+            ],
+            matrix,
+        )
+        mapped_radius = float(
+            np.mean(
+                [
+                    np.linalg.norm(mapped[1] - mapped[0]),
+                    np.linalg.norm(mapped[2] - mapped[0]),
+                ]
+            )
+        )
+        cross_source_check = {
+            "method": "apply_saved_rig_homography_only_no_fitting",
+            "mapped_hik_center_in_phone_xy": mapped[0].tolist(),
+            "adb_phone_center_xy": phone_center.tolist(),
+            "center_error_phone_px": float(np.linalg.norm(mapped[0] - phone_center)),
+            "mapped_hik_radius_phone_px": mapped_radius,
+            "adb_radius_phone_px": phone_radius,
+            "radius_error_phone_px": abs(mapped_radius - phone_radius),
+            "non_gating": True,
+        }
+    else:
+        cross_source_check = {
+            "method": "not_applicable_to_rig_normalized_hik_observation",
+            "reason": (
+                "The saved full-sensor camera matrix cannot be applied a second "
+                "time to an already rig-normalized HIK stream."
+            ),
+            "non_gating": True,
+        }
     camera_id = str(rig["camera"]["device_id"])
     phone_id = str(rig["phone"]["serial"])
     rig_id = "{}--{}".format(camera_id, phone_id)
@@ -474,21 +962,17 @@ def compose_rig_game_profile(
         "canonical_coordinate_space": "phone_natural_display_pixels",
         "canonical_phone_crop_xywh": list(phone_result["canonical_phone_crop_xywh"]),
         "native_hik_observation": {
-            "coordinate_space": "native_hik_sensor_bgr_pixels",
+            "coordinate_space": hik_coordinate_space,
             "crop_xywh": list(hik_result["crop_xywh"]),
             "center_xy": list(map(float, hik_center)),
             "radius_px": radius,
+            "session_local": not bool(
+                (hik_result.get("reuse") or {}).get("persistent", False)
+            ),
+            "reuse_rule": (hik_result.get("reuse") or {}).get("rule"),
+            "visibility": dict(hik_result.get("visibility") or {}),
         },
-        "cross_source_coordinate_check": {
-            "method": "apply_saved_rig_homography_only_no_fitting",
-            "mapped_hik_center_in_phone_xy": mapped[0].tolist(),
-            "adb_phone_center_xy": phone_center.tolist(),
-            "center_error_phone_px": center_error,
-            "mapped_hik_radius_phone_px": mapped_radius,
-            "adb_radius_phone_px": phone_radius,
-            "radius_error_phone_px": abs(mapped_radius - phone_radius),
-            "non_gating": True,
-        },
+        "cross_source_coordinate_check": cross_source_check,
     }
 
 
@@ -505,6 +989,7 @@ def calibrate_zigzag_session(
     rig_calibration: Optional[Path] = None,
     android_selected_crop_xywh: Optional[Sequence[int]] = None,
     hik_selected_crop_xywh: Optional[Sequence[int]] = None,
+    android_discovery: Optional[Mapping[str, object]] = None,
 ) -> dict:
     session = SessionReader(session_path)
     context = session.manifest.get("context") or {}
@@ -516,38 +1001,85 @@ def calibrate_zigzag_session(
     game_id = str(context.get("game_id") or "unknown-game")
     orientation = dict(context.get("phone_surface_orientation") or {})
     android_frames, _ = read_session_stream_frames(session, "android_phone")
-    if "hik_full" not in session.frames_by_stream:
+    if "hik_full" in session.frames_by_stream:
+        hik_stream = "hik_full"
+        hik_coordinate_space = "native_hik_sensor_bgr_pixels"
+    elif "hik_phone" in session.frames_by_stream:
+        hik_stream = "hik_phone"
+        hik_coordinate_space = "rig_normalized_hik_phone_pixels"
+    else:
         raise ValueError(
-            "Session has no native hik_full stream; rectified rig-dependent HIK "
-            "sessions cannot be relabeled as native sensor calibration"
+            "Session has neither a hik_full nor hik_phone frame stream"
         )
-    hik_stream = "hik_full"
     hik_frames, _ = read_session_stream_frames(session, hik_stream)
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=False)
     provenance = {"session_path": str(Path(session_path).resolve())}
+    discovery = android_discovery_config(
+        **(
+            dict(DEFAULT_ANDROID_DISCOVERY)
+            if android_discovery is None
+            else dict(android_discovery)
+        )
+    )
+    strategy = discovery["strategy"]
+    expected_android_circle = (
+        _known_android_hint(
+            game_id, (android_frames.shape[2], android_frames.shape[1])
+        )
+        if strategy == "legacy_hint" and android_selected_crop_xywh is None
+        else None
+    )
+    source_discovery = (
+        discovery
+        if strategy == "relative_prior" and android_selected_crop_xywh is None
+        else None
+    )
     android = calibrate_source_frames(
         android_frames,
         output_path / "android_phone",
         image_source="android_scrcpy",
         coordinate_space_id="android_logical_display_pixels",
         selected_crop_xywh=android_selected_crop_xywh,
-        expected_circle_xy_radius=(
-            None if android_selected_crop_xywh is not None
-            else _known_android_hint(game_id, (android_frames.shape[2], android_frames.shape[1]))
-        ),
+        expected_circle_xy_radius=expected_android_circle,
+        discovery_config=source_discovery,
         phone_surface_orientation=orientation,
         provenance={**provenance, "stream_id": "android_phone"},
     )
-    hik = calibrate_source_frames(
-        hik_frames,
-        output_path / "hik_full",
-        image_source="hik_mvs_native",
-        coordinate_space_id="native_hik_sensor_bgr_pixels",
-        selected_crop_xywh=hik_selected_crop_xywh,
-        phone_surface_orientation=orientation,
-        provenance={**provenance, "stream_id": hik_stream},
-    )
+    hik_output = output_path / hik_stream
+    if hik_selected_crop_xywh is not None:
+        hik = calibrate_source_frames(
+            hik_frames,
+            hik_output,
+            image_source="hik_mvs_manual_override",
+            coordinate_space_id=hik_coordinate_space,
+            selected_crop_xywh=hik_selected_crop_xywh,
+            phone_surface_orientation=orientation,
+            provenance={
+                **provenance,
+                "stream_id": hik_stream,
+                "manual_override": True,
+            },
+        )
+    else:
+        alignment = estimate_current_cross_source_homography(
+            android_frames, hik_frames
+        )
+        hik = create_current_hik_observation(
+            android,
+            hik_frames,
+            alignment,
+            hik_output,
+            image_source=(
+                "hik_mvs_native" if hik_stream == "hik_full" else "hik_rig_normalized"
+            ),
+            coordinate_space_id=hik_coordinate_space,
+            provenance={
+                **provenance,
+                "stream_id": hik_stream,
+                "geometry_source": "current_android_to_hik_homography",
+            },
+        )
     android_source = next(
         (
             item
@@ -598,7 +1130,7 @@ def calibrate_zigzag_session(
                 "session_path": str(Path(session_path).resolve()),
                 "phone_game_profile": str((phone_revision / "profile.json").resolve()),
                 "artifacts": {
-                    "native_hik_minimap_calibration": str((output_path / "hik_full" / "minimap_calibration.json").resolve()),
+                    "native_hik_minimap_calibration": str((hik_output / "minimap_calibration.json").resolve()),
                     "phone_game_profile": str((phone_revision / "profile.json").resolve()),
                 },
                 "reuse": {
@@ -613,7 +1145,10 @@ def calibrate_zigzag_session(
         "status": "review_required",
         "session_path": str(Path(session_path).resolve()),
         "game_id": game_id,
-        "native_hik_calibration": str((output_path / "hik_full" / "minimap_calibration.json").resolve()),
+        "native_hik_calibration": str((hik_output / "minimap_calibration.json").resolve()),
+        "hik_stream_id": hik_stream,
+        "hik_geometry_reusable": False,
+        "android_discovery": discovery,
         "phone_game_profile": str((phone_revision / "profile.json").resolve()),
         "rig_game_profile": (
             str((store.profile_directory(ScopedProfileKey("rig_game", _rig_id(rig_calibration), game_id)) / "current.json").resolve())
@@ -638,7 +1173,35 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--profiles-root", type=Path, default=Path("profiles"))
     value.add_argument("--rig-calibration", type=Path)
     value.add_argument("--android-crop", type=_parse_crop)
-    value.add_argument("--hik-crop", type=_parse_crop)
+    value.add_argument(
+        "--hik-crop",
+        type=_parse_crop,
+        help=(
+            "legacy diagnostic override; automatic calibration derives the current "
+            "HIK observation from Android and never reuses a HIK crop"
+        ),
+    )
+    value.add_argument(
+        "--android-discovery",
+        choices=("relative-prior", "unrestricted", "legacy-hint"),
+        default="relative-prior",
+    )
+    value.add_argument(
+        "--android-center-region",
+        default="0,0,0.35,0.35",
+        help="relative x0,y0,x1,y1 bounds for automatic Android circle centers",
+    )
+    value.add_argument(
+        "--android-radius-fraction",
+        default="0.07,0.22",
+        help="minimum,maximum radius as fractions of the shorter Android dimension",
+    )
+    value.add_argument(
+        "--android-min-visible",
+        type=float,
+        default=0.85,
+        help="minimum fraction of the candidate circumference visible in Android",
+    )
     return value
 
 
@@ -652,6 +1215,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rig_calibration=arguments.rig_calibration,
         android_selected_crop_xywh=arguments.android_crop,
         hik_selected_crop_xywh=arguments.hik_crop,
+        android_discovery=android_discovery_config(
+            arguments.android_discovery,
+            arguments.android_center_region,
+            arguments.android_radius_fraction,
+            arguments.android_min_visible,
+        ),
     )
     print("Mini-map calibration: {}".format(Path(output).resolve()))
     print("Phone-game profile: {}".format(result["summary"]["phone_game_profile"]))
