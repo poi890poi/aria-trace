@@ -46,6 +46,19 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(production_fusion, compatibility_fusion)
         self.assertIs(production_yaw, compatibility_yaw)
 
+    def test_workbench_server_legacy_exports_are_exact_compatibility_aliases(self):
+        from acquisition import workbench as legacy
+        from aria_trace.apps.workbench import server
+
+        self.assertEqual(server.WORKBENCH_SERVICE, legacy.WORKBENCH_SERVICE)
+        self.assertIs(server.WorkbenchHttpServer, legacy.WorkbenchHttpServer)
+        self.assertIs(
+            server.discover_workbench_instance,
+            legacy.discover_workbench_instance,
+        )
+        self.assertIs(server.is_client_disconnect, legacy.is_client_disconnect)
+        self.assertIs(server.occupied_port_message, legacy.occupied_port_message)
+
 
 if __name__ == "__main__":
     unittest.main()

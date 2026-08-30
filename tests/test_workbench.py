@@ -288,7 +288,8 @@ class WorkbenchTests(unittest.TestCase):
             "http://127.0.0.1:8080/api/instance", 404, "Not found", {}, None
         )
         with patch(
-            "acquisition.workbench.urlopen", side_effect=[not_found, Response()]
+            "aria_trace.apps.workbench.server.urlopen",
+            side_effect=[not_found, Response()],
         ):
             instance = discover_workbench_instance("127.0.0.1", 8080)
         self.assertTrue(instance["legacy"])
