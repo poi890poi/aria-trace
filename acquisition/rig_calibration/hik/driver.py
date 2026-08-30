@@ -1058,7 +1058,47 @@ class RectifiedHikCamera:
         self._dense_path = None
         self._effective_roi = None
 
+    def is_calibrated(self) -> bool:
+        """Return whether the saved bundle is sufficient for adapter streaming."""
+
+        try:
+            camera = self.config["camera"]
+            mode = camera["full_sensor_mode"]
+            roi = list(map(int, camera["hardware_roi_xywh"]))
+            imaging = self.config["imaging"]
+            white_balance = imaging["white_balance"]
+            normalization = self.config["normalization"]
+            output_size = list(map(int, normalization["output_size_px"]))
+            matrix = np.asarray(
+                normalization["full_sensor_camera_to_output_3x3"], np.float64
+            )
+            return bool(
+                str(camera["device_id"])
+                and int(mode["width_px"]) > 0
+                and int(mode["height_px"]) > 0
+                and float(mode["fps"]) > 0
+                and len(roi) == 4
+                and min(roi[2:]) > 0
+                and float(imaging["exposure_us"]) > 0
+                and np.isfinite(float(imaging["gain"]))
+                and all(
+                    int(white_balance[name]) > 0
+                    for name in ("ratio_red", "ratio_green", "ratio_blue")
+                )
+                and len(output_size) == 2
+                and min(output_size) > 0
+                and matrix.shape == (3, 3)
+                and np.isfinite(matrix).all()
+                and abs(float(np.linalg.det(matrix))) > 1.0e-12
+            )
+        except (KeyError, TypeError, ValueError, OSError):
+            return False
+
     def open(self) -> "RectifiedHikCamera":
+        if not self.is_calibrated():
+            raise RuntimeError(
+                "Saved HIK bundle is incomplete and cannot configure the camera adapter"
+            )
         camera = self.config["camera"]
         mode = camera["full_sensor_mode"]
         self.adapter.open(

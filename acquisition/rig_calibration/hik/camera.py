@@ -158,6 +158,13 @@ class HikCamera:
     def is_raw(self) -> bool:
         return False
 
+    def is_calibrated(self) -> bool:
+        """Return whether this facade has a complete saved rig calibration."""
+
+        return RectifiedHikCamera(
+            self.calibration_path, rectify=self._rectify_enabled
+        ).is_calibrated()
+
     @classmethod
     def get_all_ips(cls, sdk_python_path: Optional[str] = None) -> list[str]:
         """Return HIK device identifiers without opening any camera."""

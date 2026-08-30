@@ -224,6 +224,16 @@ For fresh HIK rig calibration followed by synchronized source-data capture, use:
 .\calibrate-hik-game-camera.bat
 ```
 
+Before repeating the full rig phase, this entry point checks the newest saved
+rig bundle for the selected camera and phone. It displays the saved ChArUco
+atlas, opens the production adapter with locked imaging, and directly compares
+a fresh hardware-ROI snapshot with `last_camera_frame.png`. If
+`is_calibrated()` is true and the unfitted snapshot comparison passes, the
+existing rig bundle is referenced and full rig calibration is skipped. A moved,
+missing, invalid, or unavailable rig always falls back to full calibration.
+Use `-RigCalibration PATH` to check one explicit prior bundle. The check and its
+images are retained beside the requested rig output in a `-precheck` directory.
+
 To repeat that exact headless entry point without repair or retry logic, use:
 
 ```powershell

@@ -2,6 +2,7 @@ param(
     [string]$GameId = "genshin-impact",
     [string]$CameraId,
     [string]$PhoneSerial,
+    [string]$RigCalibration,
     [string]$RigOutput,
     [string]$MinimapOutput
 )
@@ -31,17 +32,51 @@ function Invoke-AriaStage {
 }
 
 try {
-    $rigArguments = @("--headless", "--save", "--output", $RigOutput)
-    if ($CameraId) { $rigArguments += @("--camera-id", $CameraId) }
-    if ($PhoneSerial) { $rigArguments += @("--phone-serial", $PhoneSerial) }
+    $precheckOutput = "$RigOutput-precheck"
+    $precheckArguments = @(
+        "--artifacts-root", (Join-Path $root "artifacts"),
+        "--output", $precheckOutput
+    )
+    if ($RigCalibration) { $precheckArguments += @("--calibration", $RigCalibration) }
+    if ($CameraId) { $precheckArguments += @("--camera-id", $CameraId) }
+    if ($PhoneSerial) { $precheckArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `
-        "[1-2/5] Wake phone and calibrate the HIK rig" `
-        (Join-Path $root "calibrate-hik-rig.bat") `
-        $rigArguments
+        "[0/5] Check whether the saved HIK rig calibration is still valid" `
+        (Join-Path $root "precheck-hik-rig.bat") `
+        $precheckArguments
 
-    $rigCalibration = Join-Path $RigOutput "hik_camera_calibration.json"
-    if (-not (Test-Path -LiteralPath $rigCalibration -PathType Leaf)) {
-        throw "Rig calibration did not produce $rigCalibration"
+    $precheckPath = Join-Path $precheckOutput "precheck.json"
+    if (-not (Test-Path -LiteralPath $precheckPath -PathType Leaf)) {
+        throw "Rig precheck did not produce $precheckPath"
+    }
+    $precheck = Get-Content -LiteralPath $precheckPath -Raw | ConvertFrom-Json
+    if ($precheck.reusable -and $precheck.camera_adapter_is_calibrated) {
+        $effectiveRigCalibration = [string]$precheck.calibration
+        New-Item -ItemType Directory -Path $RigOutput | Out-Null
+        [ordered]@{
+            schema_version = "1.0"
+            status = "reused"
+            calibration = $effectiveRigCalibration
+            precheck = $precheckPath
+            comparison = $precheck.comparison
+        } | ConvertTo-Json -Depth 12 | Set-Content `
+            -LiteralPath (Join-Path $RigOutput "reused_calibration.json") `
+            -Encoding UTF8
+        Write-Host "Saved rig calibration is unchanged; full rig calibration skipped." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Rig reuse was not proven ($($precheck.status)); running full calibration." -ForegroundColor Yellow
+        $rigArguments = @("--headless", "--save", "--output", $RigOutput)
+        if ($CameraId) { $rigArguments += @("--camera-id", $CameraId) }
+        if ($PhoneSerial) { $rigArguments += @("--phone-serial", $PhoneSerial) }
+        Invoke-AriaStage `
+            "[1-2/5] Wake phone and calibrate the HIK rig" `
+            (Join-Path $root "calibrate-hik-rig.bat") `
+            $rigArguments
+        $effectiveRigCalibration = Join-Path $RigOutput "hik_camera_calibration.json"
+        if (-not (Test-Path -LiteralPath $effectiveRigCalibration -PathType Leaf)) {
+            throw "Rig calibration did not produce $effectiveRigCalibration"
+        }
     }
 
     New-Item -ItemType Directory -Force -Path $captureRoot | Out-Null
@@ -51,7 +86,7 @@ try {
     }
     $captureArguments = @(
         "--game-id", $GameId,
-        "--rig-calibration", $RigOutput,
+        "--rig-calibration", $effectiveRigCalibration,
         "--output-root", $captureRoot
     )
     if ($CameraId) { $captureArguments += @("--camera-id", $CameraId) }
@@ -86,7 +121,7 @@ try {
     }
     Write-Host ""
     Write-Host "Fresh POC localization succeeded." -ForegroundColor Green
-    Write-Host "Rig:      $rigCalibration"
+    Write-Host "Rig:      $effectiveRigCalibration"
     Write-Host "Session:  $sessionPath"
     Write-Host "Mini-map: $summaryPath"
     Write-Host "Profile:  not published by this POC-only localization stage"

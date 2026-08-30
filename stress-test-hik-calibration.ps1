@@ -222,6 +222,7 @@ function Get-PipelineTimingBreakdown {
     param([string[]]$LogLines, [datetime]$PipelineStarted, [datetime]$PipelineFinished, [string]$RunStatus)
     $entries = @(Read-TimestampedLogEntries $LogLines)
     $stageDefinitions = @(
+        [ordered]@{ name = "rig_precheck"; pattern = '^\[0/5\]' },
         [ordered]@{ name = "rig_calibration"; pattern = '^\[1-2/5\]' },
         [ordered]@{ name = "dual_source_capture"; pattern = '^\[3-4/5\]' },
         [ordered]@{ name = "minimap_localization"; pattern = '^\[5/5\]' }
@@ -513,6 +514,11 @@ for ($runIndex = 1; $runIndex -le $Runs; $runIndex++) {
     }
 
     $rigPath = Join-Path $rigOutput "hik_camera_calibration.json"
+    $rigReusePath = Join-Path $rigOutput "reused_calibration.json"
+    $rigReuse = Read-JsonFile $rigReusePath
+    if (-not (Test-Path -LiteralPath $rigPath -PathType Leaf) -and $null -ne $rigReuse) {
+        $rigPath = [string]$rigReuse.calibration
+    }
     $minimapPath = Join-Path $minimapOutput "localization_summary.json"
     $rig = Read-JsonFile $rigPath
     $minimap = Read-JsonFile $minimapPath
@@ -572,6 +578,7 @@ for ($runIndex = 1; $runIndex -le $Runs; $runIndex++) {
         run_directory = $runDirectory
         log = $logPath
         rig_calibration = if ($null -ne $rig) { $rigPath } else { $null }
+        rig_calibration_reuse = if ($null -ne $rigReuse) { $rigReusePath } else { $null }
         minimap_localization = if ($null -ne $minimap) { $minimapPath } else { $null }
         new_sessions = @($newSessions | ForEach-Object { $_.FullName })
         failure_summary = $failureSummary
