@@ -66,6 +66,14 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(sources.SourceFactory, legacy.SourceFactory)
         self.assertIs(sources.parse_adb_devices, legacy.parse_adb_devices)
 
+    def test_workbench_application_legacy_export_is_exact_compatibility_alias(self):
+        from acquisition import workbench as legacy
+        from aria_trace.apps.workbench import application
+
+        self.assertIs(application.AcquisitionWorkbench, legacy.AcquisitionWorkbench)
+        self.assertIs(application.make_handler, legacy.make_handler)
+        self.assertIs(application.main, legacy.main)
+
 
 if __name__ == "__main__":
     unittest.main()
