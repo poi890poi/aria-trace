@@ -74,7 +74,7 @@ def _camera_id_for_registry(
 def _registry_configuration(
     ip: Optional[str], config: Mapping[str, Any]
 ) -> tuple[Path, Dict[str, Any], Dict[str, Any]]:
-    from acquisition.profile_registry import (
+    from aria_trace.adapters.filesystem.profile_registry import (
         AdapterRequest,
         ProfileContext,
         ProfileRegistry,

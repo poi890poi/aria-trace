@@ -197,7 +197,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if result is None:
         print("Calibration ended without saving.")
     elif not arguments.no_profile:
-        from acquisition.profile_manager import publish_rig_calibration
+        from aria_trace.workflows.profile_management import publish_rig_calibration
 
         profile = publish_rig_calibration(
             result, profile_root=arguments.profile_root, activate=True

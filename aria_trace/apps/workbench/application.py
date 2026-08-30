@@ -60,7 +60,7 @@ from aria_trace.services.calibration.minimap.calibration import (
 )
 from aria_trace.services.calibration.minimap.verification import verify_forward_session
 from acquisition.poc_evidence import build_poc_evidence_index
-from acquisition.profiles import ProfileCatalog
+from aria_trace.adapters.filesystem.profiles import ProfileCatalog
 from aria_trace.workflows.recording import AcquisitionRecorder
 from aria_trace.workflows.route import compile_route_session
 from aria_trace.services.localization.route.tracker import RouteCandidateAdvisor, RouteVisualTracker

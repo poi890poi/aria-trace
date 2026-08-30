@@ -45,6 +45,18 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_session, SessionReader)
         self.assertIs(legacy_video, create_video_sink)
 
+    def test_legacy_profile_exports_are_exact_configuration_aliases(self):
+        from acquisition.profile_manager import publish_rig_calibration as legacy_publish
+        from acquisition.profile_registry import ProfileRegistry as legacy_registry
+        from acquisition.profiles import ProfileCatalog as legacy_catalog
+        from aria_trace.adapters.filesystem.profile_registry import ProfileRegistry
+        from aria_trace.adapters.filesystem.profiles import ProfileCatalog
+        from aria_trace.workflows.profile_management import publish_rig_calibration
+
+        self.assertIs(legacy_registry, ProfileRegistry)
+        self.assertIs(legacy_catalog, ProfileCatalog)
+        self.assertIs(legacy_publish, publish_rig_calibration)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

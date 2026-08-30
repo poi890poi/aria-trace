@@ -15,7 +15,7 @@ from ..geometry import CharucoLayout
 from .display import AdbDisplayTarget
 from .driver import HikMvsCameraAdapter, RectifiedHikCamera
 from .phone import AdbPhoneSession, resolve_adb_executable
-from acquisition.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
+from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
 
 
 DEFAULT_MINIMUM_CORRELATION = 0.985

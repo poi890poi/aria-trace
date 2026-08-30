@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import acquisition.profile_registry as profile_registry_module
+import aria_trace.adapters.filesystem.profile_registry as profile_registry_module
 
 from acquisition.profile_registry import (
     AdapterRequest,
