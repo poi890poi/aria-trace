@@ -1154,6 +1154,12 @@ class TwoRateRealtimeTracker:
                                         self.map_scale = float(
                                             np.mean([item.scale for item in rows])
                                         )
+                                    if self.route_visual_tracker is not None:
+                                        recovered_state = self.fusion.state
+                                        self.route_visual_tracker.seed(
+                                            recovered_state.pose.x,
+                                            recovered_state.pose.y,
+                                        )
                                     self._local_rejections = 0
                                     self._clear_recovery_request()
                                 self._recovery_hypotheses = []

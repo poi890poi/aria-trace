@@ -3,6 +3,7 @@ import time
 import json
 import tempfile
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -529,6 +530,68 @@ class TwoRateTrackerTests(unittest.TestCase):
 
             tracker._clear_recovery_request()
             self.assertFalse(tracker._recovery_requested())
+        finally:
+            tracker.close()
+
+    def test_accepted_global_recovery_reseeds_route_visual_tracker(self):
+        class VisualTracker:
+            def __init__(self):
+                self.previous_xy = (1.0, 1.0)
+                self.seed_calls = []
+
+            def seed(self, x, y):
+                self.previous_xy = (float(x), float(y))
+                self.seed_calls.append(self.previous_xy)
+
+            def track(self, observation, mask, timestamp_ns=None):
+                return {
+                    "measurement_accepted": False,
+                    "pose_available": True,
+                    "held": True,
+                    "x": self.previous_xy[0],
+                    "y": self.previous_xy[1],
+                    "score": 0.0,
+                    "decision": "held-no-map-measurement",
+                }
+
+        visual = VisualTracker()
+        tracker = TwoRateRealtimeTracker(
+            np.full((160, 180, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+            global_interval_s=10.0,
+            localizer=ImmediateLocalizer(),
+            recovery_consensus_count=2,
+            route_visual_tracker=visual,
+        )
+        frame = np.zeros((100, 100, 3), np.uint8)
+        try:
+            tracker.fusion.initialize(Pose2D(10.0, 20.0, 15.0))
+            tracker.fusion.state.position_sigma_m = 40.0
+            tracker.fusion._refresh_mode()
+            tracker._recovery_request_active = True
+            tracker.last_global_ns = 1
+
+            first = Future()
+            first.set_result(GlobalFix(80.0, 70.0, 15.0, 1.0, 0.9, 0.2, 2.0))
+            tracker._global_future = first
+            tracker.update(frame, 2)
+            self.assertEqual(visual.seed_calls, [])
+
+            second = Future()
+            second.set_result(GlobalFix(81.0, 70.0, 15.0, 1.0, 0.9, 0.2, 2.0))
+            tracker._global_future = second
+            result = tracker.update(frame, 3)
+
+            self.assertEqual(
+                result["global_fix"]["decision"], "recovered-consensus"
+            )
+            self.assertEqual(len(visual.seed_calls), 1)
+            self.assertEqual(
+                visual.seed_calls[0],
+                (tracker.fusion.state.pose.x, tracker.fusion.state.pose.y),
+            )
         finally:
             tracker.close()
 
