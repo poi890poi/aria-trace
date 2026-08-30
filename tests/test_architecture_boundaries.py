@@ -195,6 +195,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertTrue((ROOT / "config" / "routes").is_dir())
         self.assertFalse((ROOT / "profiles" / "games").exists())
         self.assertFalse((ROOT / "profiles" / "routes").exists())
+        self.assertFalse((ROOT / "acquisition" / "calibration_profiles.py").exists())
 
     def test_cursor_legacy_exports_are_exact_service_aliases(self):
         from acquisition.cursor_pose import CursorPoseEstimator as legacy_pose
