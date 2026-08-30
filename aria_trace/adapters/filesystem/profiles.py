@@ -13,7 +13,7 @@ class ProfileCatalog:
         self.root = (
             Path(root)
             if root
-            else Path(__file__).resolve().parents[3] / "profiles"
+            else Path(__file__).resolve().parents[3] / "config"
         )
         self.games = self._load("games", "profile_id")
         self.routes = self._load("routes", "route_profile_id")

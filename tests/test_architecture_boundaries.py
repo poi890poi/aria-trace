@@ -190,6 +190,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         ]
         self.assertEqual(["__init__"], methods)
 
+    def test_source_configuration_is_separate_from_mutable_profiles(self):
+        self.assertTrue((ROOT / "config" / "games").is_dir())
+        self.assertTrue((ROOT / "config" / "routes").is_dir())
+        self.assertFalse((ROOT / "profiles" / "games").exists())
+        self.assertFalse((ROOT / "profiles" / "routes").exists())
+
     def test_cursor_legacy_exports_are_exact_service_aliases(self):
         from acquisition.cursor_pose import CursorPoseEstimator as legacy_pose
         from acquisition.cursor_worker import CursorPoseProcessExecutor as legacy_worker
