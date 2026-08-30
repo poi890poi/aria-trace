@@ -98,6 +98,14 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(calibrate_minimap_boundary_frames, legacy_boundary)
         self.assertIs(TransitionController, legacy_transition)
 
+    def test_mapping_legacy_exports_are_exact_service_aliases(self):
+        from acquisition.map_layers import LayeredGlobalLocalizer as legacy_localizer
+        from acquisition.map_stitching import stitch_map_session as legacy_stitch
+        from aria_trace.services.mapping import LayeredGlobalLocalizer, stitch_map_session
+
+        self.assertIs(LayeredGlobalLocalizer, legacy_localizer)
+        self.assertIs(stitch_map_session, legacy_stitch)
+
 
 if __name__ == "__main__":
     unittest.main()

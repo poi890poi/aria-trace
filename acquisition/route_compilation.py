@@ -9,7 +9,7 @@ from replay.route_tracking import compile_route_tracking_package, describe_minim
 from replay.session_tools import decode_frames, sample_frames
 
 from .live_tracker import MinimapExtractor
-from .map_layers import LayeredGlobalLocalizer
+from aria_trace.services.mapping.layers import LayeredGlobalLocalizer
 from .session import SessionReader
 
 

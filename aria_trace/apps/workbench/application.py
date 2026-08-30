@@ -36,9 +36,9 @@ from replay.route_tracking import RouteTrackingPackage
 from replay.route_similarity import write_live_route_similarity
 
 from acquisition.annotations import AnnotationStore
-from acquisition.map_stitching import load_localization_reference_candidates, stitch_map_session
-from acquisition.map_layers import LayeredGlobalLocalizer, build_map_atlas
-from acquisition.map_layer_references import transition_endpoint_references
+from aria_trace.services.mapping.stitching import load_localization_reference_candidates, stitch_map_session
+from aria_trace.services.mapping.layers import LayeredGlobalLocalizer, build_map_atlas
+from aria_trace.services.mapping.references import transition_endpoint_references
 from aria_trace.services.calibration.minimap.transition_analysis import analyze_transition_session
 from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
 from acquisition.frame_pump import LatestFramePump
