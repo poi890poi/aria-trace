@@ -253,7 +253,13 @@ def parser() -> argparse.ArgumentParser:
             "published."
         )
     )
-    value.add_argument("--game-id", default="genshin-impact")
+    value.add_argument(
+        "--game-id",
+        help=(
+            "optional game identity used for known-game launch assistance and "
+            "session metadata; omit it to capture the currently prepared game"
+        ),
+    )
     value.add_argument("--android-package")
     value.add_argument(
         "--no-launch-game",
@@ -303,7 +309,7 @@ def parser() -> argparse.ArgumentParser:
 def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
     horizontal_distance = round(height * 0.225)
     vertical_distance = round(height * 0.45)
-    # Start on Genshin's unobstructed look-control surface. The right-side
+    # Start on the typical unobstructed look-control surface. A right-side
     # action cluster can consume DOWN before the camera handler sees it.
     start_x = round(width * 0.55)
     plan = ZigzagTouchPlan(
@@ -319,6 +325,38 @@ def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
     return plan
 
 
+def _launch_or_defer_game(phone: AdbPhoneSession, arguments) -> dict:
+    """Launch an explicitly identified game or preserve the current foreground app."""
+
+    if arguments.no_launch_game or not (
+        arguments.game_id or arguments.android_package
+    ):
+        return {
+            "game_id": arguments.game_id,
+            "status": (
+                "disabled_by_user"
+                if arguments.no_launch_game
+                else "manual_current_game"
+            ),
+            "package": arguments.android_package,
+            "calibration_controls_changed": False,
+            "game_input_injected": False,
+        }
+    result = launch_android_game(
+        phone,
+        arguments.game_id or arguments.android_package,
+        explicit_package=arguments.android_package,
+    )
+    result["game_id"] = arguments.game_id
+    return result
+
+
+def _session_game_label(game_id: Optional[str], android_package: Optional[str]) -> str:
+    value = game_id or android_package or "unidentified-game"
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value).strip()).strip("-.")
+    return cleaned or "unidentified-game"
+
+
 def _run_control_only(arguments) -> int:
     adb = resolve_adb_executable(arguments.adb)
     serial = _select_phone(adb, arguments.phone_serial)
@@ -328,19 +366,7 @@ def _run_control_only(arguments) -> int:
     preparation = _wake_phone_for_preparation(
         phone, wake_surface["logical_size_px"]
     )
-    game_launch = (
-        {
-            "game_id": arguments.game_id,
-            "status": "disabled_by_user",
-            "package": arguments.android_package,
-        }
-        if arguments.no_launch_game
-        else launch_android_game(
-            phone,
-            arguments.game_id,
-            explicit_package=arguments.android_package,
-        )
-    )
+    game_launch = _launch_or_defer_game(phone, arguments)
     time.sleep(0.75)
     surface = _phone_surface(adb, serial)
     width, height = surface["logical_size_px"]
@@ -365,7 +391,7 @@ def _run_control_only(arguments) -> int:
         print("Samsung Game Booster touch protection dismissed.")
     if not arguments.yes:
         input(
-            "Confirm Genshin is visible in touchscreen mode, then press Enter "
+            "Confirm the target game is visible in touchscreen mode, then press Enter "
             "to run the zigzag: "
         )
     preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
@@ -474,21 +500,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     wake_width, wake_height = wake_surface["logical_size_px"]
     phone = AdbPhoneSession(serial, adb_executable=adb)
     preparation = _wake_phone_for_preparation(phone, [wake_width, wake_height])
-    game_launch = (
-        {
-            "game_id": arguments.game_id,
-            "status": "disabled_by_user",
-            "package": arguments.android_package,
-            "calibration_controls_changed": False,
-            "game_input_injected": False,
-        }
-        if arguments.no_launch_game
-        else launch_android_game(
-            phone,
-            arguments.game_id,
-            explicit_package=arguments.android_package,
-        )
-    )
+    game_launch = _launch_or_defer_game(phone, arguments)
     # Game launch may rotate the Android logical display. Control coordinates
     # must be probed after that transition, not inherited from the launcher.
     time.sleep(0.75)
@@ -500,7 +512,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     plan = _build_zigzag_plan(arguments, width, height)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     session_path = arguments.output_root / "{}-{}-zigzag".format(
-        arguments.game_id, timestamp
+        _session_game_label(arguments.game_id, arguments.android_package), timestamp
     )
     pending_path = session_path.with_name(session_path.name + ".pending")
     if selected_camera is not None:
@@ -520,8 +532,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 game_launch["package"], game_launch["status"]
             )
         )
-    elif game_launch["status"] == "manual_unknown_game":
-        print("Game package is unknown; launch it manually before confirming readiness.")
+    elif game_launch["status"] in ("manual_unknown_game", "manual_current_game"):
+        print("No game was launched automatically; prepare any target game before confirming readiness.")
     print("Output session: {}".format(session_path.resolve()))
     print("This command records data only; it does not calibrate or publish profiles.")
     if not arguments.yes:

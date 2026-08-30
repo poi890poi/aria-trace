@@ -10,6 +10,8 @@ from acquisition.capture_game_minimap_zigzag import (
     _game_booster_lock_showing,
     _hik_fallback_allowed,
     _keyguard_showing,
+    _launch_or_defer_game,
+    _session_game_label,
     _wake_phone_for_preparation,
 )
 
@@ -51,10 +53,41 @@ class GamePhonePreparationTests(unittest.TestCase):
 
     def test_capture_cli_allows_android_only_and_require_hik_is_explicit(self):
         arguments = capture.parser().parse_args([])
+        self.assertIsNone(arguments.game_id)
         self.assertIsNone(arguments.diagnostic_rig_calibration_override)
         self.assertFalse(arguments.require_hik)
         with self.assertRaises(SystemExit):
             capture.parser().parse_args(["--rig-calibration", "legacy.json"])
+
+    def test_unidentified_game_uses_current_foreground_app_without_launcher(self):
+        arguments = capture.parser().parse_args([])
+        with patch.object(capture, "launch_android_game") as launcher:
+            result = _launch_or_defer_game(FakePhone(False), arguments)
+        launcher.assert_not_called()
+        self.assertEqual("manual_current_game", result["status"])
+        self.assertIsNone(result["game_id"])
+        self.assertEqual("unidentified-game", _session_game_label(None, None))
+
+    def test_explicit_android_package_does_not_require_game_id(self):
+        arguments = capture.parser().parse_args(
+            ["--android-package", "org.example.game"]
+        )
+        with patch.object(
+            capture,
+            "launch_android_game",
+            return_value={"status": "launched", "package": "org.example.game"},
+        ) as launcher:
+            result = _launch_or_defer_game(FakePhone(False), arguments)
+        launcher.assert_called_once_with(
+            unittest.mock.ANY,
+            "org.example.game",
+            explicit_package="org.example.game",
+        )
+        self.assertEqual("launched", result["status"])
+        self.assertIsNone(result["game_id"])
+        self.assertEqual(
+            "org.example.game", _session_game_label(None, "org.example.game")
+        )
 
     def test_visible_game_booster_lock_is_distinct_from_android_keyguard(self):
         phone = FakePhone(False)
@@ -147,6 +180,8 @@ class GamePhonePreparationTests(unittest.TestCase):
                         [
                             "--diagnostic-rig-calibration-override",
                             str(calibration),
+                            "--game-id",
+                            "game-1",
                         ]
                     )
 
@@ -213,7 +248,12 @@ class GamePhonePreparationTests(unittest.TestCase):
             "_dismiss_game_booster_lock",
             return_value={"detected": False, "dismissed": False, "attempts": 0},
         ) as dismiss:
-            self.assertEqual(capture.main(["--control-only", "--yes"]), 0)
+            self.assertEqual(
+                capture.main(
+                    ["--control-only", "--yes", "--game-id", "game-1"]
+                ),
+                0,
+            )
 
         hik.assert_not_called()
         control.start.assert_called_once()
