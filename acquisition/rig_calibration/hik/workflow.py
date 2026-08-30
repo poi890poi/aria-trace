@@ -48,6 +48,11 @@ from .algorithms import (
 )
 from .driver import HikMvsCameraAdapter
 from .display import AdbDisplayTarget
+from .media_trace import (
+    build_data_matrix_media_registry,
+    build_hik_calibration_media_registry,
+    build_hik_failure_media_registry,
+)
 from .patterns import (
     camera_white_mask,
     focus_edge_regions,
@@ -1008,6 +1013,11 @@ class HikRigCalibrationSession:
                 "payload": str(failure.get("payload", "")),
                 "failure_reason": reason,
                 "camera_polygon_xy": row["camera_polygon_xy"],
+                "raw_camera_crop_xywh": (
+                    [left, top, right - left, bottom - top]
+                    if raw_crop_name is not None
+                    else None
+                ),
                 "decode_rect_screen_xywh": list(row["decode_rect_screen_xywh"]),
                 "angle_deg": float(row.get("angle_deg", 0.0)),
                 "color_bgr": list(row.get("color_bgr", [])),
@@ -1026,24 +1036,40 @@ class HikRigCalibrationSession:
         for name, image in images.items():
             if not cv2.imwrite(str(evidence / name), image):
                 raise OSError("Could not save {}".format(name))
-        (evidence / "index.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "meaning": (
-                        "Red polygons mark exact-payload decode failures in the "
-                        "original HIK camera frame."
-                    ),
-                    "camera": dict(self.camera_metadata),
-                    "phone": self.phone_metrics.to_dict()
-                    if self.phone_metrics
-                    else None,
-                    "failure_count": len(self.data_matrix_failure_evidence),
-                    "failures": self.data_matrix_failure_evidence,
-                },
-                indent=2,
-                sort_keys=True,
+        index_document = {
+            "schema_version": 1,
+            "meaning": (
+                "Red polygons mark exact-payload decode failures in the "
+                "original HIK camera frame."
             ),
+            "camera": dict(self.camera_metadata),
+            "phone": self.phone_metrics.to_dict()
+            if self.phone_metrics
+            else None,
+            "failure_count": len(self.data_matrix_failure_evidence),
+            "failures": self.data_matrix_failure_evidence,
+            "space_conversion": {
+                "camera_to_phone_3x3": np.asarray(
+                    geometry.matrix_3x3, dtype=np.float64
+                ).tolist(),
+                "phone_to_camera_3x3": np.asarray(
+                    geometry.inverse_matrix_3x3, dtype=np.float64
+                ).tolist(),
+                "camera_space": "hik_full_sensor_camera_pixels",
+                "phone_space": "android_logical_display_pixels",
+            },
+        }
+        index_document["media"] = build_data_matrix_media_registry(
+            evidence,
+            self.data_matrix_failure_evidence,
+            full_camera_size_px=[
+                int(self.camera_metadata.get("width_px", camera_frame.shape[1])),
+                int(self.camera_metadata.get("height_px", camera_frame.shape[0])),
+            ],
+            phone_logical_size_px=self.phone_metrics.screen_size_px,
+        )
+        (evidence / "index.json").write_text(
+            json.dumps(index_document, indent=2, sort_keys=True),
             encoding="utf-8",
         )
         if self._preview_created:
@@ -1920,6 +1946,17 @@ class HikRigCalibrationSession:
             "maximum": float(np.max(rows)),
         }
 
+    @staticmethod
+    def _same_clock_elapsed_ms(
+        started_ns: int, finished_ns: int, maximum_ms: float
+    ) -> Optional[float]:
+        """Return a bounded duration only for timestamps on one clock."""
+
+        elapsed_ms = (int(finished_ns) - int(started_ns)) / 1.0e6
+        if elapsed_ms < 0.0 or elapsed_ms > float(maximum_ms):
+            return None
+        return float(elapsed_ms)
+
     def _measure_signal_transition(
         self,
         state: str,
@@ -1931,7 +1968,10 @@ class HikRigCalibrationSession:
         """Measure request-to-first-stable-camera-frame while Display changes."""
 
         holder: Dict[str, Any] = {}
-        request_time_ns = time.monotonic_ns()
+        # HIK receive_time_ns is stamped with perf_counter_ns in driver.py.
+        # Use that exact host clock here; monotonic_ns has a different origin
+        # on the supported Python 3.7/Windows runtime.
+        request_time_ns = time.perf_counter_ns()
 
         def present() -> None:
             try:
@@ -1945,7 +1985,7 @@ class HikRigCalibrationSession:
             except Exception as exc:
                 holder["error"] = str(exc)
             finally:
-                holder["finished_time_ns"] = time.monotonic_ns()
+                holder["finished_time_ns"] = time.perf_counter_ns()
 
         worker = threading.Thread(target=present, name="hik-display-transition")
         worker.daemon = True
@@ -1973,8 +2013,8 @@ class HikRigCalibrationSession:
         if worker.is_alive():
             holder["error"] = "Android Display transition did not finish before timeout"
         presentation = holder.get("presentation")
-        issued_time_ns = (
-            int(presentation.issued_time_ns) if presentation is not None else request_time_ns
+        target_issued_time_ns = (
+            int(presentation.issued_time_ns) if presentation is not None else None
         )
         acknowledgement_time_ns = None
         if presentation is not None:
@@ -1984,7 +2024,21 @@ class HikRigCalibrationSession:
                         item.get("server_receive_time_ns", holder.get("finished_time_ns", 0))
                     )
                     break
-        accepted = stable_time_ns is not None and not holder.get("error")
+        maximum_latency_ms = max(
+            12.0, float(self.options.operation_timeout_seconds) + 4.0
+        ) * 1000.0
+        request_latency_ms = (
+            self._same_clock_elapsed_ms(
+                request_time_ns, stable_time_ns, maximum_latency_ms
+            )
+            if stable_time_ns is not None
+            else None
+        )
+        if stable_time_ns is not None and request_latency_ms is None:
+            holder["error"] = (
+                "Camera receive timestamp is outside the request perf_counter_ns window"
+            )
+        accepted = request_latency_ms is not None and not holder.get("error")
         return {
             "trial": int(trial_index),
             "state": state,
@@ -1994,19 +2048,18 @@ class HikRigCalibrationSession:
             "threshold_bgr_dn": float(threshold),
             "observed_mean_bgr_dn_min": float(min(observed_means)) if observed_means else None,
             "observed_mean_bgr_dn_max": float(max(observed_means)) if observed_means else None,
-            "request_time_ns": issued_time_ns,
+            "request_time_ns": request_time_ns,
+            "request_clock": "host_perf_counter_ns",
+            "target_issued_time_ns": target_issued_time_ns,
+            "target_issued_clock": "host_monotonic_ns",
             "display_ack_time_ns": acknowledgement_time_ns,
+            "display_ack_clock": "host_monotonic_ns",
             "first_stable_camera_time_ns": stable_time_ns,
-            "request_to_first_stable_ms": (
-                (stable_time_ns - issued_time_ns) / 1.0e6
-                if stable_time_ns is not None
-                else None
-            ),
-            "display_ack_to_first_stable_ms": (
-                (stable_time_ns - acknowledgement_time_ns) / 1.0e6
-                if stable_time_ns is not None and acknowledgement_time_ns is not None
-                else None
-            ),
+            "camera_receive_clock": "host_perf_counter_ns",
+            "request_to_first_stable_ms": request_latency_ms,
+            # Display acknowledgement telemetry is monotonic_ns and cannot be
+            # subtracted from the camera's perf_counter_ns timestamp.
+            "display_ack_to_first_stable_ms": None,
         }
 
     def benchmark_final_stream(self) -> None:
@@ -2115,7 +2168,8 @@ class HikRigCalibrationSession:
         ]
         self.latency_benchmark = {
             "endpoint": "host_display_request_to_first_of_three_stable_camera_frames",
-            "clock": "host_monotonic",
+            "clock": "host_perf_counter_ns_request_and_camera_receive",
+            "display_telemetry_clock": "host_monotonic_ns_not_cross_subtracted",
             "reference_only": True,
             "black_mean_bgr_dn": black_mean,
             "white_mean_bgr_dn": white_mean,
@@ -2904,6 +2958,44 @@ class HikRigCalibrationSession:
         self.cross_source_check = result
         return result
 
+    @staticmethod
+    def _publish_calibration_directory(temporary: Path, output: Path) -> str:
+        """Publish a complete bundle despite transient Windows directory locks."""
+
+        temporary = Path(temporary)
+        output = Path(output)
+        last_error = None
+        for attempt in range(5):
+            try:
+                os.replace(str(temporary), str(output))
+                return "atomic_directory_replace"
+            except PermissionError as exc:
+                last_error = exc
+                if output.exists():
+                    raise FileExistsError(
+                        "Calibration output appeared during publication: {}".format(
+                            output
+                        )
+                    )
+                time.sleep(0.10 * float(attempt + 1))
+
+        # Antivirus/indexing can hold the directory entry while allowing its
+        # completed files to be read. Copy to a new destination as a bounded
+        # Windows fallback, and retain the source if this also fails.
+        try:
+            shutil.copytree(str(temporary), str(output))
+        except Exception as exc:
+            if output.exists():
+                shutil.rmtree(str(output), ignore_errors=True)
+            raise PermissionError(
+                "Could not publish completed calibration {}; temporary bundle "
+                "was retained at {}. Atomic error: {}; copy error: {}".format(
+                    output, temporary, last_error, exc
+                )
+            )
+        shutil.rmtree(str(temporary), ignore_errors=True)
+        return "copy_fallback_after_windows_lock"
+
     def save(self) -> Path:
         if self._saved:
             return Path(self.options.output_directory)
@@ -2923,6 +3015,7 @@ class HikRigCalibrationSession:
             self.benchmark_final_stream()
         temporary = output.parent / ".{}.tmp-{}".format(output.name, uuid.uuid4().hex)
         temporary.mkdir(parents=True, exist_ok=False)
+        publication_started = False
         try:
             phone_value = {
                 **phone_metrics.to_dict(),
@@ -3076,6 +3169,14 @@ class HikRigCalibrationSession:
                     "data_matrix": self.data_matrix_result,
                 },
             }
+            if self.last_frame is not None:
+                if not cv2.imwrite(
+                    str(temporary / "last_camera_frame.png"), self.last_frame
+                ):
+                    raise OSError("Could not save last_camera_frame.png")
+            config["media"] = build_hik_calibration_media_registry(
+                temporary, config
+            )
             (temporary / "hik_camera_calibration.json").write_text(
                 json.dumps(config, indent=2, sort_keys=True), encoding="utf-8"
             )
@@ -3085,14 +3186,20 @@ class HikRigCalibrationSession:
                 header=HIK_CONFIG_HEADER,
                 section_comments=HIK_CONFIG_COMMENTS,
             )
-            if self.last_frame is not None:
-                cv2.imwrite(str(temporary / "last_camera_frame.png"), self.last_frame)
-            os.replace(str(temporary), str(output))
+            publication_started = True
+            publication_method = self._publish_calibration_directory(
+                temporary, output
+            )
             self._saved = True
-            self.progress("Saved calibration bundle: {}".format(output))
+            self.progress(
+                "Saved calibration bundle: {} ({})".format(
+                    output, publication_method
+                )
+            )
             return output
         except Exception:
-            shutil.rmtree(str(temporary), ignore_errors=True)
+            if not publication_started:
+                shutil.rmtree(str(temporary), ignore_errors=True)
             raise
 
     def run(self) -> Optional[Path]:
@@ -3169,27 +3276,52 @@ class HikRigCalibrationSession:
             )
         if self.auto_result_frame is not None:
             cv2.imwrite(str(evidence / "auto-neutral-hik-frame.png"), self.auto_result_frame)
-        (evidence / "failure.json").write_text(
-            json.dumps(
+        failure_document = {
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "camera": dict(self.camera_metadata),
+            "phone": self.phone_metrics.to_dict() if self.phone_metrics else None,
+            "phone_calibration_display_brightness": self.phone_display_brightness,
+            "viewer": dict(self.viewer_metrics),
+            "hik_one_shot_auto_seed": self.auto_imaging_seed,
+            "exposure_observations": [
+                self._exposure_observation_dict(row)
+                for row in self.exposure_observations
+            ],
+            "final_balanced_white": self.final_white_statistics,
+            "white_balance_attempts": self.white_balance_attempts,
+            "calibration_warnings": self.calibration_warnings,
+            "space_conversion": (
                 {
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                    "camera": dict(self.camera_metadata),
-                    "phone": self.phone_metrics.to_dict() if self.phone_metrics else None,
-                    "phone_calibration_display_brightness": self.phone_display_brightness,
-                    "viewer": dict(self.viewer_metrics),
-                    "hik_one_shot_auto_seed": self.auto_imaging_seed,
-                    "exposure_observations": [
-                        self._exposure_observation_dict(row)
-                        for row in self.exposure_observations
-                    ],
-                    "final_balanced_white": self.final_white_statistics,
-                    "white_balance_attempts": self.white_balance_attempts,
-                    "calibration_warnings": self.calibration_warnings,
-                },
-                indent=2,
-                sort_keys=True,
+                    "camera_to_phone_3x3": np.asarray(
+                        self.geometry.matrix_3x3, dtype=np.float64
+                    ).tolist(),
+                    "phone_to_camera_3x3": (
+                        np.asarray(
+                            self.geometry.inverse_matrix_3x3, dtype=np.float64
+                        ).tolist()
+                    ),
+                    "camera_space": "hik_full_sensor_camera_pixels",
+                    "phone_space": "android_logical_display_pixels",
+                }
+                if self.geometry is not None
+                else None
             ),
+        }
+        full_size = [
+            int(self.camera_metadata.get("width_px", 1)),
+            int(self.camera_metadata.get("height_px", 1)),
+        ]
+        failure_document["media"] = build_hik_failure_media_registry(
+            evidence,
+            full_camera_size_px=full_size,
+            hardware_roi_xywh=self.hardware_roi,
+            phone_logical_size_px=(
+                self.phone_metrics.screen_size_px if self.phone_metrics else None
+            ),
+        )
+        (evidence / "failure.json").write_text(
+            json.dumps(failure_document, indent=2, sort_keys=True),
             encoding="utf-8",
         )
         return evidence

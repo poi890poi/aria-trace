@@ -218,19 +218,18 @@ mapping; copying only a video would discard the synchronization authority.
 
 ### Synchronized Android + HIK mini-map calibration
 
-For a complete new HIK setup, use the single entry point:
+For fresh HIK rig calibration followed by synchronized source-data capture, use:
 
 ```powershell
 .\calibrate-hik-game-camera.bat
 ```
 
-It calls the existing tools in order: headless rig calibration, automated game
-launch plus rig-normalized HIK/ADB zigzag capture and mini-map calibration, then the
-profiled HIK adapter demo in dual mode. Explicit output directories connect the
-stages; the mini-map summary supplies the exact published rig-game profile to
-the demo. A failed stage stops the sequence and retains completed artifacts.
-Use `-NoDemo` to finish after calibration, or `-GameId`, `-CameraId`, and
-`-PhoneSerial` only when defaults cannot select the intended setup.
+It calls the existing headless rig calibration and dual-source zigzag capture
+tools, then stops with the fresh session intact. Automatic mini-map candidate
+selection, profile publication, and the profiled adapter demo are deprecated
+because the automatic boundary has not been verified. The command does not
+publish a mini-map result. Use `-GameId`, `-CameraId`, and `-PhoneSerial` only
+when defaults cannot select the intended setup.
 
 With the game awake and ready and an existing rig result, run capture with:
 
@@ -289,23 +288,40 @@ forward/inverse 3x3 matrices, timestamp authorities, and direct HIK-video crop
 placement in the full ADB raster. The explanatory comments make the file usable
 without importing AriaTrace.
 
-Automatic mini-map discovery is anchored in the full Android/display image, not
-in a saved camera crop. Its default prior is deliberately broad and
-resolution-relative: the circle center is searched in the upper-left 35% of the
-display, its radius may span 7% through 22% of the shorter display dimension,
-and at least 85% of its circumference must be visible. These bounds are
-configuration, not a Genshin pixel coordinate: use `--android-center-region`,
-`--android-radius-fraction`, and `--android-min-visible` to change them, or
-`--android-discovery unrestricted` to remove the relative prior. Existing
-`--android-crop` and `--hik-crop` overrides remain accepted for diagnostics.
+The rig adapter raster is explicitly in the logical display space used during
+rig calibration, where output-up is app-up. It is not implicitly phone-natural.
+For each game session, conversion therefore follows one declared chain:
+camera-adapter -> calibration display -> phone-natural -> current ADB. If the
+current game orientation equals the calibration orientation, the saved HIK
+image is not rotated. If it differs, the quarter-turn is a new saved-video
+space and its exact matrix is composed into `coordinate_spaces.yaml`; image
+dimensions and transformed bounds are validated before the YAML is written.
 
-After the Android circle is refined, synchronized full-frame evidence estimates
-the current Android-to-HIK homography and projects the circle into whichever HIK
-stream this recording contains. The resulting HIK polygon, visible mask, and
-crop are review evidence for this session only. Camera movement invalidates
-them, so they are never treated as a reusable positioning prior. Reusable
-runtime geometry remains the phone-space crop plus the separately calibrated
-rig transformation.
+Capture and calibration are deliberately separate commands. First record one
+fresh dual-source zigzag session, then pass that completed session to automatic
+mini-map discovery:
+
+```powershell
+.\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
+.\calibrate-game-minimap.bat .\sessions\calibration\<fresh-zigzag-session>
+```
+
+Automatic discovery runs only in the complete Android/display frame and then
+calls the verified `acquisition.minimap_calibration` boundary-fitting backend.
+Its default bounds are broad and resolution-relative: center in the upper-left
+35% by 35%, radius from 7% through 22% of the shorter display dimension, and at
+least 85% of the candidate circumference visible. Configure them with
+`--android-center-region`, `--android-radius-fraction`, and
+`--android-min-visible`; no game-specific center, radius, scale, or orientation
+is built in.
+
+The HIK stream is never searched or calibrated independently. Its session-local
+mini-map polygon is obtained only by projecting the fitted Android boundary
+through the same fresh session's `coordinate_spaces.yaml`. Host capture
+timestamps select synchronized Android/HIK review frames, while
+`cross_source_check/summary.json` supplies non-gating image evidence. If the
+current session does not declare that registration, calibration stops instead
+of guessing camera position, scale, crop, or orientation.
 
 The calibrated camera adapter exposes the same base-space conversion without
 opening hardware:
@@ -328,7 +344,17 @@ socket for the gesture instead of starting one ADB process per touch event.
 Acquisition ends only after the controller reports the complete DOWN/MOVE/UP
 sequence and the configured tail has elapsed; incomplete control is rejected.
 
-The downstream calibration result boundaries remain deliberately separate:
+This POC stage writes one
+`artifacts/session-minimap-localization-*` directory containing the Android
+backend evidence, the exact Android shift mask, the projected HIK mask and
+overlay, a synchronized registration triptych, `minimap_geometry.npz`, and
+commented `localization_summary.yaml`. Synchronized flat mini-map pixels also
+fit MVS Bayer-conversion gamma and an RGB 3x3 color-correction matrix. The
+review strip shows warped ADB target, identity HIK, adjusted HIK, and both
+absolute differences. A color-fit failure is non-gating. This stage does not
+publish a runtime profile.
+
+The downstream production result boundaries remain deliberately separate:
 
 - `artifacts/game-minimap-calibration-*` contains source-specific mini-map
   results, stacked heatmaps, complete fitted boundaries, and exact shift masks.
@@ -338,9 +364,10 @@ The downstream calibration result boundaries remain deliberately separate:
   is supplied. It references the base rig and phone-game revision and adds no
   optical transform.
 
-Every JSON result has a commented YAML companion. All new revisions remain
-`review_required`; cursor, pose, tracking, game modeling, and north estimation
-are outside this product.
+Profile publication consumes a reviewed localization result in a later stage;
+it is not part of `session_minimap_localization`. All localization results
+remain `review_required`; cursor, pose, tracking, game modeling, and north
+estimation are outside this stage.
 
 The production HIK adapter consumes the base rig plus the optional rig-game
 profile:
@@ -364,6 +391,15 @@ and timestamps. Its `full` product is the base rig's normalized complete
 visible-phone output, and `minimap` is a crop in that same normalized space.
 Mini-map-only mode applies a small hardware ROI to reduce camera and USB
 throughput.
+
+When a reviewed rig-game profile contains `hik_bayer_conversion`, the adapter
+sets `MV_CC_SetGammaValue` and `MV_CC_SetBayerCCMParam` once while opening the
+MVS handle. Both operations are fused into the existing Bayer-to-BGR conversion:
+there is no LUT, extra image pass, extra image copy, or per-frame Python call.
+On the development MV-CS016-10UC at 1324x1080, an alternating live benchmark
+using the fitted gamma/CCM measured 33.354 ms identity versus 33.286 ms adjusted
+median reads. The median did not regress; the +0.168 ms p95 difference remained
+inside observed block jitter rather than indicating an added frame stage.
 
 The existing `import ... as hikcam` facade accepts the same options and keeps
 `get_frame()` as the default single-frame interface; `get_frames()` returns the

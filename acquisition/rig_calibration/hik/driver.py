@@ -444,6 +444,52 @@ class MvsPythonBackend:
             raise RuntimeError("No numeric fallback for {}={}".format(node, value))
         self._check(self.camera.MV_CC_SetEnumValue(str(node), int(numeric)), "set {}".format(node))
 
+    def set_bayer_conversion(
+        self,
+        gamma: float,
+        ccm_rgb_3x3: Sequence[Sequence[float]],
+    ) -> Mapping[str, Any]:
+        """Configure MVS's existing Bayer-to-BGR conversion once per handle."""
+
+        gamma_value = float(gamma)
+        matrix = np.asarray(ccm_rgb_3x3, dtype=np.float64)
+        if not np.isfinite(gamma_value) or not 0.1 <= gamma_value <= 4.0:
+            raise ValueError("MVS Bayer gamma must be in [0.1, 4.0]")
+        if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+            raise ValueError("MVS Bayer CCM must be a finite RGB 3x3 matrix")
+        quantized = np.round(matrix * 1024.0).astype(np.int64)
+        if np.any(quantized < -8192) or np.any(quantized > 8192):
+            raise ValueError("MVS Bayer CCM coefficients must be in [-8, 8]")
+        gamma_setter = getattr(self.camera, "MV_CC_SetGammaValue", None)
+        ccm_setter = getattr(self.camera, "MV_CC_SetBayerCCMParam", None)
+        ccm_type = getattr(self.sdk, "MV_CC_CCM_PARAM", None)
+        if gamma_setter is None or ccm_setter is None or ccm_type is None:
+            raise RuntimeError(
+                "Installed MVS SDK lacks fused Bayer gamma/CCM conversion"
+            )
+        source_pixel_type = self.get_enum("PixelFormat")
+        self._check(
+            gamma_setter(source_pixel_type, gamma_value),
+            "set MVS Bayer conversion gamma",
+        )
+        parameter = ccm_type()
+        ctypes.memset(ctypes.byref(parameter), 0, ctypes.sizeof(parameter))
+        parameter.bCCMEnable = True
+        for index, value in enumerate(quantized.reshape(-1).tolist()):
+            parameter.nCCMat[index] = int(value)
+        self._check(
+            ccm_setter(parameter),
+            "set MVS Bayer conversion CCM",
+        )
+        return {
+            "gamma": gamma_value,
+            "ccm_rgb_3x3": (quantized.astype(np.float64) / 1024.0).tolist(),
+            "ccm_quantization_scale": 1024,
+            "source_pixel_type": int(source_pixel_type),
+            "additional_frame_passes": 0,
+            "additional_frame_copies": 0,
+        }
+
     def read_bgr(self, timeout_ms: int = 1000) -> tuple[np.ndarray, dict[str, Any]]:
         if self.camera is None or not self._grabbing:
             raise RuntimeError("HIK camera is not grabbing")
@@ -833,6 +879,15 @@ class HikMvsCameraAdapter(CameraAdapter):
             effective["ratio_{}".format(selector.lower())] = self.backend.get_int("BalanceRatio")
         return effective
 
+    def set_bayer_conversion(
+        self,
+        gamma: float,
+        ccm_rgb_3x3: Sequence[Sequence[float]],
+    ) -> Mapping[str, Any]:
+        """Set fused MVS gamma+CCM without adding a streaming frame pass."""
+
+        return self.backend.set_bayer_conversion(gamma, ccm_rgb_3x3)
+
     def black_level_control(self) -> Mapping[str, Any]:
         """Return the one black-pedestal control used by calibration, if writable."""
 
@@ -1000,6 +1055,8 @@ class RectifiedHikCamera:
         self._output_size = None
         self._map_x = None
         self._map_y = None
+        self._dense_path = None
+        self._effective_roi = None
 
     def open(self) -> "RectifiedHikCamera":
         camera = self.config["camera"]
@@ -1021,26 +1078,28 @@ class RectifiedHikCamera:
         self.adapter.set_white_balance(wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"])
         effective_roi = self.adapter.set_roi(camera["hardware_roi_xywh"])
         normalization = self.config["normalization"]
+        # Keep the calibrated mapping available even for the minimum-latency
+        # hardware-ROI stream.  It is used only by explicit evidence checks;
+        # ordinary rectify=False reads still return the untouched camera ROI.
+        self._matrix = camera_adapter_roi_to_output_homography(
+            self.config, effective_roi
+        )
+        calibrated_output_size = tuple(
+            map(int, normalization["output_size_px"])
+        )
+        dense_file = normalization.get("dense_map_file")
+        if dense_file:
+            dense_path = self.path.parent / str(dense_file)
+            if dense_path.is_file():
+                self._dense_path = dense_path
+        self._effective_roi = list(map(int, effective_roi))
         if self._rectify_enabled:
-            self._matrix = camera_adapter_roi_to_output_homography(
-                self.config, effective_roi
-            )
-            self._output_size = tuple(map(int, normalization["output_size_px"]))
-            dense_file = normalization.get("dense_map_file")
-            if dense_file:
-                dense_path = self.path.parent / str(dense_file)
-                if dense_path.is_file():
-                    with np.load(str(dense_path)) as dense:
-                        self._map_x = (
-                            np.asarray(dense["map_x"], dtype=np.float32)
-                            - float(effective_roi[0])
-                        )
-                        self._map_y = (
-                            np.asarray(dense["map_y"], dtype=np.float32)
-                            - float(effective_roi[1])
-                        )
-        else:
-            self._output_size = (int(effective_roi[2]), int(effective_roi[3]))
+            self._load_rectification_maps()
+        self._output_size = (
+            calibrated_output_size
+            if self._rectify_enabled
+            else (int(effective_roi[2]), int(effective_roi[3]))
+        )
         self._opened = True
         return self
 
@@ -1118,6 +1177,15 @@ class RectifiedHikCamera:
     def _rectify(self, image: np.ndarray) -> np.ndarray:
         if not self._rectify_enabled:
             return image
+        return self.rectify_for_evidence(image)
+
+    def rectify_for_evidence(self, image: np.ndarray) -> np.ndarray:
+        """Rectify one ROI image for diagnostics without changing stream mode."""
+
+        self._load_rectification_maps()
+        calibrated_size = tuple(
+            map(int, self.config["normalization"]["output_size_px"])
+        )
         if self._map_x is not None and self._map_y is not None:
             return cv2.remap(
                 image,
@@ -1130,11 +1198,24 @@ class RectifiedHikCamera:
         return cv2.warpPerspective(
             image,
             self._matrix,
-            self._output_size,
+            calibrated_size,
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
         )
+
+    def _load_rectification_maps(self) -> None:
+        if self._map_x is not None or self._dense_path is None:
+            return
+        with np.load(str(self._dense_path)) as dense:
+            self._map_x = (
+                np.asarray(dense["map_x"], dtype=np.float32)
+                - float(self._effective_roi[0])
+            )
+            self._map_y = (
+                np.asarray(dense["map_y"], dtype=np.float32)
+                - float(self._effective_roi[1])
+            )
 
     def __enter__(self) -> "RectifiedHikCamera":
         return self.open()

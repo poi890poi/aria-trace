@@ -308,6 +308,12 @@ black level, and hardware ROI. It does not search the whole Guru feature tree.
 The rectified facade locks the calibrated imaging controls and keeps ROI/output
 shape immutable because changing them would invalidate the evidence or maps.
 
+This MV-CS016-10UC exposes no writable camera-side Gamma node. MVS does expose
+host conversion gamma and CCM, and `MV_CC_GetImageForBGR` honors both inside its
+existing Bayer conversion. A reviewed rig-game profile may therefore set them
+once at adapter open to match synchronized ADB colors. The stream does not run
+a separate contrast function, LUT, or color-conversion pass.
+
 ## Hardware verification status
 
 Offline tests use simulated boundaries. Actual MVS node names/ranges, Android

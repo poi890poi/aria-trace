@@ -229,6 +229,15 @@ class ProfiledHikGameCamera:
         self.adapter.set_white_balance(
             wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"]
         )
+        conversion = self.minimap.get("hik_bayer_conversion") or {}
+        if (
+            isinstance(conversion, Mapping)
+            and conversion.get("status") == "selected"
+        ):
+            self.adapter.set_bayer_conversion(
+                float(conversion["gamma"]),
+                conversion["ccm_rgb_3x3"],
+            )
 
     def open(self) -> "ProfiledHikGameCamera":
         if self._opened:

@@ -9,9 +9,11 @@ import numpy as np
 
 from acquisition.minimap_calibration import (
     _validate_segments,
+    android_minimap_discovery_config,
     calibrate_minimap_boundary_frames,
     calibrate_minimap_frames,
     calibrate_segment_sessions,
+    discover_android_minimap_seed,
 )
 from acquisition.models import FramePacket
 from acquisition.session import SessionWriter
@@ -47,6 +49,35 @@ def synthetic_frames(frame_count=96):
     return np.stack(rotation), np.stack(movement), boundary_center, pivot, radius
 
 
+def synthetic_android_discovery_frames(frame_count=48):
+    height, width = 360, 440
+    center = np.array([112.0, 83.0])
+    radius = 69
+    yy, xx = np.ogrid[:height, :width]
+    inside = (xx - center[0]) ** 2 + (yy - center[1]) ** 2 <= radius ** 2
+    values = []
+    for index in range(frame_count):
+        image = np.full((height, width, 3), 20, np.uint8)
+        phase = (
+            np.sin(xx * 0.11 + index * 0.23)
+            + np.cos(yy * 0.13 - index * 0.17)
+            + 2.0
+        ) * 38.0
+        for channel, offset in enumerate((28, 42, 56)):
+            layer = np.clip(offset + phase, 0, 255).astype(np.uint8)
+            image[:, :, channel][inside] = layer[inside]
+        cv2.circle(
+            image,
+            tuple(center.astype(int)),
+            radius,
+            (225, 225, 225),
+            2,
+            cv2.LINE_AA,
+        )
+        values.append(image)
+    return np.stack(values), center, radius
+
+
 class MinimapCalibrationTests(unittest.TestCase):
     def test_boundary_only_entry_point_uses_verified_evidence_contract(self):
         rotation, _, boundary_center, _, radius = synthetic_frames()
@@ -54,6 +85,11 @@ class MinimapCalibrationTests(unittest.TestCase):
             result = calibrate_minimap_boundary_frames(
                 rotation,
                 Path(temporary),
+                config={
+                    "expected_center_xy": boundary_center.tolist(),
+                    "center_search_radius_px": 14.0,
+                    "radius_range_px": [62.0, 75.0],
+                },
             )
             boundary = result["outer_boundary"]
             self.assertLess(
@@ -80,6 +116,134 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertFalse((Path(temporary) / "model.npz").exists())
             for name in declared:
                 self.assertGreater((Path(temporary) / name).stat().st_size, 0)
+
+    def test_default_boundary_entry_discovers_android_minimap_without_precise_prior(self):
+        rotation, expected_center, expected_radius = (
+            synthetic_android_discovery_frames()
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            result = calibrate_minimap_boundary_frames(
+                rotation, Path(temporary)
+            )
+            boundary = result["outer_boundary"]
+            self.assertLess(
+                np.linalg.norm(
+                    np.asarray([boundary["center_x"], boundary["center_y"]])
+                    - expected_center
+                ),
+                3.0,
+            )
+            self.assertLess(abs(boundary["radius"] - expected_radius), 3.0)
+            self.assertIsNone(result["config"]["expected_center_xy"])
+            self.assertEqual(
+                [0.0, 0.0, 0.35, 0.35],
+                result["config"]["discovery"][
+                    "center_region_xyxy_fraction"
+                ],
+            )
+            self.assertEqual(
+                [0.07, 0.22],
+                result["config"]["discovery"]["radius_fraction_range"],
+            )
+            self.assertEqual(
+                0.85,
+                result["config"]["discovery"][
+                    "minimum_circle_visible_fraction"
+                ],
+            )
+            declared = {item["name"] for item in result["evidence"]}
+            self.assertIn("boundary_discovery_candidates.png", declared)
+
+    def test_android_discovery_bounds_are_configurable_and_validated(self):
+        configured = android_minimap_discovery_config(
+            {
+                "center_region_xyxy_fraction": [0.0, 0.0, 0.4, 0.3],
+                "radius_fraction_range": [0.08, 0.2],
+                "minimum_circle_visible_fraction": 0.9,
+            }
+        )
+        self.assertEqual([0.0, 0.0, 0.4, 0.3], configured["center_region_xyxy_fraction"])
+        with self.assertRaisesRegex(ValueError, "center region"):
+            android_minimap_discovery_config(
+                {"center_region_xyxy_fraction": [0, 0, 1.1, 0.4]}
+            )
+
+    def test_android_discovery_prefers_stable_disc_over_stronger_hud_ring(self):
+        height, width = 480, 640
+        true_center = np.array([80.0, 75.0])
+        false_center = np.array([180.0, 120.0])
+        true_radius, false_radius = 50.0, 45.0
+        yy, xx = np.ogrid[:height, :width]
+        true_disc = (
+            (xx - true_center[0]) ** 2 + (yy - true_center[1]) ** 2
+            <= true_radius ** 2
+        )
+        false_disc = (
+            (xx - false_center[0]) ** 2 + (yy - false_center[1]) ** 2
+            <= false_radius ** 2
+        )
+        frames = []
+        for index in range(16):
+            phase = (
+                np.sin(xx * 0.09 + index * 0.45)
+                + np.cos(yy * 0.07 - index * 0.31)
+            ) * 28.0
+            image = np.repeat(
+                np.clip(92.0 + phase, 0, 255).astype(np.uint8)[:, :, None],
+                3,
+                axis=2,
+            )
+            static_map = np.clip(
+                82.0 + np.sin(xx * 0.14) * 18.0 + np.cos(yy * 0.12) * 15.0,
+                0,
+                255,
+            ).astype(np.uint8)
+            for channel in range(3):
+                image[:, :, channel][true_disc] = static_map[true_disc]
+            cv2.circle(
+                image,
+                tuple(true_center.astype(int)),
+                int(true_radius),
+                (140, 140, 140),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.circle(
+                image,
+                tuple(false_center.astype(int)),
+                int(false_radius),
+                (255, 255, 255),
+                3,
+                cv2.LINE_AA,
+            )
+            frames.append(image)
+        hough = np.asarray(
+            [[[true_center[0], true_center[1], true_radius],
+              [false_center[0], false_center[1], false_radius]]],
+            dtype=np.float32,
+        )
+        with patch(
+            "acquisition.minimap_calibration.cv2.HoughCircles",
+            return_value=hough,
+        ):
+            result = discover_android_minimap_seed(np.stack(frames))
+
+        selected = result["selected"]
+        self.assertLess(
+            np.linalg.norm(
+                np.asarray([selected["center_x"], selected["center_y"]])
+                - true_center
+            ),
+            1.0,
+        )
+        self.assertGreater(selected["stable_disc_contrast"], 0.0)
+        false_candidate = next(
+            candidate
+            for candidate in result["candidates"]
+            if abs(candidate["center_x"] - false_center[0]) < 1.0
+        )
+        self.assertGreater(false_candidate["ring_edge"], selected["ring_edge"])
+        self.assertGreater(selected["score"], false_candidate["score"])
 
     def test_recovers_boundary_pivot_shape_and_evidence(self):
         rotation, movement, boundary_center, pivot, radius = synthetic_frames()

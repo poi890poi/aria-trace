@@ -3,9 +3,7 @@ param(
     [string]$CameraId,
     [string]$PhoneSerial,
     [string]$RigOutput,
-    [string]$MinimapOutput,
-    [string]$ProfilesRoot,
-    [switch]$NoDemo
+    [string]$MinimapOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,10 +15,7 @@ if (-not $RigOutput) {
 if (-not $MinimapOutput) {
     $MinimapOutput = Join-Path $root "artifacts\game-minimap-calibration-$timestamp"
 }
-if (-not $ProfilesRoot) {
-    $ProfilesRoot = Join-Path $root "profiles"
-}
-
+$captureRoot = Join-Path $root "sessions\calibration"
 function Invoke-AriaStage {
     param(
         [string]$Label,
@@ -40,7 +35,7 @@ try {
     if ($CameraId) { $rigArguments += @("--camera-id", $CameraId) }
     if ($PhoneSerial) { $rigArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `
-        "[1-2/6] Wake phone and calibrate the HIK rig" `
+        "[1-2/5] Wake phone and calibrate the HIK rig" `
         (Join-Path $root "calibrate-hik-rig.bat") `
         $rigArguments
 
@@ -49,41 +44,52 @@ try {
         throw "Rig calibration did not produce $rigCalibration"
     }
 
-    $minimapArguments = @(
+    New-Item -ItemType Directory -Force -Path $captureRoot | Out-Null
+    $existingSessions = @{}
+    Get-ChildItem -LiteralPath $captureRoot -Directory | ForEach-Object {
+        $existingSessions[$_.FullName] = $true
+    }
+    $captureArguments = @(
         "--game-id", $GameId,
         "--rig-calibration", $RigOutput,
-        "--calibration-output", $MinimapOutput,
-        "--profiles-root", $ProfilesRoot
+        "--output-root", $captureRoot
     )
-    if ($CameraId) { $minimapArguments += @("--camera-id", $CameraId) }
-    if ($PhoneSerial) { $minimapArguments += @("--phone-serial", $PhoneSerial) }
+    if ($CameraId) { $captureArguments += @("--camera-id", $CameraId) }
+    if ($PhoneSerial) { $captureArguments += @("--phone-serial", $PhoneSerial) }
     Invoke-AriaStage `
-        "[3-5/6] Launch game, capture the zigzag, and calibrate the mini-map" `
+        "[3-4/5] Launch game, run the zigzag, and retain dual-source audit evidence" `
+        (Join-Path $root "capture-game-minimap-zigzag.bat") `
+        $captureArguments
+
+    $freshSessions = @(
+        Get-ChildItem -LiteralPath $captureRoot -Directory |
+        Where-Object { -not $existingSessions.ContainsKey($_.FullName) } |
+        Sort-Object LastWriteTimeUtc -Descending
+    )
+    if ($freshSessions.Count -ne 1) {
+        throw "Capture produced $($freshSessions.Count) new sessions; expected exactly one"
+    }
+    $sessionPath = $freshSessions[0].FullName
+
+    $minimapArguments = @(
+        $sessionPath,
+        "--output", $MinimapOutput
+    )
+    Invoke-AriaStage `
+        "[5/5] Discover the Android mini-map and project it through session registration" `
         (Join-Path $root "calibrate-game-minimap.bat") `
         $minimapArguments
 
-    $summaryPath = Join-Path $MinimapOutput "calibration_summary.json"
+    $summaryPath = Join-Path $MinimapOutput "localization_summary.json"
     if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
         throw "Mini-map calibration did not produce $summaryPath"
     }
-    $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
-    $rigGameProfile = [string]$summary.rig_game_profile
-    if (-not $rigGameProfile -or -not (Test-Path -LiteralPath $rigGameProfile -PathType Leaf)) {
-        throw "Mini-map calibration did not publish a usable rig-game profile"
-    }
-
     Write-Host ""
-    Write-Host "Complete calibration succeeded." -ForegroundColor Green
+    Write-Host "Fresh POC localization succeeded." -ForegroundColor Green
     Write-Host "Rig:      $rigCalibration"
+    Write-Host "Session:  $sessionPath"
     Write-Host "Mini-map: $summaryPath"
-    Write-Host "Profile:  $rigGameProfile"
-
-    if (-not $NoDemo) {
-        Invoke-AriaStage `
-            "[6/6] Run the calibrated HIK adapter demo (dual stream)" `
-            (Join-Path $root "demo-hik-camera.bat") `
-            @($RigOutput, "--minimap-calibration", $rigGameProfile, "--mode", "dual")
-    }
+    Write-Host "Profile:  not published by this POC-only localization stage"
     exit 0
 }
 catch {

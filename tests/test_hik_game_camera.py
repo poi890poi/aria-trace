@@ -18,6 +18,7 @@ class FakeAdapter:
         self.roi = None
         self.read_count = 0
         self.closed = False
+        self.bayer_conversion_calls = []
 
     def open(self, config):
         self.open_config = config
@@ -31,6 +32,9 @@ class FakeAdapter:
 
     def set_white_balance(self, red, green, blue):
         self.white_balance = (red, green, blue)
+
+    def set_bayer_conversion(self, gamma, ccm):
+        self.bayer_conversion_calls.append((gamma, ccm))
 
     def align_roi(self, roi):
         return list(roi)
@@ -151,6 +155,23 @@ class HikGameCameraTests(unittest.TestCase):
         frame_set = camera.read_streams()
         self.assertEqual(["full"], list(frame_set.streams))
         self.assertEqual([0, 0, 100, 80], adapter.roi)
+
+    def test_bayer_color_match_is_set_once_at_open_not_per_frame(self):
+        document = {
+            "canonical_phone_crop_xywh": [10, 20, 30, 20],
+            "hik_bayer_conversion": {
+                "status": "selected",
+                "gamma": 0.75,
+                "ccm_rgb_3x3": [[1.1, 0, 0], [0, 1, 0], [0, 0, 0.9]],
+            },
+        }
+        self.minimap_path.write_text(json.dumps(document), encoding="utf-8")
+        adapter = FakeAdapter()
+        camera = self.camera("minimap", False, adapter).open()
+        camera.read_streams()
+        camera.read_streams()
+        self.assertEqual(1, len(adapter.bayer_conversion_calls))
+        self.assertEqual(0.75, adapter.bayer_conversion_calls[0][0])
 
     def test_full_mode_uses_base_rig_hardware_roi_and_output_mapping(self):
         document = rig_document()

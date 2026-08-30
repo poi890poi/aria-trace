@@ -57,6 +57,57 @@ from acquisition.rig_calibration.geometry import estimate_screen_geometry
 
 
 class HikAlgorithmTests(unittest.TestCase):
+    def test_latency_rejects_cross_clock_negative_or_unbounded_values(self):
+        elapsed = HikRigCalibrationSession._same_clock_elapsed_ms
+        self.assertEqual(elapsed(1_000_000_000, 1_075_000_000, 1000.0), 75.0)
+        self.assertIsNone(elapsed(1_000_000_000, 900_000_000, 1000.0))
+        self.assertIsNone(elapsed(1_000_000_000, 3_000_000_000, 1000.0))
+
+    def test_windows_publish_falls_back_to_copy_after_locked_directory_rename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory) / ".calibration.tmp"
+            output = Path(directory) / "calibration"
+            temporary.mkdir()
+            (temporary / "hik_camera_calibration.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            with mock.patch(
+                "acquisition.rig_calibration.hik.workflow.os.replace",
+                side_effect=PermissionError("directory locked"),
+            ), mock.patch(
+                "acquisition.rig_calibration.hik.workflow.time.sleep"
+            ):
+                method = HikRigCalibrationSession._publish_calibration_directory(
+                    temporary, output
+                )
+            self.assertEqual(method, "copy_fallback_after_windows_lock")
+            self.assertTrue((output / "hik_camera_calibration.json").is_file())
+            self.assertFalse(temporary.exists())
+
+    def test_failed_publish_retains_completed_temporary_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory) / ".calibration.tmp"
+            output = Path(directory) / "calibration"
+            temporary.mkdir()
+            (temporary / "hik_camera_calibration.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            with mock.patch(
+                "acquisition.rig_calibration.hik.workflow.os.replace",
+                side_effect=PermissionError("directory locked"),
+            ), mock.patch(
+                "acquisition.rig_calibration.hik.workflow.shutil.copytree",
+                side_effect=PermissionError("file locked"),
+            ), mock.patch(
+                "acquisition.rig_calibration.hik.workflow.time.sleep"
+            ):
+                with self.assertRaisesRegex(PermissionError, "temporary bundle was retained"):
+                    HikRigCalibrationSession._publish_calibration_directory(
+                        temporary, output
+                    )
+            self.assertTrue((temporary / "hik_camera_calibration.json").is_file())
+            self.assertFalse(output.exists())
+
     def test_cross_source_check_scores_already_aligned_images_high(self):
         image = np.zeros((120, 160, 3), np.uint8)
         image[10:55, 20:75] = 255
@@ -1370,6 +1421,14 @@ class HikRectifiedStreamTests(unittest.TestCase):
             )
             self.assertTrue(
                 (saved / "cross_source_check" / "cross_source_check.yaml").is_file()
+            )
+            self.assertEqual(
+                {"valid_screen_mask.png"},
+                {row["file"] for row in config["media"]},
+            )
+            self.assertEqual(
+                "hik_rig_rectified_visible_phone_pixels",
+                config["media"][0]["space"]["id"],
             )
 
 

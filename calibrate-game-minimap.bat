@@ -13,5 +13,11 @@ set "PYTHONPATH=%ARIA_MINIMAP_OPENCV%;%ARIA_MINIMAP_ROOT%.tools;%ARIA_MINIMAP_RO
 set "ARIA_MINIMAP_PYTHON=C:\Program Files\Python37\python.exe"
 if not exist "%ARIA_MINIMAP_PYTHON%" set "ARIA_MINIMAP_PYTHON=python"
 
-"%ARIA_MINIMAP_PYTHON%" -B -m acquisition.capture_game_minimap_zigzag --analyze %*
+if "%~1"=="" (
+  echo Usage: calibrate-game-minimap.bat SESSION [options]
+  echo This analyzes one completed fresh dual-source zigzag session.
+  exit /b 2
+)
+
+"%ARIA_MINIMAP_PYTHON%" -B -m acquisition.session_minimap_localization %*
 exit /b %errorlevel%

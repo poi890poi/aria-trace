@@ -92,6 +92,11 @@ HIK_CONFIG_COMMENTS = {
         "through a full-sensor matrix directly."
     ),
     "results": "Calibration and diagnostic evidence; these fields do not change runtime coordinates.",
+    "media": (
+        "Every persisted raster image in this bundle. Each entry states whether "
+        "it is full-sensor, hardware-ROI-local, rectified phone space, a crop, "
+        "mask, or diagnostic composite, with transform references where applicable."
+    ),
 }
 
 PROFILE_HEADER = """# AriaTrace calibration profile.
