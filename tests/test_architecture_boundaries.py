@@ -18,6 +18,22 @@ def imports_in(path):
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_acquisition_tree_contains_facades_not_implementations(self):
+        violations = []
+        for path in (ROOT / "acquisition").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            definitions = [
+                node.name
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            ]
+            if definitions:
+                violations.append((str(path.relative_to(ROOT)), definitions))
+            for imported in imports_in(path):
+                if imported == "acquisition" or imported.startswith("acquisition."):
+                    violations.append((str(path.relative_to(ROOT)), imported))
+        self.assertEqual([], violations)
+
     def test_legacy_hardware_exports_are_exact_adapter_aliases(self):
         from acquisition.android_capture import ScrcpyCaptureHub as legacy_android
         from acquisition.hik_capture import CalibratedHikFrameSource as legacy_hik
