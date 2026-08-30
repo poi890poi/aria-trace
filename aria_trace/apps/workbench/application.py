@@ -64,7 +64,7 @@ from aria_trace.services.localization.route.tracker import RouteCandidateAdvisor
 from acquisition.session import SessionReader, input_capture_health
 from acquisition.scene_yaw_calibration import calibrate_scene_yaw_session
 from aria_trace.services.tracking.profiles import resolve_tracking_profile
-from acquisition.teleport_analysis import analyze_teleport_session
+from aria_trace.workflows.teleport import analyze_teleport_session
 from acquisition.windows import (
     WindowsDesktopApi,
     select_window,

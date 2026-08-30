@@ -1,6 +1,7 @@
 """Universal values exchanged across AriaTrace component boundaries."""
 
 from .artifacts import ArtifactRef
+from .behaviors import TeleportBehaviorSample
 from .envelope import DataEnvelope, DiagnosticValue, EnvelopeIdentity
 from .errors import ComponentError, FailureKind
 from .execution import (
@@ -44,4 +45,5 @@ __all__ = [
     "SpaceRef",
     "TimePoint",
     "TimingInfo",
+    "TeleportBehaviorSample",
 ]

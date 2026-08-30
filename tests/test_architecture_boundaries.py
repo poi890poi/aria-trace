@@ -118,6 +118,15 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(TwoRateRealtimeTracker, legacy_tracker)
         self.assertIs(RouteVisualTracker, legacy_route)
 
+    def test_teleport_record_and_legacy_exports_have_domain_owners(self):
+        from acquisition.models import TeleportBehaviorSample as legacy_record
+        from acquisition.teleport_behavior import make_teleport_behavior_sample as legacy_make
+        from aria_trace.domain import TeleportBehaviorSample
+        from aria_trace.services.localization.teleport import make_teleport_behavior_sample
+
+        self.assertIs(TeleportBehaviorSample, legacy_record)
+        self.assertIs(make_teleport_behavior_sample, legacy_make)
+
 
 if __name__ == "__main__":
     unittest.main()
