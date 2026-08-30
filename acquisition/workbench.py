@@ -93,6 +93,32 @@ def _strict_json_value(value):
     return value
 
 
+def _require_ready_map_localization(stitch: dict, action: str) -> dict:
+    """Return a usable localization layer or explain its recorded quality."""
+
+    localization = stitch.get("localization") or {}
+    if localization.get("status") == "ready":
+        return localization
+    quality = localization.get("quality") or {}
+    details = []
+    for key, label, digits, suffix in (
+        ("gradient_correlation_score", "correlation", 3, ""),
+        ("gradient_correlation_margin", "margin", 3, ""),
+        ("reprojection_p95_original_map_px", "reprojection p95", 2, " px"),
+    ):
+        value = quality.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            details.append(
+                "{} {:.{}f}{}".format(label, float(value), digits, suffix)
+            )
+    status = str(localization.get("status") or "missing").replace("_", " ")
+    summary = " ({})".format(", ".join(details)) if details else ""
+    raise ValueError(
+        "The selected map stitch localization is {}{}; rebuild it with compatible "
+        "mini-map evidence before {}".format(status, summary, action)
+    )
+
+
 def parse_adb_devices(output: str) -> List[dict]:
     """Parse `adb devices -l` without treating unavailable devices as targets."""
     devices = []
@@ -2322,6 +2348,7 @@ class AcquisitionWorkbench:
                 raise ValueError(
                     "Map stitch and teleport destination use different mini-map calibrations"
                 )
+            _require_ready_map_localization(stitch, "teleport analysis")
             behavior_id = safe_id(described.get("session_id") or session_path.name)
             output = self._teleport_behavior_root(game_profile_id) / behavior_id
 
@@ -2518,12 +2545,9 @@ class AcquisitionWorkbench:
                 mosaic = cv2.imread(str(mosaic_path), cv2.IMREAD_COLOR)
                 if mosaic is None:
                     raise ValueError("Could not decode the selected map mosaic")
-                localization = stitch.get("localization") or {}
-                if localization.get("status") != "ready":
-                    raise ValueError(
-                        "Rebuild and review this full-map artifact with the selected "
-                        "mini-map calibration before starting live tracking"
-                    )
+                localization = _require_ready_map_localization(
+                    stitch, "starting live tracking"
+                )
                 if localization.get("source_minimap_calibration_id") != calibration_id:
                     raise ValueError(
                         "The selected map localization raster was built for another "

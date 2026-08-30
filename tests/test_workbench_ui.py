@@ -83,6 +83,16 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
         referenced = set(re.findall(r"\bui\.([A-Za-z][A-Za-z0-9_]*)", self.source))
         self.assertEqual(sorted(referenced - set(ids)), [])
 
+    def test_teleport_analysis_requires_ready_map_localization(self):
+        self.assertIn(
+            "localizationReady=localization.status==='ready'", self.source
+        )
+        self.assertIn("stitch&&!localizationReady", self.source)
+        self.assertIn(
+            "Rebuild it with compatible mini-map evidence before teleport analysis.",
+            self.source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2256,6 +2256,40 @@ class WorkbenchTests(unittest.TestCase):
                     ),
                     b"teleport",
                 )
+                (stitch_root / "map_stitch.json").write_text(
+                    json.dumps(
+                        {
+                            "stitch_id": stitch_id,
+                            "source_minimap_calibration_id": calibration_id,
+                            "localization": {
+                                "status": "review_required",
+                                "quality": {
+                                    "gradient_correlation_score": 0.309,
+                                    "gradient_correlation_margin": 0.199,
+                                    "reprojection_p95_original_map_px": 4.53,
+                                },
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with patch(
+                    "acquisition.workbench.analyze_teleport_session"
+                ) as blocked_analysis:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "localization is review required.*correlation 0.309.*"
+                        "before teleport analysis",
+                    ):
+                        state.run_teleport_analysis(
+                            {
+                                "game_profile_id": "genshin-impact-pc",
+                                "session_relative_path": "teleport-sources/run_08",
+                                "minimap_calibration_id": calibration_id,
+                                "map_stitch_id": stitch_id,
+                            }
+                        )
+                blocked_analysis.assert_not_called()
             finally:
                 state.close()
 
