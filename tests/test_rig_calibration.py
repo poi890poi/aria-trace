@@ -289,7 +289,7 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
                 return LegacyBarcode()
 
         with mock.patch(
-            "acquisition.rig_calibration.data_matrix_readability._zxing_module",
+            "aria_trace.services.calibration.rig.data_matrix_readability._zxing_module",
             return_value=LegacyZxing,
         ):
             modules = encode_data_matrix_modules("A7K2")
@@ -317,7 +317,7 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
                 return [Result()]
 
         with mock.patch(
-            "acquisition.rig_calibration.data_matrix_readability._zxing_module",
+            "aria_trace.services.calibration.rig.data_matrix_readability._zxing_module",
             return_value=LegacyZxing,
         ):
             decoded = decode_data_matrix_payloads(np.zeros((12, 12), np.uint8))
@@ -350,7 +350,7 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
         gradient = np.tile(np.arange(32, dtype=np.uint8), (32, 1)) * 8
         image = cv2.cvtColor(gradient, cv2.COLOR_GRAY2BGR)
         with mock.patch(
-            "acquisition.rig_calibration.data_matrix_readability._zxing_module",
+            "aria_trace.services.calibration.rig.data_matrix_readability._zxing_module",
             return_value=Zxing,
         ):
             decoded = decode_data_matrix_payloads(image)

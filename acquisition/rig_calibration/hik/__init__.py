@@ -1,15 +1,4 @@
-"""Opt-in Hikrobot/HIK MVS camera and ADB-phone rig calibration."""
+"""Compatibility exports for canonical HIK rig calibration services."""
 
-from .camera import HikCamera
-from .driver import HikMvsCameraAdapter, RectifiedHikCamera
-from .game_camera import HikGameFrameSet, ProfiledHikGameCamera
-from .spaces import RigCalibratedSpaceConverter
+from aria_trace.services.calibration.rig.hik import *  # noqa: F401,F403
 
-__all__ = [
-    "HikCamera",
-    "HikMvsCameraAdapter",
-    "RectifiedHikCamera",
-    "HikGameFrameSet",
-    "ProfiledHikGameCamera",
-    "RigCalibratedSpaceConverter",
-]

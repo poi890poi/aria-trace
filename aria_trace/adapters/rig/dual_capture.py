@@ -20,7 +20,7 @@ from acquisition.game_cross_source_check import (
     orient_hik_source_from_first_adb_frame,
 )
 from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
-from acquisition.rig_calibration.hik.phone import AdbPhoneSession
+from aria_trace.services.calibration.rig.hik.phone import AdbPhoneSession
 from aria_trace.adapters.sources import AdbClockMapper, AdbGetEventSource
 
 

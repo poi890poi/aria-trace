@@ -1,6 +1,6 @@
 """PyInstaller entry point for HIK/Android rig calibration."""
 
-from acquisition.rig_calibration.hik.calibrate import main
+from aria_trace.services.calibration.rig.hik.calibrate import main
 
 
 if __name__ == "__main__":

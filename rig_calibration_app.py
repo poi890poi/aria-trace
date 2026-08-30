@@ -1,6 +1,6 @@
 """Stable source and PyInstaller entry point for the rig-calibration app."""
 
-from acquisition.rig_calibration.app.qt_app import main
+from aria_trace.apps.rig_calibrator.application import main
 
 
 if __name__ == "__main__":

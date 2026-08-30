@@ -1,7 +1,5 @@
-"""Launch the standalone AriaTrace rig-calibration desktop application."""
-
-from .qt_app import main
+from aria_trace.apps.rig_calibrator.application import main
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

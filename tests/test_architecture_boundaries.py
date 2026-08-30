@@ -83,6 +83,15 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_poc, build_poc_evidence_index)
         self.assertIs(legacy_review, ReviewState)
 
+    def test_legacy_rig_exports_are_exact_service_aliases(self):
+        from acquisition.rig_calibration import FrameSample as legacy_result
+        from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter as legacy_hik
+        from aria_trace.services.calibration.rig import FrameSample
+        from aria_trace.services.calibration.rig.hik.driver import HikMvsCameraAdapter
+
+        self.assertIs(legacy_result, FrameSample)
+        self.assertIs(legacy_hik, HikMvsCameraAdapter)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

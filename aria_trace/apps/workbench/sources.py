@@ -161,7 +161,7 @@ class SourceFactory:
     def hik_devices(self) -> List[dict]:
         """Enumerate HIK devices without opening or changing camera state."""
         if self.hik_adapter_factory is None:
-            from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter
+            from aria_trace.services.calibration.rig.hik.driver import HikMvsCameraAdapter
 
             adapter = HikMvsCameraAdapter()
         else:

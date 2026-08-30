@@ -14,7 +14,7 @@ from aria_trace.adapters.filesystem.profile_registry import (
     ProfileRegistry,
     context_from_rig_calibration,
 )
-from acquisition.rig_calibration.hik.game_camera import _source_crop_to_canonical_phone
+from aria_trace.services.calibration.rig.hik.game_camera import _source_crop_to_canonical_phone
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
