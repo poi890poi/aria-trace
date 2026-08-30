@@ -47,8 +47,14 @@ def parser() -> argparse.ArgumentParser:
         "--max-exposure-periods",
         type=int,
         choices=(1, 2, 3),
-        default=2,
-        help="Longest exposure in complete panel refresh periods (default: 2)",
+        default=1,
+        help="Longest HIK auto exposure in complete panel refresh periods (default: 1)",
+    )
+    value.add_argument(
+        "--max-auto-gain-db",
+        type=float,
+        default=12.0,
+        help="HIK one-shot auto-gain upper limit in dB (default: 12)",
     )
     value.add_argument("--exposure-noise-frames", type=int, default=4)
     value.add_argument("--target-port", type=int, default=8765)
@@ -148,6 +154,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         refresh_hz_override=arguments.refresh_hz,
         maximum_shutter_multiplier=arguments.max_shutter_multiplier,
         maximum_exposure_periods=arguments.max_exposure_periods,
+        maximum_auto_gain_db=arguments.max_auto_gain_db,
         exposure_noise_frames=arguments.exposure_noise_frames,
         geometry_frames=arguments.geometry_frames,
         settle_frames=arguments.settle_frames,

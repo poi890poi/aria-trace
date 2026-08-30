@@ -77,18 +77,16 @@ causes an explicit failure rather than silently corrupting the geometry.
 
 Before ChArUco detection, the camera uses a short hardware auto-exposure/gain
 bootstrap and discards those frames. This is only to make geometry detectable;
-the final exposure and gain are still selected manually from the measured white
-mask under the refresh-period and clipping constraints.
+the final exposure and gain come from a separate bounded HIK one-shot operation.
 
 After geometry is known, the phone shows a neutral-gray target only inside the
 camera-visible display region. On the verified MV-CS016-10UC feature tree, HIK
 `AOI1` is set to that projected camera region for one-shot exposure/gain and
 `AOI2` is set to it for one-shot white balance. The raw one-shot exposure is
-allowed to reach the longest permitted panel-refresh-safe duration (16667 us,
-or two complete display periods, at 120 Hz with the default cap) instead of inheriting a stale camera auto-exposure
-ceiling. It is then quantized to its nearest permitted panel-refresh multiple. Other permitted
-multiples are still measured as safety fallbacks when the nearest value cannot
-meet clipping/noise constraints. HIK's one-shot WB is retained as the seed and
+limited to one complete display period (16667 us at 60 Hz), and auto gain is
+limited to 12 dB. After HIK finishes, exposure and gain are read back and locked;
+the workflow does not replace them with a manual candidate search. HIK's
+one-shot WB is retained as the seed and
 the quarter-exposure blurred-white measurement applies only a residual channel
 correction.
 
@@ -98,16 +96,13 @@ white balance, frame rate, image statistics, and ChArUco corner count. The image
 is fit within the usable desktop area and is never covered by the text. Closing
 this overview hides it without cancelling calibration.
 
-Exposure endpoints are constrained to panel-period boundaries. The default
-search evaluates 0.5, 1, and 2 times the panel-refresh shutter rate: at 120 Hz,
-these are 16667, 8333, and 4167 us. This preserves complete display cycles while
-allowing lower gain. Pass `--max-exposure-periods 3` to allow 25000 us; the
-independent `--max-shutter-multiplier 3` option permits a faster 2778 us candidate.
-The workflow seeks 90% code value in the known white patch with no channel
-having 5% or more clipped samples, preferring lower gain and then shorter
-exposure. White balance is measured at one-quarter exposure after strong blur,
-then the selected exposure is restored. Before residual WB, exposure selection
-uses the brightest channel as the predicted balanced-white level because the WB
+The default HIK auto limits are one complete panel period and 12 dB. Override
+them with `--max-exposure-periods` and `--max-auto-gain-db` when required by a
+different rig. The known white patch measures and records clipping/noise after
+the auto result is locked, but does not replace that result. White balance is
+measured at one-quarter exposure after strong blur, then the locked exposure is
+restored. Before residual WB, verification uses the brightest channel as the
+predicted balanced-white level because the WB
 method raises the dim channels to that channel. After WB is locked, a new camera
 burst verifies the actual three-channel mean and clipping. If the residual
 correction misses 88-92% or clips more than 5% in any channel, the calibrator

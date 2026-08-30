@@ -123,15 +123,13 @@ behavior remains rectified for compatibility.
 - A controlled neutral-gray phone target now seeds HIK one-shot exposure, gain,
   and white balance. The camera's declared Auto Function AOI1/AOI2 regions are
   restricted to the projected target when supported; unsupported cameras fall
-  back explicitly to their default auto area. The final exposure remains manual,
-  refresh-quantized, mask-measured, and clipping/noise checked.
+  back explicitly to their default auto area. The completed one-shot exposure
+  and gain are read back and locked instead of being replaced by a manual search.
 - Android brightness is locked to manual 255/255 for measurement and restored on
-  cleanup. The HIK one-shot exposure ceiling is raised to the longest permitted
-  refresh-safe duration. By default this now includes two complete display
-  periods (16667 us at 120 Hz), while clipping/noise measurement and the faster
-  refresh-rate-multiple candidates are preserved. Pre-WB selection predicts the
-  residual-WB result from the brightest channel instead of rejecting the
-  unbalanced channel average. A post-WB camera burst checks the result; a poor
+  cleanup. The HIK one-shot exposure ceiling defaults to one complete display
+  period (16667 us at 60 Hz) and its gain ceiling defaults to 12 dB. A white-patch
+  burst records clipping and noise without overriding HIK auto. A post-WB camera
+  burst checks the result; a poor
   residual correction restores the HIK one-shot WB. Remaining target misses are
   saved as warnings instead of aborting calibration. Device I/O, missing-target,
   and unusable-geometry failures remain hard errors because no calibration can

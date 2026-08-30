@@ -215,7 +215,8 @@ class HikCalibrationOptions:
     operation_timeout_seconds: float = 8.0
     refresh_hz_override: Optional[float] = None
     maximum_shutter_multiplier: int = 2
-    maximum_exposure_periods: int = 2
+    maximum_exposure_periods: int = 1
+    maximum_auto_gain_db: float = 12.0
     exposure_noise_frames: int = 4
     geometry_frames: int = 12
     settle_frames: int = 3
@@ -231,6 +232,8 @@ class HikCalibrationOptions:
             raise ValueError("Maximum shutter multiplier must be 2 or 3")
         if self.maximum_exposure_periods not in (1, 2, 3):
             raise ValueError("Maximum exposure periods must be 1, 2, or 3")
+        if self.maximum_auto_gain_db <= 0:
+            raise ValueError("Maximum HIK auto gain must be positive")
         if min(
             self.camera_width_px,
             self.camera_height_px,
@@ -1217,7 +1220,7 @@ class HikRigCalibrationSession:
             self.camera_controls = dict(self.camera.controls())
             self.progress(
                 "Bootstrapping ChArUco visibility with camera auto exposure/gain; "
-                "final imaging remains mask-calibrated manual control..."
+                "final imaging will lock the bounded HIK one-shot result..."
             )
             self.camera.set_auto_imaging()
             self.camera_metadata["geometry_bootstrap"] = self._wait_auto_imaging()
@@ -1483,12 +1486,18 @@ class HikRigCalibrationSession:
             1.0 / float(self.options.maximum_exposure_periods),
         )
         auto_limits = dict(
-            self.camera.configure_once_auto_limits(maximum_auto_exposure_us)
+            self.camera.configure_once_auto_limits(
+                maximum_auto_exposure_us,
+                self.options.maximum_auto_gain_db,
+            )
         )
         self.progress(
             "Running HIK one-shot auto exposure, gain, and white balance on neutral gray "
-            "(target DN 128; exposure limit {:.1f} us)..."
-            .format(float(auto_limits["exposure_upper_us"]))
+            "(target DN 128; exposure limit {:.1f} us; gain limit {:.3f} dB)..."
+            .format(
+                float(auto_limits["exposure_upper_us"]),
+                float(auto_limits["gain_upper"]),
+            )
         )
         started = time.monotonic_ns()
         initial = dict(self.camera.set_once_auto_imaging())
@@ -1577,15 +1586,13 @@ class HikRigCalibrationSession:
     def calibrate_exposure(self) -> None:
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         visible_region = self._required(self.visible_region, "camera-visible screen region")
-        self.progress("Calibrating refresh-quantized exposure and gain...")
-        self._set_preview_stage("Preparing exposure target", exposure_mode="manual")
+        self.progress("Locking the completed HIK one-shot exposure and gain...")
+        self._set_preview_stage("Verifying HIK auto result", exposure_mode="manual locked")
         shown = self.target.present_image(
             white_patch(phone_metrics.screen_size_px, visible_region["xywh"]),
-            "Exposure white patch",
+            "HIK auto-result verification white patch",
         )
         self._wait_painted(shown)
-        # Lock the camera's completed one-shot WB while exposure candidates are
-        # measured; no auto state machine may move the clipping boundary here.
         seed = self._required(self.auto_imaging_seed, "HIK one-shot auto seed")
         seed_white_balance = dict(seed["white_balance"])
         self.camera.set_white_balance(
@@ -1593,101 +1600,68 @@ class HikRigCalibrationSession:
             seed_white_balance["ratio_green"],
             seed_white_balance["ratio_blue"],
         )
-        gain_limits = self.camera.controls().get("gain", {})
-        gain_min = float(gain_limits.get("minimum", 0.0))
-        gain_max = float(gain_limits.get("maximum", max(24.0, gain_min)))
-        target = 255.0 * 0.90
-        multipliers = [
-            1.0 / float(periods)
-            for periods in range(
-                int(self.options.maximum_exposure_periods), 1, -1
-            )
-        ]
-        multipliers.extend(
-            float(value)
-            for value in range(
-                1, int(self.options.maximum_shutter_multiplier) + 1
-            )
-        )
-        nearest_multiplier = min(
-            multipliers,
-            key=lambda value: abs(
-                refresh_quantized_exposure_us(phone_metrics.refresh_hz, value)
-                - float(seed["exposure_us"])
-            ),
-        )
-        multipliers.sort(key=lambda value: (value != nearest_multiplier, value))
-        nearest_exposure_us = refresh_quantized_exposure_us(
-            phone_metrics.refresh_hz, nearest_multiplier
-        )
-        seed["refresh_quantization"] = {
-            "source_exposure_us": float(seed["exposure_us"]),
-            "nearest_shutter_refresh_multiplier": float(nearest_multiplier),
-            "nearest_exposure_refresh_periods": 1.0 / float(nearest_multiplier),
-            "nearest_exposure_us": float(nearest_exposure_us),
-            "absolute_error_us": abs(float(seed["exposure_us"]) - nearest_exposure_us),
-            "fallback_candidates_evaluated": len(multipliers) - 1,
-        }
-        self.progress(
-            "One-shot exposure {:.1f} us quantizes nearest to {:.1f} us "
-            "({:.3g}x refresh shutter rate, {:.2f} panel periods); "
-            "checking allowed alternatives for clipping/noise safety."
-            .format(
-                float(seed["exposure_us"]),
-                nearest_exposure_us,
-                nearest_multiplier,
-                1.0 / float(nearest_multiplier),
-            )
-        )
-        for multiplier in multipliers:
-            exposure_us = refresh_quantized_exposure_us(
-                phone_metrics.refresh_hz, multiplier
-            )
-            low, high = gain_min, gain_max
-            for _ in range(8):
-                gain = (low + high) * 0.5
-                row = self._observe(multiplier, exposure_us, gain)
-                if (
-                    row.white_balance_reference_brightness < target
-                    and row.maximum_clipped_fraction <= 0.05
-                ):
-                    low = gain
-                else:
-                    high = gain
-            self._observe(multiplier, exposure_us, low)
-            self._observe(multiplier, exposure_us, high)
-        self.exposure = choose_exposure(self.exposure_observations)
         selected_effective = self.camera.set_manual_imaging(
-            self.exposure.exposure_us, self.exposure.gain
+            float(seed["exposure_us"]), float(seed["gain"])
         )
-        if isinstance(selected_effective, Mapping) and selected_effective.get("fps"):
+        if not isinstance(selected_effective, Mapping):
+            selected_effective = {
+                "exposure_us": float(seed["exposure_us"]),
+                "gain": float(seed["gain"]),
+            }
+        if selected_effective.get("fps"):
             self.camera_metadata["fps"] = float(selected_effective["fps"])
-        self._capture_settled(self._required(self.white_mask, "white-area camera mask"))
+        white_mask = self._required(self.white_mask, "white-area camera mask")
+        self._capture_settled(white_mask)
+        frames = [
+            self.camera.read().image
+            for _ in range(int(self.options.exposure_noise_frames))
+        ]
+        self.last_frame = frames[-1].copy()
+        statistics = temporal_white_statistics(frames, white_mask)
+        exposure_us = float(selected_effective["exposure_us"])
+        gain = float(selected_effective["gain"])
+        shutter_refresh_multiplier = (
+            1.0e6 / exposure_us / float(phone_metrics.refresh_hz)
+        )
+        self.exposure = ExposureObservation(
+            shutter_refresh_multiplier=shutter_refresh_multiplier,
+            exposure_us=exposure_us,
+            gain=gain,
+            mean_bgr=tuple(statistics["mean_bgr"]),
+            clipped_fraction_bgr=tuple(statistics["clipped_fraction_bgr"]),
+            temporal_noise_bgr=tuple(statistics["temporal_noise_bgr"]),
+        )
+        self.exposure_observations.append(self.exposure)
+        seed["locked_manual_readback"] = {
+            "exposure_us": exposure_us,
+            "gain": gain,
+            "source": "completed_hik_one_shot_auto",
+        }
         self._set_preview_stage(
-            "Selected exposure",
-            exposure_mode="manual locked",
-            exposure_us=self.exposure.exposure_us,
-            gain=self.exposure.gain,
+            "Locked HIK auto result",
+            exposure_mode="HIK one-shot result locked manually",
+            exposure_us=exposure_us,
+            gain=gain,
         )
         self.progress(
-            "Exposure: {:.1f} us ({:.1f} Hz = {:.3g}x panel refresh, {:.2f} panel periods), "
-            "gain {:.3f}, pre-WB mean {:.1f}, WB reference {:.1f}, "
+            "HIK auto lock: {:.1f} us ({:.1f} Hz, {:.2f} panel periods), "
+            "gain {:.3f} dB, white verification mean {:.1f}, WB reference {:.1f}, "
             "temporal noise {:.3f} DN RMS.".format(
-                self.exposure.exposure_us,
+                exposure_us,
                 self.exposure.shutter_rate_hz,
-                self.exposure.shutter_refresh_multiplier,
                 self.exposure.exposure_refresh_periods,
-                self.exposure.gain,
+                gain,
                 self.exposure.brightness,
                 self.exposure.white_balance_reference_brightness,
                 self.exposure.temporal_noise_rms_dn,
             )
         )
+        target = 255.0 * 0.90
         minimum_acceptable = target - 255.0 * 0.02
         if self.exposure.white_balance_reference_brightness < minimum_acceptable:
             self._warn(
-                "Selected exposure is below the preferred white level "
-                "({:.1f}/255 versus {:.1f}/255); keeping the best measured manual lock."
+                "HIK one-shot auto is below the preferred white level "
+                "({:.1f}/255 versus {:.1f}/255); keeping the completed auto result."
                 .format(
                     self.exposure.white_balance_reference_brightness,
                     minimum_acceptable,
@@ -1695,8 +1669,8 @@ class HikRigCalibrationSession:
             )
         if self.exposure.maximum_clipped_fraction > 0.05:
             self._warn(
-                "Every exposure candidate exceeded preferred clipping; keeping the least-clipped "
-                "candidate at {:.3%}.".format(
+                "HIK one-shot auto exceeds preferred clipping at {:.3%}; keeping the completed "
+                "auto result.".format(
                     self.exposure.maximum_clipped_fraction
                 )
             )

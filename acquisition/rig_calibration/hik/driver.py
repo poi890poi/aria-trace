@@ -794,9 +794,9 @@ class HikMvsCameraAdapter(CameraAdapter):
         }
 
     def configure_once_auto_limits(
-        self, maximum_exposure_us: float
+        self, maximum_exposure_us: float, maximum_gain: float
     ) -> Mapping[str, Any]:
-        """Allow one-shot AE to use the longest permitted refresh-safe exposure."""
+        """Constrain HIK one-shot AE/gain to the requested operating envelope."""
 
         exposure_limits = self.backend.int_range("AutoExposureTimeUpperLimit")
         exposure_upper = self._align_integer(
@@ -804,7 +804,13 @@ class HikMvsCameraAdapter(CameraAdapter):
         )
         self.backend.set_int("AutoExposureTimeUpperLimit", exposure_upper)
         gain_limits = self.backend.float_range("AutoGainUpperLimit")
-        gain_upper = float(gain_limits["maximum"])
+        gain_upper = float(
+            np.clip(
+                float(maximum_gain),
+                float(gain_limits["minimum"]),
+                float(gain_limits["maximum"]),
+            )
+        )
         self.backend.set_float("AutoGainUpperLimit", gain_upper)
         return {
             "exposure_upper_us": self.backend.get_int("AutoExposureTimeUpperLimit"),

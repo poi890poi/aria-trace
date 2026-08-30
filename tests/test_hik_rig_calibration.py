@@ -320,18 +320,92 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertEqual(selected.exposure_refresh_periods, 0.5)
         self.assertEqual(selected.gain, 0.0)
 
-    def test_default_hik_options_allow_two_complete_refresh_periods(self):
+    def test_default_hik_auto_limits_one_refresh_period_and_twelve_db(self):
         with tempfile.TemporaryDirectory() as directory:
             options = HikCalibrationOptions(
                 "fake", "phone", Path(directory) / "output"
             )
-        self.assertEqual(options.maximum_exposure_periods, 2)
+        self.assertEqual(options.maximum_exposure_periods, 1)
+        self.assertEqual(options.maximum_auto_gain_db, 12.0)
         self.assertAlmostEqual(
             refresh_quantized_exposure_us(
                 120.0, 1.0 / options.maximum_exposure_periods
             ),
-            16666.666667,
+            8333.333333,
             places=3,
+        )
+
+    def test_exposure_lock_keeps_completed_hik_one_shot_result(self):
+        class Camera:
+            def __init__(self):
+                self.manual_calls = []
+
+            def set_white_balance(self, red, green, blue):
+                return {
+                    "ratio_red": red,
+                    "ratio_green": green,
+                    "ratio_blue": blue,
+                }
+
+            def set_manual_imaging(self, exposure_us, gain):
+                self.manual_calls.append((float(exposure_us), float(gain)))
+                return {
+                    "exposure_us": float(exposure_us),
+                    "gain": float(gain),
+                    "fps": 30.0,
+                }
+
+            def read(self):
+                return FrameSample(
+                    np.full((16, 16, 3), 180, np.uint8),
+                    1,
+                    receive_time_ns=1,
+                    source_id="fake",
+                )
+
+        class Target:
+            def present_image(self, _image, _label):
+                return object()
+
+        with tempfile.TemporaryDirectory() as directory:
+            camera = Camera()
+            session = HikRigCalibrationSession(
+                HikCalibrationOptions(
+                    "fake", "phone", Path(directory) / "output"
+                ),
+                camera=camera,
+                phone=object(),
+                target=Target(),
+                progress=lambda _message: None,
+            )
+            session.phone_metrics = mock.Mock(
+                refresh_hz=60.0,
+                screen_size_px=(32, 32),
+            )
+            session.visible_region = {"xywh": [0, 0, 16, 16]}
+            session.white_mask = np.full((16, 16), 255, np.uint8)
+            session.auto_imaging_seed = {
+                "exposure_us": 16667.0,
+                "gain": 12.0,
+                "white_balance": {
+                    "ratio_red": 1500,
+                    "ratio_green": 1024,
+                    "ratio_blue": 1900,
+                },
+            }
+            session._wait_painted = lambda _presentation: None
+            session._capture_settled = lambda _mask: np.full(
+                (16, 16, 3), 180, np.uint8
+            )
+            session.calibrate_exposure()
+
+        self.assertEqual(camera.manual_calls, [(16667.0, 12.0)])
+        self.assertEqual(session.exposure.exposure_us, 16667.0)
+        self.assertEqual(session.exposure.gain, 12.0)
+        self.assertEqual(len(session.exposure_observations), 1)
+        self.assertEqual(
+            session.auto_imaging_seed["locked_manual_readback"]["source"],
+            "completed_hik_one_shot_auto",
         )
 
     def test_clipped_candidate_is_rejected(self):
@@ -614,7 +688,7 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertEqual(started["modes"]["GainAuto"], "Once")
         self.assertEqual(started["modes"]["BalanceWhiteAuto"], "Once")
 
-    def test_hik_one_shot_auto_limits_allow_refresh_safe_exposure_and_full_gain(self):
+    def test_hik_one_shot_auto_limits_cap_exposure_and_gain(self):
         class Backend:
             def __init__(self):
                 self.integers = {"AutoExposureTimeUpperLimit": 5840}
@@ -639,9 +713,9 @@ class HikAlgorithmTests(unittest.TestCase):
                 return self.floats[node]
 
         adapter = HikMvsCameraAdapter(backend=Backend())
-        result = adapter.configure_once_auto_limits(8333.333)
-        self.assertEqual(result["exposure_upper_us"], 8333)
-        self.assertAlmostEqual(result["gain_upper"], 16.9806995)
+        result = adapter.configure_once_auto_limits(16666.667, 12.0)
+        self.assertEqual(result["exposure_upper_us"], 16667)
+        self.assertAlmostEqual(result["gain_upper"], 12.0)
 
     def test_hik_auto_function_aoi_uses_separate_intensity_and_wb_regions(self):
         class Backend:
