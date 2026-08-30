@@ -83,6 +83,14 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_poc, build_poc_evidence_index)
         self.assertIs(legacy_review, ReviewState)
 
+        from acquisition.capture_game_minimap_zigzag import main as legacy_capture
+        from acquisition.record import main as legacy_record
+        from aria_trace.apps.record import main as record_main
+        from aria_trace.workflows.minimap_capture import main as capture_main
+
+        self.assertIs(legacy_capture, capture_main)
+        self.assertIs(legacy_record, record_main)
+
     def test_legacy_rig_exports_are_exact_service_aliases(self):
         from acquisition.rig_calibration import FrameSample as legacy_result
         from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter as legacy_hik

@@ -363,7 +363,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(events[1].payload["mouse_buttons"], ["left"])
 
     def test_tool_discovery_has_no_machine_specific_fallback(self):
-        with mock.patch("acquisition.record.shutil.which", return_value=None):
+        with mock.patch("aria_trace.apps.record.shutil.which", return_value=None):
             self.assertIsNone(default_adb())
         with mock.patch("aria_trace.adapters.filesystem.video.shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "Install it, pass --ffmpeg"):

@@ -1,6 +1,6 @@
 """PyInstaller entry point for synchronized zigzag acquisition."""
 
-from acquisition.capture_game_minimap_zigzag import main
+from aria_trace.workflows.minimap_capture import main
 
 
 if __name__ == "__main__":

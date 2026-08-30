@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from acquisition import capture_game_minimap_zigzag as capture
+from aria_trace.workflows import minimap_capture as capture
 from acquisition.capture_game_minimap_zigzag import (
     _game_booster_lock_showing,
     _hik_fallback_allowed,

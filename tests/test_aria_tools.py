@@ -13,7 +13,7 @@ class AriaToolsTests(unittest.TestCase):
         ) as importer:
             result = aria_tools.zigzag_acquisition(["--moves", "4"])
         importer.assert_called_once_with(
-            "acquisition.capture_game_minimap_zigzag"
+            "aria_trace.workflows.minimap_capture"
         )
         module.main.assert_called_once_with(["--moves", "4"])
         self.assertEqual(7, result)

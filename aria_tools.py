@@ -23,7 +23,7 @@ def rig_calibration(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def zigzag_acquisition(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("acquisition.capture_game_minimap_zigzag", argv)
+    return _invoke("aria_trace.workflows.minimap_capture", argv)
 
 
 def minimap_calibration(argv: Optional[Sequence[str]] = None) -> int:

@@ -19,12 +19,7 @@ def _strict_json_value(value):
 
 
 def make_handler(state):
-    static_path = (
-        Path(__file__).resolve().parents[3]
-        / "acquisition"
-        / "static"
-        / "recorder.html"
-    )
+    static_path = Path(__file__).resolve().parent / "static" / "recorder.html"
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, content_type: str, body: bytes) -> None:

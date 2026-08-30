@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RECORDER_HTML = ROOT / "acquisition" / "static" / "recorder.html"
+RECORDER_HTML = ROOT / "aria_trace" / "apps" / "workbench" / "static" / "recorder.html"
 
 
 class _IdLocationParser(HTMLParser):
