@@ -8,7 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 from .descriptors import extract_many
 from .package import ReplayPackage
@@ -206,4 +206,3 @@ def align_session(
     }
     _write_json_atomic(output_path / "summary.json", summary)
     return summary
-

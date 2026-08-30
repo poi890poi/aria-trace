@@ -14,7 +14,7 @@ from aria_trace.services.calibration.cursor.pose import (
     circular_difference_degrees,
     timing_summary_ms,
 )
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 def _atomic_json(path: Path, value: dict) -> None:

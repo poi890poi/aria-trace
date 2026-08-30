@@ -19,7 +19,7 @@ import numpy as np
 
 from aria_trace.services.tracking.runtime import MinimapExtractor, _gradient
 from aria_trace.services.mapping.layers import LayeredGlobalLocalizer
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 from replay.route_similarity import route_similarity_report
 from replay.route_tracking import RouteTrackingPackage, describe_minimap
 

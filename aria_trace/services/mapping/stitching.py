@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 MAP_ORIENTATION_MODEL = "fixed_north_up"

@@ -10,7 +10,7 @@ from replay.session_tools import decode_frames, sample_frames
 
 from aria_trace.services.tracking.runtime import MinimapExtractor
 from aria_trace.services.mapping.layers import LayeredGlobalLocalizer
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 def localize_route_frames(

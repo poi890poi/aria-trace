@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from aria_trace.services.tracking.runtime import GlobalMapLocalizer, MinimapExtractor
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 from aria_trace.services.localization.teleport import (
     make_teleport_behavior_sample,
     save_teleport_behavior_sample,

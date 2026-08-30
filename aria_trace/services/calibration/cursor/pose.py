@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from .shape import edge_distance_transform, polygon_edge, render_polygon
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 SCHEMA_VERSION = "1.0"

@@ -38,7 +38,7 @@ from replay.package import compile_replay_package
 from replay.route_tracking import RouteTrackingPackage
 from replay.route_similarity import write_live_route_similarity
 
-from acquisition.annotations import AnnotationStore
+from aria_trace.adapters.filesystem.annotations import AnnotationStore
 from aria_trace.services.mapping.stitching import load_localization_reference_candidates, stitch_map_session
 from aria_trace.services.mapping.layers import LayeredGlobalLocalizer, build_map_atlas
 from aria_trace.services.mapping.references import transition_endpoint_references
@@ -61,10 +61,10 @@ from aria_trace.services.calibration.minimap.calibration import (
 from aria_trace.services.calibration.minimap.verification import verify_forward_session
 from acquisition.poc_evidence import build_poc_evidence_index
 from acquisition.profiles import ProfileCatalog
-from acquisition.recorder import AcquisitionRecorder
+from aria_trace.workflows.recording import AcquisitionRecorder
 from aria_trace.workflows.route import compile_route_session
 from aria_trace.services.localization.route.tracker import RouteCandidateAdvisor, RouteVisualTracker
-from acquisition.session import SessionReader, input_capture_health
+from aria_trace.adapters.filesystem.session import SessionReader, input_capture_health
 from aria_trace.services.calibration.scene_yaw import calibrate_scene_yaw_session
 from aria_trace.services.tracking.profiles import resolve_tracking_profile
 from aria_trace.workflows.teleport import analyze_teleport_session

@@ -13,7 +13,7 @@ import numpy as np
 from aria_trace.services.vision import KltAngularYawEstimator, camera_matrix
 
 from aria_trace.services.calibration.cursor.pose import timing_summary_ms
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 DEFAULT_CONFIG = {

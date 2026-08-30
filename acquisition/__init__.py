@@ -1,3 +1,3 @@
 """Data acquisition, inspection, and replay tools for camera navigation."""
 
-SCHEMA_VERSION = "1.0"
+from aria_trace.domain.session import SESSION_SCHEMA_VERSION as SCHEMA_VERSION

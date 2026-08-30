@@ -365,7 +365,7 @@ class AcquisitionTests(unittest.TestCase):
     def test_tool_discovery_has_no_machine_specific_fallback(self):
         with mock.patch("acquisition.record.shutil.which", return_value=None):
             self.assertIsNone(default_adb())
-        with mock.patch("acquisition.video.shutil.which", return_value=None):
+        with mock.patch("aria_trace.adapters.filesystem.video.shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "Install it, pass --ffmpeg"):
                 find_ffmpeg()
     def test_portal_confirmation_requires_consistent_consecutive_poses(self):

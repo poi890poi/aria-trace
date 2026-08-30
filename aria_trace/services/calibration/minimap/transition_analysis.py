@@ -10,7 +10,7 @@ import numpy as np
 from replay.session_tools import decode_frames
 
 from .transition import ModeObservation, learn_transition_model
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 class MapScaleMatcher:

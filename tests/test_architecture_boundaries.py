@@ -30,6 +30,21 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIs(legacy_hik, CalibratedHikFrameSource)
         self.assertIs(legacy_windows, WindowsWindowFrameSource)
 
+    def test_legacy_storage_and_recording_exports_are_exact_aliases(self):
+        from acquisition.annotations import AnnotationStore as legacy_annotations
+        from acquisition.recorder import AcquisitionRecorder as legacy_recorder
+        from acquisition.session import SessionReader as legacy_session
+        from acquisition.video import create_video_sink as legacy_video
+        from aria_trace.adapters.filesystem.annotations import AnnotationStore
+        from aria_trace.adapters.filesystem.session import SessionReader
+        from aria_trace.adapters.filesystem.video import create_video_sink
+        from aria_trace.workflows.recording import AcquisitionRecorder
+
+        self.assertIs(legacy_annotations, AnnotationStore)
+        self.assertIs(legacy_recorder, AcquisitionRecorder)
+        self.assertIs(legacy_session, SessionReader)
+        self.assertIs(legacy_video, create_video_sink)
+
     def test_new_contract_package_has_no_legacy_or_platform_dependencies(self):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []

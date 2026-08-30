@@ -6,8 +6,8 @@ from typing import List, Optional, Tuple
 
 import cv2
 
-from acquisition.annotations import AnnotationStore
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.annotations import AnnotationStore
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 def sha256_file(path: Path) -> Optional[str]:
@@ -137,4 +137,3 @@ def stage_for_time(stages: List[dict], session_time_ns: int) -> dict:
         if session_time_ns >= stage["start_session_time_ns"]:
             return stage
     return stages[0]
-

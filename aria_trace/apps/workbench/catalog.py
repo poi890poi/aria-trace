@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Optional
 
-from acquisition.annotations import AnnotationStore
-from acquisition.session import SessionReader, input_capture_health
+from aria_trace.adapters.filesystem.annotations import AnnotationStore
+from aria_trace.adapters.filesystem.session import SessionReader, input_capture_health
 
 
 def session_primary_stream_id(reader) -> str:

@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 from . import SCHEMA_VERSION
 from .descriptors import describe, extract_many
@@ -175,4 +175,3 @@ class ReplayPackage:
                 if line.strip():
                     records.append(json.loads(line))
         return records
-

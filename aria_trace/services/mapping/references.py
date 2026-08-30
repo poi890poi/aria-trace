@@ -7,7 +7,7 @@ import numpy as np
 
 from replay.session_tools import decode_frames
 
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 def _endpoint_candidates(frames, count: int, from_end: bool):

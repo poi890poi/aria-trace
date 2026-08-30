@@ -26,7 +26,7 @@ import numpy as np
 
 from acquisition.models import FramePacket
 from aria_trace.adapters.sources import AdbClockMapper, FrameSource
-from acquisition.video import find_ffmpeg
+from aria_trace.adapters.filesystem.video import find_ffmpeg
 
 
 SCRCPY_SERVER_VERSION = "4.1"

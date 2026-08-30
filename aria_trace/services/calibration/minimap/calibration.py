@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from aria_trace.services.calibration.cursor.shape import fit_symmetric_polygon
-from acquisition.session import SessionReader
+from aria_trace.adapters.filesystem.session import SessionReader
 
 
 SCHEMA_VERSION = "1.0"
