@@ -58,6 +58,10 @@ from .minimap_verification import verify_forward_session
 from .poc_evidence import build_poc_evidence_index
 from .profiles import ProfileCatalog
 from .recorder import AcquisitionRecorder
+from .rig_dual_capture import (
+    build_calibrated_rig_recording_bundle,
+    single_source_recording_bundle,
+)
 from .route_compilation import compile_route_session
 from .route_tracker import RouteCandidateAdvisor
 from .session import SessionReader, input_capture_health
@@ -339,6 +343,18 @@ def capture_diagnostic_snapshot(reader, input_health: dict, active: dict) -> dic
     }
 
 
+def session_primary_stream_id(reader) -> str:
+    """Resolve the declared analysis stream while preserving legacy sessions."""
+
+    context = reader.manifest.get("context") or {}
+    declared = str(context.get("primary_stream_id") or "").strip()
+    if declared and declared in reader.frames_by_stream:
+        return declared
+    if "main" in reader.frames_by_stream:
+        return "main"
+    return next(iter(reader.frames_by_stream), "main")
+
+
 def input_failure_message(diagnostics: dict) -> str:
     """Explain an input failure using measured receiver and event evidence."""
     health = diagnostics["input_capture"]
@@ -456,7 +472,7 @@ class SourceFactory:
         },
         {
             "adapter": "hik_rig_calibrated",
-            "label": "HIK camera (rig calibrated)",
+            "label": "Calibrated rig (ADB + HIK)",
             "status": "available",
         },
         {"adapter": "uvc", "label": "UVC camera", "status": "available"},
@@ -501,11 +517,15 @@ class SourceFactory:
         xinput_api=None,
         raw_input_api=None,
         hik_adapter_factory=None,
+        rig_bundle_builder=None,
     ) -> None:
         self.desktop_api = desktop_api
         self.xinput_api = xinput_api
         self.raw_input_api = raw_input_api
         self.hik_adapter_factory = hik_adapter_factory
+        self.rig_bundle_builder = (
+            rig_bundle_builder or build_calibrated_rig_recording_bundle
+        )
 
     @staticmethod
     def _adb(config: dict) -> Path:
@@ -558,8 +578,22 @@ class SourceFactory:
                 close()
 
     def capture_sources(self, frame_config: dict, input_config: dict):
-        """Build a synchronized frame/input pair for one recorder lifetime."""
-        if frame_config.get("adapter") != "android_scrcpy":
+        """Build one live frame source and its synchronized input source."""
+        adapter = frame_config.get("adapter")
+        if adapter == "hik_rig_calibrated":
+            bundle = self.recording_bundle(
+                frame_config, {"adapter": "none"}
+            )
+            primary = next(
+                source
+                for source in bundle.frame_sources
+                if source.stream_id == bundle.primary_stream_id
+            )
+            for source in bundle.frame_sources:
+                if source is not primary:
+                    source.stop()
+            return primary, self.input(input_config)
+        if adapter != "android_scrcpy":
             return self.frame(frame_config), self.input(input_config)
         serial = str(frame_config.get("serial") or "").strip()
         if not serial:
@@ -598,6 +632,37 @@ class SourceFactory:
         else:
             input_source = self.input(input_config)
         return frame_source, input_source
+
+    def recording_bundle(self, frame_config: dict, input_config: dict):
+        """Build the complete source set owned by one recording adapter."""
+
+        if frame_config.get("adapter") != "hik_rig_calibrated":
+            frame_source, input_source = self.capture_sources(
+                frame_config, input_config
+            )
+            return single_source_recording_bundle(frame_source, input_source)
+        calibration = str(frame_config.get("calibration") or "").strip()
+        if not calibration:
+            raise ValueError("Choose a HIK rig calibration")
+        server_config = frame_config.get("scrcpy_server")
+        bundled_server = (
+            Path(__file__).resolve().parents[1]
+            / ".tools"
+            / "scrcpy-win64-v4.1"
+            / "scrcpy-server"
+        )
+        if not server_config and bundled_server.is_file():
+            server_config = bundled_server
+        return self.rig_bundle_builder(
+            Path(calibration),
+            adb=self._adb(frame_config),
+            scrcpy_server=server_config,
+            ffmpeg=frame_config.get("ffmpeg"),
+            input_adapter=input_config.get("adapter", "none"),
+            input_source_id=input_config.get("source_id", "android-input"),
+            bit_rate=int(frame_config.get("bit_rate") or 16_000_000),
+            max_fps=float(frame_config.get("max_fps") or 60.0),
+        )
 
     def frame(self, config: dict):
         adapter = config.get("adapter")
@@ -3311,6 +3376,7 @@ class AcquisitionWorkbench:
         input_health = input_capture_health(reader.manifest, reader.inputs)
         metadata = self._session_metadata(path)
         context = reader.manifest.get("context") or {}
+        primary_stream_id = session_primary_stream_id(reader)
         if "route_failed" in kinds or "capture_failed" in kinds:
             status = "failed"
         elif not input_health["healthy"]:
@@ -3345,10 +3411,10 @@ class AcquisitionWorkbench:
             "created_utc": reader.manifest.get("created_utc"),
             "finished_utc": reader.manifest.get("finished_utc"),
             "duration_s": reader.manifest.get("duration_ns", 0) / 1.0e9,
-            "frames": len(reader.frames_by_stream.get("main", [])),
+            "frames": len(reader.frames_by_stream.get(primary_stream_id, [])),
             "input_events": len(reader.inputs),
             "dropped_frames": reader.manifest.get("dropped_frames", {}).get(
-                "main", 0
+                primary_stream_id, 0
             ),
             "status": status,
             "label": label,
@@ -3444,6 +3510,7 @@ class AcquisitionWorkbench:
             annotations = AnnotationStore(path).list()
             kinds = [item["kind"] for item in annotations]
             input_health = input_capture_health(reader.manifest, reader.inputs)
+            primary_stream_id = session_primary_stream_id(reader)
             if "route_failed" in kinds or "capture_failed" in kinds:
                 status = "needs_rerecord"
             elif not input_health["healthy"]:
@@ -3462,10 +3529,10 @@ class AcquisitionWorkbench:
                 "run_index": run_index,
                 "status": status,
                 "path": str(path),
-                "frames": len(reader.frames_by_stream.get("main", [])),
+                "frames": len(reader.frames_by_stream.get(primary_stream_id, [])),
                 "duration_s": reader.manifest.get("duration_ns", 0) / 1.0e9,
                 "dropped_frames": reader.manifest.get("dropped_frames", {}).get(
-                    "main", 0
+                    primary_stream_id, 0
                 ),
                 "input_events": len(reader.inputs),
                 "control_input_events": input_health["control_events"],
@@ -3936,20 +4003,20 @@ class AcquisitionWorkbench:
             }
             try:
                 self._archive_existing(active["path"])
-                frame_source, input_source = self.sources.capture_sources(
+                source_bundle = self.sources.recording_bundle(
                     config["frame_source"], config["input_source"]
                 )
-                if input_source is not None and hasattr(
-                    input_source, "disable_foreground_filter"
-                ):
-                    input_source.disable_foreground_filter()
+                for input_source in source_bundle.input_sources:
+                    if hasattr(input_source, "disable_foreground_filter"):
+                        input_source.disable_foreground_filter()
                 recorder = AcquisitionRecorder(
                     active["path"],
-                    [frame_source],
-                    [input_source] if input_source is not None else [],
+                    source_bundle.frame_sources,
+                    source_bundle.input_sources,
                     queue_size=8192,
                     video_encoding="h264",
                     video_fps=float(config["frame_source"].get("fps", 30.0)),
+                    frame_processors=source_bundle.frame_processors,
                     session_context={
                         "experiment_id": config["experiment_id"],
                         "game_profile_id": config["game_profile_id"],
@@ -3975,6 +4042,7 @@ class AcquisitionWorkbench:
                             if config.get("start_trigger") == "first_input"
                             else "settled_timer_start_segment_v1"
                         ),
+                        **source_bundle.session_context,
                     },
                 )
                 def sources_started() -> None:
@@ -4030,6 +4098,7 @@ class AcquisitionWorkbench:
                     on_recording_started=recording_started,
                     on_input_recorded=input_recorded,
                 )
+                source_bundle.finalize(active["path"], manifest)
                 active["stop"].set()
                 control_thread = active.get("android_control_thread")
                 if control_thread is not None:
@@ -4048,7 +4117,14 @@ class AcquisitionWorkbench:
                 session_started = bool(
                     (manifest.get("recording_start") or {}).get("started")
                 )
-                frames = reader.frames_by_stream.get("main", [])
+                frames = reader.frames_by_stream.get(
+                    source_bundle.primary_stream_id, []
+                )
+                missing_streams = [
+                    stream_id
+                    for stream_id in source_bundle.required_stream_ids
+                    if not reader.frames_by_stream.get(stream_id)
+                ]
                 duration_ns = int(manifest.get("duration_ns") or 0)
                 empty_input = not input_health["healthy"]
                 failed = bool(
@@ -4058,6 +4134,7 @@ class AcquisitionWorkbench:
                     or manifest.get("status") != "complete"
                     or duration_ns <= 0
                     or not frames
+                    or missing_streams
                 )
                 if not failed:
                     if active.get("android_control_events"):
@@ -4075,6 +4152,7 @@ class AcquisitionWorkbench:
                         active["recording_started_host_time_ns"],
                         capture_kind=config["capture_kind"],
                         capture_id=config["capture_id"],
+                        stream_id=source_bundle.primary_stream_id,
                     )
                     keep_session = True
                 if not session_started:
@@ -4100,11 +4178,15 @@ class AcquisitionWorkbench:
                             "Recording did not complete; the partial capture was "
                             "discarded"
                         )
-                elif duration_ns <= 0 or not frames:
+                elif duration_ns <= 0 or not frames or missing_streams:
                     with self._lock:
                         self._last_error = (
-                            "Recording contained no usable video duration or "
-                            "frames; the partial capture was discarded"
+                            "Recording contained no usable duration or required "
+                            "frame streams{}; the partial capture was discarded"
+                        ).format(
+                            " ({})".format(", ".join(missing_streams))
+                            if missing_streams
+                            else ""
                         )
                 else:
                     hud_result["state"] = "complete"
@@ -4301,9 +4383,11 @@ class AcquisitionWorkbench:
         capture_kind: str = "route",
         capture_id: Optional[str] = None,
         failure_note: Optional[str] = None,
+        stream_id: str = "main",
     ) -> None:
         reader = SessionReader(path)
-        frames = reader.frames_by_stream.get("main", [])
+        stream_id = str(stream_id)
+        frames = reader.frames_by_stream.get(stream_id, [])
         start_index, end_index = automatic_take_bounds(
             frames,
             reader.inputs,
@@ -4318,7 +4402,7 @@ class AcquisitionWorkbench:
             store.add(
                 kind,
                 frame["session_time_ns"],
-                "main",
+                stream_id,
                 frame["frame_index"],
                 route_id=route_id if capture_kind == "route" else None,
                 note=note,
@@ -4328,7 +4412,7 @@ class AcquisitionWorkbench:
             store.add(
                 "route_failed" if capture_kind == "route" else "capture_failed",
                 frame["session_time_ns"],
-                "main",
+                stream_id,
                 frame["frame_index"],
                 route_id=route_id if capture_kind == "route" else None,
                 note=failure_note

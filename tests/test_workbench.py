@@ -961,6 +961,66 @@ class WorkbenchTests(unittest.TestCase):
             calibrated_type.call_args[0][0],
             Path("rig/hik_camera_calibration.json"),
         )
+        rig_descriptor = next(
+            item
+            for item in factory.descriptor()["frame_adapters"]
+            if item["adapter"] == "hik_rig_calibrated"
+        )
+        self.assertEqual(rig_descriptor["label"], "Calibrated rig (ADB + HIK)")
+
+    def test_rig_recording_uses_dual_bundle_boundary(self):
+        calls = []
+        expected = object()
+
+        def build(calibration, **options):
+            calls.append((calibration, options))
+            return expected
+
+        factory = SourceFactory(rig_bundle_builder=build)
+        with patch.object(factory, "_adb", return_value=Path("adb.exe")):
+            actual = factory.recording_bundle(
+                {
+                    "adapter": "hik_rig_calibrated",
+                    "calibration": "rig/hik_camera_calibration.json",
+                    "max_fps": 55,
+                },
+                {"adapter": "adb_getevent", "source_id": "touch"},
+            )
+        self.assertIs(actual, expected)
+        self.assertEqual(calls[0][0], Path("rig/hik_camera_calibration.json"))
+        self.assertEqual(calls[0][1]["adb"], Path("adb.exe"))
+        self.assertEqual(calls[0][1]["input_adapter"], "adb_getevent")
+        self.assertEqual(calls[0][1]["input_source_id"], "touch")
+        self.assertEqual(calls[0][1]["max_fps"], 55.0)
+
+    def test_rig_live_source_uses_oriented_bundle_primary(self):
+        class Frame:
+            def __init__(self, stream_id):
+                self.stream_id = stream_id
+                self.stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        android = Frame("android_phone")
+        hik = Frame("hik_phone")
+        bundle = SimpleNamespace(
+            frame_sources=[android, hik],
+            primary_stream_id="hik_phone",
+        )
+        factory = SourceFactory(rig_bundle_builder=lambda *_args, **_kwargs: bundle)
+        with patch.object(factory, "_adb", return_value=Path("adb.exe")):
+            frame, input_source = factory.capture_sources(
+                {
+                    "adapter": "hik_rig_calibrated",
+                    "calibration": "rig/hik_camera_calibration.json",
+                },
+                {"adapter": "none"},
+            )
+        self.assertIs(frame, hik)
+        self.assertIsNone(input_source)
+        self.assertTrue(android.stopped)
+        self.assertFalse(hik.stopped)
 
     def test_hik_device_discovery_does_not_open_camera(self):
         closed = []
