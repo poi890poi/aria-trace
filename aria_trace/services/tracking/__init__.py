@@ -1,6 +1,6 @@
-"""Compatibility import for the promoted production pose-fusion service."""
+"""Tracking-state prediction, gating, and fusion services."""
 
-from aria_trace.services.tracking.pose_fusion import (
+from .pose_fusion import (
     CorrectionDecision,
     FusionConfig,
     FusionState,

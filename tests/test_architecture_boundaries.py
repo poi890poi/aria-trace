@@ -29,18 +29,22 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual([], violations)
 
     def test_no_new_production_imports_from_poc_are_added(self):
-        allowed_debt = {
-            ("acquisition/live_tracker.py", "poc.pose_fusion"),
-            ("acquisition/live_tracker.py", "poc.yaw_estimation"),
-            ("acquisition/scene_yaw_calibration.py", "poc.yaw_estimation"),
-        }
         violations = set()
         for package in ("acquisition", "replay", "aria_trace"):
             for path in (ROOT / package).rglob("*.py"):
                 for imported in imports_in(path):
                     if imported == "poc" or imported.startswith("poc."):
                         violations.add((path.relative_to(ROOT).as_posix(), imported))
-        self.assertEqual(set(), violations - allowed_debt)
+        self.assertEqual(set(), violations)
+
+    def test_poc_imports_are_compatibility_aliases_for_promoted_services(self):
+        from aria_trace.services.tracking import PoseFusionGate as production_fusion
+        from aria_trace.services.vision import KltAngularYawEstimator as production_yaw
+        from poc.pose_fusion import PoseFusionGate as compatibility_fusion
+        from poc.yaw_estimation import KltAngularYawEstimator as compatibility_yaw
+
+        self.assertIs(production_fusion, compatibility_fusion)
+        self.assertIs(production_yaw, compatibility_yaw)
 
 
 if __name__ == "__main__":

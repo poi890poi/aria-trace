@@ -1,6 +1,6 @@
 import unittest
 
-from poc.pose_fusion import Pose2D, PoseFusionGate, angle_difference_deg
+from aria_trace.services.tracking import Pose2D, PoseFusionGate, angle_difference_deg
 
 
 class PoseFusionTests(unittest.TestCase):

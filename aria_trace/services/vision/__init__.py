@@ -1,6 +1,6 @@
-"""Compatibility import for the promoted production yaw-estimation service."""
+"""Reusable visual-motion measurement services."""
 
-from aria_trace.services.vision.yaw_estimation import (
+from .yaw_estimation import (
     KltAngularYawEstimator,
     KltEssentialYawEstimator,
     KltTrackMeasurement,

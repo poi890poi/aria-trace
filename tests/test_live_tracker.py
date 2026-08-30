@@ -22,7 +22,7 @@ from acquisition.map_layers import LayeredGlobalLocalizer
 from acquisition.models import FramePacket
 from acquisition.profiles import ProfileCatalog
 from acquisition.workbench import AcquisitionWorkbench
-from poc.pose_fusion import Pose2D
+from aria_trace.services.tracking import Pose2D
 from replay.route_tracking import compile_route_tracking_package
 
 

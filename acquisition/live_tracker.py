@@ -10,8 +10,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from poc.pose_fusion import FusionConfig, Pose2D, PoseFusionGate
-from poc.yaw_estimation import KltAngularYawEstimator, camera_matrix
+from aria_trace.services.tracking import FusionConfig, Pose2D, PoseFusionGate
+from aria_trace.services.vision import KltAngularYawEstimator, camera_matrix
 
 from .cursor_pose import CursorPoseEstimator
 from .cursor_worker import CursorPoseProcessExecutor

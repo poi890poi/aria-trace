@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from poc.yaw_estimation import KltAngularYawEstimator, camera_matrix
+from aria_trace.services.vision import KltAngularYawEstimator, camera_matrix
 
 from .cursor_pose import timing_summary_ms
 from .session import SessionReader
