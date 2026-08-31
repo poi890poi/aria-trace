@@ -235,6 +235,86 @@ capture fresh synchronized ADB/HIK images and rerun game-color calibration.
 If the replacement panel dimensions differ, follow **New game or new panel
 platform** instead and perform new panel/game calibration.
 
+## HIK camera adapter and demo stream
+
+The production adapter uses the active profile registry; it does not scan
+`artifacts/` or select an arbitrary calibration path. Configure
+`ARIA_PROFILE_ROOT` and the camera/phone/game defaults first, then use the
+HIK-shaped `hikcam` interface:
+
+```python
+import hikcam
+
+with hikcam.HikCamera(config={
+    "game_id": "genshin-impact",
+    "mode": "dual",             # full, minimap, or dual
+    "rectify": True,
+    "color_order": "BGR",
+    "color_policy": "game_matched",
+}) as camera:
+    frames = camera.get_frames()
+    phone = frames["full"]
+    minimap = frames["minimap"]
+
+    # Proprietary additive API; ordinary HIK/OpenCV-style frame returns stay
+    # image-only. Keep this metadata with every stored or transformed image.
+    phone_space = camera.get_aria_frame_metadata("full")
+    minimap_space = camera.get_aria_frame_metadata("minimap")
+```
+
+For a single stream, call `camera.get_frame()` or `camera.read()`, then call
+`camera.get_aria_frame_metadata()` for the matching space, hardware ROI,
+orientation, transform provenance, stored size, and color order. Do not infer a
+HIK image's coordinate space from its dimensions or filename.
+
+| Mode | Rectified output | `rectify=False` / `--no-rectify` |
+|---|---|---|
+| `full` | rig-normalized phone display | hardware-ROI camera raster |
+| `minimap` | phone/game-normalized mini-map | native camera mini-map ROI |
+| `dual` | synchronized normalized phone + mini-map | synchronized native rig ROI + mini-map ROI |
+
+`dual` derives both products from one HIK acquisition. Profile resolution and
+camera configuration happen when the adapter opens; there are no registry
+lookups per frame. The adapter locks calibrated exposure, gain, white balance,
+ROI, and selected HIK gamma/color controls for the session. The adapter itself
+does not wake, sleep, launch, unlock, or touch the phone.
+
+Run a live GUI stream from the repository root:
+
+```powershell
+# Rig-normalized full phone view; requires an active rig profile.
+python -m aria_tools camera-adapter-demo `
+  --mode full --gui
+
+# Synchronized normalized full + mini-map views; requires active rig-game data.
+python -m aria_tools camera-adapter-demo `
+  --game-id GAME_ID `
+  --mode dual `
+  --color-policy game_matched `
+  --gui
+
+# Lowest geometric-processing latency. Output remains explicitly space-tagged.
+python -m aria_tools camera-adapter-demo `
+  --game-id GAME_ID --mode dual --no-rectify --gui
+```
+
+Press `Q` or `Esc`, or close either window, to stop. Add
+`--manage-phone-display` only when the demo should best-effort wake the
+calibrated phone at startup and sleep it on exit; this option only manages
+display power and requires `--gui`.
+
+From the standalone Windows release, the equivalent commands are:
+
+```bat
+camera-adapter-demo.bat --mode full
+camera-adapter-demo.bat --game-id GAME_ID --mode dual --color-policy game_matched
+python-tools.bat camera-adapter-demo --game-id GAME_ID --mode dual --gui
+```
+
+The release `camera-adapter-demo.bat` supplies `--gui` automatically. Its
+Python dependencies must be installed with `install-camera-adapter.bat`; HIK
+MVS remains a user-managed system dependency.
+
 For the Genshin POC, record each useful motion as its own session. After **CAPTURE COMPLETE**, return to the list and choose the matching label. Selecting a label is the single review action that promotes a successful recording to usable evidence. The machine-readable index at `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json` links those labels to source sessions, confirmation markers, timing/count summaries, and profile provenance.
 
 Start with:
