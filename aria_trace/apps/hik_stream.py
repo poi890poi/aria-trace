@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from pathlib import Path
 from typing import Optional, Sequence
@@ -13,6 +14,29 @@ from aria_trace.adapters.hik.compat import Camera, HikCamera
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
 from aria_trace.adapters.android.phone import AdbPhoneSession
+
+
+def hik_camera_class(camera_library: str):
+    """Return the selected drop-in HikCamera implementation."""
+
+    if camera_library not in ("adapter", "native"):
+        raise ValueError("camera_library must be adapter or native")
+    module_name = (
+        "hikcam" if camera_library == "adapter" else "hik_camera.hik_camera"
+    )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        if camera_library == "adapter":
+            raise
+        raise RuntimeError(
+            "Native HIK Python library is unavailable. Install hik_camera in "
+            "this Python environment, then retry --camera-library native."
+        ) from exc
+    camera = getattr(module, "HikCamera", None)
+    if camera is None:
+        raise RuntimeError("Native hik_camera module does not export HikCamera")
+    return camera
 
 
 class PhoneDisplayPowerSession:
@@ -56,7 +80,21 @@ class PhoneDisplayPowerSession:
 
 
 def parser() -> argparse.ArgumentParser:
-    value = argparse.ArgumentParser(description="Stream the calibrated phone-display ROI from HIK MVS.")
+    value = argparse.ArgumentParser(
+        description=(
+            "Stream HIK video through either AriaTrace's calibrated drop-in "
+            "adapter or the native hik_camera library."
+        )
+    )
+    value.add_argument(
+        "--camera-library",
+        choices=("adapter", "native"),
+        default="adapter",
+        help=(
+            "import AriaTrace's drop-in adapter (default) or the independently "
+            "installed native hik_camera package"
+        ),
+    )
     value.add_argument(
         "--diagnostic-calibration-override",
         type=Path,
@@ -72,7 +110,7 @@ def parser() -> argparse.ArgumentParser:
         choices=("minimap", "full", "dual"),
         default="full",
         help=(
-            "adapter stream mode; the registry resolves all required profiles"
+            "adapter stream mode; native-library verification supports full only"
         ),
     )
     value.add_argument("--mvs-python-path")
@@ -87,11 +125,11 @@ def parser() -> argparse.ArgumentParser:
         default="auto",
     )
     value.add_argument("--minimap-margin-px", type=int, default=6)
-    value.add_argument("--gui", action="store_true", help="Show live rectified frames; Q/Esc closes")
+    value.add_argument("--gui", action="store_true", help="Show live frames; Q/Esc closes")
     value.add_argument(
         "--no-rectify",
         action="store_true",
-        help="Show the hardware-ROI camera frame without remap/warp for minimum latency",
+        help="Adapter only: show hardware-ROI frames without remap/warp",
     )
     value.add_argument(
         "--manage-phone-display",
@@ -160,6 +198,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.manage_phone_display and not arguments.gui:
         parser().error("--manage-phone-display requires --gui")
+    if arguments.camera_library == "native":
+        if arguments.mode != "full":
+            parser().error("--camera-library native supports only --mode full")
+        if arguments.diagnostic_calibration_override is not None:
+            parser().error(
+                "--camera-library native does not use a rig calibration override"
+            )
+        if arguments.diagnostic_rig_game_profile_override is not None:
+            parser().error(
+                "--camera-library native does not use a rig-game profile override"
+            )
+        if arguments.manage_phone_display:
+            parser().error(
+                "--camera-library native does not identify a calibrated phone; "
+                "remove --manage-phone-display"
+            )
     if (
         arguments.diagnostic_calibration_override is not None
         and arguments.diagnostic_rig_game_profile_override is None
@@ -179,10 +233,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     display = None
     camera = None
+    native_context_open = False
     windows = []
     try:
-        if arguments.diagnostic_calibration_override is None:
-            camera = HikCamera(
+        selected_camera_class = hik_camera_class(arguments.camera_library)
+        if arguments.camera_library == "native":
+            camera = selected_camera_class(arguments.camera_id)
+            configuration = None
+            camera.__enter__()
+            native_context_open = True
+        elif arguments.diagnostic_calibration_override is None:
+            camera = selected_camera_class(
                 config={
                     "profile_root": arguments.profile_root,
                     "game_id": arguments.game_id,
@@ -247,11 +308,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif not camera.is_open:
             camera.open()
         if not arguments.gui:
-            print("Rectified stream configured. Use open_camera(...) from Python, or pass --gui.")
+            label = (
+                "Native hik_camera stream"
+                if arguments.camera_library == "native"
+                else "Rectified stream"
+            )
+            print(
+                "{} configured. Pass --gui to verify live frames.".format(label)
+            )
             return 0
         profiled = bool(
-            arguments.diagnostic_rig_game_profile_override is not None
-            or getattr(camera, "config", {}).get("minimap_calibration")
+            arguments.camera_library == "adapter"
+            and (
+                arguments.diagnostic_rig_game_profile_override is not None
+                or getattr(camera, "config", {}).get("minimap_calibration")
+            )
         )
         stream_names = (
             ["full", "minimap"]
@@ -261,7 +332,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         windows = ["HIK {}".format(name) for name in stream_names]
         print(
             "Live {} stream opened. Press Q/Esc or close a window to exit."
-            .format(arguments.mode if profiled else "rectified phone"),
+            .format(
+                arguments.mode
+                if profiled
+                else (
+                    "native hik_camera"
+                    if arguments.camera_library == "native"
+                    else "rectified phone"
+                )
+            ),
             flush=True,
         )
         for window in windows:
@@ -274,8 +353,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     frame_set = camera.read_streams()
                     displayed = frame_set.streams
             else:
-                ok, frame = camera.read()
-                displayed = {stream_names[0]: frame} if ok and frame is not None else {}
+                if hasattr(camera, "get_frame"):
+                    frame = camera.get_frame()
+                    displayed = {stream_names[0]: frame} if frame is not None else {}
+                else:
+                    ok, frame = camera.read()
+                    displayed = {stream_names[0]: frame} if ok and frame is not None else {}
             for name, frame in displayed.items():
                 cv2.imshow("HIK {}".format(name), frame)
             key = cv2.waitKey(1) & 0xFF
@@ -288,7 +371,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 return 0
     finally:
         try:
-            if camera is not None:
+            if camera is not None and arguments.camera_library == "native":
+                if native_context_open:
+                    camera.__exit__(None, None, None)
+            elif camera is not None:
                 camera.release()
         finally:
             if arguments.gui:

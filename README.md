@@ -298,6 +298,20 @@ python -m aria_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --no-rectify --gui
 ```
 
+To verify drop-in interface compatibility, run the same GUI loop with the
+independently installed `hik_camera.hik_camera` library. This changes the selected
+`HikCamera` import; it does not invoke AriaTrace's MVS acquisition adapter or
+load profiles:
+
+```powershell
+python -m aria_tools camera-adapter-demo `
+  --camera-library native --camera-id CAMERA_IP --gui
+```
+
+Native-library verification supports the shared full-frame `get_frame()` path
+only. The upstream library and its dependencies are user-managed and must be
+installed in the Python environment running the command.
+
 Press `Q` or `Esc`, or close either window, to stop. Add
 `--manage-phone-display` only when the demo should best-effort wake the
 calibrated phone at startup and sleep it on exit; this option only manages
@@ -308,6 +322,7 @@ From the standalone Windows release, the equivalent commands are:
 ```bat
 camera-adapter-demo.bat --mode full
 camera-adapter-demo.bat --game-id GAME_ID --mode dual --color-policy game_matched
+camera-adapter-demo.bat --camera-library native --camera-id CAMERA_IP
 python-tools.bat camera-adapter-demo --game-id GAME_ID --mode dual --gui
 ```
 
