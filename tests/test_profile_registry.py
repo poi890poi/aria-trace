@@ -10,7 +10,6 @@ from acquisition.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
-    ProfileResolutionError,
     default_profile_root,
 )
 
@@ -112,12 +111,56 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual(first["revision_id"], repeated["revision_id"])
         self.assertEqual("unchanged_existing_revision", repeated["publication"])
 
-    def test_incomplete_context_never_guesses_between_display_variants(self):
-        self.publish_rig(context())
-        self.publish_rig(context(refresh=60.0))
+    def test_incomplete_context_uses_newest_active_variant(self):
+        first = self.publish_rig(context())
+        newest = self.publish_rig(context(refresh=60.0))
         incomplete = ProfileContext(camera_id="CAM-1", phone_id="PHONE-1")
-        with self.assertRaisesRegex(ProfileResolutionError, "incomplete context"):
-            self.registry.resolve("rig", incomplete)
+        resolved = self.registry.resolve("rig", incomplete)
+        self.assertNotEqual(first["revision_id"], resolved["revision_id"])
+        self.assertEqual(newest["revision_id"], resolved["revision_id"])
+        self.assertEqual(
+            "newest_active_compatible_revision",
+            resolved["resolution"]["selection"],
+        )
+
+    def test_phone_game_is_owned_by_platform_panel_and_game_not_phone_serial(self):
+        source = context()
+        profile = self.registry.publish(
+            "phone_game",
+            source,
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            review_state="accepted",
+            activate=True,
+        )
+        other_phone = ProfileContext(
+            game_id=source.game_id,
+            camera_id="OTHER-CAMERA",
+            phone_id="PHONE-2",
+            phone_model="another handset",
+            panel_display=source.panel_display,
+            game_display=source.game_display,
+        )
+        resolved = self.registry.resolve("phone_game", other_phone)
+        self.assertEqual(profile["revision_id"], resolved["revision_id"])
+        compatibility = resolved["resolution"]["compatibility"]
+        self.assertEqual([], compatibility["warnings"])
+        self.assertTrue(compatibility["provenance_notes"])
+
+    def test_explicit_incompatible_revision_warns_but_is_returned(self):
+        profile = self.registry.publish(
+            "phone_game",
+            context(),
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            review_state="accepted",
+            activate=True,
+        )
+        requested = context(width=1920, game="another-game")
+        selected = self.registry.resolve_revision(
+            profile["revision_id"], requested, expected_kind="phone_game"
+        )
+        compatibility = selected["resolution"]["compatibility"]
+        self.assertEqual("incompatible_override", compatibility["status"])
+        self.assertGreaterEqual(len(compatibility["warnings"]), 2)
 
     def test_adapter_mode_controls_dependencies_not_profile_identity(self):
         rig = self.publish_rig()

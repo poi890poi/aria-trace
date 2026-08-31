@@ -14,6 +14,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,8 +24,14 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 from .commented_yaml import write_commented_yaml
 
 
-SCHEMA_VERSION = "2.0"
-PROFILE_KINDS = ("rig", "phone_game", "rig_game", "rig_game_color")
+SCHEMA_VERSION = "2.1"
+PROFILE_KINDS = (
+    "rig",
+    "phone_game",
+    "phone_game_color",
+    "rig_game",
+    "rig_game_color",
+)
 REVISION_STATES = ("review_required", "accepted")
 ADAPTER_MODES = ("full", "minimap", "dual")
 NORMALIZATION_MODES = ("auto", "dense_remap", "homography", "none")
@@ -38,7 +45,7 @@ PROFILE_HEADER = """# AriaTrace production profile revision.
 # this commented YAML is the human-readable payload and provenance record."""
 
 PROFILE_COMMENTS = {
-    "identity": "Exact ownership and display-compatibility dimensions.",
+    "identity": "Portable ownership and display-compatibility dimensions.",
     "context": "Observed facts used when this revision was created.",
     "dependencies": "Exact immutable revisions consumed by this revision.",
     "payload": "Runtime configuration owned by this profile kind.",
@@ -182,6 +189,28 @@ class ProfileContext:
             },
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ProfileContext":
+        """Read a stored context while keeping device identity as provenance."""
+
+        game = dict(value.get("game") or {})
+        devices = dict(value.get("devices") or {})
+        camera = dict(devices.get("camera") or {})
+        phone = dict(devices.get("phone") or {})
+        display = dict(value.get("display") or {})
+        return cls(
+            game_id=game.get("id"),
+            platform=str(game.get("platform") or "android"),
+            package=game.get("package"),
+            game_version=game.get("version"),
+            camera_adapter=str(camera.get("adapter") or "hik_mvs"),
+            camera_id=camera.get("id"),
+            phone_id=phone.get("id"),
+            phone_model=phone.get("model"),
+            panel_display=display.get("panel") or {},
+            game_display=display.get("game") or {},
+        )
+
 
 @dataclass(frozen=True)
 class AdapterRequest:
@@ -260,38 +289,43 @@ class ProfileKey:
         if kind not in PROFILE_KINDS:
             raise ValueError("Unsupported profile kind: {}".format(kind))
         if kind == "rig":
-            if not context.camera_id or not context.phone_id or not context.panel_signature:
-                raise ValueError("Rig profiles require camera, phone, and panel display")
+            if not context.camera_id or not context.panel_signature:
+                raise ValueError("Rig profiles require camera and panel display")
             return cls(
                 kind,
-                "{}--{}".format(context.camera_id, context.phone_id),
+                context.camera_id,
                 "_",
                 context.panel_signature,
                 "_",
             )
-        if kind == "phone_game":
-            if not context.phone_id or not context.game_id or not context.game_display_signature:
-                raise ValueError("Phone-game profiles require phone, game, and game display")
+        if kind in ("phone_game", "phone_game_color"):
+            if (
+                not context.game_id
+                or not context.panel_signature
+                or not context.game_display_signature
+            ):
+                raise ValueError(
+                    "Phone-game profiles require platform, game, panel, and game display"
+                )
             return cls(
                 kind,
-                context.phone_id,
+                context.platform,
                 context.game_id,
-                "_",
+                context.panel_signature,
                 context.game_display_signature,
             )
         if (
             not context.camera_id
-            or not context.phone_id
             or not context.game_id
             or not context.panel_signature
             or not context.game_display_signature
         ):
             raise ValueError(
-                "Rig-game profiles require camera, phone, game, panel, and game display"
+                "Rig-game profiles require camera, game, panel, and game display"
             )
         return cls(
             kind,
-            "{}--{}".format(context.camera_id, context.phone_id),
+            context.camera_id,
             context.game_id,
             context.panel_signature,
             context.game_display_signature,
@@ -322,6 +356,74 @@ class ProfileKey:
 
 class ProfileResolutionError(RuntimeError):
     pass
+
+
+def _profile_compatibility(
+    kind: str,
+    requested: ProfileContext,
+    stored: ProfileContext,
+) -> Dict[str, Any]:
+    """Describe compatibility without treating source handset identity as ownership."""
+
+    matched = []
+    mismatches = []
+    messages = []
+    notes = []
+
+    def compare(field_name: str, requested_value: Any, stored_value: Any) -> None:
+        if requested_value is None or requested_value == {}:
+            return
+        if stored_value == requested_value:
+            matched.append(field_name)
+            return
+        mismatch = {
+            "field": field_name,
+            "requested": requested_value,
+            "profile": stored_value,
+        }
+        mismatches.append(mismatch)
+        messages.append(
+            "{} mismatch: requested {!r}, profile has {!r}".format(
+                field_name, requested_value, stored_value
+            )
+        )
+
+    compare("platform", requested.platform, stored.platform)
+    if kind in ("rig", "rig_game", "rig_game_color"):
+        compare("camera_id", requested.camera_id, stored.camera_id)
+        compare("panel_display", requested.panel_display, stored.panel_display)
+    if kind in ("phone_game", "phone_game_color", "rig_game", "rig_game_color"):
+        compare("game_id", requested.game_id, stored.game_id)
+        compare("game_package", requested.package, stored.package)
+        compare("game_version", requested.game_version, stored.game_version)
+        if kind in ("phone_game", "phone_game_color"):
+            compare("panel_display", requested.panel_display, stored.panel_display)
+        compare("game_display", requested.game_display, stored.game_display)
+
+    if requested.phone_id and stored.phone_id and requested.phone_id != stored.phone_id:
+        notes.append(
+            "Source phone differs (requested {!r}, profile {!r}); phone identity is "
+            "provenance only".format(requested.phone_id, stored.phone_id)
+        )
+    if (
+        requested.phone_model
+        and stored.phone_model
+        and requested.phone_model != stored.phone_model
+    ):
+        notes.append(
+            "Source phone model differs (requested {!r}, profile {!r}); panel and "
+            "game geometry determine portability".format(
+                requested.phone_model, stored.phone_model
+            )
+        )
+    return {
+        "status": "compatible" if not mismatches else "incompatible_override",
+        "warnings": messages,
+        "mismatches": mismatches,
+        "matched_fields": matched,
+        "provenance_notes": notes,
+        "policy": "advisory_for_explicit_revision",
+    }
 
 
 class ProfileRegistry:
@@ -616,26 +718,23 @@ class ProfileRegistry:
     ) -> Sequence[sqlite3.Row]:
         clauses = ["r.kind=?"]
         values = [kind]
-        for column, value in (
-            ("r.camera_id", context.camera_id),
-            ("r.phone_id", context.phone_id),
-            ("r.game_id", context.game_id if kind != "rig" else None),
-            (
-                "r.panel_signature",
-                context.panel_signature
-                if kind in ("rig", "rig_game", "rig_game_color")
-                else None,
-            ),
-            (
-                "r.game_signature",
-                context.game_display_signature
-                if kind in ("phone_game", "rig_game", "rig_game_color")
-                else None,
-            ),
-        ):
-            if value is not None:
-                clauses.append("{}=?".format(column))
-                values.append(value)
+        if kind in ("rig", "rig_game", "rig_game_color") and context.camera_id:
+            clauses.append("r.camera_id=?")
+            values.append(context.camera_id)
+        if kind != "rig" and context.game_id:
+            clauses.append("r.game_id=?")
+            values.append(context.game_id)
+        if context.panel_signature:
+            if kind in ("phone_game", "phone_game_color"):
+                # Schema 2.0 phone-game revisions used '_' here and retained
+                # the real panel in context_json. Keep those revisions usable.
+                clauses.append("(r.panel_signature=? OR r.panel_signature='_')")
+            else:
+                clauses.append("r.panel_signature=?")
+            values.append(context.panel_signature)
+        if kind != "rig" and context.game_display_signature:
+            clauses.append("r.game_signature=?")
+            values.append(context.game_display_signature)
         query = """SELECT r.* FROM active_profiles a
                    JOIN revisions r ON r.revision_id=a.revision_id
                    WHERE {} ORDER BY r.created_utc DESC""".format(" AND ".join(clauses))
@@ -652,14 +751,70 @@ class ProfileRegistry:
                     context.panel_signature, context.game_display_signature,
                 )
             )
-        if len(rows) != 1:
+        rows.sort(
+            key=lambda row: (
+                int(
+                    context.panel_signature is not None
+                    and row["panel_signature"] == context.panel_signature
+                ),
+                str(row["created_utc"]),
+            ),
+            reverse=True,
+        )
+        result = self.revision(rows[0]["revision_id"])
+        result["resolution"] = {
+            "selection": (
+                "newest_active_compatible_revision"
+                if len(rows) > 1
+                else "active_compatible_revision"
+            ),
+            "candidate_count": len(rows),
+            "compatibility": _profile_compatibility(
+                kind,
+                context,
+                ProfileContext.from_dict(result.get("context") or {}),
+            ),
+        }
+        return result
+
+    def resolve_revision(
+        self,
+        revision_id: str,
+        context: ProfileContext,
+        *,
+        expected_kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Resolve an explicit revision even when its compatibility is imperfect."""
+
+        result = self.revision(revision_id)
+        kind = str((result.get("identity") or {}).get("kind") or "")
+        if expected_kind is not None and kind != expected_kind:
             raise ProfileResolutionError(
-                "{} active {} profiles match incomplete context; provide phone/display "
-                "identity or an explicit revision: {}".format(
-                    len(rows), kind, ", ".join(row["revision_id"] for row in rows)
+                "Explicit revision {} is {}, expected {}".format(
+                    revision_id, kind, expected_kind
                 )
             )
-        return self.revision(rows[0]["revision_id"])
+        compatibility = _profile_compatibility(
+            kind,
+            context,
+            ProfileContext.from_dict(result.get("context") or {}),
+        )
+        result["resolution"] = {
+            "selection": "explicit_revision_override",
+            "candidate_count": 1,
+            "compatibility": compatibility,
+        }
+        return result
+
+    @staticmethod
+    def evaluate_compatibility(
+        kind: str,
+        requested: ProfileContext,
+        profile_context: ProfileContext,
+    ) -> Dict[str, Any]:
+        if kind not in PROFILE_KINDS:
+            raise ValueError("Unsupported profile kind: {}".format(kind))
+        return _profile_compatibility(kind, requested, profile_context)
 
     def list_revisions(
         self, *, kind: Optional[str] = None, active_only: bool = False
@@ -718,8 +873,14 @@ class ProfileRegistry:
             rig_game = self.resolve("rig_game", context)
             dependencies = rig_game.get("dependencies") or {}
             try:
-                rig = self.revision(str(dependencies["rig"]))
-                phone_game = self.revision(str(dependencies["phone_game"]))
+                rig = self.resolve_revision(
+                    str(dependencies["rig"]), context, expected_kind="rig"
+                )
+                phone_game = self.resolve_revision(
+                    str(dependencies["phone_game"]),
+                    context,
+                    expected_kind="phone_game",
+                )
             except KeyError as exc:
                 raise ProfileResolutionError(
                     "Rig-game profile has incomplete dependencies: {}".format(exc)
@@ -814,6 +975,38 @@ class ProfileRegistry:
                 "phone_operations": "none",
             },
         }
+        selected_profiles = {
+            "rig": rig,
+            "phone_game": phone_game,
+            "rig_game": rig_game,
+            "rig_game_color": rig_game_color,
+        }
+        profile_compatibility = {}
+        compatibility_warnings = []
+        provenance_notes = []
+        for profile_kind, profile in selected_profiles.items():
+            if profile is None:
+                continue
+            details = dict(
+                ((profile.get("resolution") or {}).get("compatibility") or {})
+            )
+            profile_compatibility[profile_kind] = details
+            compatibility_warnings.extend(
+                "{}: {}".format(profile_kind, message)
+                for message in details.get("warnings") or []
+            )
+            provenance_notes.extend(
+                "{}: {}".format(profile_kind, message)
+                for message in details.get("provenance_notes") or []
+            )
+        result["compatibility"] = {
+            "policy": "automatic_compatible_or_explicit_warn_and_allow",
+            "profiles": profile_compatibility,
+            "warnings": compatibility_warnings,
+            "provenance_notes": provenance_notes,
+        }
+        for message in compatibility_warnings:
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
         return result
 
 

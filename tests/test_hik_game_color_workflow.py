@@ -127,8 +127,23 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                     profile_root=root / "profiles",
                 )
             profile = registry.revision(result["profile_revision"])
+            portable_color = registry.revision(
+                result["portable_phone_game_color_revision"]
+            )
             self.assertEqual(
                 rig_profile["revision_id"], profile["dependencies"]["rig"]
+            )
+            self.assertEqual(
+                portable_color["revision_id"],
+                profile["dependencies"]["phone_game_color"],
+            )
+            self.assertEqual(
+                "phone_game_color", portable_color["identity"]["kind"]
+            )
+            self.assertTrue(
+                registry.runtime_file(
+                    portable_color, "adb_game_color_reference"
+                ).is_file()
             )
             self.assertTrue((root / "output" / "hikcam_adapter.py").is_file())
 

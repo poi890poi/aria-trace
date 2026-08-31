@@ -1,19 +1,30 @@
 # Production calibration profiles
 
 The production registry selects immutable calibration revisions for the current
-camera, phone, game, and display geometry. It resolves a configuration once
+camera, panel platform, game, and display geometry. It resolves a configuration once
 when a camera adapter opens. Frame acquisition does not read the registry and
 does not operate the phone.
 
 ## Profile model
 
-- `rig`: HIK camera + phone + physical rig position + panel dimensions. It owns
+- `rig`: HIK camera + physical rig position + panel dimensions. It owns
   camera imaging, ROI, orientation, and display normalization.
-- `phone_game`: phone + game + game display dimensions/layout. It owns the
+- `phone_game`: Android/panel platform + game + game display dimensions/layout. It owns the
   mini-map geometry in canonical phone-display coordinates and is usable by
   ADB-only tools.
+- `phone_game_color`: an ADB-side game appearance reference. It is portable but
+  never contains HIK gamma, CCM, exposure, gain, or white-balance controls.
 - `rig_game`: exact `rig` + exact `phone_game`. It owns the composition needed
-  for HIK mini-map/dual output and optional game-matched Bayer conversion.
+  for HIK mini-map/dual output.
+- `rig_game_color`: a local HIK color fit derived from a portable ADB target and
+  an exact local rig.
+
+`phone` in these names means a phone/display platform, not one handset serial.
+The source serial and model remain provenance. Profiles are portable between
+handsets when panel and game geometry match. Panel, game, package/version, and
+layout mismatches are reported as warnings for an explicit import/selection;
+they do not make the data unreadable. Automatic camera-adapter selection still
+requires a compatible local rig so it cannot silently open an unrelated camera.
 
 Panel and game display dimensions are compatibility keys. Adapter behavior is
 not: `full`, `minimap`, and `dual`, RGB/BGR order, normalization, ROI policy,
@@ -23,7 +34,38 @@ Each publication creates (or reuses) an immutable revision under
 `profiles/<kind>/.../revisions/`. SQLite in `profiles/.registry/` is the
 activation authority; `profile.yaml` and `active.yaml` are commented,
 human-readable records. Publishing a review candidate does not replace the
-active revision. Resolution fails on ambiguity instead of guessing.
+active revision. If several compatible active variants remain after applying
+the observed context, resolution selects the newest revision.
+
+## Portable calibration
+
+Export a reviewed camera-independent revision as a directory or ZIP:
+
+```bat
+manage-profiles.bat export-portable phone-game-REVISION portable-game.zip
+manage-profiles.bat export-portable phone-game-color-REVISION portable-color.zip
+```
+
+Importing is review-first. It preserves mismatch warnings and, for mini-map
+geometry, composes a candidate `rig_game` revision with the active local rig:
+
+```bat
+manage-profiles.bat import-portable portable-game.zip --game-id genshin-impact
+```
+
+After reviewing the warnings and evidence, explicitly activate both imported
+and locally composed revisions in one operation:
+
+```bat
+manage-profiles.bat import-portable portable-game.zip --game-id genshin-impact --activate
+```
+
+Use `--panel-size W H`, `--game-size W H`, `--camera-id`, or `--phone-id` to
+describe the target system. A mismatching value warns but is accepted because
+the import is explicit. The resulting `rig_game` references the active local
+`rig`; camera coordinates, ROI, orientation, and rectification are never copied
+from the exporting system. A portable color reference similarly requires a new
+local HIK fit before it can become `rig_game_color`.
 
 ## Normal operation
 

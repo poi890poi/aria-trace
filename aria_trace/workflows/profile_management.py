@@ -10,6 +10,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from aria_trace.adapters.filesystem.profile_registry import (
     AdapterRequest,
+    PROFILE_KINDS,
     ProfileContext,
     ProfileRegistry,
     context_from_rig_calibration,
@@ -221,10 +222,28 @@ def publish_minimap_profiles(
         "shift_estimation_mask": android_result.get("shift_estimation_mask"),
         "capabilities": {"adb_minimap": True, "camera_independent": True},
     }
+    portable_files = {}
+    shift_mask_value = android_result.get("shift_estimation_mask")
+    if shift_mask_value:
+        shift_mask_path = Path(str(shift_mask_value))
+        if not shift_mask_path.is_absolute():
+            shift_mask_path = summary_path.parent / shift_mask_path
+        if shift_mask_path.is_file():
+            portable_files["shift_estimation_mask"] = shift_mask_path
+            phone_payload["shift_estimation_mask_runtime_file"] = (
+                "shift_estimation_mask"
+            )
+    for index, evidence_value in enumerate(evidence):
+        evidence_path = Path(str(evidence_value))
+        if not evidence_path.is_absolute():
+            evidence_path = summary_path.parent / evidence_path
+        if evidence_path.is_file():
+            portable_files["review_evidence_{:03d}".format(index)] = evidence_path
     phone_profile = store.publish(
         "phone_game",
         context,
         phone_payload,
+        runtime_files=portable_files,
         provenance={
             "localization_summary": str(summary_path),
             "session_path": str(session_path),
@@ -308,7 +327,7 @@ def parser() -> argparse.ArgumentParser:
     activate = subcommands.add_parser("activate")
     activate.add_argument("revision_id")
     list_profiles = subcommands.add_parser("list")
-    list_profiles.add_argument("--kind", choices=("rig", "phone_game", "rig_game", "rig_game_color"))
+    list_profiles.add_argument("--kind", choices=PROFILE_KINDS)
     list_profiles.add_argument("--active-only", action="store_true")
     show = subcommands.add_parser("show")
     show.add_argument("revision_id")
@@ -340,6 +359,30 @@ def parser() -> argparse.ArgumentParser:
         choices=("auto", "rig_locked", "game_matched", "unadjusted"),
         default="auto",
     )
+    portable_export = subcommands.add_parser(
+        "export-portable",
+        help="export one camera-independent phone-game revision",
+    )
+    portable_export.add_argument("revision_id")
+    portable_export.add_argument("output", type=Path)
+    portable_import = subcommands.add_parser(
+        "import-portable",
+        help="import portable panel/game data as review-first local candidates",
+    )
+    portable_import.add_argument("package", type=Path)
+    portable_import.add_argument("--camera-id")
+    portable_import.add_argument("--phone-id")
+    portable_import.add_argument("--game-id")
+    portable_import.add_argument("--package-id")
+    portable_import.add_argument("--game-version")
+    portable_import.add_argument("--panel-size", type=int, nargs=2, metavar=("W", "H"))
+    portable_import.add_argument("--game-size", type=int, nargs=2, metavar=("W", "H"))
+    portable_import.add_argument(
+        "--activate",
+        action="store_true",
+        help="explicitly activate the imported and locally composed revisions",
+    )
+    portable_import.add_argument("--no-compose-rig", action="store_true")
     return value
 
 
@@ -388,11 +431,73 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if arguments.command == "show":
         print(json.dumps(registry.revision(arguments.revision_id), indent=2))
         return 0
+    if arguments.command == "export-portable":
+        from aria_trace.workflows.portable_profiles import export_portable_profile
+
+        result = export_portable_profile(
+            arguments.revision_id, arguments.output, registry=registry
+        )
+        print("Portable calibration: {}".format(result["output"]))
+        print("Source revision: {}".format(result["source_revision"]))
+        return 0
     from aria_trace.adapters.filesystem.system_configuration import (
         load_system_configuration,
     )
 
     settings = load_system_configuration(arguments.profile_root)
+    if arguments.command == "import-portable":
+        from aria_trace.workflows.portable_profiles import import_portable_profile
+
+        requested = ProfileContext(
+            game_id=arguments.game_id or settings["game"].get("game_id"),
+            package=arguments.package_id,
+            game_version=arguments.game_version,
+            camera_id=arguments.camera_id or settings["devices"].get("camera_id"),
+            phone_id=arguments.phone_id or settings["devices"].get("phone_id"),
+            panel_display=(
+                {"natural_panel_px": arguments.panel_size}
+                if arguments.panel_size
+                else {}
+            ),
+            game_display=(
+                {
+                    "natural_panel_px": arguments.panel_size or arguments.game_size,
+                    "logical_frame_px": arguments.game_size,
+                    "game_viewport_xywh": [
+                        0,
+                        0,
+                        int(arguments.game_size[0]),
+                        int(arguments.game_size[1]),
+                    ],
+                }
+                if arguments.game_size
+                else {}
+            ),
+        )
+        result = import_portable_profile(
+            arguments.package,
+            registry=registry,
+            requested_context=requested,
+            activate=arguments.activate,
+            compose_local_rig=not arguments.no_compose_rig,
+        )
+        print(
+            "Imported portable profile: {}".format(
+                result["portable_profile"]["revision_id"]
+            )
+        )
+        if result["rig_game"] is not None:
+            print("Local rig-game profile: {}".format(result["rig_game"]["revision_id"]))
+        for message in result["warnings"]:
+            print("Warning: {}".format(message))
+        if result["local_fit_required"]:
+            print(
+                "Warning: portable ADB color reference imported; local HIK color "
+                "fitting is still required"
+            )
+        if not arguments.activate:
+            print("Imported revisions are review-required candidates; use --activate after review.")
+        return 0
     context = ProfileContext(
         game_id=arguments.game_id or settings["game"].get("game_id"),
         camera_id=arguments.camera_id or settings["devices"].get("camera_id"),

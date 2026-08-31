@@ -33,6 +33,30 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _adb_color_statistics(frames: np.ndarray) -> Mapping[str, object]:
+    """Compact camera-independent appearance reference in decoded BGR space."""
+
+    sampled = frames[:, ::8, ::8, :].reshape(-1, 3).astype(np.float32)
+    channels = {}
+    for index, name in enumerate(("blue", "green", "red")):
+        values = sampled[:, index]
+        channels[name] = {
+            "mean_dn": float(np.mean(values)),
+            "stddev_dn": float(np.std(values)),
+            "percentiles_dn": {
+                str(percentile): float(np.percentile(values, percentile))
+                for percentile in (1, 5, 25, 50, 75, 95, 99)
+            },
+        }
+    return {
+        "color_order": "BGR",
+        "source_frame_count": int(frames.shape[0]),
+        "sample_stride_px": 8,
+        "sample_count": int(sampled.shape[0]),
+        "channels": channels,
+    }
+
+
 def _decode_indices(
     video: Path,
     records: Sequence[Mapping[str, object]],
@@ -232,6 +256,11 @@ def calibrate_game_color_session(
     for filename, image in evidence.items():
         if not cv2.imwrite(str(output / filename), image):
             raise RuntimeError("Cannot write color evidence {}".format(filename))
+    adb_reference_path = output / "adb_game_color_reference.png"
+    reference_index = int(len(android_frames) // 2)
+    if not cv2.imwrite(str(adb_reference_path), android_frames[reference_index]):
+        raise RuntimeError("Cannot write portable ADB game-color reference")
+    adb_color_reference = _adb_color_statistics(android_frames)
     summary = {
         "schema_version": "1.0",
         "status": "calibrated_pending_publication",
@@ -240,6 +269,7 @@ def calibrate_game_color_session(
         "profile_context": context.as_dict(),
         "rig_revision": active_rig["revision_id"],
         "hik_bayer_conversion": conversion,
+        "adb_game_color_reference": adb_color_reference,
         "synchronized_source_frames": {
             "android_phone": [int(row["frame_index"]) for row in selected_android],
             "hik_phone": [int(row["frame_index"]) for row in selected_hik],
@@ -250,6 +280,29 @@ def calibrate_game_color_session(
     }
     summary_path = output / "game_color_calibration.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    phone_color_profile = registry.publish(
+        "phone_game_color",
+        context,
+        {
+            "profile_kind": "phone_game_color",
+            "coordinate_space": "android_logical_display_pixels",
+            "adb_game_color_reference": adb_color_reference,
+            "capabilities": {
+                "camera_independent": True,
+                "portable": True,
+                "local_hik_fit_required": True,
+            },
+        },
+        runtime_files={"adb_game_color_reference": adb_reference_path},
+        provenance={
+            "session": str(session),
+            "selected_android_frame_index": int(
+                selected_android[reference_index]["frame_index"]
+            ),
+        },
+        review_state="accepted" if activate else "review_required",
+        activate=activate,
+    )
     profile = registry.publish(
         "rig_game_color",
         context,
@@ -261,7 +314,10 @@ def calibrate_game_color_session(
                 "runtime_frame_passes": 0,
             },
         },
-        dependencies={"rig": active_rig["revision_id"]},
+        dependencies={
+            "rig": active_rig["revision_id"],
+            "phone_game_color": phone_color_profile["revision_id"],
+        },
         provenance={
             "game_color_calibration": str(summary_path),
             "session": str(session),
@@ -271,6 +327,9 @@ def calibrate_game_color_session(
         activate=activate,
     )
     summary["profile_revision"] = profile["revision_id"]
+    summary["portable_phone_game_color_revision"] = phone_color_profile[
+        "revision_id"
+    ]
     summary["profile_publication"] = profile["publication"]
     summary["status"] = "accepted" if activate else "review_required"
     if activate:
