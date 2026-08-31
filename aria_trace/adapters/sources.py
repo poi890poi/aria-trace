@@ -227,15 +227,32 @@ def estimate_clock_offset(samples):
 
 
 class AdbClockMapper:
-    """Map Android CLOCK_MONOTONIC timestamps onto PC perf_counter_ns()."""
+    """Map an observed Android source clock onto PC ``perf_counter_ns()``.
 
-    def __init__(self, adb: Path, serial: Optional[str] = None, sample_count: int = 7) -> None:
+    ``/proc/uptime`` is only a candidate epoch: on Android it includes suspend
+    time, while input, camera, or MediaCodec timestamps may use a clock which
+    excludes suspend or has a stream-local origin.  The first real source
+    timestamp therefore validates that candidate.  An incompatible epoch is
+    mapped from observed source/host pairs, preserving source-time deltas.
+    """
+
+    def __init__(
+        self,
+        adb: Path,
+        serial: Optional[str] = None,
+        sample_count: int = 7,
+        maximum_plausible_lag_ns: int = 10_000_000_000,
+    ) -> None:
         self.adb = Path(adb)
         self.serial = serial
         self.sample_count = int(sample_count)
+        self.maximum_plausible_lag_ns = int(maximum_plausible_lag_ns)
         self.offset_ns = None
         self.rtt_ns = None
         self.status = "not-calibrated"
+        self.observed_offset_ns = None
+        self._last_source_time_ns = None
+        self._last_host_time_ns = None
         self._lock = threading.Lock()
 
     def _base_command(self):
@@ -261,7 +278,7 @@ class AdbClockMapper:
                     device_ns = int(float(output.split()[0]) * 1.0e9)
                     samples.append((before, after, device_ns))
                 self.offset_ns, self.rtt_ns = estimate_clock_offset(samples)
-                self.status = "mapped-from-proc-uptime"
+                self.status = "mapped-from-proc-uptime-unverified"
             except Exception:
                 self.offset_ns = None
                 self.rtt_ns = None
@@ -269,16 +286,71 @@ class AdbClockMapper:
 
     def to_host_time_ns(self, device_time_ns: int, fallback_ns: Optional[int] = None) -> int:
         self.calibrate()
-        if self.offset_ns is not None:
-            return int(device_time_ns) + int(self.offset_ns)
-        return int(fallback_ns if fallback_ns is not None else time.perf_counter_ns())
+        source_time_ns = int(device_time_ns)
+        receive_time_ns = int(
+            fallback_ns if fallback_ns is not None else time.perf_counter_ns()
+        )
+        with self._lock:
+            candidate = (
+                source_time_ns + int(self.offset_ns)
+                if self.offset_ns is not None
+                else None
+            )
+            candidate_is_plausible = (
+                candidate is not None
+                and candidate >= 0
+                and abs(receive_time_ns - candidate)
+                <= self.maximum_plausible_lag_ns
+            )
+            if self.status in (
+                "mapped-from-proc-uptime-unverified",
+                "mapped-from-proc-uptime-verified",
+            ) and candidate_is_plausible:
+                self.status = "mapped-from-proc-uptime-verified"
+                return int(candidate)
+
+            if self.status != "mapped-from-observed-source-time":
+                self.status = "mapped-from-observed-source-time"
+                self.observed_offset_ns = None
+                self._last_source_time_ns = None
+                self._last_host_time_ns = None
+
+            observed_offset = receive_time_ns - source_time_ns
+            if (
+                self.observed_offset_ns is None
+                or observed_offset < self.observed_offset_ns
+            ):
+                self.observed_offset_ns = observed_offset
+            mapped = source_time_ns + int(self.observed_offset_ns)
+            mapped = min(mapped, receive_time_ns)
+            if (
+                self._last_source_time_ns is not None
+                and source_time_ns >= self._last_source_time_ns
+                and self._last_host_time_ns is not None
+            ):
+                mapped = max(mapped, self._last_host_time_ns)
+            mapped = max(0, mapped)
+            if (
+                self._last_source_time_ns is None
+                or source_time_ns >= self._last_source_time_ns
+            ):
+                self._last_source_time_ns = source_time_ns
+                self._last_host_time_ns = mapped
+            return int(mapped)
 
     def describe(self) -> Dict[str, object]:
+        active_offset = (
+            self.observed_offset_ns
+            if self.status == "mapped-from-observed-source-time"
+            else self.offset_ns
+        )
         return {
             "clock_status": self.status,
-            "device_to_pc_offset_ns": self.offset_ns,
+            "device_to_pc_offset_ns": active_offset,
+            "proc_uptime_candidate_offset_ns": self.offset_ns,
+            "observed_source_offset_ns": self.observed_offset_ns,
             "clock_sample_rtt_ns": self.rtt_ns,
-            "device_clock": "CLOCK_MONOTONIC",
+            "device_clock": "source timestamp validated against /proc/uptime candidate",
             "host_clock": "perf_counter_ns",
         }
 

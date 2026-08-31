@@ -389,7 +389,8 @@ class AndroidCamera:
             "source_time_ns": int(source_ns),
             "capture_time_ns": int(capture_ns),
             "receive_time_ns": int(receive_ns),
-            "timestamp_timebase": "Android CLOCK_MONOTONIC mapped to host",
+            "timestamp_timebase": "scrcpy_media_pts_mapped_to_host",
+            "timestamp_mapping": self._hub.clock.describe(),
             "transport_latency_ms": max(0.0, (receive_ns - capture_ns) / 1.0e6),
             "dropped_before": self._hub.take_drops("camera"),
             "image_space": {

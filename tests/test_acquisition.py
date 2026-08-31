@@ -21,7 +21,7 @@ from acquisition.annotations import AnnotationStore
 from acquisition.extract_portal_init import extract_initialization
 from acquisition.review import ReviewState, make_handler
 from acquisition.session import SessionReader, SessionWriter
-from acquisition.sources import estimate_clock_offset, parse_getevent_line
+from acquisition.sources import AdbClockMapper, estimate_clock_offset, parse_getevent_line
 from acquisition.android_capture import (
     AndroidRoiFrameSource,
     parse_android_roi,
@@ -406,6 +406,31 @@ class AcquisitionTests(unittest.TestCase):
         )
         self.assertEqual(rtt, 100)
         self.assertEqual(offset, 1_050)
+
+    def test_clock_mapping_keeps_compatible_proc_uptime_epoch(self):
+        mapper = AdbClockMapper(Path("adb"), maximum_plausible_lag_ns=1_000)
+        mapper.offset_ns = 900
+        mapper.rtt_ns = 20
+        mapper.status = "mapped-from-proc-uptime-unverified"
+
+        self.assertEqual(1_000, mapper.to_host_time_ns(100, 1_100))
+        self.assertEqual("mapped-from-proc-uptime-verified", mapper.status)
+        self.assertIsNone(mapper.observed_offset_ns)
+
+    def test_clock_mapping_rebases_incompatible_media_pts_epoch(self):
+        mapper = AdbClockMapper(Path("adb"), maximum_plausible_lag_ns=1_000)
+        mapper.offset_ns = -98_900_000
+        mapper.rtt_ns = 20
+        mapper.status = "mapped-from-proc-uptime-unverified"
+
+        first = mapper.to_host_time_ns(25_700_000, 2_300_000)
+        second = mapper.to_host_time_ns(25_734_000, 2_340_000)
+
+        self.assertEqual(2_300_000, first)
+        self.assertEqual(2_334_000, second)
+        self.assertEqual("mapped-from-observed-source-time", mapper.status)
+        self.assertEqual(-23_400_000, mapper.observed_offset_ns)
+        self.assertGreaterEqual(second, first)
 
     def test_writes_reads_and_decodes_multistream_session(self):
         with tempfile.TemporaryDirectory() as temporary:

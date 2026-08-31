@@ -529,6 +529,12 @@ class AndroidRoiFrameSource(FrameSource):
             )
         else:
             cropped = cropped.copy()
+        clock = getattr(self.hub, "clock", None)
+        timestamp_mapping = (
+            dict(clock.describe())
+            if clock is not None and callable(getattr(clock, "describe", None))
+            else {}
+        )
         return FramePacket(
             self.stream_id,
             cropped,
@@ -541,7 +547,8 @@ class AndroidRoiFrameSource(FrameSource):
                 "source_size": [frame_width, frame_height],
                 "roi_xywh": [self.spec.x, self.spec.y, width, height],
                 "target_size": [cropped.shape[1], cropped.shape[0]],
-                "timestamp_timebase": "Android CLOCK_MONOTONIC",
+                "timestamp_timebase": "scrcpy_media_pts_mapped_to_host",
+                "timestamp_mapping": timestamp_mapping,
             },
             dropped_before=self.hub.take_drops(self.stream_id),
         )
