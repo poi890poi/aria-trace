@@ -129,10 +129,15 @@ def _camera_bbox_for_screen_rect(
     camera_shape: Sequence[int],
     rect_screen_xywh: Sequence[float],
     camera_to_screen_3x3: np.ndarray,
+    camera_lens_model: Optional[Mapping[str, Any]] = None,
     padding_camera_px: int = 3,
 ) -> Tuple[int, int, int, int]:
     inverse = np.linalg.inv(camera_to_screen_3x3)
     camera_polygon = transform_points(_screen_rect_polygon(rect_screen_xywh), inverse)
+    if camera_lens_model is not None:
+        from .distortion import distort_pixel_points
+
+        camera_polygon = distort_pixel_points(camera_polygon, camera_lens_model)
     left = max(0, int(math.floor(float(np.min(camera_polygon[:, 0])))) - padding_camera_px)
     top = max(0, int(math.floor(float(np.min(camera_polygon[:, 1])))) - padding_camera_px)
     right = min(
@@ -152,14 +157,24 @@ def _local_sampling(
     camera_to_screen_3x3: np.ndarray,
     edge_center_screen_xy: np.ndarray,
     edge_normal_screen_xy: np.ndarray,
+    camera_lens_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     inverse = np.linalg.inv(camera_to_screen_3x3)
     camera_center = transform_points([edge_center_screen_xy], inverse)[0]
+    if camera_lens_model is not None:
+        from .distortion import distort_pixel_points, undistort_pixel_points
+
+        camera_center = distort_pixel_points([camera_center], camera_lens_model)[0]
     camera_probe = np.asarray(
         [camera_center, camera_center + [1.0, 0.0], camera_center + [0.0, 1.0]],
         dtype=np.float64,
     )
-    screen_probe = transform_points(camera_probe, camera_to_screen_3x3)
+    ideal_probe = (
+        undistort_pixel_points(camera_probe, camera_lens_model)
+        if camera_lens_model is not None
+        else camera_probe
+    )
+    screen_probe = transform_points(ideal_probe, camera_to_screen_3x3)
     jacobian = np.column_stack(
         [screen_probe[1] - screen_probe[0], screen_probe[2] - screen_probe[0]]
     )
@@ -189,6 +204,7 @@ def measure_slanted_edge_esfr(
     oecf_lut: Optional[Sequence[float]] = None,
     geometry_confidence: float = 1.0,
     display_pixel_pitch_mm_xy: Optional[Sequence[float]] = None,
+    camera_lens_model: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], np.ndarray]:
     """Measure one edge directly from native camera samples in display units.
 
@@ -208,14 +224,25 @@ def measure_slanted_edge_esfr(
         raise ValueError("e-SFR oversampling must be between 2 and 16")
     transform = matrix_3x3(camera_to_screen_3x3)
     left, top, right, bottom = _camera_bbox_for_screen_rect(
-        camera_image.shape, rect_screen_xywh, transform
+        camera_image.shape,
+        rect_screen_xywh,
+        transform,
+        camera_lens_model=camera_lens_model,
     )
     crop = camera_image[top:bottom, left:right]
     yy, xx = np.mgrid[top:bottom, left:right]
     camera_points = np.column_stack(
         [xx.reshape(-1).astype(np.float64), yy.reshape(-1).astype(np.float64)]
     )
-    screen_points = transform_points(camera_points, transform)
+    if camera_lens_model is not None:
+        from .distortion import undistort_pixel_points
+
+        camera_points_for_geometry = undistort_pixel_points(
+            camera_points, camera_lens_model
+        )
+    else:
+        camera_points_for_geometry = camera_points
+    screen_points = transform_points(camera_points_for_geometry, transform)
     x, y, width, height = map(float, rect_screen_xywh)
     inset = max(2.0, min(width, height) * 0.025)
     inside = (
@@ -306,7 +333,9 @@ def measure_slanted_edge_esfr(
 
     mtf50 = _crossing_frequency(frequencies, mtf, 0.50)
     mtf10 = _crossing_frequency(frequencies, mtf, 0.10)
-    sampling = _local_sampling(transform, center, normal)
+    sampling = _local_sampling(
+        transform, center, normal, camera_lens_model=camera_lens_model
+    )
     native_frequency = frequencies / float(
         sampling["camera_px_per_display_px_along_edge_normal"]
     )
@@ -327,6 +356,10 @@ def measure_slanted_edge_esfr(
         [center - direction * half_length, center + direction * half_length],
         np.linalg.inv(transform),
     )
+    if camera_lens_model is not None:
+        from .distortion import distort_pixel_points
+
+        camera_edge = distort_pixel_points(camera_edge, camera_lens_model)
     camera_edge -= np.asarray([left, top], dtype=np.float64)
     cv2.line(
         evidence,
@@ -340,7 +373,14 @@ def measure_slanted_edge_esfr(
         "standard": "ISO 12233:2024",
         "method": "slanted_edge_e_sfr",
         "implementation_conformance": "non_certified",
-        "measurement_input_space": "camera_pre_homography_px",
+        "measurement_input_space": (
+            "camera_raw_distorted_px"
+            if camera_lens_model is not None
+            else "camera_pre_homography_px"
+        ),
+        "lens_geometry_applied_without_image_resampling": bool(
+            camera_lens_model is not None
+        ),
         "primary_spatial_frequency_unit": "cycles_per_display_pixel",
         "native_analysis_frequency_unit": "cycles_per_camera_pixel",
         "rect_screen_xywh": list(map(float, rect_screen_xywh)),

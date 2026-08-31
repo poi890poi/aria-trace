@@ -130,6 +130,27 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--operation-timeout-seconds", type=float, default=8.0)
     value.add_argument("--geometry-frames", type=int, default=12)
     value.add_argument(
+        "--distortion-correction",
+        choices=("off", "guided"),
+        default="off",
+        help=(
+            "guided collects distinct ChArUco views and enables correction only "
+            "after independent holdout improvement; off keeps homography-only"
+        ),
+    )
+    value.add_argument(
+        "--distortion-views",
+        type=int,
+        default=8,
+        help="guided ChArUco views including one independent holdout (default: 8)",
+    )
+    value.add_argument(
+        "--distortion-min-relative-p95-improvement",
+        type=float,
+        default=0.05,
+        help="minimum independent p95 improvement required to save correction",
+    )
+    value.add_argument(
         "--visible-screen-margin-px",
         type=int,
         default=8,
@@ -321,6 +342,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         maximum_auto_gain_db=arguments.max_auto_gain_db,
         exposure_noise_frames=arguments.exposure_noise_frames,
         geometry_frames=arguments.geometry_frames,
+        distortion_correction=arguments.distortion_correction,
+        distortion_view_count=arguments.distortion_views,
+        distortion_min_relative_p95_improvement=(
+            arguments.distortion_min_relative_p95_improvement
+        ),
         visible_screen_margin_px=arguments.visible_screen_margin_px,
         settle_frames=arguments.settle_frames,
         headless=arguments.headless,

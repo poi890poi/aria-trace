@@ -153,9 +153,15 @@ A single fixed view of a planar display supports a screen homography but does no
 - positive and negative yaw;
 - corners reaching the outer camera-image regions.
 
-The system estimates the camera matrix, radial/tangential distortion, per-view reprojection error, and uncertainty. It rejects blurry views, poorly distributed corners, and redundant poses.
+The HIK workflow keeps this stage opt-in (`--distortion-correction guided`, eight
+views by default). It fits radial/tangential distortion on all but the final
+view. The final view is an independent holdout: correction is accepted only
+when its p95 screen reprojection error improves by the configured relative
+margin (5% by default) and its maximum error does not worsen. Otherwise the
+artifact explicitly records a rejected/unavailable lens model and continues
+with homography-only rectification.
 
-If trusted intrinsics already exist for the exact camera mode, they may be reused. If the user skips this stage, the wizard continues in `homography_only` mode and lowers confidence near image edges. A projective matrix must not be represented as having corrected unmeasured radial distortion.
+If trusted intrinsics already exist for the exact camera mode, they may be reused. If the user skips this stage, the wizard continues in `homography_only` mode and lowers confidence near image edges. A projective matrix must not be represented as having corrected unmeasured radial distortion. In the HIK adapter, an accepted lens model is used only when rectification is enabled. Distortion and screen normalization are precomposed into the existing dense output-to-raw map, so live capture still performs exactly one `cv2.remap`; `rectify=False` still returns the raw hardware ROI unchanged.
 
 ### 5.3 Final ChArUco screen registration
 
@@ -171,7 +177,7 @@ patch wholly inside the camera-visible intersection with the required ROI.
 
 The system captures a burst and:
 
-1. Undistorts each accepted frame.
+1. Maps detected raw-camera corner coordinates into the undistorted full-sensor coordinate space when an evidence-gated lens model was accepted.
 2. Detects marker IDs and interpolated ChArUco corners.
 3. Fits the camera-to-screen homography with robust outlier rejection.
 4. Aggregates accepted frames rather than trusting one detection.

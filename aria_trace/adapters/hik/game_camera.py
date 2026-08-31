@@ -13,6 +13,9 @@ import numpy as np
 
 from aria_trace.adapters.rig.devices import CameraConfiguration
 from aria_trace.services.calibration.rig.contracts import FrameSample
+from aria_trace.services.calibration.rig.distortion import (
+    distorted_screen_region_roi,
+)
 from aria_trace.services.calibration.rig.hik.algorithms import (
     camera_adapter_roi_to_output_homography,
     camera_roi_for_screen_region,
@@ -196,6 +199,8 @@ class ProfiledHikGameCamera:
         self._full_size: Optional[tuple[int, int]] = None
         self._full_map_x: Optional[np.ndarray] = None
         self._full_map_y: Optional[np.ndarray] = None
+        self._minimap_map_x: Optional[np.ndarray] = None
+        self._minimap_map_y: Optional[np.ndarray] = None
         self._minimap_in_full_xywh: Optional[list[int]] = None
         self._last_stream_metadata: Dict[str, Mapping[str, object]] = {}
 
@@ -272,12 +277,25 @@ class ProfiledHikGameCamera:
         try:
             self._apply_locked_imaging()
             screen_crop = self._screen_crop()
-            requested_minimap_roi = camera_roi_for_screen_region(
-                screen_crop,
-                self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
-                self._sensor_size(),
-                margin_px=self.minimap_margin_px,
+            coordinate_schema = int(
+                (self.rig.get("coordinate_spaces") or {}).get("schema_version", 0)
             )
+            lens_model = (self.rig.get("optics") or {}).get("lens_model") or {}
+            if coordinate_schema >= 3:
+                requested_minimap_roi = distorted_screen_region_roi(
+                    self._sensor_size(),
+                    screen_crop,
+                    self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
+                    lens_model,
+                    margin_px=self.minimap_margin_px,
+                )
+            else:
+                requested_minimap_roi = camera_roi_for_screen_region(
+                    screen_crop,
+                    self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
+                    self._sensor_size(),
+                    margin_px=self.minimap_margin_px,
+                )
             self._minimap_sensor_roi = list(
                 self.adapter.align_roi(requested_minimap_roi)
             )
@@ -288,35 +306,29 @@ class ProfiledHikGameCamera:
             )
             self._effective_roi = list(self.adapter.set_roi(requested_roi))
 
-            camera_to_screen = np.asarray(
-                self.rig["geometry"]["full_sensor_camera_to_screen_3x3"],
-                dtype=np.float64,
-            )
-            acquisition_to_screen = compose_hardware_roi_homography(
-                camera_to_screen, self._effective_roi
-            )
             crop_x, crop_y, crop_width, crop_height = screen_crop
-            self._minimap_matrix = _translation(-crop_x, -crop_y).dot(
-                acquisition_to_screen
-            )
+            if coordinate_schema < 3:
+                camera_to_screen = np.asarray(
+                    self.rig["geometry"]["full_sensor_camera_to_screen_3x3"],
+                    dtype=np.float64,
+                )
+                acquisition_to_screen = compose_hardware_roi_homography(
+                    camera_to_screen, self._effective_roi
+                )
+                self._minimap_matrix = _translation(-crop_x, -crop_y).dot(
+                    acquisition_to_screen
+                )
             self._minimap_size = (crop_width, crop_height)
 
             normalization = self.rig["normalization"]
-            self._full_matrix = camera_adapter_roi_to_output_homography(
-                self.rig, self._effective_roi
+            self._full_matrix = (
+                None
+                if coordinate_schema >= 3
+                else camera_adapter_roi_to_output_homography(
+                    self.rig, self._effective_roi
+                )
             )
             self._full_size = tuple(map(int, normalization["output_size_px"]))
-            dense_file = normalization.get("dense_map_file")
-            if dense_file and self.mode != "minimap":
-                dense_path = self.rig_path.parent / str(dense_file)
-                if dense_path.is_file():
-                    with np.load(str(dense_path)) as dense:
-                        self._full_map_x = np.asarray(
-                            dense["map_x"], dtype=np.float32
-                        ) - float(self._effective_roi[0])
-                        self._full_map_y = np.asarray(
-                            dense["map_y"], dtype=np.float32
-                        ) - float(self._effective_roi[1])
             origin_x, origin_y = map(
                 float, normalization.get("origin_screen_xy", [0, 0])
             )
@@ -330,6 +342,41 @@ class ProfiledHikGameCamera:
                 int(round(crop_width / scale_x)),
                 int(round(crop_height / scale_y)),
             ]
+            dense_file = normalization.get("dense_map_file")
+            if dense_file and self.rectify_minimap:
+                dense_path = self.rig_path.parent / str(dense_file)
+                if dense_path.is_file():
+                    with np.load(str(dense_path)) as dense:
+                        self._full_map_x = np.asarray(
+                            dense["map_x"], dtype=np.float32
+                        ) - float(self._effective_roi[0])
+                        self._full_map_y = np.asarray(
+                            dense["map_y"], dtype=np.float32
+                        ) - float(self._effective_roi[1])
+            if coordinate_schema >= 3 and self.rectify_minimap:
+                if self._full_map_x is None or self._full_map_y is None:
+                    raise RuntimeError(
+                        "Distortion-corrected HIK game stream requires its dense remap"
+                    )
+                mini_x, mini_y, mini_width, mini_height = self._minimap_in_full_xywh
+                if (
+                    mini_x < 0
+                    or mini_y < 0
+                    or mini_x + mini_width > self._full_map_x.shape[1]
+                    or mini_y + mini_height > self._full_map_x.shape[0]
+                ):
+                    raise ValueError(
+                        "Mini-map crop {} exceeds the saved dense rectification map"
+                        .format(self._minimap_in_full_xywh)
+                    )
+                self._minimap_map_x = self._full_map_x[
+                    mini_y : mini_y + mini_height,
+                    mini_x : mini_x + mini_width,
+                ]
+                self._minimap_map_y = self._full_map_y[
+                    mini_y : mini_y + mini_height,
+                    mini_x : mini_x + mini_width,
+                ]
             self._opened = True
         except Exception:
             self.adapter.close()
@@ -341,6 +388,15 @@ class ProfiledHikGameCamera:
 
     def _minimap_from_acquisition(self, image: np.ndarray) -> np.ndarray:
         if self.rectify_minimap:
+            if self._minimap_map_x is not None and self._minimap_map_y is not None:
+                return cv2.remap(
+                    image,
+                    self._minimap_map_x,
+                    self._minimap_map_y,
+                    interpolation=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=(0, 0, 0),
+                )
             return cv2.warpPerspective(
                 image,
                 self._minimap_matrix,
@@ -425,6 +481,11 @@ class ProfiledHikGameCamera:
             "one_acquisition_for_all_streams": True,
         }
         stream_metadata: Dict[str, Mapping[str, object]] = {}
+        distortion_corrected = bool(
+            self.rig.get("normalization", {}).get(
+                "lens_correction_in_dense_map", False
+            )
+        )
         for name, image in streams.items():
             height, width = image.shape[:2]
             if name == "full" and self.rectify_minimap:
@@ -435,9 +496,13 @@ class ProfiledHikGameCamera:
                     "parent_space_id": "hik_full_sensor_camera_pixels",
                     "source_roi_in_parent_xywh": list(self._effective_roi),
                     "transform_reference": (
-                        "hik_camera_calibration.json#normalization."
+                        "hik_camera_calibration.json#normalization.dense_map_file"
+                        if distortion_corrected
+                        else "hik_camera_calibration.json#normalization."
                         "full_sensor_camera_to_output_3x3"
                     ),
+                    "lens_distortion_corrected": distortion_corrected,
+                    "runtime_resampling_passes": 1,
                     "orientation": "phone_app_up",
                     "color_order": "BGR",
                 }
@@ -448,6 +513,14 @@ class ProfiledHikGameCamera:
                     "stored_size_px": [int(width), int(height)],
                     "parent_space_id": "android_phone_natural_display_pixels",
                     "roi_in_parent_xywh": list(self._screen_crop()),
+                    "transform_reference": (
+                        "hik_camera_calibration.json#normalization.dense_map_file"
+                        if distortion_corrected
+                        else "hik_camera_calibration.json#normalization."
+                        "full_sensor_camera_to_output_3x3"
+                    ),
+                    "lens_distortion_corrected": distortion_corrected,
+                    "runtime_resampling_passes": 1,
                     "orientation": "phone_app_up",
                     "color_order": "BGR",
                 }

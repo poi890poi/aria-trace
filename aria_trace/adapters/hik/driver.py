@@ -1204,8 +1204,13 @@ class RectifiedHikCamera:
         # Keep the calibrated mapping available even for the minimum-latency
         # hardware-ROI stream.  It is used only by explicit evidence checks;
         # ordinary rectify=False reads still return the untouched camera ROI.
-        self._matrix = camera_adapter_roi_to_output_homography(
-            self.config, effective_roi
+        coordinate_schema = int(
+            (self.config.get("coordinate_spaces") or {}).get("schema_version", 0)
+        )
+        self._matrix = (
+            None
+            if coordinate_schema >= 3
+            else camera_adapter_roi_to_output_homography(self.config, effective_roi)
         )
         calibrated_output_size = tuple(
             map(int, normalization["output_size_px"])
@@ -1217,6 +1222,10 @@ class RectifiedHikCamera:
                 self._dense_path = dense_path
         self._effective_roi = list(map(int, effective_roi))
         if self._rectify_enabled:
+            if coordinate_schema >= 3 and self._dense_path is None:
+                raise RuntimeError(
+                    "Distortion-corrected HIK calibration requires its precomputed dense remap"
+                )
             self._load_rectification_maps()
         self._output_size = (
             calibrated_output_size
@@ -1279,6 +1288,11 @@ class RectifiedHikCamera:
         rectified = self._rectify(sample.image)
         height, width = rectified.shape[:2]
         if self._rectify_enabled:
+            distortion_corrected = bool(
+                self.config.get("normalization", {}).get(
+                    "lens_correction_in_dense_map", False
+                )
+            )
             image_space = {
                 "schema_version": "1.0",
                 "space_id": "hik_rig_rectified_visible_phone_pixels",
@@ -1286,9 +1300,13 @@ class RectifiedHikCamera:
                 "parent_space_id": "hik_full_sensor_camera_pixels",
                 "source_roi_in_parent_xywh": list(self._effective_roi),
                 "transform_reference": (
-                    "hik_camera_calibration.json#normalization."
+                    "hik_camera_calibration.json#normalization.dense_map_file"
+                    if distortion_corrected
+                    else "hik_camera_calibration.json#normalization."
                     "full_sensor_camera_to_output_3x3"
                 ),
+                "lens_distortion_corrected": distortion_corrected,
+                "runtime_resampling_passes": 1,
                 "orientation": "phone_app_up",
                 "color_order": "BGR",
             }

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -214,6 +215,76 @@ class HikRoiSpaceTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "Effective HIK ROI"):
             validate_hik_coordinate_contract(calibration, [12, 20, 40, 30])
+
+    def test_distortion_contract_uses_one_precomputed_runtime_remap(self):
+        lens = {
+            "source": "measured",
+            "model": "opencv_radtan",
+            "camera_matrix_3x3": [[100, 0, 4], [0, 100, 4], [0, 0, 1]],
+            "distortion_coefficients": [-0.1, 0.01, 0, 0, 0],
+        }
+        spaces = hik_image_space_conversions(
+            np.eye(3), np.eye(3), np.eye(3),
+            [8, 8], [2, 3, 4, 4], [4, 4],
+            calibration_display_size_px=[8, 8],
+            phone_natural_size_px=[8, 8],
+            lens_model=lens,
+        )
+        config = {
+            "camera": {
+                "device_id": "fake",
+                "full_sensor_mode": {"width_px": 8, "height_px": 8, "fps": 30},
+                "hardware_roi_xywh": [2, 3, 4, 4],
+            },
+            "phone": {
+                "screen_size_px": [8, 8],
+                "natural_screen_size_px": [8, 8],
+            },
+            "imaging": {
+                "black_level": 0,
+                "exposure_us": 1000,
+                "gain": 0,
+                "white_balance": {
+                    "ratio_red": 1000,
+                    "ratio_green": 1000,
+                    "ratio_blue": 1000,
+                },
+            },
+            "normalization": {
+                "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
+                "output_size_px": [4, 4],
+                "dense_map_file": "rectification_maps.npz",
+                "lens_correction_in_dense_map": True,
+            },
+            "coordinate_spaces": spaces,
+            "optics": {"lens_model": lens},
+        }
+        self.assertEqual(
+            validate_hik_coordinate_contract(config)["schema_version"], 3
+        )
+        image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape((4, 4, 3))
+        adapter = RuntimeAdapter(image)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "hik_camera_calibration.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            xx, yy = np.meshgrid(np.arange(2, 6), np.arange(3, 7))
+            np.savez_compressed(
+                str(root / "rectification_maps.npz"),
+                map_x=xx.astype(np.float32),
+                map_y=yy.astype(np.float32),
+            )
+            real_remap = __import__("cv2").remap
+            with mock.patch(
+                "aria_trace.adapters.hik.driver.cv2.remap", wraps=real_remap
+            ) as remap:
+                camera = RectifiedHikCamera(path, adapter=adapter, rectify=True).open()
+                sample = camera.read_sample()
+                camera.release()
+        self.assertEqual(remap.call_count, 1)
+        np.testing.assert_array_equal(sample.image, image)
+        self.assertEqual(sample.metadata["image_space"]["runtime_resampling_passes"], 1)
+        self.assertTrue(sample.metadata["image_space"]["lens_distortion_corrected"])
 
     def test_runtime_uses_saved_roi_matrix_and_legacy_mismatch_fallback(self):
         calibration = {

@@ -27,6 +27,16 @@ from aria_trace.adapters.android.display import LocalPhoneTargetServer, PhoneTar
 from aria_trace.services.calibration.rig.bundle import build_calibration, write_calibration_bundle
 from aria_trace.services.calibration.rig.data_matrix_readability import grade_data_matrix_decode, render_data_matrix_target
 from aria_trace.services.calibration.rig.geometry import CharucoLayout, detect_charuco_correspondences, estimate_screen_geometry
+from aria_trace.services.calibration.rig.distortion import (
+    combined_output_to_raw_maps,
+    distort_pixel_points,
+    distorted_screen_region_mask,
+    distorted_screen_region_roi,
+    fit_evidence_gated_distortion,
+    raw_roi_for_maps,
+    raw_sensor_viewport_in_screen,
+    undistort_pixel_points,
+)
 from aria_trace.services.calibration.rig.image_quality import measure_slanted_edge_esfr
 from aria_trace.services.calibration.rig.hik.algorithms import (
     BlackLevelObservation,
@@ -146,6 +156,9 @@ class HikCalibrationOptions:
     data_matrix_initial_module_px: int = 1
     complete_grader_plugin: Optional[str] = None
     strict_display_screenshot_verification: bool = False
+    distortion_correction: str = "off"
+    distortion_view_count: int = 8
+    distortion_min_relative_p95_improvement: float = 0.05
     repeatability_policy: str = DEFAULT_RIG_REPEATABILITY_POLICY
     save_max_displacement_px: float = float(
         _DEFAULT_REPEATABILITY["save_max_displacement_px"]
@@ -191,6 +204,12 @@ class HikCalibrationOptions:
             raise ValueError(
                 "display_component applies only to target_presenter=legacy_gallery"
             )
+        if self.distortion_correction not in ("off", "guided"):
+            raise ValueError("Distortion correction must be off or guided")
+        if self.distortion_view_count < 4:
+            raise ValueError("Guided distortion calibration needs at least four views")
+        if not 0.0 <= self.distortion_min_relative_p95_improvement <= 1.0:
+            raise ValueError("Distortion holdout improvement must be within 0..1")
 
 
 class HikRigCalibrationSession:
@@ -252,6 +271,8 @@ class HikRigCalibrationSession:
         self.transport_benchmark: Optional[Dict[str, Any]] = None
         self.latency_benchmark: Optional[Dict[str, Any]] = None
         self.cross_source_check: Optional[Dict[str, Any]] = None
+        self.lens_model: Dict[str, Any] = {"source": "unavailable"}
+        self._raw_roi_cache: Dict[tuple, List[int]] = {}
         self.hardware_roi: Optional[List[int]] = None
         self.focus_history: List[Dict[str, Any]] = []
         self.focus_pose_history: List[Dict[str, Any]] = []
@@ -281,6 +302,74 @@ class HikRigCalibrationSession:
         value = str(message)
         self.calibration_warnings.append(value)
         self.progress("Warning: {}".format(value))
+
+    def _uses_measured_distortion(self) -> bool:
+        return self.lens_model.get("source") == "measured"
+
+    def _screen_points_to_raw_camera(
+        self, screen_points_xy: Sequence[Sequence[float]]
+    ) -> np.ndarray:
+        geometry = self._required(self.geometry, "screen geometry")
+        ideal = cv2.perspectiveTransform(
+            np.asarray(screen_points_xy, dtype=np.float64).reshape((-1, 1, 2)),
+            np.asarray(geometry.inverse_matrix_3x3, dtype=np.float64),
+        ).reshape((-1, 2))
+        return (
+            distort_pixel_points(ideal, self.lens_model)
+            if self._uses_measured_distortion()
+            else ideal
+        )
+
+    def _raw_roi_for_screen_region(
+        self,
+        screen_region_xywh: Sequence[int],
+        camera_size_px: Sequence[int],
+        margin_px: int = 4,
+    ) -> List[int]:
+        geometry = self._required(self.geometry, "screen geometry")
+        key = (
+            tuple(map(int, screen_region_xywh)),
+            tuple(map(int, camera_size_px)),
+            int(margin_px),
+            bool(self._uses_measured_distortion()),
+        )
+        cached = self._raw_roi_cache.get(key)
+        if cached is not None:
+            return list(cached)
+        if not self._uses_measured_distortion():
+            result = camera_roi_for_screen_region(
+                screen_region_xywh,
+                geometry.inverse_matrix_3x3,
+                camera_size_px,
+                margin_px=margin_px,
+            )
+        else:
+            result = distorted_screen_region_roi(
+                camera_size_px,
+                screen_region_xywh,
+                geometry.inverse_matrix_3x3,
+                self.lens_model,
+                margin_px=margin_px,
+            )
+        self._raw_roi_cache[key] = list(result)
+        return list(result)
+
+    def _rectify_raw_frame_to_screen(self, frame: np.ndarray) -> np.ndarray:
+        geometry = self._required(self.geometry, "screen geometry")
+        phone_metrics = self._required(self.phone_metrics, "phone metrics")
+        maps = combined_output_to_raw_maps(
+            geometry.matrix_3x3,
+            phone_metrics.screen_size_px,
+            self.lens_model if self._uses_measured_distortion() else None,
+        )
+        return cv2.remap(
+            frame,
+            maps[0],
+            maps[1],
+            interpolation=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(127, 127, 127),
+        )
 
     def _update_focus_save_gate(
         self, displacement_px: float, threshold_px: float
@@ -910,23 +999,6 @@ class HikRigCalibrationSession:
         self.data_matrix_evidence_directory = evidence
         return evidence
 
-    @staticmethod
-    def _data_matrix_camera_polygon(
-        screen_rect_xywh: Sequence[int],
-        screen_to_camera_3x3: Sequence[Sequence[float]],
-    ) -> np.ndarray:
-        """Project a phone-screen decoder crop back into the original camera frame."""
-
-        x, y, width, height = map(float, screen_rect_xywh)
-        screen_corners = np.asarray(
-            [[x, y], [x + width, y], [x + width, y + height], [x, y + height]],
-            dtype=np.float32,
-        )
-        return cv2.perspectiveTransform(
-            screen_corners.reshape((1, -1, 2)),
-            np.asarray(screen_to_camera_3x3, dtype=np.float64),
-        ).reshape((-1, 2))
-
     def _write_data_matrix_failure_evidence(
         self,
         module_px: int,
@@ -950,8 +1022,9 @@ class HikRigCalibrationSession:
         for failure in failures:
             row = failure["row"]
             trial_index = int(failure["trial_index"])
-            polygon = self._data_matrix_camera_polygon(
-                row["decode_rect_screen_xywh"], geometry.inverse_matrix_3x3
+            x, y, width, height = map(int, row["decode_rect_screen_xywh"])
+            polygon = self._screen_points_to_raw_camera(
+                [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
             )
             polygon_i = np.rint(polygon).astype(np.int32)
             cv2.polylines(
@@ -1083,7 +1156,12 @@ class HikRigCalibrationSession:
                 "phone_to_camera_3x3": np.asarray(
                     geometry.inverse_matrix_3x3, dtype=np.float64
                 ).tolist(),
-                "camera_space": "hik_full_sensor_camera_pixels",
+                "camera_space": (
+                    "hik_full_sensor_undistorted_pixels"
+                    if self._uses_measured_distortion()
+                    else "hik_full_sensor_bgr_pixels"
+                ),
+                "annotated_evidence_space": "hik_full_sensor_bgr_pixels",
                 "phone_space": "android_logical_display_pixels",
             },
         }
@@ -1356,6 +1434,117 @@ class HikRigCalibrationSession:
             )
         )
 
+    def calibrate_lens_distortion(self) -> None:
+        """Collect distinct ChArUco views and keep correction only on holdout gain."""
+
+        if self.options.distortion_correction == "off":
+            self.lens_model = {"source": "unavailable", "reason": "disabled"}
+            return
+        if self.options.headless:
+            raise RuntimeError(
+                "Guided distortion calibration needs the interactive camera preview"
+            )
+        layout = self._required(self.charuco_layout, "screen-filling ChArUco layout")
+        shown = self.target.present_charuco()
+        self._wait_painted(shown)
+        camera_views: List[np.ndarray] = []
+        screen_views: List[np.ndarray] = []
+        requested = int(self.options.distortion_view_count)
+        self.progress(
+            "Lens diagnostic: capture {} genuinely different ChArUco positions/tilts. "
+            "The last view is reserved for independent holdout evaluation.".format(requested)
+        )
+        try:
+            while len(camera_views) < requested:
+                index = len(camera_views) + 1
+                self._set_preview_stage(
+                    "Lens distortion view {} / {}".format(index, requested),
+                    exposure_mode="camera auto lens diagnostic",
+                    operator_prompt=(
+                        "MOVE / TILT THE PHONE TARGET",
+                        "Use a different position and modest tilt for every view.",
+                        "ENTER / SPACE = CAPTURE THIS VIEW",
+                        "Q / ESC = SKIP DISTORTION CORRECTION",
+                    ),
+                )
+                sample = self.camera.read()
+                self.last_frame = sample.image.copy()
+                detected = None
+                try:
+                    detected = detect_charuco_correspondences(sample.image, layout)
+                except RuntimeError:
+                    pass
+                key = self._preview_update(
+                    sample.image,
+                    sample.metadata,
+                    charuco_corners=(
+                        int(detected["corner_count"]) if detected is not None else 0
+                    ),
+                )
+                if key in (27, ord("q"), ord("Q")):
+                    self.lens_model = {
+                        "source": "unavailable",
+                        "reason": "operator_skipped_guided_collection",
+                    }
+                    self.progress(
+                        "Lens correction skipped; homography-only rectification remains active."
+                    )
+                    return
+                if key in (10, 13, 32):
+                    if detected is None or int(detected["corner_count"]) < 12:
+                        self.progress(
+                            "View {} was not captured: at least 12 ChArUco corners are required."
+                            .format(index)
+                        )
+                        continue
+                    camera_views.append(
+                        np.asarray(detected["camera_points_xy"], dtype=np.float64)
+                    )
+                    screen_views.append(
+                        np.asarray(detected["screen_points_xy"], dtype=np.float64)
+                    )
+                    self.progress(
+                        "Captured lens view {} / {} with {} corners.".format(
+                            index, requested, int(detected["corner_count"])
+                        )
+                    )
+                if self._preview_disabled:
+                    raise RuntimeError(
+                        "The lens-calibration preview was closed before collection finished"
+                    )
+        finally:
+            self._preview_settings.pop("operator_prompt", None)
+        full_size = [
+            int(self.camera_metadata["width_px"]),
+            int(self.camera_metadata["height_px"]),
+        ]
+        self.lens_model = fit_evidence_gated_distortion(
+            camera_views,
+            screen_views,
+            full_size,
+            self.options.distortion_min_relative_p95_improvement,
+        )
+        holdout = self.lens_model["holdout"]
+        if self.lens_model.get("source") == "measured":
+            self.progress(
+                "Lens correction accepted: held-out p95 {:.3f} -> {:.3f} display px "
+                "({:.1%} improvement). It will be folded into one runtime remap."
+                .format(
+                    holdout["baseline_homography_p95_screen_px"],
+                    holdout["candidate_p95_screen_px"],
+                    holdout["relative_p95_improvement"],
+                )
+            )
+        else:
+            self.progress(
+                "Lens correction rejected: held-out p95 {:.3f} -> {:.3f} display px. "
+                "Homography-only rectification remains active."
+                .format(
+                    holdout["baseline_homography_p95_screen_px"],
+                    holdout["candidate_p95_screen_px"],
+                )
+            )
+
     def calibrate_geometry(self) -> None:
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         self.progress("Showing ChArUco atlas and locating the camera-visible phone area...")
@@ -1370,6 +1559,13 @@ class HikRigCalibrationSession:
             self.last_frame = frame.copy()
             try:
                 detected = detect_charuco_correspondences(frame, layout)
+                if self.lens_model.get("source") == "measured":
+                    detected["raw_camera_points_xy"] = np.asarray(
+                        detected["camera_points_xy"], dtype=np.float64
+                    )
+                    detected["camera_points_xy"] = undistort_pixel_points(
+                        detected["raw_camera_points_xy"], self.lens_model
+                    )
                 candidates.append(detected)
                 self._preview_update(
                     frame,
@@ -1392,8 +1588,16 @@ class HikRigCalibrationSession:
             camera_size,
             phone_metrics.screen_size_px,
         )
+        self._raw_roi_cache.clear()
+        viewport_polygon = (
+            raw_sensor_viewport_in_screen(
+                camera_size, self.geometry.matrix_3x3, self.lens_model
+            )
+            if self._uses_measured_distortion()
+            else self.geometry.viewport_polygon_screen_xy
+        )
         self.visible_region = camera_visible_screen_region(
-            self.geometry.viewport_polygon_screen_xy,
+            viewport_polygon,
             phone_metrics.screen_size_px,
             coverage_margin_px=self.options.visible_screen_margin_px,
         )
@@ -1406,11 +1610,20 @@ class HikRigCalibrationSession:
             [x + (width - 1) / 2.0, y + (height - 1) / 2.0],
             probe_distance_px=max(16.0, min(width, height) / 4.0),
         )
-        self.white_mask = camera_white_mask(
-            camera_size,
-            self.phone_metrics.screen_size_px,
-            self.visible_region["safe_xywh"],
-            self.geometry.inverse_matrix_3x3,
+        self.white_mask = (
+            distorted_screen_region_mask(
+                camera_size,
+                self.visible_region["safe_xywh"],
+                self.geometry.inverse_matrix_3x3,
+                self.lens_model,
+            )
+            if self.lens_model.get("source") == "measured"
+            else camera_white_mask(
+                camera_size,
+                self.phone_metrics.screen_size_px,
+                self.visible_region["safe_xywh"],
+                self.geometry.inverse_matrix_3x3,
+            )
         )
         self.progress(
             "Camera-visible phone coverage: x={} y={} w={} h={} px; safe target "
@@ -1583,10 +1796,8 @@ class HikRigCalibrationSession:
 
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         visible_region = self._required(self.visible_region, "camera-visible screen region")
-        geometry = self._required(self.geometry, "screen geometry")
-        auto_camera_roi = camera_roi_for_screen_region(
+        auto_camera_roi = self._raw_roi_for_screen_region(
             visible_region["safe_xywh"],
-            geometry.inverse_matrix_3x3,
             [int(self.camera_metadata["width_px"]), int(self.camera_metadata["height_px"])],
             margin_px=0,
         )
@@ -1990,6 +2201,10 @@ class HikRigCalibrationSession:
                 charuco_corners=int(detected["corner_count"]),
             )
             camera_points = np.asarray(detected["camera_points_xy"], dtype=np.float64)
+            if self._uses_measured_distortion():
+                camera_points = undistort_pixel_points(
+                    camera_points, self.lens_model
+                )
             screen_points = np.asarray(detected["screen_points_xy"], dtype=np.float64)
             predicted = cv2.perspectiveTransform(
                 screen_points.reshape(-1, 1, 2),
@@ -2156,9 +2371,27 @@ class HikRigCalibrationSession:
             int(self.camera_metadata["width_px"]),
             int(self.camera_metadata["height_px"]),
         ]
-        requested = camera_roi_for_screen_region(
-            visible_region["xywh"], geometry.inverse_matrix_3x3, full_size
-        )
+        if self.lens_model.get("source") == "measured":
+            region_x, region_y, region_width, region_height = map(
+                int, visible_region["xywh"]
+            )
+            screen_to_output = np.asarray(
+                [[1, 0, -region_x], [0, 1, -region_y], [0, 0, 1]],
+                dtype=np.float64,
+            )
+            undistorted_to_output = screen_to_output.dot(geometry.matrix_3x3)
+            provisional_maps = combined_output_to_raw_maps(
+                undistorted_to_output,
+                [region_width, region_height],
+                self.lens_model,
+            )
+            requested = raw_roi_for_maps(
+                provisional_maps[0], provisional_maps[1], full_size
+            )
+        else:
+            requested = camera_roi_for_screen_region(
+                visible_region["xywh"], geometry.inverse_matrix_3x3, full_size
+            )
         expected = self.camera.align_roi(requested)
         effective = list(map(int, self.camera.set_roi(expected)))
         if effective != list(map(int, expected)):
@@ -2281,9 +2514,8 @@ class HikRigCalibrationSession:
         visible_region = self._required(self.visible_region, "camera-visible screen region")
         geometry = self._required(self.geometry, "screen geometry")
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
-        roi = camera_roi_for_screen_region(
+        roi = self._raw_roi_for_screen_region(
             visible_region["safe_xywh"],
-            geometry.inverse_matrix_3x3,
             [frame.shape[1], frame.shape[0]],
             margin_px=0,
         )
@@ -2307,6 +2539,9 @@ class HikRigCalibrationSession:
                     edge_angle_deg=edge["angle_deg"],
                     geometry_confidence=geometry.confidence,
                     display_pixel_pitch_mm_xy=pitch,
+                    camera_lens_model=(
+                        self.lens_model if self._uses_measured_distortion() else None
+                    ),
                 )
                 evidence.update(
                     {
@@ -2355,7 +2590,6 @@ class HikRigCalibrationSession:
 
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         visible_region = self._required(self.visible_region, "camera-visible screen region")
-        geometry = self._required(self.geometry, "screen geometry")
         physical_pitch = phone_metrics.to_dict().get("physical_pixel_pitch_mm_xy")
         frame_x, frame_y, frame_width, frame_height = focus_frame_rect(
             visible_region["safe_xywh"]
@@ -2369,10 +2603,7 @@ class HikRigCalibrationSession:
             ],
             dtype=np.float64,
         )
-        expected_frame_quad = cv2.perspectiveTransform(
-            frame_screen_quad.reshape((-1, 1, 2)),
-            np.asarray(geometry.inverse_matrix_3x3, dtype=np.float64),
-        ).reshape((-1, 2))
+        expected_frame_quad = self._screen_points_to_raw_camera(frame_screen_quad)
         geometry_change_threshold_px = max(
             float(self.options.save_max_displacement_px),
             3.0
@@ -2423,8 +2654,13 @@ class HikRigCalibrationSession:
                         frame_displacement_px, geometry_change_threshold_px
                     )
                     if physical_pitch:
+                        pose_quad = (
+                            undistort_pixel_points(detected_quad, self.lens_model)
+                            if self._uses_measured_distortion()
+                            else detected_quad
+                        )
                         pose = estimate_focus_target_pose(
-                            detected_quad,
+                            pose_quad,
                             [
                                 (frame_width - 1) * float(physical_pitch[0]),
                                 (frame_height - 1) * float(physical_pitch[1]),
@@ -2550,9 +2786,8 @@ class HikRigCalibrationSession:
                 tile_limit_height = max(120, (available_height - 6) // 2)
                 crops = []
                 for edge in focus_edge_regions(visible_region["safe_xywh"]):
-                    edge_roi = camera_roi_for_screen_region(
+                    edge_roi = self._raw_roi_for_screen_region(
                         edge["rect_screen_xywh"],
-                        geometry.inverse_matrix_3x3,
                         [frame.shape[1], frame.shape[0]],
                         margin_px=0,
                     )
@@ -2631,7 +2866,6 @@ class HikRigCalibrationSession:
 
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         visible_region = self._required(self.visible_region, "camera-visible screen region")
-        geometry = self._required(self.geometry, "screen geometry")
         complete_grader: Optional[CompleteGrader] = None
         if self.options.complete_grader_plugin:
             complete_grader = _load_callable(self.options.complete_grader_plugin)
@@ -2710,14 +2944,7 @@ class HikRigCalibrationSession:
                     gain=self.exposure.gain if self.exposure else None,
                 )
                 frame = self._capture_data_matrix_frame()
-                screen_frame = cv2.warpPerspective(
-                    frame,
-                    np.asarray(geometry.matrix_3x3, dtype=np.float64),
-                    tuple(phone_metrics.screen_size_px),
-                    flags=cv2.INTER_CUBIC,
-                    borderMode=cv2.BORDER_CONSTANT,
-                    borderValue=(127, 127, 127),
-                )
+                screen_frame = self._rectify_raw_frame_to_screen(frame)
                 presentation_count += 1
                 batch_sizes.append(len(items))
                 presentation_failures = []
@@ -2936,13 +3163,11 @@ class HikRigCalibrationSession:
         return self.data_matrix_result
 
     def _rectification_maps(self, matrix: np.ndarray, output_size: Sequence[int]):
-        width, height = map(int, output_size)
-        inverse = np.linalg.inv(np.asarray(matrix, dtype=np.float64))
-        yy, xx = np.mgrid[0:height, 0:width]
-        points = np.column_stack([xx.reshape(-1), yy.reshape(-1)]).astype(np.float64)
-        homogeneous = np.column_stack([points, np.ones(len(points))]).dot(inverse.T)
-        source = homogeneous[:, :2] / homogeneous[:, 2:3]
-        return source[:, 0].reshape((height, width)).astype(np.float32), source[:, 1].reshape((height, width)).astype(np.float32)
+        return combined_output_to_raw_maps(
+            matrix,
+            output_size,
+            self.lens_model if self.lens_model.get("source") == "measured" else None,
+        )
 
     def _save_cross_source_check(
         self,
@@ -3114,8 +3339,8 @@ class HikRigCalibrationSession:
             x, y, width, height = visible_region["xywh"]
             full_size = [int(self.camera_metadata["width_px"]), int(self.camera_metadata["height_px"])]
             camera_roi = self.hardware_roi or self.camera.align_roi(
-                camera_roi_for_screen_region(
-                    visible_region["xywh"], geometry.inverse_matrix_3x3, full_size
+                self._raw_roi_for_screen_region(
+                    visible_region["xywh"], full_size
                 )
             )
             calibration, _, valid_mask = build_calibration(
@@ -3132,13 +3357,18 @@ class HikRigCalibrationSession:
                     "camera": {**dict(self.camera_metadata), "controls": dict(self.camera_controls)},
                     "phone": phone_value,
                 },
+                optics={"lens_model": dict(self.lens_model)},
                 image_quality={"focus_history": self.focus_history, "confidence": geometry.confidence},
                 data_matrix_decode=self.data_matrix_result or {},
                 # Acceptance remains a separate review/gating action; saving
                 # evidence must never silently promote the artifact.
                 status="warning",
             )
-            calibration["normalization"]["input_space"] = "camera_sensor_bgr_px"
+            calibration["normalization"]["input_space"] = (
+                "hik_full_sensor_undistorted_pixels"
+                if self.lens_model.get("source") == "measured"
+                else "hik_full_sensor_bgr_pixels"
+            )
             calibration["normalization"]["orientation"] = {
                 **dict(orientation_evidence),
                 "output_x_axis": "app_right",
@@ -3157,8 +3387,19 @@ class HikRigCalibrationSession:
                 calibration_display_quarter_turns=(
                     phone_metrics.orientation_quarter_turns
                 ),
+                lens_model=self.lens_model,
             )
             maps = self._rectification_maps(normalization_matrix, [width, height])
+            if self.lens_model.get("source") == "measured":
+                map_x, map_y = maps
+                valid_mask = (
+                    np.isfinite(map_x)
+                    & np.isfinite(map_y)
+                    & (map_x >= 0)
+                    & (map_y >= 0)
+                    & (map_x <= full_size[0] - 1)
+                    & (map_y <= full_size[1] - 1)
+                ).astype(np.uint8) * 255
             try:
                 cross_source_check = self._save_cross_source_check(
                     temporary, maps, valid_mask, visible_region
@@ -3234,9 +3475,18 @@ class HikRigCalibrationSession:
                 },
                 "normalization": {
                     "full_sensor_camera_to_output_3x3": normalization_matrix.tolist(),
+                    "matrix_input_space_id": (
+                        "hik_full_sensor_undistorted_pixels"
+                        if self.lens_model.get("source") == "measured"
+                        else "hik_full_sensor_bgr_pixels"
+                    ),
                     "output_size_px": [width, height],
                     "origin_screen_xy": [x, y],
                     "dense_map_file": "rectification_maps.npz",
+                    "runtime_resampling": "single_precomposed_cv2_remap",
+                    "lens_correction_in_dense_map": bool(
+                        self.lens_model.get("source") == "measured"
+                    ),
                     "orientation": {
                         **dict(orientation_evidence),
                         "output_x_axis": "app_right",
@@ -3244,6 +3494,7 @@ class HikRigCalibrationSession:
                     },
                 },
                 "coordinate_spaces": coordinate_spaces,
+                "optics": {"lens_model": dict(self.lens_model)},
                 "results": {
                     "hik_one_shot_auto_seed": self.auto_imaging_seed,
                     "exposure_observations": [
@@ -3316,6 +3567,7 @@ class HikRigCalibrationSession:
         self.open()
         try:
             try:
+                self.calibrate_lens_distortion()
                 if not self.wait_for_positioning_confirmation():
                     return None
                 self.calibrate_geometry()
@@ -3413,7 +3665,12 @@ class HikRigCalibrationSession:
                             self.geometry.inverse_matrix_3x3, dtype=np.float64
                         ).tolist()
                     ),
-                    "camera_space": "hik_full_sensor_camera_pixels",
+                    "camera_space": (
+                        "hik_full_sensor_undistorted_pixels"
+                        if self._uses_measured_distortion()
+                        else "hik_full_sensor_bgr_pixels"
+                    ),
+                    "raw_evidence_space": "hik_full_sensor_bgr_pixels",
                     "phone_space": "android_logical_display_pixels",
                 }
                 if self.geometry is not None

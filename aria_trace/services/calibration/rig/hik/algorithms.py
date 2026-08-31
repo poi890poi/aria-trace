@@ -447,6 +447,7 @@ def hik_image_space_conversions(
     calibration_display_size_px: Optional[Sequence[int]] = None,
     phone_natural_size_px: Optional[Sequence[int]] = None,
     calibration_display_quarter_turns: int = 0,
+    lens_model: Optional[Mapping[str, Any]] = None,
 ) -> dict:
     """Describe full-sensor and runtime-ROI image spaces without ambiguity."""
 
@@ -475,8 +476,13 @@ def hik_image_space_conversions(
         normalized[np.abs(normalized) < 1.0e-12] = 0.0
         return normalized.tolist()
 
+    distortion_measured = bool(
+        lens_model is not None and lens_model.get("source") == "measured"
+    )
     result = {
-        "schema_version": 2 if calibration_display_size_px is not None else 1,
+        "schema_version": (
+            3 if distortion_measured else 2 if calibration_display_size_px is not None else 1
+        ),
         "coordinate_convention": {
             "coordinates": "pixel_center_xy",
             "origin": "top_left_pixel_center_is_[0,0]",
@@ -576,6 +582,48 @@ def hik_image_space_conversions(
             "android_calibration_logical_display_pixels",
             "android_phone_natural_display_pixels",
         ]
+    if distortion_measured:
+        result["spaces"]["undistorted_full_sensor_image"] = {
+            "id": "hik_full_sensor_undistorted_pixels",
+            "size_px": [full_width, full_height],
+            "owner": "calibration_geometry_only",
+        }
+        conversions = result["conversions"]
+        conversions[
+            "undistorted_full_sensor_image_to_phone_display_3x3"
+        ] = conversions.pop("full_sensor_image_to_phone_display_3x3")
+        conversions[
+            "phone_display_to_undistorted_full_sensor_image_3x3"
+        ] = conversions.pop("phone_display_to_full_sensor_image_3x3")
+        conversions[
+            "undistorted_full_sensor_image_to_calibrated_output_3x3"
+        ] = conversions.pop("full_sensor_image_to_calibrated_output_3x3")
+        for name in (
+            "camera_adapter_roi_image_to_phone_display_3x3",
+            "phone_display_to_camera_adapter_roi_image_3x3",
+            "camera_adapter_roi_image_to_calibrated_output_3x3",
+            "calibrated_output_image_to_camera_adapter_roi_image_3x3",
+        ):
+            conversions.pop(name, None)
+        conversions["raw_roi_to_calibrated_output"] = {
+            "model": "precomputed_dense_output_to_raw_remap",
+            "map_file": "rectification_maps.npz",
+            "runtime_resampling_passes": 1,
+            "enabled_only_when_rectify_is_true": True,
+        }
+        result["lens_distortion"] = {
+            "model": str(lens_model.get("model", "opencv_radtan")),
+            "source": "measured",
+            "raw_space_id": "hik_full_sensor_bgr_pixels",
+            "ideal_space_id": "hik_full_sensor_undistorted_pixels",
+        }
+        result["runtime_chain"] = [
+            "hik_camera_adapter_hardware_roi_bgr_pixels",
+            "rectification_maps.npz:output_to_raw_lookup",
+            "hik_rig_rectified_visible_phone_pixels",
+            "android_calibration_logical_display_pixels",
+            "android_phone_natural_display_pixels",
+        ]
     return result
 
 
@@ -590,6 +638,7 @@ def validate_hik_coordinate_contract(
         return {"status": "legacy_unvalidated", "schema_version": 1}
     spaces = document.get("spaces") or {}
     conversions = document.get("conversions") or {}
+    schema_version = int(document.get("schema_version", 0))
     required_space_ids = {
         "full_sensor_image": "hik_full_sensor_bgr_pixels",
         "camera_adapter_roi_image": "hik_camera_adapter_hardware_roi_bgr_pixels",
@@ -612,6 +661,21 @@ def validate_hik_coordinate_contract(
     output_size = size("calibrated_output_image")
     display_size = size("phone_calibration_display")
     natural_size = size("phone_natural_display")
+    if schema_version >= 3:
+        required_space_ids["undistorted_full_sensor_image"] = (
+            "hik_full_sensor_undistorted_pixels"
+        )
+        if size("undistorted_full_sensor_image") != full_size:
+            raise ValueError("Undistorted sensor raster must preserve full-sensor size")
+        lens = (calibration.get("optics") or {}).get("lens_model") or {}
+        if lens.get("source") != "measured":
+            raise ValueError("Schema-v3 coordinate contract requires measured lens data")
+        dense = conversions.get("raw_roi_to_calibrated_output") or {}
+        if (
+            dense.get("model") != "precomputed_dense_output_to_raw_remap"
+            or int(dense.get("runtime_resampling_passes", 0)) != 1
+        ):
+            raise ValueError("Schema-v3 raw ROI conversion must be one dense remap")
     camera = calibration.get("camera") or {}
     mode = camera.get("full_sensor_mode") or {}
     if full_size != (int(mode.get("width_px", 0)), int(mode.get("height_px", 0))):
@@ -634,17 +698,28 @@ def validate_hik_coordinate_contract(
     if natural_size != tuple(map(int, phone.get("natural_screen_size_px") or [])):
         raise ValueError("Phone-natural size disagrees with Android topology")
 
-    matrix_names = (
-        "full_sensor_image_to_phone_display_3x3",
-        "phone_display_to_full_sensor_image_3x3",
-        "full_sensor_image_to_calibrated_output_3x3",
+    full_prefix = "undistorted_full_sensor_image" if schema_version >= 3 else "full_sensor_image"
+    phone_inverse = (
+        "phone_display_to_undistorted_full_sensor_image_3x3"
+        if schema_version >= 3
+        else "phone_display_to_full_sensor_image_3x3"
+    )
+    matrix_names = [
+        "{}_to_phone_display_3x3".format(full_prefix),
+        phone_inverse,
+        "{}_to_calibrated_output_3x3".format(full_prefix),
         "camera_adapter_roi_image_to_full_sensor_image_3x3",
         "full_sensor_image_to_camera_adapter_roi_image_3x3",
-        "camera_adapter_roi_image_to_calibrated_output_3x3",
-        "calibrated_output_image_to_camera_adapter_roi_image_3x3",
         "phone_natural_display_to_calibration_display_3x3",
         "calibration_display_to_phone_natural_display_3x3",
-    )
+    ]
+    if schema_version < 3:
+        matrix_names.extend(
+            [
+                "camera_adapter_roi_image_to_calibrated_output_3x3",
+                "calibrated_output_image_to_camera_adapter_roi_image_3x3",
+            ]
+        )
     matrices = {}
     for name in matrix_names:
         value = np.asarray(conversions.get(name), dtype=np.float64)
@@ -654,32 +729,37 @@ def validate_hik_coordinate_contract(
             raise ValueError("Coordinate conversion {} is singular".format(name))
         matrices[name] = value / value[2, 2]
 
-    roi_to_output_expected = matrices[
-        "full_sensor_image_to_calibrated_output_3x3"
-    ].dot(matrices["camera_adapter_roi_image_to_full_sensor_image_3x3"])
-    roi_to_output_expected /= roi_to_output_expected[2, 2]
-    composition_error = float(
-        np.max(
-            np.abs(
-                roi_to_output_expected
-                - matrices["camera_adapter_roi_image_to_calibrated_output_3x3"]
+    composition_error = 0.0
+    if schema_version < 3:
+        roi_to_output_expected = matrices[
+            "full_sensor_image_to_calibrated_output_3x3"
+        ].dot(matrices["camera_adapter_roi_image_to_full_sensor_image_3x3"])
+        roi_to_output_expected /= roi_to_output_expected[2, 2]
+        composition_error = float(
+            np.max(
+                np.abs(
+                    roi_to_output_expected
+                    - matrices["camera_adapter_roi_image_to_calibrated_output_3x3"]
+                )
             )
         )
-    )
-    pairs = (
+    pairs = [
         (
-            "full_sensor_image_to_phone_display_3x3",
-            "phone_display_to_full_sensor_image_3x3",
-        ),
-        (
-            "camera_adapter_roi_image_to_calibrated_output_3x3",
-            "calibrated_output_image_to_camera_adapter_roi_image_3x3",
+            "{}_to_phone_display_3x3".format(full_prefix),
+            phone_inverse,
         ),
         (
             "phone_natural_display_to_calibration_display_3x3",
             "calibration_display_to_phone_natural_display_3x3",
         ),
-    )
+    ]
+    if schema_version < 3:
+        pairs.append(
+            (
+                "camera_adapter_roi_image_to_calibrated_output_3x3",
+                "calibrated_output_image_to_camera_adapter_roi_image_3x3",
+            )
+        )
     roundtrip_error = max(
         float(np.max(np.abs(matrices[forward].dot(matrices[inverse]) - np.eye(3))))
         for forward, inverse in pairs
@@ -688,7 +768,7 @@ def validate_hik_coordinate_contract(
         raise ValueError("Coordinate conversion chain is internally inconsistent")
     return {
         "status": "validated",
-        "schema_version": 2,
+        "schema_version": schema_version,
         "maximum_matrix_roundtrip_error": roundtrip_error,
         "maximum_composition_error": composition_error,
     }
@@ -701,6 +781,10 @@ def camera_adapter_roi_to_output_homography(
 
     effective = list(map(int, effective_roi_xywh))
     spaces = calibration.get("coordinate_spaces") or {}
+    if int(spaces.get("schema_version", 0)) >= 3:
+        raise ValueError(
+            "Distortion-corrected calibration has no raw-ROI homography; use its dense remap"
+        )
     roi_space = (spaces.get("spaces") or {}).get("camera_adapter_roi_image") or {}
     saved_roi = roi_space.get("roi_in_full_sensor_xywh")
     saved_matrix = (spaces.get("conversions") or {}).get(

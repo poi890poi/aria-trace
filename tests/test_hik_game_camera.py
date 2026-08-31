@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -134,6 +135,46 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual((20, 30, 3), frame_set.streams["minimap"].shape)
         self.assertEqual(1, adapter.read_count)
         self.assertFalse(frame_set.metadata["rectified_minimap"])
+
+    def test_distortion_corrected_minimap_uses_one_cropped_dense_remap(self):
+        document = rig_document()
+        document["coordinate_spaces"] = {"schema_version": 3}
+        document["optics"] = {
+            "lens_model": {
+                "source": "measured",
+                "model": "opencv_radtan",
+                "camera_matrix_3x3": [
+                    [100.0, 0.0, 50.0],
+                    [0.0, 100.0, 40.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        }
+        document["normalization"].update(
+            {
+                "dense_map_file": "rectification_maps.npz",
+                "lens_correction_in_dense_map": True,
+            }
+        )
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        xx, yy = np.meshgrid(np.arange(100), np.arange(80))
+        np.savez_compressed(
+            str(self.rig_path.parent / "rectification_maps.npz"),
+            map_x=xx.astype(np.float32),
+            map_y=yy.astype(np.float32),
+        )
+        adapter = FakeAdapter()
+        real_remap = __import__("cv2").remap
+        with mock.patch(
+            "aria_trace.adapters.hik.game_camera.cv2.remap", wraps=real_remap
+        ) as remap:
+            camera = self.camera("minimap", True, adapter).open()
+            frame_set = camera.read_streams()
+        self.assertEqual([10, 20, 30, 20], adapter.roi)
+        self.assertEqual((20, 30, 3), frame_set.streams["minimap"].shape)
+        self.assertEqual(remap.call_count, 1)
+        self.assertTrue(frame_set.metadata["rectified_minimap"])
 
     def test_dual_mode_derives_both_streams_from_one_acquisition(self):
         adapter = FakeAdapter()
