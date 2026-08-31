@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import textwrap
 from pathlib import Path
 from typing import Dict, Mapping
 
@@ -18,7 +17,11 @@ from aria_trace.adapters.filesystem.profile_registry import (
 
 def _literal(data: bytes) -> str:
     encoded = base64.b64encode(data).decode("ascii")
-    chunks = textwrap.wrap(encoded, 96) or [""]
+    # ``textwrap.wrap`` repeatedly slices one unbroken base64 word and becomes
+    # quadratic for multi-megabyte dense rectification maps. Base64 has no
+    # whitespace semantics, so fixed-width slicing is both exact and linear.
+    chunks = [encoded[index : index + 96] for index in range(0, len(encoded), 96)]
+    chunks = chunks or [""]
     return "(\n{}\n    )".format(
         "\n".join("        {!r}".format(chunk) for chunk in chunks)
     )

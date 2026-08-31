@@ -1,4 +1,6 @@
 import importlib.util
+import ast
+import base64
 import json
 import tempfile
 import unittest
@@ -9,10 +11,20 @@ from aria_trace.adapters.filesystem.profile_registry import (
     ProfileContext,
     ProfileRegistry,
 )
-from aria_trace.workflows.adapter_export import export_resolved_adapter
+from aria_trace.workflows.adapter_export import _literal, export_resolved_adapter
 
 
 class AdapterExportTests(unittest.TestCase):
+    def test_binary_literal_chunks_large_payload_without_changing_bytes(self):
+        payload = bytes(range(256)) * 4096
+        encoded_literal = _literal(payload)
+        encoded = ast.literal_eval(encoded_literal)
+        self.assertEqual(payload, base64.b64decode(encoded))
+        self.assertLessEqual(
+            max(len(line.strip().strip("'")) for line in encoded_literal.splitlines()[1:-1]),
+            96,
+        )
+
     def test_export_embeds_runtime_data_and_never_reads_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
