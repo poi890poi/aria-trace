@@ -426,6 +426,15 @@ class AdbPhoneSession:
                 "http://127.0.0.1:{}/".format(port),
             )
             self.viewer_activity = resolved.splitlines()[-1].strip() if resolved else None
+            if self.viewer_activity:
+                # Browser document-fullscreen state can survive a later VIEW
+                # intent.  Starting from that retained state makes the same
+                # trusted center tap alternate between entering and leaving
+                # fullscreen, which changes the physical target scale between
+                # otherwise identical calibration/reuse runs.  Reset only the
+                # resolved viewer process; no browser data or settings change.
+                viewer_package = self.viewer_activity.split("/", 1)[0]
+                self.shell("am", "force-stop", viewer_package)
             self.shell(
                 "am",
                 "start",

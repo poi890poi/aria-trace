@@ -1079,6 +1079,8 @@ class FakeAdbRunner:
             return "Phone"
         if args[:3] == ["shell", "getprop", "ro.build.version.release"]:
             return "14"
+        if args[:4] == ["shell", "cmd", "package", "resolve-activity"]:
+            return "com.android.chrome/com.google.android.apps.chrome.IntentDispatcher"
         if args[:4] == ["shell", "settings", "get", "system"] or args[:4] == ["shell", "settings", "get", "global"]:
             return self.settings.get((args[3], args[4])) or "null"
         if args[:4] == ["shell", "settings", "put", "system"] or args[:4] == ["shell", "settings", "put", "global"]:
@@ -1130,6 +1132,19 @@ class HikPhoneTests(unittest.TestCase):
         self.assertIn("KEYCODE_WAKEUP", flattened)
         self.assertIn("KEYCODE_SLEEP", flattened)
         self.assertGreaterEqual(flattened.count("tap"), 2)
+        force_stop = [
+            index
+            for index, command in enumerate(runner.commands)
+            if command == ["shell", "am", "force-stop", "com.android.chrome"]
+        ]
+        launches = [
+            index
+            for index, command in enumerate(runner.commands)
+            if command[:3] == ["shell", "am", "start"]
+        ]
+        self.assertEqual(1, len(force_stop))
+        self.assertEqual(1, len(launches))
+        self.assertLess(force_stop[0], launches[0])
         self.assertFalse(runner.display_on)
 
     def test_physical_display_is_verified_after_wakeup(self):
