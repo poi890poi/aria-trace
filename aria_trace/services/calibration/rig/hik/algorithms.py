@@ -444,6 +444,9 @@ def hik_image_space_conversions(
     full_sensor_size_px: Sequence[int],
     camera_adapter_roi_xywh: Sequence[int],
     calibrated_output_size_px: Sequence[int],
+    calibration_display_size_px: Optional[Sequence[int]] = None,
+    phone_natural_size_px: Optional[Sequence[int]] = None,
+    calibration_display_quarter_turns: int = 0,
 ) -> dict:
     """Describe full-sensor and runtime-ROI image spaces without ambiguity."""
 
@@ -472,7 +475,8 @@ def hik_image_space_conversions(
         normalized[np.abs(normalized) < 1.0e-12] = 0.0
         return normalized.tolist()
 
-    return {
+    result = {
+        "schema_version": 2 if calibration_display_size_px is not None else 1,
         "coordinate_convention": {
             "coordinates": "pixel_center_xy",
             "origin": "top_left_pixel_center_is_[0,0]",
@@ -516,6 +520,177 @@ def hik_image_space_conversions(
             "adapter applies camera.hardware_roi_xywh, then uses the ROI-image "
             "conversion whose origin already includes that crop."
         ),
+    }
+    if calibration_display_size_px is not None:
+        display_width, display_height = map(int, calibration_display_size_px)
+        natural_width, natural_height = map(
+            int, phone_natural_size_px or calibration_display_size_px
+        )
+        turns = int(calibration_display_quarter_turns) % 4
+        expected_display = (
+            (natural_height, natural_width)
+            if turns % 2
+            else (natural_width, natural_height)
+        )
+        if (display_width, display_height) != expected_display:
+            raise ValueError(
+                "Calibration display {}x{} does not match phone-natural {}x{} "
+                "at quarter-turn {}".format(
+                    display_width,
+                    display_height,
+                    natural_width,
+                    natural_height,
+                    turns,
+                )
+            )
+        natural_to_display = np.asarray(
+            (
+                [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                [[0, -1, natural_height - 1], [1, 0, 0], [0, 0, 1]],
+                [[-1, 0, natural_width - 1], [0, -1, natural_height - 1], [0, 0, 1]],
+                [[0, 1, 0], [-1, 0, natural_width - 1], [0, 0, 1]],
+            )[turns],
+            dtype=np.float64,
+        )
+        result["spaces"]["phone_calibration_display"] = {
+            "id": "android_calibration_logical_display_pixels",
+            "size_px": [display_width, display_height],
+            "orientation_quarter_turns_clockwise_from_natural": turns,
+            "owner": "android_calibration_target_surface",
+        }
+        result["spaces"]["phone_natural_display"] = {
+            "id": "android_phone_natural_display_pixels",
+            "size_px": [natural_width, natural_height],
+            "owner": "android_display_topology",
+        }
+        result["conversions"][
+            "phone_natural_display_to_calibration_display_3x3"
+        ] = matrix(natural_to_display)
+        result["conversions"][
+            "calibration_display_to_phone_natural_display_3x3"
+        ] = matrix(np.linalg.inv(natural_to_display))
+        result["runtime_chain"] = [
+            "hik_full_sensor_bgr_pixels",
+            "hik_camera_adapter_hardware_roi_bgr_pixels",
+            "hik_rig_rectified_visible_phone_pixels",
+            "android_calibration_logical_display_pixels",
+            "android_phone_natural_display_pixels",
+        ]
+    return result
+
+
+def validate_hik_coordinate_contract(
+    calibration: Mapping[str, Any],
+    effective_roi_xywh: Optional[Sequence[int]] = None,
+) -> dict:
+    """Validate a version-2 HIK raster/transform chain without touching hardware."""
+
+    document = calibration.get("coordinate_spaces") or {}
+    if int(document.get("schema_version", 0)) < 2:
+        return {"status": "legacy_unvalidated", "schema_version": 1}
+    spaces = document.get("spaces") or {}
+    conversions = document.get("conversions") or {}
+    required_space_ids = {
+        "full_sensor_image": "hik_full_sensor_bgr_pixels",
+        "camera_adapter_roi_image": "hik_camera_adapter_hardware_roi_bgr_pixels",
+        "calibrated_output_image": "hik_rig_rectified_visible_phone_pixels",
+        "phone_calibration_display": "android_calibration_logical_display_pixels",
+        "phone_natural_display": "android_phone_natural_display_pixels",
+    }
+
+    def size(name: str) -> tuple[int, int]:
+        item = spaces.get(name) or {}
+        if item.get("id") != required_space_ids[name]:
+            raise ValueError("Coordinate space {} has an unexpected ID".format(name))
+        value = tuple(map(int, item.get("size_px") or []))
+        if len(value) != 2 or min(value) <= 0:
+            raise ValueError("Coordinate space {} has an invalid W x H size".format(name))
+        return value
+
+    full_size = size("full_sensor_image")
+    roi_size = size("camera_adapter_roi_image")
+    output_size = size("calibrated_output_image")
+    display_size = size("phone_calibration_display")
+    natural_size = size("phone_natural_display")
+    camera = calibration.get("camera") or {}
+    mode = camera.get("full_sensor_mode") or {}
+    if full_size != (int(mode.get("width_px", 0)), int(mode.get("height_px", 0))):
+        raise ValueError("Full-sensor coordinate size disagrees with camera mode")
+    saved_roi = tuple(
+        map(int, (spaces["camera_adapter_roi_image"].get("roi_in_full_sensor_xywh") or []))
+    )
+    if len(saved_roi) != 4 or saved_roi[2:] != roi_size:
+        raise ValueError("ROI coordinate size disagrees with its full-sensor region")
+    if saved_roi != tuple(map(int, camera.get("hardware_roi_xywh") or [])):
+        raise ValueError("ROI coordinate region disagrees with camera hardware ROI")
+    if effective_roi_xywh is not None and saved_roi != tuple(map(int, effective_roi_xywh)):
+        raise ValueError("Effective HIK ROI disagrees with the calibrated ROI contract")
+    normalization = calibration.get("normalization") or {}
+    if output_size != tuple(map(int, normalization.get("output_size_px") or [])):
+        raise ValueError("Output coordinate size disagrees with normalization")
+    phone = calibration.get("phone") or {}
+    if display_size != tuple(map(int, phone.get("screen_size_px") or [])):
+        raise ValueError("Calibration-display size disagrees with phone logical raster")
+    if natural_size != tuple(map(int, phone.get("natural_screen_size_px") or [])):
+        raise ValueError("Phone-natural size disagrees with Android topology")
+
+    matrix_names = (
+        "full_sensor_image_to_phone_display_3x3",
+        "phone_display_to_full_sensor_image_3x3",
+        "full_sensor_image_to_calibrated_output_3x3",
+        "camera_adapter_roi_image_to_full_sensor_image_3x3",
+        "full_sensor_image_to_camera_adapter_roi_image_3x3",
+        "camera_adapter_roi_image_to_calibrated_output_3x3",
+        "calibrated_output_image_to_camera_adapter_roi_image_3x3",
+        "phone_natural_display_to_calibration_display_3x3",
+        "calibration_display_to_phone_natural_display_3x3",
+    )
+    matrices = {}
+    for name in matrix_names:
+        value = np.asarray(conversions.get(name), dtype=np.float64)
+        if value.shape != (3, 3) or not np.isfinite(value).all():
+            raise ValueError("Coordinate conversion {} is not a finite 3x3 matrix".format(name))
+        if abs(float(np.linalg.det(value))) < 1.0e-12:
+            raise ValueError("Coordinate conversion {} is singular".format(name))
+        matrices[name] = value / value[2, 2]
+
+    roi_to_output_expected = matrices[
+        "full_sensor_image_to_calibrated_output_3x3"
+    ].dot(matrices["camera_adapter_roi_image_to_full_sensor_image_3x3"])
+    roi_to_output_expected /= roi_to_output_expected[2, 2]
+    composition_error = float(
+        np.max(
+            np.abs(
+                roi_to_output_expected
+                - matrices["camera_adapter_roi_image_to_calibrated_output_3x3"]
+            )
+        )
+    )
+    pairs = (
+        (
+            "full_sensor_image_to_phone_display_3x3",
+            "phone_display_to_full_sensor_image_3x3",
+        ),
+        (
+            "camera_adapter_roi_image_to_calibrated_output_3x3",
+            "calibrated_output_image_to_camera_adapter_roi_image_3x3",
+        ),
+        (
+            "phone_natural_display_to_calibration_display_3x3",
+            "calibration_display_to_phone_natural_display_3x3",
+        ),
+    )
+    roundtrip_error = max(
+        float(np.max(np.abs(matrices[forward].dot(matrices[inverse]) - np.eye(3))))
+        for forward, inverse in pairs
+    )
+    if max(composition_error, roundtrip_error) > 1.0e-6:
+        raise ValueError("Coordinate conversion chain is internally inconsistent")
+    return {
+        "status": "validated",
+        "schema_version": 2,
+        "maximum_matrix_roundtrip_error": roundtrip_error,
+        "maximum_composition_error": composition_error,
     }
 
 

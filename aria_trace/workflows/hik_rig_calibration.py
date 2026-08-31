@@ -37,6 +37,7 @@ from aria_trace.services.calibration.rig.hik.algorithms import (
     choose_black_level,
     choose_exposure,
     hik_image_space_conversions,
+    validate_hik_coordinate_contract,
     detect_focus_pose_frame,
     estimate_focus_target_pose,
     laplacian_sharpness,
@@ -3133,6 +3134,11 @@ class HikRigCalibrationSession:
                 full_size,
                 camera_roi,
                 [width, height],
+                calibration_display_size_px=phone_metrics.screen_size_px,
+                phone_natural_size_px=phone_metrics.natural_screen_size_px,
+                calibration_display_quarter_turns=(
+                    phone_metrics.orientation_quarter_turns
+                ),
             )
             maps = self._rectification_maps(normalization_matrix, [width, height])
             try:
@@ -3252,6 +3258,9 @@ class HikRigCalibrationSession:
                     "data_matrix": self.data_matrix_result,
                 },
             }
+            config["coordinate_spaces"]["validation"] = (
+                validate_hik_coordinate_contract(config, camera_roi)
+            )
             if self.last_frame is not None:
                 if not cv2.imwrite(
                     str(temporary / "last_camera_frame.png"), self.last_frame

@@ -18,7 +18,10 @@ import numpy as np
 
 from aria_trace.adapters.rig.devices import CameraAdapter, CameraConfiguration, CameraDevice
 from aria_trace.services.calibration.rig.contracts import FrameSample
-from aria_trace.services.calibration.rig.hik.algorithms import camera_adapter_roi_to_output_homography
+from aria_trace.services.calibration.rig.hik.algorithms import (
+    camera_adapter_roi_to_output_homography,
+    validate_hik_coordinate_contract,
+)
 from aria_trace.services.calibration.rig.hik.spaces import RigCalibratedSpaceConverter
 
 
@@ -1141,6 +1144,7 @@ class RectifiedHikCamera:
             matrix = np.asarray(
                 normalization["full_sensor_camera_to_output_3x3"], np.float64
             )
+            validate_hik_coordinate_contract(self.config)
             return bool(
                 str(camera["device_id"])
                 and int(mode["width_px"]) > 0
@@ -1195,6 +1199,7 @@ class RectifiedHikCamera:
                 self._bayer_conversion["ccm_rgb_3x3"],
             )
         effective_roi = self.adapter.set_roi(camera["hardware_roi_xywh"])
+        validate_hik_coordinate_contract(self.config, effective_roi)
         normalization = self.config["normalization"]
         # Keep the calibrated mapping available even for the minimum-latency
         # hardware-ROI stream.  It is used only by explicit evidence checks;

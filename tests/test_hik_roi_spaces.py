@@ -13,6 +13,7 @@ from acquisition.commented_yaml import (
 from acquisition.rig_calibration.hik.algorithms import (
     camera_adapter_roi_to_output_homography,
     hik_image_space_conversions,
+    validate_hik_coordinate_contract,
 )
 from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
@@ -154,6 +155,65 @@ class HikRoiSpaceTests(unittest.TestCase):
             "production_camera_adapter_only",
             spaces["spaces"]["camera_adapter_roi_image"]["owner"],
         )
+
+    def test_version_two_contract_names_and_validates_every_runtime_space(self):
+        spaces = hik_image_space_conversions(
+            np.eye(3),
+            np.eye(3),
+            np.eye(3),
+            [100, 80],
+            [10, 20, 40, 30],
+            [100, 80],
+            calibration_display_size_px=[80, 100],
+            phone_natural_size_px=[100, 80],
+            calibration_display_quarter_turns=1,
+        )
+        calibration = {
+            "camera": {
+                "full_sensor_mode": {"width_px": 100, "height_px": 80},
+                "hardware_roi_xywh": [10, 20, 40, 30],
+            },
+            "phone": {
+                "screen_size_px": [80, 100],
+                "natural_screen_size_px": [100, 80],
+            },
+            "normalization": {"output_size_px": [100, 80]},
+            "coordinate_spaces": spaces,
+        }
+        result = validate_hik_coordinate_contract(calibration, [10, 20, 40, 30])
+        self.assertEqual(result["status"], "validated")
+        self.assertEqual(
+            spaces["runtime_chain"],
+            [
+                "hik_full_sensor_bgr_pixels",
+                "hik_camera_adapter_hardware_roi_bgr_pixels",
+                "hik_rig_rectified_visible_phone_pixels",
+                "android_calibration_logical_display_pixels",
+                "android_phone_natural_display_pixels",
+            ],
+        )
+
+    def test_version_two_contract_rejects_effective_roi_drift(self):
+        spaces = hik_image_space_conversions(
+            np.eye(3), np.eye(3), np.eye(3),
+            [100, 80], [10, 20, 40, 30], [100, 80],
+            calibration_display_size_px=[100, 80],
+            phone_natural_size_px=[100, 80],
+        )
+        calibration = {
+            "camera": {
+                "full_sensor_mode": {"width_px": 100, "height_px": 80},
+                "hardware_roi_xywh": [10, 20, 40, 30],
+            },
+            "phone": {
+                "screen_size_px": [100, 80],
+                "natural_screen_size_px": [100, 80],
+            },
+            "normalization": {"output_size_px": [100, 80]},
+            "coordinate_spaces": spaces,
+        }
+        with self.assertRaisesRegex(ValueError, "Effective HIK ROI"):
+            validate_hik_coordinate_contract(calibration, [12, 20, 40, 30])
 
     def test_runtime_uses_saved_roi_matrix_and_legacy_mismatch_fallback(self):
         calibration = {
