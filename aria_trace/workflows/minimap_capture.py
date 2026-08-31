@@ -972,7 +972,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 calibrated_phone_id, serial
             )
         )
-    server = find_scrcpy_server(arguments.scrcpy_server)
+    server = (
+        find_scrcpy_server(arguments.scrcpy_server)
+        if arguments.android_capture == "scrcpy"
+        else None
+    )
     wake_surface = _phone_surface(adb, serial)
     wake_width, wake_height = wake_surface["logical_size_px"]
     phone = AdbPhoneSession(serial, adb_executable=adb)

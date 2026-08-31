@@ -240,6 +240,50 @@ class GamePhonePreparationTests(unittest.TestCase):
             reset_seconds=0.10,
         )
 
+    def test_adb_screenshot_entry_path_does_not_resolve_scrcpy(self):
+        class PreparationCheckpoint(Exception):
+            pass
+
+        surface = {
+            "logical_size_px": [2400, 1080],
+            "natural_size_px": [1080, 2400],
+            "quarter_turns_clockwise_from_natural": 1,
+        }
+        with patch.object(capture, "HikMvsCameraAdapter"), patch.object(
+            capture, "_select_camera", return_value=None
+        ), patch.object(
+            capture, "resolve_adb_executable", return_value=Path("adb.exe")
+        ), patch.object(
+            capture, "_select_phone", return_value="phone-1"
+        ), patch.object(
+            capture, "find_scrcpy_server"
+        ) as find_server, patch.object(
+            capture, "_phone_surface", return_value=surface
+        ), patch.object(
+            capture, "AdbPhoneSession"
+        ), patch.object(
+            capture,
+            "_wake_phone_for_preparation",
+            return_value={"keyguard_after": False},
+        ), patch.object(
+            capture,
+            "_launch_or_defer_game",
+            return_value={"package": None, "status": "manual_current_game"},
+        ), patch.object(
+            capture.time, "sleep"
+        ), patch.object(
+            capture,
+            "_dismiss_game_booster_lock",
+            return_value={"detected": False, "dismissed": False, "attempts": 0},
+        ) as dismiss, patch(
+            "builtins.input", side_effect=PreparationCheckpoint
+        ):
+            with self.assertRaises(PreparationCheckpoint):
+                capture.main(["--android-capture", "adb-screenshot"])
+
+        find_server.assert_not_called()
+        dismiss.assert_called_once()
+
     def test_control_only_skips_hik_capture_and_calibration(self):
         plan = Mock()
         directions = [
