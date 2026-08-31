@@ -160,6 +160,24 @@ an independent `rig_game_color` profile, and writes review images:
 game-color-calibration.bat sessions\calibration\SESSION artifacts\game-color-SESSION
 ```
 
+To collect the session without running scrcpy, use:
+
+```bat
+zigzag-acquisition.bat --android-capture adb-screenshot --require-hik
+```
+
+One lossless ADB screenshot and one rig-normalized HIK frame are retained after
+each settled swipe. Omitting `--require-hik` permits an Android-only mini-map
+session, but such a session cannot fit HIK color because it contains no HIK
+pixels.
+
+The color command's `SESSION` is immutable measurement provenance, and `OUTPUT`
+is its review-evidence destination; neither is device/profile configuration.
+Automatic configuration still selects the game context, active rig revision,
+and publication root. Requiring the source session prevents a silently chosen
+recording from changing calibration results, while requiring a new output path
+prevents evidence from being overwritten.
+
 Every successful active rig or game-color calibration also writes
 `hikcam_adapter.py`. This generated module embeds the exact rig JSON, dense
 rectification map, and applicable game profiles. It reads no profile registry

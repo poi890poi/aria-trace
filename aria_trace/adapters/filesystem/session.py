@@ -260,6 +260,28 @@ class SessionWriter:
         self.manifest["pc_monotonic_origin_ns"] = self.origin_ns
         _write_json_atomic(self.path / "manifest.json", self.manifest)
 
+    def attach_frame_processors(self, processors) -> None:
+        """Attach evidence processors after a buffered capture rebases its clock.
+
+        Live acquisition supplies processors to the constructor. Buffered
+        acquisition must first know its earliest retained timestamp, so it may
+        attach processors exactly once before writing any frame or input.
+        """
+
+        if self.frame_counts or self.input_counts or self._video_sinks:
+            raise RuntimeError(
+                "Cannot attach frame processors after recording has started"
+            )
+        if self.frame_processors:
+            raise RuntimeError("Frame processors are already attached")
+        self.frame_processors = list(processors)
+        self.manifest["online_frame_artifacts"] = [
+            processor.describe() for processor in self.frame_processors
+        ]
+        _write_json_atomic(self.path / "manifest.json", self.manifest)
+        for processor in self.frame_processors:
+            processor.start(self.path, self.session_id, self.origin_ns)
+
     def _video_sink(self, packet: FramePacket):
         stream_id = packet.stream_id
         height, width = packet.image.shape[:2]

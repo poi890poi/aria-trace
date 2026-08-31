@@ -279,6 +279,13 @@ def build_dual_source_space_document(
             .format(mapped_bounds, expected_bounds)
         )
     rig_config = converter.calibration
+    android_capture = (manifest.get("context") or {}).get("android_capture") or {}
+    android_timestamp_authority = (
+        "frames.jsonl host_capture_time_ns is the midpoint of the ADB "
+        "screencap request/receive interval; per-frame uncertainty is in metadata"
+        if android_capture.get("transport") == "adb_exec_out_screencap_png"
+        else "frames.jsonl host_capture_time_ns mapped from Android CLOCK_MONOTONIC"
+    )
     return {
         "schema_version": "1.0",
         "scope": "one synchronized dual-source capture session",
@@ -345,9 +352,7 @@ def build_dual_source_space_document(
                     int(android_frame.get("width", converter.adb_size_px[0])),
                     int(android_frame.get("height", converter.adb_size_px[1])),
                 ],
-                "timestamp_authority": (
-                    "frames.jsonl host_capture_time_ns mapped from Android CLOCK_MONOTONIC"
-                ),
+                "timestamp_authority": android_timestamp_authority,
             },
             "hik_phone": {
                 "video": (manifest.get("videos") or {}).get("hik_phone"),
@@ -436,6 +441,13 @@ def write_android_source_space_yaml(
         raise RuntimeError("ADB-only session has no Android frame metadata")
     size = [int(first_android["width"]), int(first_android["height"])]
     video = (manifest.get("videos") or {}).get("android_phone")
+    android_capture = (manifest.get("context") or {}).get("android_capture") or {}
+    android_timestamp_authority = (
+        "frames.jsonl host_capture_time_ns is the midpoint of the ADB "
+        "screencap request/receive interval; per-frame uncertainty is in metadata"
+        if android_capture.get("transport") == "adb_exec_out_screencap_png"
+        else "frames.jsonl host_capture_time_ns mapped from Android CLOCK_MONOTONIC"
+    )
     document = {
         "schema_version": "1.0",
         "capture_mode": "android_only",
@@ -457,9 +469,7 @@ def write_android_source_space_yaml(
                 "video": video,
                 "space": "android_logical_display_pixels",
                 "stored_size_px": size,
-                "timestamp_authority": (
-                    "frames.jsonl host_capture_time_ns mapped from Android CLOCK_MONOTONIC"
-                ),
+                "timestamp_authority": android_timestamp_authority,
             }
         },
         "conversions": {

@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
+import subprocess
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
+
+import cv2
+import numpy as np
 
 from aria_trace.adapters.android.capture import (
     AndroidRoiFrameSource,
@@ -26,10 +31,13 @@ from aria_trace.services.calibration.rig.dual_source_spaces import (
 )
 from aria_trace.services.calibration.rig.cross_source import (
     GameCrossSourceEvidenceRecorder,
+    match_game_camera_orientation,
     orient_hik_source_from_first_adb_frame,
 )
 from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
+from aria_trace.adapters.filesystem.session import SessionWriter
+from aria_trace.domain.packets import FramePacket
 from aria_trace.workflows.recording import AcquisitionRecorder
 from aria_trace.adapters.android.phone import (
     AdbPhoneSession,
@@ -205,7 +213,7 @@ def _game_booster_lock_showing(phone: AdbPhoneSession) -> bool:
 def _dismiss_game_booster_lock(
     phone: AdbPhoneSession,
     adb: Path,
-    server: Path,
+    server: Optional[Path],
     serial: str,
     screen_size_px: Sequence[int],
 ) -> dict:
@@ -227,15 +235,26 @@ def _dismiss_game_booster_lock(
             [round(width * 0.50), round(height * 0.33)],
             [round(width * 0.50), round(height * 0.20)],
         ]
-        with ScrcpyTouchController(
-            adb, server, serial, [width, height]
-        ) as controller:
-            controller.inject_touch("DOWN", points[0])
-            for point in points[1:]:
+        if server is None:
+            phone.shell(
+                "input",
+                "swipe",
+                str(points[0][0]),
+                str(points[0][1]),
+                str(points[-1][0]),
+                str(points[-1][1]),
+                "480",
+            )
+        else:
+            with ScrcpyTouchController(
+                adb, server, serial, [width, height]
+            ) as controller:
+                controller.inject_touch("DOWN", points[0])
+                for point in points[1:]:
+                    time.sleep(0.12)
+                    controller.inject_touch("MOVE", point)
                 time.sleep(0.12)
-                controller.inject_touch("MOVE", point)
-            time.sleep(0.12)
-            controller.inject_touch("UP", points[-1])
+                controller.inject_touch("UP", points[-1])
         time.sleep(0.75)
     if _game_booster_lock_showing(phone):
         raise RuntimeError(
@@ -248,9 +267,9 @@ def _dismiss_game_booster_lock(
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
-            "Record Android and, when available, rig-normalized HIK streams during "
-            "one continuous horizon-returning zigzag. No calibration is run or "
-            "published."
+            "Record Android and, when available, rig-normalized HIK images during "
+            "one horizon-returning zigzag. Android capture may be continuous "
+            "scrcpy or settled ADB screenshots. No calibration is run or published."
         )
     )
     value.add_argument(
@@ -276,6 +295,24 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--adb")
     value.add_argument("--scrcpy-server", type=Path)
     value.add_argument("--ffmpeg", type=Path)
+    value.add_argument(
+        "--android-capture",
+        choices=("scrcpy", "adb-screenshot"),
+        default="scrcpy",
+        help=(
+            "Android image transport: continuous scrcpy video or one lossless "
+            "ADB screencap after each settled swipe (default: scrcpy)"
+        ),
+    )
+    value.add_argument(
+        "--screenshot-settle-seconds",
+        type=float,
+        default=0.35,
+        help=(
+            "ADB-screenshot mode delay after touch UP before capturing the "
+            "settled game image (default: 0.35)"
+        ),
+    )
     value.add_argument(
         "--output-root", type=Path, default=Path("sessions") / "calibration"
     )
@@ -360,7 +397,11 @@ def _session_game_label(game_id: Optional[str], android_package: Optional[str]) 
 def _run_control_only(arguments) -> int:
     adb = resolve_adb_executable(arguments.adb)
     serial = _select_phone(adb, arguments.phone_serial)
-    server = find_scrcpy_server(arguments.scrcpy_server)
+    server = (
+        find_scrcpy_server(arguments.scrcpy_server)
+        if arguments.android_capture == "scrcpy"
+        else None
+    )
     wake_surface = _phone_surface(adb, serial)
     phone = AdbPhoneSession(serial, adb_executable=adb)
     preparation = _wake_phone_for_preparation(
@@ -405,7 +446,11 @@ def _run_control_only(arguments) -> int:
         )
     )
 
-    controller = ScrcpyTouchController(adb, server, serial, [width, height])
+    controller = (
+        ScrcpyTouchController(adb, server, serial, [width, height])
+        if server is not None
+        else None
+    )
     control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
     packets = []
     try:
@@ -435,9 +480,425 @@ def _run_control_only(arguments) -> int:
     return 0
 
 
+class _AdbSettledScreenshotSource:
+    """Session descriptor for screenshots synchronously triggered by swipe UP."""
+
+    stream_id = "android_phone"
+
+    def __init__(self, adb: Path, serial: str, settle_seconds: float) -> None:
+        self.adb = Path(adb)
+        self.serial = str(serial)
+        self.settle_seconds = float(settle_seconds)
+        self.capture_count = 0
+
+    def describe(self) -> dict:
+        return {
+            "type": type(self).__name__,
+            "stream_id": self.stream_id,
+            "transport": "adb_exec_out_screencap_png",
+            "scrcpy_used": False,
+            "trigger": "after_each_zigzag_touch_UP",
+            "settle_seconds_after_up": self.settle_seconds,
+            "lossless_pngs_retained": True,
+            "capture_count": int(self.capture_count),
+            "adb": str(self.adb.resolve()),
+            "serial": self.serial,
+        }
+
+
+def _capture_adb_screenshot_packet(
+    adb: Path, serial: str, stroke_index: int
+) -> tuple[FramePacket, bytes]:
+    """Capture one lossless Android screenshot with bounded host-time metadata."""
+
+    request_time_ns = time.perf_counter_ns()
+    png = subprocess.check_output(
+        [str(adb), "-s", str(serial), "exec-out", "screencap", "-p"],
+        stderr=subprocess.DEVNULL,
+        timeout=12,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    receive_time_ns = time.perf_counter_ns()
+    image = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        raise RuntimeError(
+            "ADB screencap after swipe {} was not a decodable PNG".format(
+                stroke_index
+            )
+        )
+    capture_time_ns = (request_time_ns + receive_time_ns) // 2
+    return (
+        FramePacket(
+            "android_phone",
+            image,
+            capture_time_ns,
+            receive_time_ns,
+            metadata={
+                "source": "android_adb_screencap",
+                "coordinate_space": "android_logical_display_pixels",
+                "transport": "adb_exec_out_screencap_png",
+                "trigger": "settled_after_zigzag_touch_UP",
+                "stroke_index": int(stroke_index),
+                "request_time_ns": int(request_time_ns),
+                "timestamp_uncertainty_ns": int(
+                    (receive_time_ns - request_time_ns) // 2
+                ),
+                "lossless_png_sha256": hashlib.sha256(png).hexdigest(),
+            },
+        ),
+        png,
+    )
+
+
+def _record_adb_screenshot_zigzag(
+    pending_path: Path,
+    *,
+    adb: Path,
+    serial: str,
+    plan: ZigzagTouchPlan,
+    screenshot_settle_seconds: float,
+    surface: dict,
+    selected_camera,
+    hik_adapter,
+    rig_calibration: Optional[Path],
+    calibration_revision: Optional[str],
+    calibration_selection: Optional[str],
+    require_hik: bool,
+    hik_fallback_reason: Optional[str],
+    game_id: Optional[str],
+    preparation: dict,
+    game_launch: dict,
+    ffmpeg: Optional[Path],
+    video_encoding: str = "h264",
+) -> tuple[dict, object, Optional[object]]:
+    """Record settled swipe endpoints without starting any scrcpy component."""
+
+    if screenshot_settle_seconds < 0.0:
+        raise ValueError("Screenshot settle duration cannot be negative")
+    input_packets = []
+    captured_pairs = []
+    raw_pngs = []
+    orientation_match = None
+    orientation_images = None
+    output_image_turns = None
+    aligned_surface = dict(surface)
+    aligned_surface["source"] = "adb_surface_orientation_at_capture"
+    hik = None
+
+    if selected_camera is not None:
+        hik_reader = RectifiedHikCamera(rig_calibration, adapter=hik_adapter)
+        hik = CalibratedHikFrameSource(
+            rig_calibration,
+            "hik_phone",
+            rectify=True,
+            output_quarter_turns_clockwise=0,
+            reader=hik_reader,
+        )
+        try:
+            hik.start()
+            # Claim and warm the stream before the first settled endpoint. This
+            # frame is diagnostic warm-up only and is not persisted.
+            hik.read()
+        except Exception as exc:
+            try:
+                hik.stop()
+            except Exception:
+                pass
+            if require_hik or not _hik_fallback_allowed(exc):
+                raise
+            hik_fallback_reason = "{}: {}".format(type(exc).__name__, exc)
+            hik = None
+            selected_camera = None
+            print(
+                "HIK camera unavailable or occupied; settled ADB screenshots "
+                "remain usable for mini-map calibration: {}".format(
+                    hik_fallback_reason
+                ),
+                flush=True,
+            )
+
+    control = AndroidZigzagInputSource(adb, serial, plan, controller=None)
+    screenshot_source = _AdbSettledScreenshotSource(
+        adb, serial, screenshot_settle_seconds
+    )
+
+    def receive_input(packet) -> None:
+        nonlocal orientation_match, orientation_images, output_image_turns
+        nonlocal aligned_surface
+        input_packets.append(packet)
+        if packet.kind != "zigzag_touch" or packet.payload.get("action") != "UP":
+            return
+        stroke_index = int(packet.payload.get("point_index", len(captured_pairs)))
+        if screenshot_settle_seconds:
+            time.sleep(float(screenshot_settle_seconds))
+        adb_packet, raw_png = _capture_adb_screenshot_packet(
+            adb, serial, stroke_index
+        )
+        adb_packet.metadata["trigger_input_up_host_time_ns"] = int(
+            packet.host_time_ns
+        )
+        adb_packet.metadata["settled_after_up_ms"] = (
+            int(adb_packet.host_capture_time_ns) - int(packet.host_time_ns)
+        ) / 1.0e6
+        hik_packet = None
+        if hik is not None:
+            if orientation_match is None:
+                calibration_display_packet = hik.read()
+                if calibration_display_packet is None:
+                    raise RuntimeError(
+                        "HIK stream ended before orientation could be measured"
+                    )
+                calibration_display_image = hik.alignment_evidence_image(
+                    calibration_display_packet
+                )
+                orientation_match, orientation_images = (
+                    match_game_camera_orientation(
+                        adb_packet.image,
+                        calibration_display_image,
+                        rig_calibration,
+                        android_reported_quarter_turns=surface[
+                            "quarter_turns_clockwise_from_natural"
+                        ],
+                    )
+                )
+                orientation_match["first_frame_pair_delta_ms"] = abs(
+                    int(calibration_display_packet.host_capture_time_ns)
+                    - int(adb_packet.host_capture_time_ns)
+                ) / 1.0e6
+                output_image_turns = int(
+                    orientation_match[
+                        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                    ]
+                )
+                hik.set_output_orientation(
+                    output_image_turns,
+                    {
+                        "status": orientation_match["status"],
+                        "selection_basis": orientation_match["selection_basis"],
+                        "selected_confidence": orientation_match[
+                            "selected_confidence"
+                        ],
+                        "confidence_margin": orientation_match[
+                            "confidence_margin"
+                        ],
+                    },
+                )
+                selected_surface_turns = int(
+                    orientation_match[
+                        "selected_adb_surface_quarter_turns_clockwise_from_phone_natural"
+                    ]
+                )
+                aligned_surface = {
+                    **dict(surface),
+                    "quarter_turns_clockwise_from_natural": selected_surface_turns,
+                    "degrees_clockwise_from_natural": selected_surface_turns * 90,
+                    "source": "first_game_adb_and_hik_image_evidence",
+                    "android_reported_quarter_turns_clockwise_from_natural": surface[
+                        "quarter_turns_clockwise_from_natural"
+                    ],
+                    "orientation_evidence": (
+                        "cross_source_check/orientation_match/summary.json"
+                    ),
+                }
+            hik_packet = hik.read()
+            if hik_packet is None:
+                raise RuntimeError(
+                    "HIK stream ended after settled swipe {}".format(stroke_index)
+                )
+            hik_packet.metadata["trigger"] = "settled_after_zigzag_touch_UP"
+            hik_packet.metadata["stroke_index"] = stroke_index
+            hik_packet.metadata["trigger_input_up_host_time_ns"] = int(
+                packet.host_time_ns
+            )
+            hik_packet.metadata["paired_adb_capture_time_ns"] = int(
+                adb_packet.host_capture_time_ns
+            )
+        adb_packet.metadata["paired_hik_capture_time_ns"] = (
+            int(hik_packet.host_capture_time_ns)
+            if hik_packet is not None
+            else None
+        )
+        captured_pairs.append((adb_packet, hik_packet))
+        raw_pngs.append(raw_png)
+        screenshot_source.capture_count += 1
+
+    try:
+        control.start(receive_input)
+        timeout = max(
+            30.0,
+            float(plan.duration_seconds)
+            + len(plan.strokes()) * (float(screenshot_settle_seconds) + 6.0)
+            + 20.0,
+        )
+        if not control.wait_completed(timeout):
+            raise RuntimeError(
+                "ADB screenshot zigzag did not complete within {:.1f} seconds"
+                .format(timeout)
+            )
+    finally:
+        control.stop()
+        if hik is not None:
+            hik.stop()
+
+    if control.error:
+        raise RuntimeError("Android zigzag control failed: {}".format(control.error))
+    if not control.completed or control.events_issued != control.expected_event_count:
+        raise RuntimeError(
+            "Android zigzag control was incomplete: {}/{} events".format(
+                control.events_issued, control.expected_event_count
+            )
+        )
+    if len(captured_pairs) != len(plan.strokes()):
+        raise RuntimeError(
+            "Settled ADB screenshot count {} does not match {} completed swipes"
+            .format(len(captured_pairs), len(plan.strokes()))
+        )
+
+    frame_processors = []
+    if hik is not None:
+        frame_processors.append(
+            GameCrossSourceEvidenceRecorder(
+                rig_calibration,
+                aligned_surface,
+                sample_period_seconds=0.0,
+                orientation_match=orientation_match,
+                orientation_evidence_images=orientation_images,
+            )
+        )
+    frame_sources = [screenshot_source] + ([hik] if hik is not None else [])
+    hik_context = (
+        {
+            "mode": "rig_rectified_phone_view_settled_snapshots",
+            "status": "active",
+            "camera_id": selected_camera.device_id,
+            "rig_calibration_used": True,
+            "rig_calibration": str(rig_calibration.resolve()),
+            "rig_profile_revision": calibration_revision,
+            "calibration_selection": calibration_selection,
+            "stream_id": "hik_phone",
+            "output_image_quarter_turns_clockwise_from_calibration_display": (
+                output_image_turns
+            ),
+            "output_orientation_selection": {
+                "basis": orientation_match["selection_basis"],
+                "status": orientation_match["status"],
+                "confidence": orientation_match["selected_confidence"],
+                "confidence_margin": orientation_match["confidence_margin"],
+                "evidence": "cross_source_check/orientation_match/summary.json",
+            },
+        }
+        if hik is not None
+        else {
+            "mode": "android_only",
+            "status": "not_requested" if rig_calibration is None else "fallback",
+            "reason": hik_fallback_reason,
+            "rig_calibration_used": False,
+        }
+    )
+    context = {
+        "capture_kind": "zigzag_minimap_source_data",
+        "capture_schedule": "settled_swipe_endpoint_screenshots",
+        "android_capture": {
+            "transport": "adb_exec_out_screencap_png",
+            "scrcpy_used": False,
+            "trigger": "after_each_zigzag_touch_UP",
+            "settle_seconds_after_up": float(screenshot_settle_seconds),
+            "lossless_png_directory": "screenshots/android_phone",
+        },
+        "game_id": game_id,
+        "image_sources": ["android_adb_screencap"]
+        + (["hik_mvs_rig_rectified"] if hik is not None else []),
+        "hik_capture": hik_context,
+        "phone_surface_orientation": aligned_surface,
+        "phone_preparation": preparation,
+        "game_launch": game_launch,
+        "zigzag_plan": plan.as_dict(),
+        "calibration_compatibility": {
+            "minimap": "compatible_android_phone_session",
+            "game_color": (
+                "compatible_synchronized_adb_hik_pairs"
+                if hik is not None
+                else "requires_hik_pairs_not_present"
+            ),
+        },
+        "calibration_status": "not_run",
+    }
+    writer = SessionWriter(
+        pending_path,
+        frame_sources,
+        [control],
+        video_encoding=video_encoding,
+        video_fps=max(1.0, min(30.0, float(len(captured_pairs)))),
+        video_crf=16,
+        ffmpeg=ffmpeg,
+        session_context=context,
+    )
+    all_times = [packet.host_time_ns for packet in input_packets]
+    all_times.extend(
+        packet.host_capture_time_ns
+        for pair in captured_pairs
+        for packet in pair
+        if packet is not None
+    )
+    try:
+        writer.rebase_origin(min(all_times))
+        if frame_processors:
+            writer.attach_frame_processors(frame_processors)
+        screenshot_directory = pending_path / "screenshots" / "android_phone"
+        screenshot_directory.mkdir(parents=True, exist_ok=True)
+        for index, (packet, raw_png) in enumerate(zip(
+            (pair[0] for pair in captured_pairs), raw_pngs
+        )):
+            relative = Path("screenshots") / "android_phone" / (
+                "swipe-{:03d}.png".format(index)
+            )
+            (pending_path / relative).write_bytes(raw_png)
+            packet.metadata["lossless_png"] = relative.as_posix()
+        for packet in input_packets:
+            writer.write_input(packet)
+        for adb_packet, hik_packet in captured_pairs:
+            writer.write_frame(adb_packet)
+            if hik_packet is not None:
+                writer.write_frame(hik_packet)
+        writer.manifest["frame_sources"] = [
+            source.describe() for source in frame_sources
+        ]
+        writer.manifest["input_sources"] = [control.describe()]
+        writer.close(status="complete")
+    except Exception as exc:
+        writer.close(
+            status="incomplete",
+            error="{}: {}".format(type(exc).__name__, exc),
+        )
+        raise
+
+    manifest = json.loads(
+        (pending_path / "manifest.json").read_text(encoding="utf-8")
+    )
+    if hik is not None:
+        write_dual_source_space_yaml(
+            pending_path, rig_calibration, aligned_surface, manifest
+        )
+    else:
+        write_android_source_space_yaml(
+            pending_path, aligned_surface, manifest
+        )
+    manifest["coordinate_spaces"] = "coordinate_spaces.yaml"
+    manifest_path = pending_path / "manifest.json"
+    temporary_manifest = pending_path / "manifest.json.tmp"
+    temporary_manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    temporary_manifest.replace(manifest_path)
+    return manifest, control, hik
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argument_parser = parser()
     arguments = argument_parser.parse_args(argv)
+    if (
+        arguments.android_capture == "adb-screenshot"
+        and arguments.screenshot_settle_seconds < 0.0
+    ):
+        argument_parser.error("--screenshot-settle-seconds cannot be negative")
     from aria_trace.adapters.filesystem.system_configuration import (
         load_system_configuration,
     )
@@ -551,12 +1012,70 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif game_launch["status"] in ("manual_unknown_game", "manual_current_game"):
         print("No game was launched automatically; prepare any target game before confirming readiness.")
     print("Output session: {}".format(session_path.resolve()))
+    if arguments.android_capture == "adb-screenshot":
+        print(
+            "Android capture: ADB screencap after each settled swipe; scrcpy "
+            "will not be started."
+        )
     print("This command records data only; it does not calibrate or publish profiles.")
     if not arguments.yes:
         input("Prepare the game, then press Enter when its unobstructed view is ready: ")
     preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
         phone, adb, server, serial, [width, height]
     )
+
+    if arguments.android_capture == "adb-screenshot":
+        try:
+            manifest, control, settled_hik = _record_adb_screenshot_zigzag(
+                pending_path,
+                adb=adb,
+                serial=serial,
+                plan=plan,
+                screenshot_settle_seconds=arguments.screenshot_settle_seconds,
+                surface=surface,
+                selected_camera=selected_camera,
+                hik_adapter=hik_adapter,
+                rig_calibration=rig_calibration,
+                calibration_revision=calibration_revision,
+                calibration_selection=(
+                    calibration_selection if selected_camera is not None else None
+                ),
+                require_hik=arguments.require_hik,
+                hik_fallback_reason=hik_fallback_reason,
+                game_id=arguments.game_id,
+                preparation=preparation,
+                game_launch=game_launch,
+                ffmpeg=arguments.ffmpeg,
+            )
+            counts = manifest.get("frame_counts") or {}
+            expected_swipes = len(plan.strokes())
+            if (
+                manifest.get("status") != "complete"
+                or int(counts.get("android_phone", 0)) != expected_swipes
+                or (
+                    settled_hik is not None
+                    and int(counts.get("hik_phone", 0)) != expected_swipes
+                )
+            ):
+                raise RuntimeError(
+                    "Settled screenshot recording did not preserve one frame "
+                    "per completed swipe"
+                )
+            pending_path.replace(session_path)
+        except Exception:
+            if pending_path.is_dir():
+                shutil.rmtree(str(pending_path))
+            raise
+        print(
+            "Captured {} settled swipe endpoints with {}: {}".format(
+                len(plan.strokes()),
+                "ADB screencap and HIK"
+                if settled_hik is not None
+                else "ADB screencap only",
+                session_path.resolve(),
+            )
+        )
+        return 0
 
     clock = AdbClockMapper(adb, serial)
     hub = ScrcpyCaptureHub(

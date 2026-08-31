@@ -284,6 +284,23 @@ To record source data without analysis, use:
 python -m aria_tools zigzag-acquisition --game-id genshin-impact --require-hik
 ```
 
+For a settled endpoint capture that never starts scrcpy, use:
+
+```powershell
+python -m aria_tools zigzag-acquisition --game-id genshin-impact --android-capture adb-screenshot --require-hik
+```
+
+This mode sends the same long swipe through Android's ADB input transport,
+waits `--screenshot-settle-seconds` after every touch UP, and captures one
+lossless `adb exec-out screencap -p` PNG. The PNGs are retained under
+`screenshots/android_phone/` and are also encoded as the canonical
+`android_phone` session video with exact per-frame timing metadata. Scrcpy is
+neither located nor started. When HIK is available, one rig-normalized HIK
+frame is retained at each same settled endpoint, so the session contains the
+paired streams required by game color calibration. Without HIK, the session is
+still valid for Android mini-map calibration but explicitly declares that HIK
+color fitting is unavailable.
+
 The `android_phone` stream always keeps the complete Android logical display.
 When available, the optional `hik_phone` stream uses the
 calibrated HIK adapter, so it contains only the camera-visible phone region,
@@ -339,11 +356,14 @@ matrices = camera.space_converter(surface_quarter_turns).describe()["conversion"
 The quarter-turn value is Android's reported surface rotation from the natural
 phone raster. Points use pixel-center XY: top-left `[0, 0]`, +X right, +Y down.
 
-Game control uses the reusable `ScrcpyTouchController` in
+Continuous-mode game control uses the reusable `ScrcpyTouchController` in
 `acquisition/scrcpy_control.py`. It maintains one pinned scrcpy 4.1 control
 socket for the gesture instead of starting one ADB process per touch event.
 Acquisition ends only after the controller reports the complete DOWN/MOVE/UP
 sequence and the configured tail has elapsed; incomplete control is rejected.
+The explicit `adb-screenshot` mode instead uses Android's ADB motion-event
+transport and deliberately accepts its lower control rate because acquisition
+occurs only after settled swipe endpoints.
 
 The production HIK adapter resolves the base rig, optional mini-map rig-game
 profile, and optional game-color profile once through `ProfileRegistry`:
