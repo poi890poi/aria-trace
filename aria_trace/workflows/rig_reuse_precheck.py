@@ -120,6 +120,63 @@ def compare_calibration_snapshots(
     }
 
 
+def format_reuse_precheck_failure(result: Mapping[str, object]) -> str:
+    """Explain why an active rig cannot be reused in operator-facing terms."""
+
+    status = str(result.get("status") or "unknown")
+    if status == "rig_moved":
+        comparison = dict(result.get("comparison") or {})
+        correlation = float(comparison.get("correlation", float("nan")))
+        minimum_correlation = float(
+            comparison.get("minimum_correlation", DEFAULT_MINIMUM_CORRELATION)
+        )
+        mae = float(comparison.get("mean_absolute_error_dn", float("nan")))
+        maximum_mae = float(
+            comparison.get("maximum_mae_dn", DEFAULT_MAXIMUM_MAE_DN)
+        )
+        return (
+            "Rig reuse check failed: the current camera snapshot does not match "
+            "the saved rig snapshot within the configured repeatability limits.\n"
+            "  Correlation: {:.6f}; required >= {:.6f} [{}]\n"
+            "  Grayscale MAE: {:.3f} DN; required <= {:.3f} DN [{}]\n"
+            "The camera/phone may have moved, or the display, ROI, orientation, or "
+            "locked imaging state may differ from the saved calibration."
+        ).format(
+            correlation,
+            minimum_correlation,
+            "PASS" if correlation >= minimum_correlation else "FAIL",
+            mae,
+            maximum_mae,
+            "PASS" if mae <= maximum_mae else "FAIL",
+        )
+    if status == "no_previous_calibration":
+        return (
+            "Rig reuse was skipped: no active rig profile exists for the selected "
+            "camera and phone."
+        )
+    if status == "identity_mismatch":
+        mismatch = str(result.get("reason") or "device_identity_mismatch")
+        return (
+            "Rig reuse check failed: the selected device identity does not match "
+            "the saved calibration ({})."
+        ).format(mismatch)
+    if status == "incomplete_calibration":
+        return (
+            "Rig reuse check failed: the saved rig profile is incomplete; its "
+            "camera adapter data or reference snapshot is missing."
+        )
+    if status == "unavailable":
+        return "Rig reuse check could not run: {}".format(
+            result.get("reason") or "no diagnostic reason was reported"
+        )
+    if status == "reusable" and not result.get("camera_adapter_is_calibrated"):
+        return (
+            "Rig reuse check passed the snapshot comparison, but the saved camera "
+            "adapter reports incomplete calibration data."
+        )
+    return "Rig reuse check did not pass (status: {}).".format(status)
+
+
 def _saved_layout(config: Mapping[str, object]) -> CharucoLayout:
     phone = config["phone"]
     layout = config["geometry"]["charuco_layout"]
@@ -412,18 +469,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             sample_frames=repeatability["reuse_sample_frames"],
         )
         if result["status"] == "no_previous_calibration":
-            print("Rig precheck: no active registry calibration is available.")
+            print(format_reuse_precheck_failure(result))
+            print(
+                "Precheck evidence: {}".format(
+                    (arguments.output / "precheck.json").resolve()
+                )
+            )
             return 0
     comparison = result.get("comparison") or {}
-    print(
-        "Rig precheck: {}{}".format(
-            result["status"],
-            " (correlation {:.6f}, MAE {:.3f} DN)".format(
+    if result.get("reusable") and result.get("camera_adapter_is_calibrated"):
+        print(
+            "Rig precheck: reusable (correlation {:.6f}, MAE {:.3f} DN)".format(
                 float(comparison["correlation"]),
                 float(comparison["mean_absolute_error_dn"]),
             )
-            if comparison
-            else "",
+        )
+    else:
+        print(format_reuse_precheck_failure(result))
+    print(
+        "Precheck evidence: {}".format(
+            (arguments.output / "precheck.json").resolve()
         )
     )
     return 0

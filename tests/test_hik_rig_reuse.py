@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -14,6 +16,7 @@ from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
 from acquisition.rig_calibration.hik.reuse_precheck import (
     compare_calibration_snapshots,
     discover_active_profile_calibration,
+    format_reuse_precheck_failure,
     main as reuse_precheck_main,
     parser as reuse_precheck_parser,
 )
@@ -53,6 +56,23 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
+    def test_repeatability_failure_message_names_metrics_limits_and_outcome(self):
+        message = format_reuse_precheck_failure(
+            {
+                "status": "rig_moved",
+                "comparison": {
+                    "correlation": 0.88,
+                    "minimum_correlation": 0.90,
+                    "mean_absolute_error_dn": 12.0,
+                    "maximum_mae_dn": 20.0,
+                },
+            }
+        )
+        self.assertIn("Rig reuse check failed", message)
+        self.assertIn("Correlation: 0.880000; required >= 0.900000 [FAIL]", message)
+        self.assertIn("Grayscale MAE: 12.000 DN; required <= 20.000 DN [PASS]", message)
+        self.assertIn("camera/phone may have moved", message)
+
     def test_adapter_export_accepts_saved_bundle_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -181,6 +201,62 @@ class HikRigReuseTests(unittest.TestCase):
             session.assert_not_called()
             exporter.assert_called_once()
             self.assertTrue((root / "output" / "reused_calibration.json").is_file())
+
+    def test_failed_reuse_explains_metrics_before_full_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            device = Mock(device_id="CAM-1", label="camera")
+            adapter = Mock()
+            adapter.devices.return_value = [device]
+            session = Mock()
+            session.run.return_value = None
+            precheck = {
+                "status": "rig_moved",
+                "reusable": False,
+                "camera_adapter_is_calibrated": True,
+                "comparison": {
+                    "correlation": 0.88,
+                    "minimum_correlation": 0.90,
+                    "mean_absolute_error_dn": 12.0,
+                    "maximum_mae_dn": 20.0,
+                },
+            }
+            output = io.StringIO()
+            with patch(
+                "aria_trace.apps.hik_rig_calibration.HikMvsCameraAdapter",
+                return_value=adapter,
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.connected_adb_devices",
+                return_value=["PHONE-1"],
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.resolve_adb_executable",
+                return_value=Path("adb"),
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.run_active_reuse_precheck",
+                return_value=precheck,
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.HikRigCalibrationSession",
+                return_value=session,
+            ) as session_type, contextlib.redirect_stdout(output):
+                self.assertEqual(
+                    0,
+                    rig_calibration_main(
+                        [
+                            "--reuse-if-unchanged",
+                            "--headless",
+                            "--output",
+                            str(root / "output"),
+                        ]
+                    ),
+                )
+            text = output.getvalue()
+            self.assertIn(
+                "Correlation: 0.880000; required >= 0.900000 [FAIL]", text
+            )
+            self.assertIn("Full rig calibration will start now.", text)
+            self.assertIn("Repeatability evidence:", text)
+            session_type.assert_called_once()
+            session.run.assert_called_once()
 
     def test_legacy_calibration_option_is_obsolete(self):
         with self.assertRaises(SystemExit):

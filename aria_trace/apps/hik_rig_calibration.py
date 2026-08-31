@@ -237,6 +237,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Output: {}".format(arguments.output.resolve()))
     if arguments.reuse_if_unchanged and not arguments.test:
         from aria_trace.workflows.rig_reuse_precheck import (
+            format_reuse_precheck_failure,
             run_active_reuse_precheck,
         )
 
@@ -281,9 +282,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 profile_root,
             )
             return 0
+        print(format_reuse_precheck_failure(precheck))
+        print("Full rig calibration will start now.")
         print(
-            "Rig reuse was not proven ({}); running full calibration.".format(
-                precheck.get("status", "unknown")
+            "Repeatability evidence: {}".format(
+                (precheck_output / "precheck.json").resolve()
             )
         )
     options = HikCalibrationOptions(
