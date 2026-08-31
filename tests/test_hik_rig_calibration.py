@@ -76,14 +76,24 @@ class HikAlgorithmTests(unittest.TestCase):
         )
         session.charuco_layout = screen_filling_charuco_layout((64, 48))
         session._wait_painted = mock.Mock()
+        observed_prompts = []
+
+        def preview_update(*_args, **_kwargs):
+            observed_prompts.append(session._preview_settings.get("operator_prompt"))
+            return None if len(observed_prompts) == 1 else 32
+
         with mock.patch(
             "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
             return_value={"corner_count": 12},
         ), mock.patch.object(
-            session, "_preview_update", side_effect=[None, 32]
+            session, "_preview_update", side_effect=preview_update
         ):
             self.assertTrue(session.wait_for_positioning_confirmation())
         self.assertEqual(2, camera.read.call_count)
+        self.assertEqual(2, len(observed_prompts))
+        self.assertIn("POSITION RIG", observed_prompts[0])
+        self.assertIn("ENTER / SPACE = START", observed_prompts[0])
+        self.assertNotIn("operator_prompt", session._preview_settings)
 
     def test_focus_save_gate_requires_consecutive_displaced_frames(self):
         options = HikCalibrationOptions(
@@ -342,6 +352,33 @@ class HikAlgorithmTests(unittest.TestCase):
             )
         self.assertTrue(scales)
         self.assertEqual({0.50}, set(scales))
+
+    def test_operator_prompt_is_high_contrast_and_names_controls(self):
+        canvas = np.full((360, 640, 3), 24, np.uint8)
+        drawn_text = []
+        original_put_text = cv2.putText
+
+        def record(image, text, *args, **kwargs):
+            drawn_text.append(str(text))
+            return original_put_text(image, text, *args, **kwargs)
+
+        with mock.patch.object(cv2, "putText", side_effect=record):
+            height = HikRigCalibrationSession._draw_operator_prompt(
+                canvas,
+                340,
+                300,
+                (
+                    "POSITION RIG",
+                    "Click this preview window, then:",
+                    "ENTER / SPACE = START",
+                    "Q / ESC = CANCEL",
+                ),
+            )
+        self.assertGreater(height, 0)
+        self.assertIn("POSITION RIG", drawn_text)
+        self.assertIn("ENTER / SPACE = START", drawn_text)
+        self.assertIn("Q / ESC = CANCEL", drawn_text)
+        self.assertFalse(np.all(canvas[:height, 340:] == 24))
 
     def test_plugin_factory_is_lazy_and_does_not_require_vendor_sdk(self):
         adapter = create_camera_adapter()

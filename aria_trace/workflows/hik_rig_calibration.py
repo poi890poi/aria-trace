@@ -78,6 +78,8 @@ DATA_MATRIX_DEFAULT_TRIALS = 40
 DATA_MATRIX_MAX_PATTERNS_PER_SCREEN = 8
 PANEL_FONT_SCALE = 0.50
 PANEL_LINE_STEP_PX = 22
+OPERATOR_PROMPT_FONT_SCALE = 0.56
+OPERATOR_PROMPT_LINE_STEP_PX = 25
 _DEFAULT_REPEATABILITY = RIG_REPEATABILITY_POLICIES[
     DEFAULT_RIG_REPEATABILITY_POLICY
 ]
@@ -485,6 +487,63 @@ class HikRigCalibrationSession:
             )
         return selected_lines
 
+    @classmethod
+    def _draw_operator_prompt(
+        cls,
+        canvas: np.ndarray,
+        panel_left: int,
+        panel_width: int,
+        lines: Sequence[str],
+    ) -> int:
+        """Draw a persistent high-contrast operator action at the top of the GUI."""
+
+        if not lines:
+            return 0
+        left = int(panel_left) + 14
+        usable_width = max(40, int(panel_width) - 28)
+        wrapped = cls._wrap_panel_lines(
+            lines,
+            usable_width,
+            OPERATOR_PROMPT_FONT_SCALE,
+            thickness=1,
+        )
+        maximum_lines = max(
+            1,
+            (canvas.shape[0] - 24) // OPERATOR_PROMPT_LINE_STEP_PX,
+        )
+        wrapped = wrapped[:maximum_lines]
+        height = min(
+            canvas.shape[0],
+            18 + len(wrapped) * OPERATOR_PROMPT_LINE_STEP_PX,
+        )
+        right = min(canvas.shape[1] - 1, int(panel_left) + int(panel_width) - 1)
+        cv2.rectangle(
+            canvas,
+            (int(panel_left), 0),
+            (right, max(0, height - 1)),
+            (38, 54, 82),
+            -1,
+        )
+        cv2.rectangle(
+            canvas,
+            (int(panel_left), 0),
+            (right, max(0, height - 1)),
+            (0, 210, 255),
+            2,
+        )
+        for index, line in enumerate(wrapped):
+            cv2.putText(
+                canvas,
+                line,
+                (left, 22 + index * OPERATOR_PROMPT_LINE_STEP_PX),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                OPERATOR_PROMPT_FONT_SCALE,
+                (80, 235, 255),
+                2 if index == 0 else 1,
+                cv2.LINE_AA,
+            )
+        return int(height)
+
     def _preview_lines(
         self,
         frame: np.ndarray,
@@ -575,11 +634,19 @@ class HikRigCalibrationSession:
             image = cv2.resize(frame, (image_width, image_height), interpolation=cv2.INTER_AREA)
             canvas = np.full((image_height, image_width + panel_width, 3), 24, np.uint8)
             canvas[:, :image_width] = image
+            prompt_lines = self._preview_settings.get("operator_prompt") or ()
+            prompt_height = self._draw_operator_prompt(
+                canvas, image_width, panel_width, prompt_lines
+            )
+            preview_lines = self._preview_lines(frame, sample_metadata, **settings)
+            if prompt_lines and preview_lines:
+                preview_lines = preview_lines[1:]
+            panel = canvas[prompt_height:, image_width:]
             self._draw_text_panel(
-                canvas,
-                image_width,
+                panel,
+                0,
                 panel_width,
-                self._preview_lines(frame, sample_metadata, **settings),
+                preview_lines,
             )
             cv2.resizeWindow(self._preview_window, canvas.shape[1], canvas.shape[0])
             cv2.imshow(self._preview_window, canvas)
@@ -1352,40 +1419,50 @@ class HikRigCalibrationSession:
         shown = self.target.present_charuco()
         self._wait_painted(shown)
         self._set_preview_stage(
-            "POSITION RIG - Enter/Space starts; Q/Esc cancels",
+            "Positioning guide",
             exposure_mode="camera auto positioning guide",
+            operator_prompt=(
+                "POSITION RIG",
+                "Adjust using the live ChArUco view.",
+                "Click this preview window, then:",
+                "ENTER / SPACE = START",
+                "Q / ESC = CANCEL",
+            ),
         )
         self.progress(
             "Positioning pause: use the live camera view and full-screen ChArUco "
             "board to adjust the rig. Press Enter/Space in the preview to start, "
             "or Q/Esc to cancel."
         )
-        while True:
-            sample = self.camera.read()
-            self.last_frame = sample.image.copy()
-            corner_count = 0
-            try:
-                corner_count = int(
-                    detect_charuco_correspondences(sample.image, layout)["corner_count"]
+        try:
+            while True:
+                sample = self.camera.read()
+                self.last_frame = sample.image.copy()
+                corner_count = 0
+                try:
+                    corner_count = int(
+                        detect_charuco_correspondences(sample.image, layout)["corner_count"]
+                    )
+                except RuntimeError:
+                    pass
+                key = self._preview_update(
+                    sample.image,
+                    sample.metadata,
+                    charuco_corners=corner_count,
                 )
-            except RuntimeError:
-                pass
-            key = self._preview_update(
-                sample.image,
-                sample.metadata,
-                charuco_corners=corner_count,
-            )
-            if key in (10, 13, 32):
-                self.progress("Positioning confirmed; starting ChArUco calibration.")
-                return True
-            if key in (27, ord("q"), ord("Q")):
-                self.progress("Positioning cancelled; calibration was not started.")
-                return False
-            if self._preview_disabled:
-                raise RuntimeError(
-                    "The positioning preview was closed before confirmation; "
-                    "rerun or use --headless for unattended calibration"
-                )
+                if key in (10, 13, 32):
+                    self.progress("Positioning confirmed; starting ChArUco calibration.")
+                    return True
+                if key in (27, ord("q"), ord("Q")):
+                    self.progress("Positioning cancelled; calibration was not started.")
+                    return False
+                if self._preview_disabled:
+                    raise RuntimeError(
+                        "The positioning preview was closed before confirmation; "
+                        "rerun or use --headless for unattended calibration"
+                    )
+        finally:
+            self._preview_settings.pop("operator_prompt", None)
 
     def _observe(self, multiplier: float, exposure_us: float, gain: float) -> ExposureObservation:
         white_mask = self._required(self.white_mask, "white-area camera mask")
