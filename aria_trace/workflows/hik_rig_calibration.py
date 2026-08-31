@@ -277,6 +277,7 @@ class HikRigCalibrationSession:
         self.auto_result_sample: Optional[FrameSample] = None
         self.auto_phone_screenshot: Optional[np.ndarray] = None
         self.cv_verification: Optional[Dict[str, Any]] = None
+        self.final_verification_sample: Optional[FrameSample] = None
         self.transport_benchmark: Optional[Dict[str, Any]] = None
         self.latency_benchmark: Optional[Dict[str, Any]] = None
         self.cross_source_check: Optional[Dict[str, Any]] = None
@@ -2283,6 +2284,8 @@ class HikRigCalibrationSession:
         self._wait_painted(shown)
         corner_counts = []
         errors = []
+        best_sample = None
+        best_frame_p95 = float("inf")
         attempted = int(self.options.geometry_frames)
         for _ in range(attempted):
             sample = self._read_camera()
@@ -2309,8 +2312,17 @@ class HikRigCalibrationSession:
                 screen_points.reshape(-1, 1, 2),
                 np.asarray(geometry.inverse_matrix_3x3, dtype=np.float64),
             ).reshape(-1, 2)
+            frame_errors = np.linalg.norm(camera_points - predicted, axis=1)
             corner_counts.append(int(len(camera_points)))
-            errors.extend(np.linalg.norm(camera_points - predicted, axis=1).tolist())
+            errors.extend(frame_errors.tolist())
+            frame_p95 = float(np.percentile(frame_errors, 95))
+            if frame_p95 < best_frame_p95:
+                best_frame_p95 = frame_p95
+                best_sample = validated_rig_sample(
+                    sample,
+                    parent_size_px=self._full_sensor_size_px(),
+                    copy_image=True,
+                )
         successful = sum(value > 0 for value in corner_counts)
         self.cv_verification = {
             "attempted_frames": attempted,
@@ -2325,6 +2337,7 @@ class HikRigCalibrationSession:
             raise RuntimeError(
                 "Final manual imaging produced no ChArUco detections; calibration is not usable"
             )
+        self.final_verification_sample = best_sample
         self.progress(
             "Final imaging verification: {}/{} ChArUco frames, reprojection p95 {:.3f} camera px."
             .format(successful, attempted, self.cv_verification["reprojection_error_camera_px_p95"])
@@ -3297,8 +3310,24 @@ class HikRigCalibrationSession:
                 presentation, timeout_seconds=self.options.operation_timeout_seconds
             )
             screenshot = getattr(self.target, "last_screenshot", None)
+            screenshot_path = evidence_directory / "adb_full_screenshot.png"
             if screenshot is None:
-                raise RuntimeError("ADB screenshot is unavailable")
+                remote = "/sdcard/Download/aria_trace_cross_source_{}.png".format(
+                    uuid.uuid4().hex
+                )
+                try:
+                    self.phone.shell("screencap", "-p", remote)
+                    self.phone.run("pull", remote, str(screenshot_path))
+                finally:
+                    try:
+                        self.phone.shell("rm", "-f", remote)
+                    except Exception:
+                        pass
+                screenshot = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
+                if screenshot is None or screenshot.size == 0:
+                    raise RuntimeError("ADB screenshot is unavailable")
+            elif not cv2.imwrite(str(screenshot_path), screenshot):
+                raise OSError("Could not save full ADB screenshot evidence")
             camera_frame = self._capture_settled()
             camera_sample = self._required(
                 self.last_sample, "cross-source HIK frame with producer metadata"
@@ -3323,7 +3352,7 @@ class HikRigCalibrationSession:
             metrics, images = cross_source_alignment_evidence(
                 adb_crop, hik_rectified, valid_mask
             )
-            written = {}
+            written = {"adb_full_screenshot": screenshot_path.name}
             for name, image in images.items():
                 if not cv2.imwrite(str(evidence_directory / name), image):
                     raise OSError("Could not save cross-source evidence {}".format(name))
@@ -3374,7 +3403,28 @@ class HikRigCalibrationSession:
                 },
                 metadata_reference="cross_source_check.json#media",
             )
-            comparison_records = [adb_record, rectified_record]
+            full_adb_record = raster_record(
+                screenshot_path.name,
+                media_type="image",
+                stored_size_px=[
+                    int(screenshot.shape[1]), int(screenshot.shape[0])
+                ],
+                space_id="android_logical_display_pixels",
+                operation="adb_screencap_copy",
+                source_space_id="android_logical_display_pixels",
+                source_region={
+                    "kind": "full_frame",
+                    "xywh": [
+                        0,
+                        0,
+                        int(screenshot.shape[1]),
+                        int(screenshot.shape[0]),
+                    ],
+                },
+                orientation={"value": "android_calibration_display"},
+                metadata_reference="cross_source_check.json#media",
+            )
+            comparison_records = [full_adb_record, adb_record, rectified_record]
             for name, operation in (
                 ("edge_overlay_adb_red_hik_cyan.png", "aligned_edge_comparison"),
                 ("normalized_difference_heatmap.png", "aligned_difference_heatmap"),
@@ -3736,13 +3786,14 @@ class HikRigCalibrationSession:
                 validate_hik_coordinate_contract(config, camera_roi)
             )
             additional_media = []
-            if self.last_sample is not None:
+            evidence_sample = self.final_verification_sample or self.last_sample
+            if evidence_sample is not None:
                 if not cv2.imwrite(
-                    str(temporary / "last_camera_frame.png"), self.last_sample.image
+                    str(temporary / "last_camera_frame.png"), evidence_sample.image
                 ):
                     raise OSError("Could not save last_camera_frame.png")
                 review = self._expanded_camera_review(
-                    self.last_sample, "Final rig calibration acquisition"
+                    evidence_sample, "Final rig calibration acquisition"
                 )
                 review_name = "last_camera_frame_expanded_review.png"
                 if not cv2.imwrite(str(temporary / review_name), review.image):
@@ -3765,7 +3816,7 @@ class HikRigCalibrationSession:
             config["media"] = build_hik_calibration_media_registry(
                 temporary,
                 config,
-                last_camera_sample=self.last_sample,
+                last_camera_sample=evidence_sample,
                 additional_records=additional_media,
             )
             (temporary / "hik_camera_calibration.json").write_text(

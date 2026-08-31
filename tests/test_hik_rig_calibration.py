@@ -162,6 +162,51 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertFalse(session._update_focus_save_gate(13.0, 12.0))
         self.assertTrue(session._update_focus_save_gate(13.0, 12.0))
 
+    def test_final_verification_sample_is_not_replaced_by_later_benchmark_frame(self):
+        options = HikCalibrationOptions(
+            "fake",
+            "phone",
+            Path("unused"),
+            headless=True,
+            geometry_frames=2,
+        )
+        white = rig_frame_sample(np.full((48, 64, 3), 240, np.uint8), 1)
+        gray = rig_frame_sample(np.full((48, 64, 3), 120, np.uint8), 2)
+        black = rig_frame_sample(np.zeros((48, 64, 3), np.uint8), 3)
+        camera = mock.Mock()
+        camera.read.side_effect = [white, gray, black]
+        target = mock.Mock()
+        target.present_charuco.return_value = mock.Mock(revision=1)
+        session = HikRigCalibrationSession(
+            options,
+            camera=camera,
+            target=target,
+            progress=lambda _message: None,
+        )
+        session.phone_metrics = PhoneMetrics(
+            "phone", "Example", "Phone", "14", [64, 48], 420, 60.0
+        )
+        session.charuco_layout = screen_filling_charuco_layout((64, 48))
+        points = np.asarray([[8, 8], [56, 8], [8, 40], [56, 40]], np.float64)
+        session.geometry = estimate_screen_geometry(points, points, (64, 48), (64, 48))
+        session.camera_metadata = {"width_px": 64, "height_px": 48}
+        session._wait_painted = mock.Mock()
+        session._preview_update = mock.Mock()
+        with mock.patch(
+            "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
+            return_value={
+                "camera_points_xy": points,
+                "screen_points_xy": points,
+                "corner_count": len(points),
+            },
+        ):
+            session.verify_final_imaging()
+        session._read_camera()
+        self.assertEqual(0.0, float(np.mean(session.last_sample.image)))
+        self.assertEqual(
+            240.0, float(np.mean(session.final_verification_sample.image))
+        )
+
     def test_latency_rejects_cross_clock_negative_or_unbounded_values(self):
         elapsed = HikRigCalibrationSession._same_clock_elapsed_ms
         self.assertEqual(elapsed(1_000_000_000, 1_075_000_000, 1000.0), 75.0)
@@ -273,7 +318,15 @@ class HikAlgorithmTests(unittest.TestCase):
                     / "full_camera_and_projected_phone_review.png"
                 ).is_file()
             )
-            self.assertEqual(7, len(result["media"]))
+            self.assertEqual(8, len(result["media"]))
+            full_adb = next(
+                row
+                for row in result["media"]
+                if row["file"] == "adb_full_screenshot.png"
+            )
+            self.assertEqual(
+                "android_logical_display_pixels", full_adb["space"]["id"]
+            )
 
     def test_complete_focus_view_preserves_entire_frame_inside_pane(self):
         image = np.zeros((10, 20, 3), np.uint8)
