@@ -19,6 +19,7 @@ venv/
 data/
 artifacts/
 sessions/
+profiles/
 portal_maps/
 *.mp4
 *.mkv
