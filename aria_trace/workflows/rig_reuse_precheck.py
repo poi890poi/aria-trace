@@ -15,7 +15,11 @@ from aria_trace.services.calibration.rig.geometry import (
     CharucoLayout,
     detect_charuco_correspondences,
 )
-from aria_trace.adapters.rig.devices import CameraConfiguration
+from aria_trace.adapters.rig.devices import (
+    CameraAdapter,
+    CameraConfiguration,
+    create_camera_adapter as create_plugin_camera_adapter,
+)
 from aria_trace.adapters.android.hik_display import AdbDisplayTarget
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
@@ -263,6 +267,7 @@ def run_reuse_precheck(
     phone_serial: Optional[str] = None,
     maximum_displacement_px: float = DEFAULT_MAXIMUM_DISPLACEMENT_PX,
     sample_frames: int = 3,
+    adapter: Optional[CameraAdapter] = None,
 ) -> Mapping[str, object]:
     """Present the saved target and prove the camera/phone pose is unchanged."""
 
@@ -298,7 +303,7 @@ def run_reuse_precheck(
         _write_result(output, result)
         return result
 
-    adapter = HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
+    adapter = adapter or HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
 
     adb_path = resolve_adb_executable(adb)
     phone = AdbPhoneSession(saved_phone, adb_executable=adb_path)
@@ -310,10 +315,17 @@ def run_reuse_precheck(
     evidence_frames = []
     detection_failures = []
     cleanup_warnings = []
+    timing = {}
+    total_started = time.perf_counter_ns()
     try:
+        stage_started = time.perf_counter_ns()
         target.configure_canonical_orientation(orientation)
         phone.wake_and_hold_display(orientation)
         target.start(_saved_layout(config))
+        timing["target_prepare_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
         adapter.open(
             CameraConfiguration(
                 device_id=saved_camera,
@@ -325,8 +337,16 @@ def run_reuse_precheck(
         )
         full_roi = list(adapter.reset_full_sensor_roi())
         _apply_saved_imaging(adapter, config)
+        timing["camera_open_and_restore_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
         for _ in range(3):
             adapter.read()
+        timing["camera_warmup_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
         for frame_index in range(max(1, int(sample_frames))):
             sample = adapter.read()
             try:
@@ -340,10 +360,14 @@ def run_reuse_precheck(
                 continue
             observations.append(detected)
             evidence_frames.append((sample.image.copy(), dict(sample.metadata)))
+        timing["capture_and_detect_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
         if not observations:
             raise RuntimeError(
                 "ChArUco board was not detected in any full-sensor precheck frame"
             )
+        stage_started = time.perf_counter_ns()
         comparison = dict(
             compare_charuco_alignment(
                 observations,
@@ -351,6 +375,10 @@ def run_reuse_precheck(
                 maximum_displacement_px=maximum_displacement_px,
             )
         )
+        timing["compare_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
         output.mkdir(parents=True, exist_ok=False)
         representative_index = int(
             np.argsort(
@@ -377,6 +405,9 @@ def run_reuse_precheck(
                 "charuco_alignment_overlay": "charuco_alignment_overlay.png",
             },
         )
+        timing["evidence_write_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
     except Exception as exc:
         if not output.exists():
             output.mkdir(parents=True)
@@ -395,9 +426,11 @@ def run_reuse_precheck(
         except Exception as exc:
             cleanup_warnings.append(str(exc))
         try:
-            phone.cleanup(turn_display_off=False)
+            phone.cleanup(turn_display_off=True)
         except Exception as exc:
             cleanup_warnings.append(str(exc))
+    timing["total_ms"] = (time.perf_counter_ns() - total_started) / 1.0e6
+    result["timing"] = timing
     if cleanup_warnings:
         result["cleanup_warnings"] = cleanup_warnings
     (output / "precheck.json").write_text(
@@ -416,6 +449,7 @@ def run_active_reuse_precheck(
     phone_serial: Optional[str] = None,
     maximum_displacement_px: float = DEFAULT_MAXIMUM_DISPLACEMENT_PX,
     sample_frames: int = 3,
+    adapter: Optional[CameraAdapter] = None,
 ) -> Mapping[str, object]:
     """Resolve and check the active rig profile without accepting artifact paths.
 
@@ -451,6 +485,7 @@ def run_active_reuse_precheck(
                 phone_serial=phone_serial,
                 maximum_displacement_px=maximum_displacement_px,
                 sample_frames=sample_frames,
+                adapter=adapter,
             )
         )
     except Exception as exc:
@@ -490,6 +525,10 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--phone-serial")
     value.add_argument("--adb")
     value.add_argument("--mvs-python-path")
+    value.add_argument(
+        "--camera-adapter",
+        help="HIK-compatible module:factory; omission uses physical HIK MVS",
+    )
     return value
 
 
@@ -502,6 +541,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     repeatability = resolve_rig_repeatability_policy(
         load_system_configuration(arguments.profile_root)
+    )
+    adapter = (
+        create_plugin_camera_adapter(arguments.camera_adapter)
+        if arguments.camera_adapter
+        else None
     )
     if arguments.diagnostic_calibration_override:
         calibration = resolve_calibration_file(
@@ -520,6 +564,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "reuse_max_displacement_px"
                     ],
                     sample_frames=repeatability["reuse_sample_frames"],
+                    adapter=adapter,
                 )
             )
             result["calibration_selection"] = "diagnostic_explicit_path"
@@ -549,6 +594,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             phone_serial=arguments.phone_serial,
             maximum_displacement_px=repeatability["reuse_max_displacement_px"],
             sample_frames=repeatability["reuse_sample_frames"],
+            adapter=adapter,
         )
         if result["status"] == "no_previous_calibration":
             print(format_reuse_precheck_failure(result))

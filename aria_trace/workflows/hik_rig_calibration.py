@@ -291,6 +291,19 @@ class HikRigCalibrationSession:
         self._preview_settings: Dict[str, Any] = {}
         self._opened = False
         self._saved = False
+        self.stage_timings: List[Dict[str, Any]] = []
+
+    def _timed_stage(self, name: str, operation):
+        started = time.perf_counter_ns()
+        try:
+            return operation()
+        finally:
+            self.stage_timings.append(
+                {
+                    "stage": str(name),
+                    "duration_ms": (time.perf_counter_ns() - started) / 1.0e6,
+                }
+            )
 
     @staticmethod
     def _required(value, name: str):
@@ -3349,7 +3362,9 @@ class HikRigCalibrationSession:
                 screen_points_xy=correspondences["screen_points_xy"],
                 camera_size_px=full_size,
                 screen_size_px=phone_metrics.screen_size_px,
-                input_frame_id="hik://{}/full_sensor".format(self.options.camera_id),
+                input_frame_id="hik://{}/full_sensor".format(
+                    self.camera_metadata.get("device_id", self.options.camera_id)
+                ),
                 canonical_screen_frame_id="android://{}/display".format(self.options.phone_serial),
                 output_origin_screen_xy=[x, y],
                 output_size_px=[width, height],
@@ -3428,8 +3443,14 @@ class HikRigCalibrationSession:
             config = {
                 "schema_version": 1,
                 "camera": {
-                    "adapter_id": "hik_mvs",
-                    "device_id": self.options.camera_id,
+                    "adapter_id": str(
+                        self.camera_metadata.get(
+                            "adapter_id", getattr(self.camera, "adapter_id", "hik_mvs")
+                        )
+                    ),
+                    "device_id": str(
+                        self.camera_metadata.get("device_id", self.options.camera_id)
+                    ),
                     "metadata": dict(self.camera_metadata),
                     "controls": dict(self.camera_controls),
                     "full_sensor_mode": {
@@ -3564,22 +3585,30 @@ class HikRigCalibrationSession:
             raise
 
     def run(self) -> Optional[Path]:
-        self.open()
+        self._timed_stage("open", self.open)
         try:
             try:
-                self.calibrate_lens_distortion()
-                if not self.wait_for_positioning_confirmation():
+                self._timed_stage("lens_distortion", self.calibrate_lens_distortion)
+                if not self._timed_stage(
+                    "positioning_confirmation", self.wait_for_positioning_confirmation
+                ):
                     return None
-                self.calibrate_geometry()
-                self.calibrate_black_level()
-                self.calibrate_once_auto_imaging()
-                self.calibrate_exposure()
-                self.calibrate_white_balance()
-                self.verify_final_imaging()
+                self._timed_stage("geometry", self.calibrate_geometry)
+                self._timed_stage("black_level", self.calibrate_black_level)
+                self._timed_stage("camera_once_auto", self.calibrate_once_auto_imaging)
+                self._timed_stage("exposure", self.calibrate_exposure)
+                self._timed_stage("white_balance", self.calibrate_white_balance)
+                self._timed_stage(
+                    "final_imaging_verification", self.verify_final_imaging
+                )
                 if self.options.grade_data_matrix:
-                    self.grade_data_matrix()
+                    self._timed_stage("data_matrix", self.grade_data_matrix)
                 if self.options.headless:
-                    return self.save() if self.options.save_without_prompt else None
+                    return (
+                        self._timed_stage("save", self.save)
+                        if self.options.save_without_prompt
+                        else None
+                    )
                 while True:
                     action = self.focus_loop()
                     if action == "data_matrix":
@@ -3602,7 +3631,7 @@ class HikRigCalibrationSession:
                         self.verify_final_imaging()
                         continue
                     if action == "save":
-                        return self.save()
+                        return self._timed_stage("save", self.save)
                     return None
             except Exception as exc:
                 evidence = self._write_failure_evidence(exc)
@@ -3610,7 +3639,7 @@ class HikRigCalibrationSession:
                     self.progress("Failure evidence saved for review: {}".format(evidence))
                 raise
         finally:
-            self.close()
+            self._timed_stage("close", self.close)
 
     def _write_failure_evidence(self, error: Exception) -> Optional[Path]:
         """Save review images only; never create a failed calibration bundle."""

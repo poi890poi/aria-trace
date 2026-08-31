@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
+from aria_trace.adapters.rig.devices import create_camera_adapter as create_plugin_camera_adapter
 from aria_trace.adapters.android.phone import (
     AdbPhoneSession,
     connected_adb_devices,
@@ -60,6 +61,13 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--output", type=Path, help="New calibration bundle directory")
     value.add_argument("--adb", help="ADB executable; normally auto-detected")
     value.add_argument("--mvs-python-path")
+    value.add_argument(
+        "--camera-adapter",
+        help=(
+            "HIK-compatible module:factory camera adapter; omission uses the "
+            "physical HIK MVS driver"
+        ),
+    )
     value.add_argument("--profile-root", type=Path)
     value.add_argument(
         "--reuse-if-unchanged",
@@ -241,19 +249,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             repeatability["save_movement_consecutive_frames"],
         )
     )
-    camera = HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
+    camera = (
+        create_plugin_camera_adapter(arguments.camera_adapter)
+        if arguments.camera_adapter
+        else HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
+    )
     if arguments.list_cameras:
         for device in camera.devices(probe=True):
             print("{}\t{}\t{}".format(device.device_id, device.label, dict(device.metadata)))
         return 0
     if arguments.camera_id is None:
         selected_camera = _select(
-            "HIK camera",
+            "camera",
             camera.devices(probe=True),
             lambda item: "{} ({})".format(item.label, item.device_id),
         )
         arguments.camera_id = selected_camera.device_id
-        print("Selected HIK camera: {}".format(selected_camera.label))
+        print("Selected camera: {}".format(selected_camera.label))
     adb = resolve_adb_executable(arguments.adb)
     if arguments.phone_serial is None:
         arguments.phone_serial = _select(
@@ -291,6 +303,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             phone_serial=arguments.phone_serial,
             maximum_displacement_px=repeatability["reuse_max_displacement_px"],
             sample_frames=repeatability["reuse_sample_frames"],
+            adapter=camera,
         )
         if (
             precheck.get("reusable")
@@ -365,7 +378,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ],
     )
     phone = AdbPhoneSession(arguments.phone_serial, adb_executable=adb)
-    result = HikRigCalibrationSession(options, camera=camera, phone=phone).run()
+    run_started = time.perf_counter_ns()
+    session = HikRigCalibrationSession(options, camera=camera, phone=phone)
+    result = session.run()
+    run_elapsed_ms = (time.perf_counter_ns() - run_started) / 1.0e6
+    if result is not None:
+        recorded_stages = getattr(session, "stage_timings", [])
+        if not isinstance(recorded_stages, (list, tuple)):
+            recorded_stages = []
+        timing = {
+            "schema_version": "1.0",
+            "path": "fresh_calibration",
+            "total_ms": run_elapsed_ms,
+            "stages": list(recorded_stages),
+        }
+        result_directory = Path(result)
+        result_directory.mkdir(parents=True, exist_ok=True)
+        (result_directory / "run_timing.json").write_text(
+            json.dumps(timing, indent=2), encoding="utf-8"
+        )
+        print("Fresh calibration time: {:.3f} s".format(run_elapsed_ms / 1000.0))
     if result is None:
         print("Calibration ended without saving.")
     elif not arguments.no_profile:

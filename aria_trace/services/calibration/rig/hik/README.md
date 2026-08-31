@@ -31,6 +31,32 @@ The existing desktop adapter loader can use this camera plugin factory:
 aria_trace.adapters.hik.driver:create_camera_adapter
 ```
 
+The production command also accepts another HIK-compatible adapter factory.
+The same adapter instance is used by the reuse precheck and, when reuse is not
+accepted, by the complete calibration workflow:
+
+```powershell
+python -m aria_trace.apps.hik_rig_calibration `
+  --camera-adapter package.module:create_camera_adapter `
+  --camera-id CAMERA_MODEL_ID `
+  --phone-serial DISPLAY_SERIAL `
+  --reuse-if-unchanged `
+  --headless --save
+```
+
+The factory takes no arguments and returns `CameraAdapter`. Its reported
+`adapter_id` and `device_id` are saved as profile identity, so different
+cameras, lenses, resolutions, frame rates, and zoom modes can remain separate
+models. A fresh saved run writes `run_timing.json`; reuse writes its stage
+breakdown in `precheck.json`. Those receipts are produced by the production
+paths rather than a benchmark-only calibration wrapper.
+
+`virtualhikcam.driver:create_camera_adapter` is the repository's Android
+Camera2 development implementation of this contract. It has persistent ROI
+and control state and rejects concurrent opens, but makes no claims about HIK
+hardware controls, sensor ROI bandwidth, or latency. See
+`virtualhikcam/README.md`.
+
 List cameras without claiming one:
 
 ```powershell
