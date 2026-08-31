@@ -22,6 +22,7 @@ from acquisition.rig_calibration.hik.reuse_precheck import (
     main as reuse_precheck_main,
     parser as reuse_precheck_parser,
 )
+from aria_trace.workflows.rig_reuse_precheck import _wait_owned_target_fullscreen
 from acquisition.profile_registry import ProfileContext, ProfileRegistry
 from aria_trace.apps.hik_rig_calibration import (
     _write_standalone_adapter,
@@ -70,6 +71,26 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
+    @staticmethod
+    def _full_sensor_sample():
+        return FrameSample(
+            np.zeros((48, 64, 3), np.uint8),
+            1,
+            receive_time_ns=1,
+            metadata={
+                "image_space": {
+                    "space_id": "hik_camera_acquisition_pixels",
+                    "stored_size_px": [64, 48],
+                    "parent_space_id": "hik_full_sensor_camera_pixels",
+                    "parent_size_px": [64, 48],
+                    "roi_in_parent_xywh": [0, 0, 64, 48],
+                    "local_to_parent_3x3": np.eye(3).tolist(),
+                    "orientation": "hik_camera_native",
+                    "color_order": "BGR",
+                }
+            },
+        )
+
     def test_precheck_resets_full_sensor_and_uses_only_charuco_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -77,24 +98,16 @@ class HikRigReuseTests(unittest.TestCase):
             output = root / "precheck"
             adapter = Mock()
             adapter.reset_full_sensor_roi.return_value = [0, 0, 64, 48]
-            adapter.read.return_value = FrameSample(
-                np.zeros((48, 64, 3), np.uint8),
-                1,
-                receive_time_ns=1,
-                metadata={
-                    "image_space": {
-                        "space_id": "hik_camera_acquisition_pixels",
-                        "stored_size_px": [64, 48],
-                        "parent_space_id": "hik_full_sensor_camera_pixels",
-                        "parent_size_px": [64, 48],
-                        "roi_in_parent_xywh": [0, 0, 64, 48],
-                        "local_to_parent_3x3": np.eye(3).tolist(),
-                        "orientation": "hik_camera_native",
-                        "color_order": "BGR",
-                    }
-                },
-            )
+            adapter.read.return_value = self._full_sensor_sample()
             target = Mock()
+            target.bound_port = 12345
+            target.telemetry.return_value = {
+                "browser": {
+                    "canvas_width": 64,
+                    "canvas_height": 48,
+                    "fullscreen": True,
+                }
+            }
             phone = Mock()
             points = np.asarray(
                 [[10, 10], [30, 10], [10, 30], [30, 30]], np.float64
@@ -111,7 +124,7 @@ class HikRigReuseTests(unittest.TestCase):
                 "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession",
                 return_value=phone,
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.AdbDisplayTarget",
+                "aria_trace.workflows.rig_reuse_precheck.LocalPhoneTargetServer",
                 return_value=target,
             ), patch(
                 "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",
@@ -145,6 +158,81 @@ class HikRigReuseTests(unittest.TestCase):
                 "hik_camera_acquisition_pixels",
                 result["image_space"]["space_id"],
             )
+
+    def test_owned_target_fullscreen_uses_physical_canvas_for_adb_tap(self):
+        phone = Mock()
+        target = Mock()
+        target.telemetry.side_effect = [
+            {
+                "browser": {
+                    "canvas_width": 1200,
+                    "canvas_height": 1776,
+                    "visual_viewport_width": 800,
+                    "visual_viewport_height": 1280,
+                    "fullscreen": False,
+                }
+            },
+            {
+                "browser": {
+                    "canvas_width": 1200,
+                    "canvas_height": 1920,
+                    "fullscreen": True,
+                }
+            },
+        ]
+        browser = _wait_owned_target_fullscreen(
+            phone, target, [1200, 1920], timeout_seconds=1.0
+        )
+        self.assertTrue(browser["fullscreen"])
+        phone.request_fullscreen.assert_called_once_with(
+            [1200, 1920], viewport_size_px=[1200, 1776]
+        )
+
+    def test_failed_detection_still_writes_expanded_full_sensor_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calibration = write_calibration(root / "rig")
+            output = root / "precheck"
+            adapter = Mock()
+            adapter.reset_full_sensor_roi.return_value = [0, 0, 64, 48]
+            adapter.read.return_value = self._full_sensor_sample()
+            target = Mock()
+            target.bound_port = 12345
+            target.telemetry.return_value = {
+                "browser": {
+                    "canvas_width": 64,
+                    "canvas_height": 48,
+                    "fullscreen": True,
+                }
+            }
+            with patch(
+                "aria_trace.workflows.rig_reuse_precheck.RectifiedHikCamera"
+            ) as validator_type, patch(
+                "aria_trace.workflows.rig_reuse_precheck.resolve_adb_executable",
+                return_value=Path("adb"),
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession"
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.LocalPhoneTargetServer",
+                return_value=target,
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",
+                side_effect=RuntimeError("no board"),
+            ):
+                validator_type.return_value.is_calibrated.return_value = True
+                result = run_reuse_precheck(
+                    calibration,
+                    output,
+                    sample_frames=3,
+                    adapter=adapter,
+                )
+            self.assertEqual("unavailable", result["status"])
+            self.assertIn("not detected", result["reason"])
+            self.assertEqual(3, len(result["detection_failures"]))
+            self.assertTrue(
+                (output / "fresh_full_sensor_expanded_review.png").is_file()
+            )
+            self.assertEqual(2, len(result["media"]))
 
     def test_repeatability_failure_message_names_geometry_limit_and_outcome(self):
         message = format_reuse_precheck_failure(

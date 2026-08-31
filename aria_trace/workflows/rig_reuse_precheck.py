@@ -20,7 +20,7 @@ from aria_trace.adapters.rig.devices import (
     CameraConfiguration,
     create_camera_adapter as create_plugin_camera_adapter,
 )
-from aria_trace.adapters.android.hik_display import AdbDisplayTarget
+from aria_trace.adapters.android.display import LocalPhoneTargetServer
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.evidence.media_trace import validate_media_registry
 from aria_trace.evidence.rig_spatial import (
@@ -30,6 +30,7 @@ from aria_trace.evidence.rig_spatial import (
     validated_rig_sample,
 )
 from aria_trace.services.calibration.rig.distortion import distort_pixel_points
+from aria_trace.services.calibration.rig.contracts import FrameSample
 from aria_trace.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
 from aria_trace.adapters.filesystem.system_configuration import (
@@ -265,6 +266,85 @@ def _alignment_overlay(
     return result
 
 
+def _expanded_precheck_review(
+    sample: FrameSample,
+    config: Mapping[str, object],
+    screen_to_camera: Sequence[Sequence[float]],
+    *,
+    title: str,
+    overlay: Optional[np.ndarray] = None,
+):
+    """Build one saved-geometry review without reassigning sample space."""
+
+    full_mode = config["camera"]["full_sensor_mode"]
+    full_size = [int(full_mode["width_px"]), int(full_mode["height_px"])]
+    phone_size = list(map(int, config["phone"]["screen_size_px"]))
+    phone_corners = np.asarray(
+        [
+            [0, 0],
+            [phone_size[0] - 1, 0],
+            [phone_size[0] - 1, phone_size[1] - 1],
+            [0, phone_size[1] - 1],
+        ],
+        dtype=np.float64,
+    )
+    ideal_phone_quad = cv2.perspectiveTransform(
+        phone_corners.reshape((-1, 1, 2)),
+        np.asarray(screen_to_camera, dtype=np.float64),
+    ).reshape((-1, 2))
+    lens_model = dict(((config.get("optics") or {}).get("lens_model") or {}))
+    raw_phone_quad = (
+        distort_pixel_points(ideal_phone_quad, lens_model)
+        if lens_model.get("source") == "measured"
+        else ideal_phone_quad
+    )
+    return expanded_rig_camera_review(
+        sample,
+        full_sensor_size_px=full_size,
+        phone_display_size_px=phone_size,
+        phone_display_to_full_sensor_3x3=(
+            screen_to_camera if lens_model.get("source") != "measured" else None
+        ),
+        phone_display_quadrilateral_full_sensor_xy=raw_phone_quad,
+        title=title,
+        overlay=overlay,
+    )
+
+
+def _wait_owned_target_fullscreen(
+    phone: AdbPhoneSession,
+    target: LocalPhoneTargetServer,
+    expected_size_px: Sequence[int],
+    timeout_seconds: float = 8.0,
+) -> Mapping[str, object]:
+    """Retry the trusted fullscreen tap until owned-target telemetry agrees."""
+
+    expected = list(map(int, expected_size_px))
+    deadline = time.monotonic() + float(timeout_seconds)
+    last_browser: Mapping[str, object] = {}
+    while time.monotonic() < deadline:
+        last_browser = dict((target.telemetry().get("browser") or {}))
+        canvas = [
+            int(last_browser.get("canvas_width", 0) or 0),
+            int(last_browser.get("canvas_height", 0) or 0),
+        ]
+        if bool(last_browser.get("fullscreen")) and canvas == expected:
+            return last_browser
+        # Keep this trusted-input coordinate calculation identical to fresh
+        # calibration.  The target canvas is reported in physical display
+        # pixels; Chrome's visual viewport is reported in CSS pixels and is
+        # therefore not a valid ADB input coordinate on scaled displays.
+        phone.request_fullscreen(
+            expected,
+            viewport_size_px=canvas if min(canvas) > 0 else None,
+        )
+        time.sleep(0.25)
+    raise RuntimeError(
+        "Owned ChArUco target did not enter fullscreen at {} px: {}"
+        .format(expected, dict(last_browser))
+    )
+
+
 def run_reuse_precheck(
     calibration: Path,
     output: Path,
@@ -315,21 +395,27 @@ def run_reuse_precheck(
 
     adb_path = resolve_adb_executable(adb)
     phone = AdbPhoneSession(saved_phone, adb_executable=adb_path)
-    viewer = str(((config.get("phone") or {}).get("viewer") or {}).get("activity") or "")
-    target = AdbDisplayTarget(phone, component=viewer or None)
+    target = LocalPhoneTargetServer(bind_host="127.0.0.1", port=0)
     orientation = int(config["phone"].get("orientation_quarter_turns", 0))
     full_mode = config["camera"]["full_sensor_mode"]
     observations = []
     evidence_frames = []
+    acquired_samples = []
     detection_failures = []
     cleanup_warnings = []
     timing = {}
     total_started = time.perf_counter_ns()
     try:
         stage_started = time.perf_counter_ns()
-        target.configure_canonical_orientation(orientation)
-        phone.wake_and_hold_display(orientation)
         target.start(_saved_layout(config))
+        phone.wake_and_hold(
+            target.bound_port,
+            config["phone"]["screen_size_px"],
+            orientation,
+        )
+        _wait_owned_target_fullscreen(
+            phone, target, config["phone"]["screen_size_px"]
+        )
         timing["target_prepare_ms"] = (
             time.perf_counter_ns() - stage_started
         ) / 1.0e6
@@ -357,9 +443,18 @@ def run_reuse_precheck(
         stage_started = time.perf_counter_ns()
         for frame_index in range(max(1, int(sample_frames))):
             sample = adapter.read()
+            checked_sample = validated_rig_sample(
+                sample,
+                parent_size_px=[
+                    int(full_mode["width_px"]),
+                    int(full_mode["height_px"]),
+                ],
+                copy_image=True,
+            )
+            acquired_samples.append(checked_sample)
             try:
                 detected = detect_charuco_correspondences(
-                    sample.image, _saved_layout(config)
+                    checked_sample.image, _saved_layout(config)
                 )
             except RuntimeError as exc:
                 detection_failures.append(
@@ -367,16 +462,7 @@ def run_reuse_precheck(
                 )
                 continue
             observations.append(detected)
-            evidence_frames.append(
-                validated_rig_sample(
-                    sample,
-                    parent_size_px=[
-                        int(full_mode["width_px"]),
-                        int(full_mode["height_px"]),
-                    ],
-                    copy_image=True,
-                )
-            )
+            evidence_frames.append(checked_sample)
         timing["capture_and_detect_ms"] = (
             time.perf_counter_ns() - stage_started
         ) / 1.0e6
@@ -411,48 +497,18 @@ def run_reuse_precheck(
             raise OSError("Could not save full-sensor precheck frame")
         if not cv2.imwrite(str(output / "charuco_alignment_overlay.png"), overlay):
             raise OSError("Could not save ChArUco alignment overlay")
-        phone_size = list(map(int, config["phone"]["screen_size_px"]))
-        phone_corners = np.asarray(
-            [
-                [0, 0],
-                [phone_size[0] - 1, 0],
-                [phone_size[0] - 1, phone_size[1] - 1],
-                [0, phone_size[1] - 1],
-            ],
-            dtype=np.float64,
-        )
-        ideal_phone_quad = cv2.perspectiveTransform(
-            phone_corners.reshape((-1, 1, 2)),
-            np.asarray(screen_to_camera, dtype=np.float64),
-        ).reshape((-1, 2))
-        lens_model = dict(((config.get("optics") or {}).get("lens_model") or {}))
-        raw_phone_quad = (
-            distort_pixel_points(ideal_phone_quad, lens_model)
-            if lens_model.get("source") == "measured"
-            else ideal_phone_quad
-        )
-        common_review_args = {
-            "full_sensor_size_px": [
-                int(full_mode["width_px"]), int(full_mode["height_px"])
-            ],
-            "phone_display_size_px": phone_size,
-            "phone_display_to_full_sensor_3x3": (
-                screen_to_camera
-                if lens_model.get("source") != "measured"
-                else None
-            ),
-            "phone_display_quadrilateral_full_sensor_xy": raw_phone_quad,
-        }
-        fresh_review = expanded_rig_camera_review(
+        fresh_review = _expanded_precheck_review(
             fresh_sample,
+            config,
+            screen_to_camera,
             title="Rig reuse full-sensor acquisition",
-            **common_review_args,
         )
-        alignment_review = expanded_rig_camera_review(
+        alignment_review = _expanded_precheck_review(
             fresh_sample,
+            config,
+            screen_to_camera,
             title="Rig reuse ChArUco alignment: green=saved magenta=fresh",
             overlay=overlay,
-            **common_review_args,
         )
         review_files = {
             "fresh_full_sensor_expanded_review.png": fresh_review,
@@ -520,7 +576,52 @@ def run_reuse_precheck(
             status="unavailable",
             reusable=False,
             reason="{}: {}".format(type(exc).__name__, exc),
+            detection_failures=detection_failures,
         )
+        if acquired_samples:
+            try:
+                sample = acquired_samples[-1]
+                raw_name = "fresh_full_sensor_frame.png"
+                review_name = "fresh_full_sensor_expanded_review.png"
+                if not cv2.imwrite(str(output / raw_name), sample.image):
+                    raise OSError("Could not save failed precheck camera frame")
+                review = _expanded_precheck_review(
+                    sample,
+                    config,
+                    screen_to_camera,
+                    title="Rig reuse acquisition before precheck failure",
+                )
+                if not cv2.imwrite(str(output / review_name), review.image):
+                    raise OSError("Could not save failed precheck expanded review")
+                media = [
+                    rig_sample_media_record(
+                        raw_name,
+                        sample,
+                        operation="failed_rig_reuse_acquisition_frame_copy",
+                        metadata_reference="precheck.json#media",
+                        notes=(
+                            "Machine/source raster; use expanded review for human inspection."
+                        ),
+                    ),
+                    expanded_review_media_record(
+                        review_name,
+                        review,
+                        metadata_reference="precheck.json#media",
+                    ),
+                ]
+                validate_media_registry(output, media)
+                result.update(
+                    image_space=sample.metadata.get("image_space"),
+                    evidence={
+                        "fresh_full_sensor_frame": raw_name,
+                        "fresh_full_sensor_expanded_review": review_name,
+                    },
+                    media=media,
+                )
+            except Exception as evidence_exc:
+                result["evidence_error"] = "{}: {}".format(
+                    type(evidence_exc).__name__, evidence_exc
+                )
     finally:
         try:
             adapter.close()
