@@ -57,6 +57,34 @@ from acquisition.rig_calibration.hik.workflow import (
 from acquisition.rig_calibration.geometry import estimate_screen_geometry
 
 
+def rig_frame_sample(image, time_ns=1, roi_xywh=None):
+    height, width = image.shape[:2]
+    roi = list(roi_xywh or [0, 0, width, height])
+    parent_size = [max(width, roi[0] + roi[2]), max(height, roi[1] + roi[3])]
+    return FrameSample(
+        image,
+        time_ns,
+        receive_time_ns=time_ns,
+        source_id="fake",
+        metadata={
+            "image_space": {
+                "space_id": "hik_camera_acquisition_pixels",
+                "stored_size_px": [width, height],
+                "parent_space_id": "hik_full_sensor_camera_pixels",
+                "parent_size_px": parent_size,
+                "roi_in_parent_xywh": roi,
+                "local_to_parent_3x3": [
+                    [1.0, 0.0, float(roi[0])],
+                    [0.0, 1.0, float(roi[1])],
+                    [0.0, 0.0, 1.0],
+                ],
+                "orientation": "hik_camera_native",
+                "color_order": "BGR",
+            }
+        },
+    )
+
+
 class HikAlgorithmTests(unittest.TestCase):
     def test_owned_exact_pixel_presenter_is_default_and_gallery_is_explicit(self):
         owned = HikRigCalibrationSession(
@@ -84,9 +112,7 @@ class HikAlgorithmTests(unittest.TestCase):
         options = HikCalibrationOptions(
             "fake", "phone", Path("unused"), headless=False
         )
-        sample = mock.Mock(
-            image=np.zeros((48, 64, 3), np.uint8), metadata={}
-        )
+        sample = rig_frame_sample(np.zeros((48, 64, 3), np.uint8))
         camera = mock.Mock()
         camera.read.return_value = sample
         target = mock.Mock()
@@ -240,6 +266,14 @@ class HikAlgorithmTests(unittest.TestCase):
                 (output / "cross_source_check" / "edge_overlay_adb_red_hik_cyan.png")
                 .is_file()
             )
+            self.assertTrue(
+                (
+                    output
+                    / "cross_source_check"
+                    / "full_camera_and_projected_phone_review.png"
+                ).is_file()
+            )
+            self.assertEqual(7, len(result["media"]))
 
     def test_complete_focus_view_preserves_entire_frame_inside_pane(self):
         image = np.zeros((10, 20, 3), np.uint8)
@@ -271,13 +305,7 @@ class HikAlgorithmTests(unittest.TestCase):
             progress=lambda _message: None,
         )
         session.camera.read.side_effect = [
-            FrameSample(
-                np.full((2, 2, 3), index, np.uint8),
-                index,
-                receive_time_ns=index,
-                source_id="fake",
-                metadata={"frame_number": index},
-            )
+            rig_frame_sample(np.full((2, 2, 3), index, np.uint8), index)
             for index in range(8)
         ]
         expected = np.full((2, 2, 3), 99, np.uint8)
@@ -531,12 +559,7 @@ class HikAlgorithmTests(unittest.TestCase):
                 }
 
             def read(self):
-                return FrameSample(
-                    np.full((16, 16, 3), 180, np.uint8),
-                    1,
-                    receive_time_ns=1,
-                    source_id="fake",
-                )
+                return rig_frame_sample(np.full((16, 16, 3), 180, np.uint8))
 
         class Target:
             def present_image(self, _image, _label):
@@ -640,7 +663,7 @@ class HikAlgorithmTests(unittest.TestCase):
                 else:
                     image = np.full((16, 16, 3), 230, np.uint8)
                     image[:, :8, 1] = 255
-                return FrameSample(image, 1, receive_time_ns=1, source_id="fake")
+                return rig_frame_sample(image)
 
         with tempfile.TemporaryDirectory() as directory:
             camera = Camera()
@@ -1164,7 +1187,7 @@ class FakeRectifiedAdapter:
         return list(roi)
 
     def read(self):
-        return FrameSample(self.image.copy(), 1, receive_time_ns=1, source_id="fake")
+        return rig_frame_sample(self.image.copy(), roi_xywh=getattr(self, "roi", None))
 
     def close(self):
         self.closed = True

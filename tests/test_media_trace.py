@@ -10,9 +10,74 @@ from acquisition.media_trace import raster_record, validate_media_registry
 from acquisition.rig_calibration.hik.media_trace import (
     build_hik_calibration_media_registry,
 )
+from acquisition.rig_calibration.contracts import FrameSample
+from aria_trace.evidence.rig_spatial import (
+    SYNTHETIC_BACKGROUND_BGR,
+    expanded_rig_camera_review,
+    validate_rig_image_space,
+)
 
 
 class MediaTraceTests(unittest.TestCase):
+    @staticmethod
+    def _roi_sample(image, roi, parent_size):
+        return FrameSample(
+            image,
+            1,
+            metadata={
+                "image_space": {
+                    "space_id": "hik_camera_acquisition_pixels",
+                    "stored_size_px": [image.shape[1], image.shape[0]],
+                    "parent_space_id": "hik_full_sensor_camera_pixels",
+                    "parent_size_px": list(parent_size),
+                    "roi_in_parent_xywh": list(roi),
+                    "local_to_parent_3x3": [
+                        [1.0, 0.0, float(roi[0])],
+                        [0.0, 1.0, float(roi[1])],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    "orientation": "hik_camera_native",
+                    "color_order": "BGR",
+                }
+            },
+        )
+
+    def test_rig_space_rejects_missing_or_inconsistent_producer_metadata(self):
+        image = np.zeros((20, 30, 3), np.uint8)
+        with self.assertRaisesRegex(ValueError, "did not supply image_space"):
+            validate_rig_image_space(image, None)
+        sample = self._roi_sample(image, [7, 9, 30, 20], [80, 60])
+        bad = dict(sample.metadata["image_space"])
+        bad["roi_in_parent_xywh"] = [7, 9, 29, 20]
+        with self.assertRaisesRegex(ValueError, "inconsistent ROI"):
+            validate_rig_image_space(image, bad)
+
+    def test_expanded_review_keeps_full_sensor_and_outlying_phone_projection(self):
+        image = np.full((20, 30, 3), 40, np.uint8)
+        sample = self._roi_sample(image, [10, 8, 30, 20], [80, 60])
+        phone_quad = [[-12, -8], [86, -5], [90, 67], [-9, 70]]
+        review = expanded_rig_camera_review(
+            sample,
+            full_sensor_size_px=[80, 60],
+            phone_display_size_px=[100, 200],
+            phone_display_to_full_sensor_3x3=None,
+            phone_display_quadrilateral_full_sensor_xy=phone_quad,
+            title="test",
+        )
+        self.assertEqual(
+            phone_quad,
+            review.geometry["phone_display_quadrilateral_full_sensor_xy"],
+        )
+        self.assertEqual(
+            "explicit_raw_sensor_quadrilateral",
+            review.geometry["phone_projection_model"],
+        )
+        synthetic = np.all(
+            review.image == np.asarray(SYNTHETIC_BACKGROUND_BGR, np.uint8), axis=2
+        )
+        self.assertGreater(int(np.count_nonzero(synthetic)), 0)
+        self.assertGreater(review.image.shape[1], 80)
+
     def test_registry_requires_every_media_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -50,7 +115,29 @@ class MediaTraceTests(unittest.TestCase):
                 "normalization": {"output_size_px": [30, 40]},
                 "results": {"cross_source_check": {}},
             }
-            records = build_hik_calibration_media_registry(root, config)
+            sample = FrameSample(
+                np.zeros((80, 90, 3), np.uint8),
+                1,
+                metadata={
+                    "image_space": {
+                        "space_id": "hik_camera_adapter_roi_image_pixels",
+                        "stored_size_px": [90, 80],
+                        "parent_space_id": "hik_full_sensor_camera_pixels",
+                        "parent_size_px": [100, 90],
+                        "roi_in_parent_xywh": [5, 6, 90, 80],
+                        "local_to_parent_3x3": [
+                            [1.0, 0.0, 5.0],
+                            [0.0, 1.0, 6.0],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        "orientation": "hik_camera_native",
+                        "color_order": "BGR",
+                    }
+                },
+            )
+            records = build_hik_calibration_media_registry(
+                root, config, last_camera_sample=sample
+            )
             by_file = {row["file"]: row for row in records}
             camera = by_file["last_camera_frame.png"]
             self.assertEqual(

@@ -22,6 +22,14 @@ from aria_trace.adapters.rig.devices import (
 )
 from aria_trace.adapters.android.hik_display import AdbDisplayTarget
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from aria_trace.evidence.media_trace import validate_media_registry
+from aria_trace.evidence.rig_spatial import (
+    expanded_review_media_record,
+    expanded_rig_camera_review,
+    rig_sample_media_record,
+    validated_rig_sample,
+)
+from aria_trace.services.calibration.rig.distortion import distort_pixel_points
 from aria_trace.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
 from aria_trace.adapters.filesystem.system_configuration import (
@@ -359,7 +367,16 @@ def run_reuse_precheck(
                 )
                 continue
             observations.append(detected)
-            evidence_frames.append((sample.image.copy(), dict(sample.metadata)))
+            evidence_frames.append(
+                validated_rig_sample(
+                    sample,
+                    parent_size_px=[
+                        int(full_mode["width_px"]),
+                        int(full_mode["height_px"]),
+                    ],
+                    copy_image=True,
+                )
+            )
         timing["capture_and_detect_ms"] = (
             time.perf_counter_ns() - stage_started
         ) / 1.0e6
@@ -385,7 +402,8 @@ def run_reuse_precheck(
                 [row["p95_displacement_px"] for row in comparison["frame_metrics"]]
             )[len(observations) // 2]
         )
-        fresh, fresh_metadata = evidence_frames[representative_index]
+        fresh_sample = evidence_frames[representative_index]
+        fresh = fresh_sample.image
         overlay = _alignment_overlay(
             fresh, observations[representative_index], screen_to_camera
         )
@@ -393,17 +411,104 @@ def run_reuse_precheck(
             raise OSError("Could not save full-sensor precheck frame")
         if not cv2.imwrite(str(output / "charuco_alignment_overlay.png"), overlay):
             raise OSError("Could not save ChArUco alignment overlay")
+        phone_size = list(map(int, config["phone"]["screen_size_px"]))
+        phone_corners = np.asarray(
+            [
+                [0, 0],
+                [phone_size[0] - 1, 0],
+                [phone_size[0] - 1, phone_size[1] - 1],
+                [0, phone_size[1] - 1],
+            ],
+            dtype=np.float64,
+        )
+        ideal_phone_quad = cv2.perspectiveTransform(
+            phone_corners.reshape((-1, 1, 2)),
+            np.asarray(screen_to_camera, dtype=np.float64),
+        ).reshape((-1, 2))
+        lens_model = dict(((config.get("optics") or {}).get("lens_model") or {}))
+        raw_phone_quad = (
+            distort_pixel_points(ideal_phone_quad, lens_model)
+            if lens_model.get("source") == "measured"
+            else ideal_phone_quad
+        )
+        common_review_args = {
+            "full_sensor_size_px": [
+                int(full_mode["width_px"]), int(full_mode["height_px"])
+            ],
+            "phone_display_size_px": phone_size,
+            "phone_display_to_full_sensor_3x3": (
+                screen_to_camera
+                if lens_model.get("source") != "measured"
+                else None
+            ),
+            "phone_display_quadrilateral_full_sensor_xy": raw_phone_quad,
+        }
+        fresh_review = expanded_rig_camera_review(
+            fresh_sample,
+            title="Rig reuse full-sensor acquisition",
+            **common_review_args,
+        )
+        alignment_review = expanded_rig_camera_review(
+            fresh_sample,
+            title="Rig reuse ChArUco alignment: green=saved magenta=fresh",
+            overlay=overlay,
+            **common_review_args,
+        )
+        review_files = {
+            "fresh_full_sensor_expanded_review.png": fresh_review,
+            "charuco_alignment_expanded_review.png": alignment_review,
+        }
+        for name, review in review_files.items():
+            if not cv2.imwrite(str(output / name), review.image):
+                raise OSError("Could not save {}".format(name))
+        media = [
+            rig_sample_media_record(
+                "fresh_full_sensor_frame.png",
+                fresh_sample,
+                operation="rig_reuse_acquisition_frame_copy",
+                metadata_reference="precheck.json#media",
+                notes="Machine/source raster; use expanded review for human inspection.",
+            ),
+            rig_sample_media_record(
+                "charuco_alignment_overlay.png",
+                type(fresh_sample)(
+                    image=overlay,
+                    time_ns=fresh_sample.time_ns,
+                    clock_id=fresh_sample.clock_id,
+                    receive_time_ns=fresh_sample.receive_time_ns,
+                    source_id=fresh_sample.source_id,
+                    metadata=fresh_sample.metadata,
+                ),
+                operation="draw_saved_and_detected_charuco_alignment",
+                metadata_reference="precheck.json#media",
+                notes="Machine/source-space overlay; use expanded review for human inspection.",
+            ),
+        ]
+        media.extend(
+            expanded_review_media_record(
+                name, review, metadata_reference="precheck.json#media"
+            )
+            for name, review in review_files.items()
+        )
+        validate_media_registry(output, media)
         result.update(
             status="reusable" if comparison["matches"] else "rig_moved",
             reusable=bool(comparison["matches"]),
             comparison=comparison,
             detection_failures=detection_failures,
-            image_space=fresh_metadata.get("image_space"),
+            image_space=fresh_sample.metadata.get("image_space"),
             effective_full_sensor_roi_xywh=full_roi,
             evidence={
                 "fresh_full_sensor_frame": "fresh_full_sensor_frame.png",
                 "charuco_alignment_overlay": "charuco_alignment_overlay.png",
+                "fresh_full_sensor_expanded_review": (
+                    "fresh_full_sensor_expanded_review.png"
+                ),
+                "charuco_alignment_expanded_review": (
+                    "charuco_alignment_expanded_review.png"
+                ),
             },
+            media=media,
         )
         timing["evidence_write_ms"] = (
             time.perf_counter_ns() - stage_started

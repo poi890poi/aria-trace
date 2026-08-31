@@ -267,6 +267,15 @@ For a single stream, call `camera.get_frame()` or `camera.read()`, then call
 orientation, transform provenance, stored size, and color order. Do not infer a
 HIK image's coordinate space from its dimensions or filename.
 
+AriaTrace's own rig calibration, tests, and POCs use the atomic
+`FrameSample`/`read_sample()` form so pixels cannot be separated from that
+metadata. Persisted raw images retain the producer's space record. Human review
+images use an expanded magenta-checker canvas: yellow outlines the complete
+camera sensor and green outlines the projected phone display, including regions
+outside the acquired ROI. The media registry stores the exact placements; an
+early failure before geometry is known is labeled as projection unavailable.
+See [the HIK rig calibration documentation](aria_trace/services/calibration/rig/hik/README.md#spatially-traceable-evidence).
+
 | Mode | Rectified output | `rectify=False` / `--no-rectify` |
 |---|---|---|
 | `full` | rig-normalized phone display | hardware-ROI camera raster |

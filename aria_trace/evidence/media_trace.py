@@ -93,7 +93,13 @@ def array_size_px(image: np.ndarray) -> list[int]:
 
 
 def validate_media_registry(root: Path, records: Sequence[Mapping[str, Any]]) -> None:
-    """Require every persisted image/video under root to have exactly one record."""
+    """Check registry coverage and stored raster size only.
+
+    Domain producers must validate semantic coordinate metadata before building
+    these records. In particular, rig code uses ``rig_spatial`` and must not
+    treat this generic filesystem check as proof that a space assignment is
+    geometrically correct.
+    """
 
     root = Path(root)
     registered = [str(row["file"]).replace("\\", "/") for row in records]

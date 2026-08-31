@@ -38,6 +38,7 @@ from aria_trace.services.calibration.rig.distortion import (
     undistort_pixel_points,
 )
 from aria_trace.services.calibration.rig.image_quality import measure_slanted_edge_esfr
+from aria_trace.services.calibration.rig.contracts import FrameSample
 from aria_trace.services.calibration.rig.hik.algorithms import (
     BlackLevelObservation,
     ExposureObservation,
@@ -65,6 +66,13 @@ from aria_trace.evidence.rig_media import (
     build_hik_failure_media_registry,
 )
 from aria_trace.evidence.rig_alignment import cross_source_alignment_evidence
+from aria_trace.evidence.media_trace import raster_record
+from aria_trace.evidence.rig_spatial import (
+    expanded_review_media_record,
+    expanded_rig_camera_review,
+    rig_sample_media_record,
+    validated_rig_sample,
+)
 from aria_trace.services.calibration.rig.hik.patterns import (
     camera_white_mask,
     focus_edge_regions,
@@ -266,6 +274,7 @@ class HikRigCalibrationSession:
         self.auto_imaging_seed: Optional[Dict[str, Any]] = None
         self.auto_target_image: Optional[np.ndarray] = None
         self.auto_result_frame: Optional[np.ndarray] = None
+        self.auto_result_sample: Optional[FrameSample] = None
         self.auto_phone_screenshot: Optional[np.ndarray] = None
         self.cv_verification: Optional[Dict[str, Any]] = None
         self.transport_benchmark: Optional[Dict[str, Any]] = None
@@ -284,6 +293,7 @@ class HikRigCalibrationSession:
         self.data_matrix_evidence_directory: Optional[Path] = None
         self.data_matrix_failure_evidence: List[Dict[str, Any]] = []
         self.last_frame: Optional[np.ndarray] = None
+        self.last_sample: Optional[FrameSample] = None
         self._preview_window = "HIK calibration - live camera"
         self._preview_created = False
         self._preview_disabled = bool(options.headless)
@@ -310,6 +320,69 @@ class HikRigCalibrationSession:
         if value is None:
             raise RuntimeError("Calibration stage requires {}".format(name))
         return value
+
+    def _full_sensor_size_px(self) -> Optional[List[int]]:
+        width = int(self.camera_metadata.get("width_px", 0) or 0)
+        height = int(self.camera_metadata.get("height_px", 0) or 0)
+        return [width, height] if min(width, height) > 0 else None
+
+    def _remember_sample(self, sample: FrameSample, copy_image: bool = True) -> FrameSample:
+        """Retain producer-owned space together with the latest rig image."""
+
+        checked = validated_rig_sample(
+            sample,
+            parent_size_px=self._full_sensor_size_px(),
+            copy_image=copy_image,
+        )
+        self.last_sample = checked
+        self.last_frame = checked.image
+        return checked
+
+    def _read_camera(self) -> FrameSample:
+        return self._remember_sample(self.camera.read())
+
+    def _phone_projection_in_raw_sensor(self) -> Optional[np.ndarray]:
+        """Return the four physical display corners in raw full-sensor pixels."""
+
+        if self.geometry is None or self.phone_metrics is None:
+            return None
+        width, height = map(int, self.phone_metrics.screen_size_px)
+        return self._screen_points_to_raw_camera(
+            [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]
+        )
+
+    def _expanded_camera_review(
+        self,
+        sample: FrameSample,
+        title: str,
+        *,
+        overlay: Optional[np.ndarray] = None,
+    ):
+        full_size = self._full_sensor_size_px()
+        if full_size is None:
+            space = dict((sample.metadata or {}).get("image_space") or {})
+            full_size = list(map(int, space.get("parent_size_px") or []))
+        if len(full_size or []) != 2:
+            raise RuntimeError("Full-sensor dimensions are unavailable for rig evidence")
+        phone_size = (
+            list(map(int, self.phone_metrics.screen_size_px))
+            if self.phone_metrics is not None
+            else None
+        )
+        phone_quad = self._phone_projection_in_raw_sensor()
+        return expanded_rig_camera_review(
+            sample,
+            full_sensor_size_px=full_size,
+            phone_display_size_px=phone_size,
+            phone_display_to_full_sensor_3x3=(
+                np.asarray(self.geometry.inverse_matrix_3x3, dtype=np.float64)
+                if self.geometry is not None and not self._uses_measured_distortion()
+                else None
+            ),
+            phone_display_quadrilateral_full_sensor_xy=phone_quad,
+            title=title,
+            overlay=overlay,
+        )
 
     def _warn(self, message: str) -> None:
         value = str(message)
@@ -404,7 +477,7 @@ class HikRigCalibrationSession:
     ) -> Dict[str, Any]:
         self._capture_settled(white_mask)
         frames = [
-            self.camera.read().image
+            self._read_camera().image
             for _ in range(int(self.options.exposure_noise_frames))
         ]
         self.last_frame = frames[-1].copy()
@@ -796,7 +869,7 @@ class HikRigCalibrationSession:
         minimum = max(4, int(self.options.settle_frames))
         sample = None
         while time.monotonic() < deadline:
-            sample = self.camera.read()
+            sample = self._read_camera()
             image = sample.image
             self._preview_update(image, sample.metadata)
             if mask is not None:
@@ -823,7 +896,7 @@ class HikRigCalibrationSession:
 
         discard_count = max(8, int(self.options.settle_frames) * 2)
         for _ in range(discard_count):
-            sample = self.camera.read()
+            sample = self._read_camera()
             self._preview_update(sample.image, sample.metadata)
         return self._capture_settled()
 
@@ -1206,7 +1279,7 @@ class HikRigCalibrationSession:
         frames_observed = 0
         start = time.monotonic_ns()
         while time.monotonic() < deadline:
-            sample = self.camera.read()
+            sample = self._read_camera()
             frames_observed += 1
             state = dict(self.camera.imaging_state())
             self._set_preview_stage(
@@ -1480,7 +1553,7 @@ class HikRigCalibrationSession:
                         "Q / ESC = SKIP DISTORTION CORRECTION",
                     ),
                 )
-                sample = self.camera.read()
+                sample = self._read_camera()
                 self.last_frame = sample.image.copy()
                 detected = None
                 try:
@@ -1567,7 +1640,7 @@ class HikRigCalibrationSession:
         self._wait_painted(presentation)
         candidates = []
         for _ in range(int(self.options.geometry_frames)):
-            sample = self.camera.read()
+            sample = self._read_camera()
             frame = sample.image
             self.last_frame = frame.copy()
             try:
@@ -1681,7 +1754,7 @@ class HikRigCalibrationSession:
         )
         try:
             while True:
-                sample = self.camera.read()
+                sample = self._read_camera()
                 self.last_frame = sample.image.copy()
                 corner_count = 0
                 try:
@@ -1726,7 +1799,7 @@ class HikRigCalibrationSession:
             self.camera_metadata["fps"] = float(effective["fps"])
         self._capture_settled(white_mask)
         frames = [
-            self.camera.read().image
+            self._read_camera().image
             for _ in range(int(self.options.exposure_noise_frames))
         ]
         self.last_frame = frames[-1].copy()
@@ -1780,7 +1853,7 @@ class HikRigCalibrationSession:
             effective = self.camera.set_black_level(candidate)
             self._capture_settled(white_mask)
             frames = [
-                self.camera.read().image
+                self._read_camera().image
                 for _ in range(int(self.options.exposure_noise_frames))
             ]
             statistics = temporal_black_statistics(frames, white_mask)
@@ -1873,7 +1946,7 @@ class HikRigCalibrationSession:
         rows = []
         completed_modes = None
         while time.monotonic() < deadline:
-            sample = self.camera.read()
+            sample = self._read_camera()
             state = dict(self.camera.imaging_state())
             modes = dict(self.camera.auto_imaging_modes())
             mean = float(np.mean(sample.image))
@@ -1917,7 +1990,20 @@ class HikRigCalibrationSession:
                 .format(rows)
             )
         final = rows[-1]
-        self.auto_result_frame = self.last_frame.copy() if self.last_frame is not None else None
+        self.auto_result_sample = (
+            validated_rig_sample(
+                self.last_sample,
+                parent_size_px=self._full_sensor_size_px(),
+                copy_image=True,
+            )
+            if self.last_sample is not None
+            else None
+        )
+        self.auto_result_frame = (
+            self.auto_result_sample.image
+            if self.auto_result_sample is not None
+            else None
+        )
         white_balance = dict(self.camera.white_balance_state())
         self.camera.set_manual_imaging(final["exposure_us"], final["gain"])
         self.camera.set_white_balance(
@@ -1979,7 +2065,7 @@ class HikRigCalibrationSession:
         white_mask = self._required(self.white_mask, "white-area camera mask")
         self._capture_settled(white_mask)
         frames = [
-            self.camera.read().image
+            self._read_camera().image
             for _ in range(int(self.options.exposure_noise_frames))
         ]
         self.last_frame = frames[-1].copy()
@@ -2199,7 +2285,7 @@ class HikRigCalibrationSession:
         errors = []
         attempted = int(self.options.geometry_frames)
         for _ in range(attempted):
-            sample = self.camera.read()
+            sample = self._read_camera()
             frame = sample.image
             self.last_frame = frame.copy()
             try:
@@ -2307,7 +2393,7 @@ class HikRigCalibrationSession:
         observed_means: List[float] = []
         stable_time_ns = None
         while time.monotonic() < deadline:
-            sample = self.camera.read()
+            sample = self._read_camera()
             self.last_frame = sample.image.copy()
             mean = float(np.mean(sample.image[np.asarray(mask) > 0]))
             observed_means.append(mean)
@@ -2424,7 +2510,7 @@ class HikRigCalibrationSession:
         receive_times_ns = []
         for _ in range(24):
             started = time.monotonic_ns()
-            sample = self.camera.read()
+            sample = self._read_camera()
             finished = time.monotonic_ns()
             if sample.image.shape[:2] != (height, width):
                 raise RuntimeError(
@@ -2647,7 +2733,7 @@ class HikRigCalibrationSession:
             cv2.namedWindow(window, cv2.WINDOW_NORMAL)
             window_created = True
             while True:
-                frame = self.camera.read().image
+                frame = self._read_camera().image
                 self.last_frame = frame.copy()
                 measurement = self._focus_measurement(frame)
                 self.focus_history.append(measurement)
@@ -3200,6 +3286,7 @@ class HikRigCalibrationSession:
             "confidence": None,
             "evidence_directory": "cross_source_check",
             "evidence_files": {},
+            "media": [],
         }
         try:
             evidence_directory.mkdir(parents=True, exist_ok=True)
@@ -3213,6 +3300,9 @@ class HikRigCalibrationSession:
             if screenshot is None:
                 raise RuntimeError("ADB screenshot is unavailable")
             camera_frame = self._capture_settled()
+            camera_sample = self._required(
+                self.last_sample, "cross-source HIK frame with producer metadata"
+            )
             roi = self.hardware_roi or [0, 0, camera_frame.shape[1], camera_frame.shape[0]]
             roi_x, roi_y, _, _ = map(int, roi)
             map_x, map_y = rectification_maps
@@ -3235,8 +3325,101 @@ class HikRigCalibrationSession:
             )
             written = {}
             for name, image in images.items():
-                if cv2.imwrite(str(evidence_directory / name), image):
-                    written[name.rsplit(".", 1)[0]] = name
+                if not cv2.imwrite(str(evidence_directory / name), image):
+                    raise OSError("Could not save cross-source evidence {}".format(name))
+                written[name.rsplit(".", 1)[0]] = name
+
+            expanded = self._expanded_camera_review(
+                camera_sample, "Cross-source alignment acquisition"
+            )
+            expanded_name = "full_camera_and_projected_phone_review.png"
+            if not cv2.imwrite(
+                str(evidence_directory / expanded_name), expanded.image
+            ):
+                raise OSError("Could not save {}".format(expanded_name))
+            written["full_camera_and_projected_phone_review"] = expanded_name
+
+            output_size = [width, height]
+            adb_record = raster_record(
+                "adb_visible_crop.png",
+                media_type="image",
+                stored_size_px=output_size,
+                space_id="android_visible_phone_crop_pixels",
+                operation="crop_without_resampling",
+                source_space_id="android_logical_display_pixels",
+                source_region={"kind": "crop", "xywh": [x, y, width, height]},
+                orientation={"value": "android_calibration_display"},
+                metadata_reference="cross_source_check.json#media",
+            )
+            rectified_record = raster_record(
+                "hik_rectified.png",
+                media_type="image",
+                stored_size_px=output_size,
+                space_id="hik_rig_rectified_visible_phone_pixels",
+                operation="saved_rig_rectification",
+                source_space_id=str(
+                    camera_sample.metadata["image_space"]["space_id"]
+                ),
+                source_region={
+                    "kind": "complete_source_raster",
+                    "size_px": [
+                        int(camera_sample.image.shape[1]),
+                        int(camera_sample.image.shape[0]),
+                    ],
+                },
+                orientation={"value": "android_calibration_display"},
+                transform={
+                    "dense_map_reference": "../rectification_maps.npz",
+                    "source_roi_in_full_sensor_xywh": list(map(int, roi)),
+                },
+                metadata_reference="cross_source_check.json#media",
+            )
+            comparison_records = [adb_record, rectified_record]
+            for name, operation in (
+                ("edge_overlay_adb_red_hik_cyan.png", "aligned_edge_comparison"),
+                ("normalized_difference_heatmap.png", "aligned_difference_heatmap"),
+                ("valid_mask.png", "rectification_validity_mask"),
+            ):
+                comparison_records.append(
+                    raster_record(
+                        name,
+                        media_type="image",
+                        stored_size_px=output_size,
+                        space_id="rig_cross_source_comparison_local_pixels",
+                        operation=operation,
+                        source_space_id="aligned_adb_and_hik_comparison_inputs",
+                        source_region={
+                            "kind": "coincident_full_frames",
+                            "size_px": output_size,
+                        },
+                        orientation={"value": "android_calibration_display"},
+                        metadata_reference="cross_source_check.json#media",
+                    )
+                )
+            comparison_records.append(
+                raster_record(
+                    "side_by_side_adb_then_hik.png",
+                    media_type="image",
+                    stored_size_px=[width * 2, height],
+                    space_id="diagnostic_composite_pixels",
+                    operation="horizontal_composite_adb_then_hik",
+                    source_space_id="aligned_adb_and_hik_comparison_inputs",
+                    source_region={
+                        "kind": "side_by_side",
+                        "left": "adb_visible_crop.png",
+                        "right": "hik_rectified.png",
+                    },
+                    orientation={"value": "diagnostic_composite"},
+                    metadata_reference="cross_source_check.json#media",
+                )
+            )
+            comparison_records.append(
+                expanded_review_media_record(
+                    expanded_name,
+                    expanded,
+                    metadata_reference="cross_source_check.json#media",
+                )
+            )
             result.update(
                 {
                     "status": "measured",
@@ -3248,6 +3431,7 @@ class HikRigCalibrationSession:
                     "camera_visible_screen_region_xywh": [x, y, width, height],
                     "camera_hardware_roi_xywh": list(map(int, roi)),
                     "evidence_files": written,
+                    "media": comparison_records,
                 }
             )
             self.progress(
@@ -3551,13 +3735,38 @@ class HikRigCalibrationSession:
             config["coordinate_spaces"]["validation"] = (
                 validate_hik_coordinate_contract(config, camera_roi)
             )
-            if self.last_frame is not None:
+            additional_media = []
+            if self.last_sample is not None:
                 if not cv2.imwrite(
-                    str(temporary / "last_camera_frame.png"), self.last_frame
+                    str(temporary / "last_camera_frame.png"), self.last_sample.image
                 ):
                     raise OSError("Could not save last_camera_frame.png")
+                review = self._expanded_camera_review(
+                    self.last_sample, "Final rig calibration acquisition"
+                )
+                review_name = "last_camera_frame_expanded_review.png"
+                if not cv2.imwrite(str(temporary / review_name), review.image):
+                    raise OSError("Could not save {}".format(review_name))
+                additional_media.append(
+                    expanded_review_media_record(
+                        review_name,
+                        review,
+                        metadata_reference=(
+                            "hik_camera_calibration.json#evidence.expanded_review"
+                        ),
+                    )
+                )
+                config["evidence"] = {
+                    "expanded_review": {
+                        "file": review_name,
+                        "geometry": dict(review.geometry),
+                    }
+                }
             config["media"] = build_hik_calibration_media_registry(
-                temporary, config
+                temporary,
+                config,
+                last_camera_sample=self.last_sample,
+                additional_records=additional_media,
             )
             (temporary / "hik_camera_calibration.json").write_text(
                 json.dumps(config, indent=2, sort_keys=True), encoding="utf-8"
@@ -3646,7 +3855,7 @@ class HikRigCalibrationSession:
 
         target_image = getattr(self.target, "last_target", None)
         phone_image = getattr(self.target, "last_screenshot", None)
-        if self.last_frame is None and target_image is None and phone_image is None:
+        if self.last_sample is None and target_image is None and phone_image is None:
             return None
         root = Path(self.options.output_directory).resolve().parent
         evidence = root / "{}-failure-evidence-{}".format(
@@ -3654,21 +3863,82 @@ class HikRigCalibrationSession:
             time.strftime("%Y%m%d-%H%M%S"),
         )
         evidence.mkdir(parents=True, exist_ok=False)
+        camera_samples: Dict[str, FrameSample] = {}
+        phone_media: Dict[str, Dict[str, Any]] = {}
+        additional_media = []
+
+        def write_image(name: str, image: np.ndarray) -> None:
+            if not cv2.imwrite(str(evidence / name), image):
+                raise OSError("Could not save {}".format(name))
+
+        def remember_phone_image(name: str, image: np.ndarray, operation: str) -> None:
+            write_image(name, image)
+            width, height = int(image.shape[1]), int(image.shape[0])
+            phone_media[name] = {
+                "space_id": "android_logical_display_pixels",
+                "operation": operation,
+                "source_space_id": "android_logical_display_pixels",
+                "source_region": {
+                    "kind": "full_frame",
+                    "xywh": [0, 0, width, height],
+                },
+                "orientation": {"value": "android_calibration_display"},
+            }
+
         if target_image is not None:
-            cv2.imwrite(str(evidence / "display-target.png"), target_image)
-        if phone_image is not None:
-            cv2.imwrite(str(evidence / "phone-screenshot.png"), phone_image)
-        if self.last_frame is not None:
-            cv2.imwrite(str(evidence / "raw-hik-frame.png"), self.last_frame)
-        if self.auto_target_image is not None:
-            cv2.imwrite(str(evidence / "auto-neutral-target.png"), self.auto_target_image)
-        if self.auto_phone_screenshot is not None:
-            cv2.imwrite(
-                str(evidence / "auto-neutral-phone-screenshot.png"),
-                self.auto_phone_screenshot,
+            remember_phone_image(
+                "display-target.png", target_image, "generated_phone_display_target"
             )
-        if self.auto_result_frame is not None:
-            cv2.imwrite(str(evidence / "auto-neutral-hik-frame.png"), self.auto_result_frame)
+        if phone_image is not None:
+            remember_phone_image(
+                "phone-screenshot.png", phone_image, "adb_screenshot_copy"
+            )
+        if self.last_sample is not None:
+            name = "raw-hik-frame.png"
+            write_image(name, self.last_sample.image)
+            camera_samples[name] = self.last_sample
+            review = self._expanded_camera_review(
+                self.last_sample, "Last HIK frame before calibration failure"
+            )
+            review_name = "raw-hik-frame-expanded-review.png"
+            write_image(review_name, review.image)
+            additional_media.append(
+                expanded_review_media_record(
+                    review_name,
+                    review,
+                    metadata_reference="failure.json#expanded_reviews.raw_hik_frame",
+                )
+            )
+        if self.auto_target_image is not None:
+            remember_phone_image(
+                "auto-neutral-target.png",
+                self.auto_target_image,
+                "generated_neutral_phone_display_target",
+            )
+        if self.auto_phone_screenshot is not None:
+            remember_phone_image(
+                "auto-neutral-phone-screenshot.png",
+                self.auto_phone_screenshot,
+                "adb_screenshot_copy",
+            )
+        if self.auto_result_sample is not None:
+            name = "auto-neutral-hik-frame.png"
+            write_image(name, self.auto_result_sample.image)
+            camera_samples[name] = self.auto_result_sample
+            review = self._expanded_camera_review(
+                self.auto_result_sample, "HIK one-shot auto imaging result"
+            )
+            review_name = "auto-neutral-hik-frame-expanded-review.png"
+            write_image(review_name, review.image)
+            additional_media.append(
+                expanded_review_media_record(
+                    review_name,
+                    review,
+                    metadata_reference=(
+                        "failure.json#expanded_reviews.auto_neutral_hik_frame"
+                    ),
+                )
+            )
         failure_document = {
             "error_type": type(error).__name__,
             "error": str(error),
@@ -3705,18 +3975,16 @@ class HikRigCalibrationSession:
                 if self.geometry is not None
                 else None
             ),
+            "expanded_reviews": {
+                row["file"]: row.get("provenance", {}).get("transform")
+                for row in additional_media
+            },
         }
-        full_size = [
-            int(self.camera_metadata.get("width_px", 1)),
-            int(self.camera_metadata.get("height_px", 1)),
-        ]
         failure_document["media"] = build_hik_failure_media_registry(
             evidence,
-            full_camera_size_px=full_size,
-            hardware_roi_xywh=self.hardware_roi,
-            phone_logical_size_px=(
-                self.phone_metrics.screen_size_px if self.phone_metrics else None
-            ),
+            camera_samples=camera_samples,
+            phone_media=phone_media,
+            additional_records=additional_media,
         )
         (evidence / "failure.json").write_text(
             json.dumps(failure_document, indent=2, sort_keys=True),

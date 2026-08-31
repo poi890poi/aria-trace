@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
+from acquisition.rig_calibration.contracts import FrameSample
 from acquisition.rig_calibration.hik.reuse_precheck import (
     compare_charuco_alignment,
     discover_active_profile_calibration,
@@ -76,12 +77,20 @@ class HikRigReuseTests(unittest.TestCase):
             output = root / "precheck"
             adapter = Mock()
             adapter.reset_full_sensor_roi.return_value = [0, 0, 64, 48]
-            adapter.read.return_value = Mock(
-                image=np.zeros((48, 64, 3), np.uint8),
+            adapter.read.return_value = FrameSample(
+                np.zeros((48, 64, 3), np.uint8),
+                1,
+                receive_time_ns=1,
                 metadata={
                     "image_space": {
                         "space_id": "hik_camera_acquisition_pixels",
                         "stored_size_px": [64, 48],
+                        "parent_space_id": "hik_full_sensor_camera_pixels",
+                        "parent_size_px": [64, 48],
+                        "roi_in_parent_xywh": [0, 0, 64, 48],
+                        "local_to_parent_3x3": np.eye(3).tolist(),
+                        "orientation": "hik_camera_native",
+                        "color_order": "BGR",
                     }
                 },
             )
@@ -125,6 +134,13 @@ class HikRigReuseTests(unittest.TestCase):
             self.assertEqual([0, 0, 64, 48], result["effective_full_sensor_roi_xywh"])
             self.assertFalse((root / "rig" / "last_camera_frame.png").exists())
             self.assertTrue((output / "fresh_full_sensor_frame.png").is_file())
+            self.assertTrue(
+                (output / "fresh_full_sensor_expanded_review.png").is_file()
+            )
+            self.assertTrue(
+                (output / "charuco_alignment_expanded_review.png").is_file()
+            )
+            self.assertEqual(4, len(result["media"]))
             self.assertEqual(
                 "hik_camera_acquisition_pixels",
                 result["image_space"]["space_id"],

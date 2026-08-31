@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Mapping, Optional, Sequence
 
 from aria_trace.evidence.media_trace import (
@@ -10,36 +11,16 @@ from aria_trace.evidence.media_trace import (
     raster_record,
     validate_media_registry,
 )
-
-
-def _camera_source_region(
-    size_px: Sequence[int],
-    full_size_px: Sequence[int],
-    hardware_roi_xywh: Optional[Sequence[int]],
-) -> tuple[str, dict]:
-    size = list(map(int, size_px))
-    full = list(map(int, full_size_px))
-    roi = list(map(int, hardware_roi_xywh or [0, 0] + full))
-    if size == full:
-        return "hik_full_sensor_camera_pixels", {
-            "kind": "full_frame",
-            "xywh": [0, 0] + full,
-        }
-    if size == roi[2:4]:
-        return "hik_full_sensor_camera_pixels", {
-            "kind": "hardware_roi",
-            "xywh": roi,
-            "local_origin_in_source_xy": roi[:2],
-        }
-    return "hik_current_camera_acquisition_pixels", {
-        "kind": "explicit_unresolved_acquisition_raster",
-        "size_px": size,
-        "warning": "No saved full-sensor/ROI dimensions match this frame",
-    }
+from aria_trace.evidence.rig_spatial import rig_sample_media_record
+from aria_trace.services.calibration.rig.contracts import FrameSample
 
 
 def build_hik_calibration_media_registry(
-    root: Path, config: Mapping[str, object]
+    root: Path,
+    config: Mapping[str, object],
+    *,
+    last_camera_sample: Optional[FrameSample] = None,
+    additional_records: Sequence[Mapping[str, object]] = (),
 ) -> list[dict]:
     """Describe every persisted image in a completed HIK calibration bundle."""
 
@@ -54,24 +35,20 @@ def build_hik_calibration_media_registry(
 
     last_frame_path = root / "last_camera_frame.png"
     if last_frame_path.is_file():
-        size = image_size_px(last_frame_path)
-        source_space, source_region = _camera_source_region(
-            size, full_size, hardware_roi
-        )
+        if last_camera_sample is None:
+            raise RuntimeError(
+                "Completed HIK bundle has a camera frame without producer metadata"
+            )
+        if image_size_px(last_frame_path) != [
+            int(last_camera_sample.image.shape[1]),
+            int(last_camera_sample.image.shape[0]),
+        ]:
+            raise RuntimeError("Persisted last camera frame differs from its sample")
         records.append(
-            raster_record(
+            rig_sample_media_record(
                 "last_camera_frame.png",
-                media_type="image",
-                stored_size_px=size,
-                space_id=(
-                    "hik_camera_adapter_roi_image_pixels"
-                    if source_region["kind"] == "hardware_roi"
-                    else source_space
-                ),
+                last_camera_sample,
                 operation="last_settled_hik_acquisition_frame_copy",
-                source_space_id=source_space,
-                source_region=source_region,
-                orientation={"camera_native": True},
                 metadata_reference="hik_camera_calibration.yaml#camera",
                 notes="This is not the rectified visible-phone output.",
             )
@@ -99,50 +76,25 @@ def build_hik_calibration_media_registry(
             )
         )
 
-    cross = (config.get("results") or {}).get("cross_source_check") or {}
-    adb_crop = cross.get("camera_visible_screen_region_xywh")
-    camera_roi = cross.get("camera_hardware_roi_xywh") or hardware_roi
     evidence_root = root / "cross_source_check"
-    for path in sorted(evidence_root.glob("*.png")) if evidence_root.is_dir() else []:
-        relative = "cross_source_check/{}".format(path.name)
-        size = image_size_px(path)
-        space_id = "rig_cross_source_comparison_local_pixels"
-        source_space = "rig_cross_source_comparison_inputs"
-        source_region = {
-            "kind": "comparison",
-            "adb_crop_xywh": adb_crop,
-            "camera_hardware_roi_xywh": camera_roi,
-        }
-        operation = "cross_source_diagnostic_visualization"
-        orientation = {"phone_natural": True}
-        if path.name == "adb_visible_crop.png":
-            source_space = "android_phone_natural_display_pixels"
-            source_region = {"kind": "crop", "xywh": adb_crop}
-            operation = "crop_without_resampling"
-        elif path.name == "hik_rectified.png":
-            source_space = "hik_full_sensor_camera_pixels"
-            source_region = {"kind": "hardware_roi", "xywh": camera_roi}
-            operation = "rig_rectification"
-        elif path.name == "valid_mask.png":
-            source_space = "hik_rig_rectified_visible_phone_pixels"
-            source_region = {"kind": "full_frame", "xywh": [0, 0] + output_size}
-            operation = "validity_mask_copy"
-        elif path.name.startswith("side_by_side"):
-            space_id = "diagnostic_composite_pixels"
-            operation = "horizontal_composite_adb_then_hik"
-        records.append(
-            raster_record(
-                relative,
-                media_type="image",
-                stored_size_px=size,
-                space_id=space_id,
-                operation=operation,
-                source_space_id=source_space,
-                source_region=source_region,
-                orientation=orientation,
-                metadata_reference="cross_source_check/cross_source_check.yaml",
-            )
+    if evidence_root.is_dir():
+        result_path = evidence_root / "cross_source_check.json"
+        cross_document = (
+            json.loads(result_path.read_text(encoding="utf-8"))
+            if result_path.is_file()
+            else {}
         )
+        cross_records = list(cross_document.get("media") or [])
+        persisted_cross_media = list(evidence_root.glob("*.png"))
+        if persisted_cross_media and not cross_records:
+            raise RuntimeError(
+                "Cross-source rig evidence was persisted without producer records"
+            )
+        for record in cross_records:
+            value = dict(record)
+            value["file"] = "cross_source_check/{}".format(value["file"])
+            records.append(value)
+    records.extend(dict(value) for value in additional_records)
     validate_media_registry(root, records)
     return records
 
@@ -150,54 +102,45 @@ def build_hik_calibration_media_registry(
 def build_hik_failure_media_registry(
     root: Path,
     *,
-    full_camera_size_px: Sequence[int],
-    hardware_roi_xywh: Optional[Sequence[int]],
-    phone_logical_size_px: Optional[Sequence[int]],
+    camera_samples: Mapping[str, FrameSample],
+    phone_media: Mapping[str, Mapping[str, object]],
+    additional_records: Sequence[Mapping[str, object]] = (),
 ) -> list[dict]:
     """Describe every persisted review image in a failed HIK run."""
 
     root = Path(root)
-    phone_size = list(map(int, phone_logical_size_px or [1, 1]))
     records = []
     for path in sorted(root.glob("*.png")):
         size = image_size_px(path)
         name = path.name
-        if "hik-frame" in name:
-            source_space, source_region = _camera_source_region(
-                size, full_camera_size_px, hardware_roi_xywh
-            )
-            record = raster_record(
+        if name in camera_samples:
+            record = rig_sample_media_record(
                 name,
-                media_type="image",
-                stored_size_px=size,
-                space_id=source_space,
+                camera_samples[name],
                 operation="failure_evidence_camera_frame_copy",
-                source_space_id=source_space,
-                source_region=source_region,
-                orientation={"camera_native": True},
                 metadata_reference="failure.json#camera",
             )
-        else:
-            is_screenshot = "screenshot" in name
+        elif name in phone_media:
+            supplied = dict(phone_media[name])
             record = raster_record(
                 name,
                 media_type="image",
                 stored_size_px=size,
-                space_id="android_logical_display_pixels",
-                operation=(
-                    "adb_screenshot_copy"
-                    if is_screenshot
-                    else "generated_phone_display_target"
-                ),
-                source_space_id="android_logical_display_pixels",
-                source_region={
-                    "kind": "full_frame",
-                    "xywh": [0, 0, size[0], size[1]],
-                    "expected_logical_size_px": phone_size,
-                },
-                orientation={"as_displayed_by_android": True},
+                space_id=str(supplied["space_id"]),
+                operation=str(supplied["operation"]),
+                source_space_id=str(supplied["source_space_id"]),
+                source_region=dict(supplied["source_region"]),
+                orientation=dict(supplied["orientation"]),
                 metadata_reference="failure.json#phone",
             )
+        else:
+            matches = [row for row in additional_records if row.get("file") == name]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "Rig failure image {} lacks exactly one producer record"
+                    .format(name)
+                )
+            record = dict(matches[0])
         records.append(record)
     validate_media_registry(root, records)
     return records

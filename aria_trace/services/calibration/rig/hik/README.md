@@ -215,6 +215,34 @@ camera failure while retaining the exact-payload synchronization check.
 
 ## Saved result and stream
 
+### Spatially traceable evidence
+
+Rig image space belongs to the media producer. Every HIK-compatible adapter
+used by AriaTrace calibration supplies `FrameSample.metadata["image_space"]`
+with its stored size, color order, orientation, parent full-sensor space,
+hardware ROI, and local-to-parent matrix. Calibration, reuse checks, and rig
+POCs reject a missing or inconsistent record; they never recover a space from
+a filename or raster dimensions. Image-only compatibility methods remain
+available to downstream HIK users, while `read_sample()` and
+`get_aria_frame_metadata()` expose the additive AriaTrace contract.
+
+Raw measurement images stay unmodified for machine replay. Every camera image
+intended for human review also has an `*_expanded_review.png` canvas. The
+canvas is never cropped to the acquisition: it contains the complete camera
+sensor rectangle in yellow and the complete projected physical phone-display
+quadrilateral in green. Area outside captured pixels is a saturated magenta
+checkerboard, deliberately unlike normal camera or game content. Its exact
+source-to-review transform, quadrilaterals, and synthetic background color are
+stored in the adjacent JSON/YAML media registry. If calibration fails before
+screen geometry exists, the review still shows the full sensor and explicitly
+marks the phone projection unavailable rather than inventing one.
+
+Full ADB screenshots are the canonical Android display raster and may omit a
+separate transform. Every ADB crop, rotation, resize, rectification, diagnostic
+composite, or camera-derived raster still requires an explicit media record.
+Tests and POCs inside this repository follow the same rule even though external
+camera-adapter consumers are free to use the image-only compatibility API.
+
 Saving is atomic and creates `calibration.yaml`, `valid_screen_mask.png`,
 `rectification_maps.npz`, evidence, and `hik_camera_calibration.json`. The JSON
 records exact IDs and modes, exposure/gain/WB, hardware ROI, camera-visible phone
