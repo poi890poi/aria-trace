@@ -307,6 +307,11 @@ def parser() -> argparse.ArgumentParser:
     minimap.add_argument("--activate", action="store_true")
     activate = subcommands.add_parser("activate")
     activate.add_argument("revision_id")
+    list_profiles = subcommands.add_parser("list")
+    list_profiles.add_argument("--kind", choices=("rig", "phone_game", "rig_game", "rig_game_color"))
+    list_profiles.add_argument("--active-only", action="store_true")
+    show = subcommands.add_parser("show")
+    show.add_argument("revision_id")
     resolve = subcommands.add_parser("resolve")
     resolve.add_argument("--game-id")
     resolve.add_argument("--camera-id")
@@ -370,10 +375,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         result = registry.activate(arguments.revision_id)
         print("Activated profile: {}".format(result["revision_id"]))
         return 0
+    if arguments.command == "list":
+        print(
+            json.dumps(
+                registry.list_revisions(
+                    kind=arguments.kind, active_only=arguments.active_only
+                ),
+                indent=2,
+            )
+        )
+        return 0
+    if arguments.command == "show":
+        print(json.dumps(registry.revision(arguments.revision_id), indent=2))
+        return 0
+    from aria_trace.adapters.filesystem.system_configuration import (
+        load_system_configuration,
+    )
+
+    settings = load_system_configuration(arguments.profile_root)
     context = ProfileContext(
-        game_id=arguments.game_id,
-        camera_id=arguments.camera_id,
-        phone_id=arguments.phone_id,
+        game_id=arguments.game_id or settings["game"].get("game_id"),
+        camera_id=arguments.camera_id or settings["devices"].get("camera_id"),
+        phone_id=arguments.phone_id or settings["devices"].get("phone_id"),
     )
     request = AdapterRequest(
         mode=arguments.mode,

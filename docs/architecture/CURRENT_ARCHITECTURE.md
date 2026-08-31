@@ -86,6 +86,11 @@ zigzag acquisition, sessions or the Workbench.
 - `profiles/phone_game/`, `profiles/rig/`, `profiles/rig_game/`, and
   `profiles/rig_game_color/` are mutable,
   machine/device-specific profile stores.
+- `profiles/.registry/settings.{json,yaml}` stores operator defaults. One named
+  rig-repeatability policy owns both reuse and GUI-save gates.
+- `profiles/calibrations/` stores source rig bundles when no explicit output is
+  supplied; production resolution still reads immutable runtime copies from
+  profile revisions.
 - `sessions/` is operator working data.
 - `artifacts/` is generated analysis, evidence and compiled data.
 
@@ -99,6 +104,7 @@ python -m aria_trace.apps.workbench
 python -m aria_trace.apps.rig_calibrator
 python -m aria_trace.apps.hik_rig_calibration
 python -m aria_trace.apps.hik_stream
+python -m aria_tools setup show
 ```
 
 Compatibility commands remain available as documented in

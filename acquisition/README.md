@@ -218,26 +218,30 @@ mapping; copying only a video would discard the synchronization authority.
 
 ### Android and synchronized Android + HIK mini-map calibration
 
-For fresh HIK rig calibration followed by synchronized source-data capture, use:
+Configure shared device identities and the centralized repeatability policy:
 
 ```powershell
-.\calibrate-hik-game-camera.bat
+python -m aria_tools setup configure --camera-id DA9066154 --phone-id RFCR91GWXLX --rig-repeatability relaxed
+python -m aria_tools setup show
 ```
 
-Before repeating the full rig phase, this entry point checks the newest saved
-rig bundle for the selected camera and phone. It displays the saved ChArUco
-atlas, opens the production adapter with locked imaging, and directly compares
-a fresh hardware-ROI snapshot with `last_camera_frame.png`. If
-`is_calibrated()` is true and the unfitted snapshot comparison passes, the
-existing rig bundle is referenced and full rig calibration is skipped. A moved,
-missing, invalid, or unavailable rig always falls back to full calibration.
-Use `-RigCalibration PATH` to check one explicit prior bundle. The check and its
-images are retained beside the requested rig output in a `-precheck` directory.
+For rig calibration with registry reuse, use:
+
+```powershell
+python -m aria_tools rig-calibration --reuse-if-unchanged
+```
+
+GUI mode displays the complete ChArUco board and live camera guide, then waits
+for Enter/Space before collecting geometry. The active profile is resolved only
+from `ARIA_PROFILE_ROOT` (or local `profiles/` when unset); it never scans
+`artifacts/`. A moved, missing, invalid, or unavailable rig falls back to full
+calibration. The default saved bundle is under the effective profile root's
+`calibrations/` directory.
 
 With the game awake and ready and an existing rig result, run capture with:
 
 ```powershell
-.\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
+python -m aria_tools zigzag-acquisition --game-id genshin-impact --require-hik
 ```
 
 For the one-time phone/game calibration when HIK is unavailable or occupied,
@@ -277,7 +281,7 @@ does not inject game input or modify camera/calibration controls.
 To record source data without analysis, use:
 
 ```powershell
-.\capture-game-minimap-zigzag.bat --rig-calibration .\artifacts\hik-calibration-YYYYMMDD-HHMMSS
+python -m aria_tools zigzag-acquisition --game-id genshin-impact --require-hik
 ```
 
 The `android_phone` stream always keeps the complete Android logical display.

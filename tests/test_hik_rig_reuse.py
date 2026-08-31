@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -17,7 +18,10 @@ from acquisition.rig_calibration.hik.reuse_precheck import (
     parser as reuse_precheck_parser,
 )
 from acquisition.profile_registry import ProfileContext, ProfileRegistry
-from aria_trace.apps.hik_rig_calibration import main as rig_calibration_main
+from aria_trace.apps.hik_rig_calibration import (
+    _write_standalone_adapter,
+    main as rig_calibration_main,
+)
 
 
 def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> Path:
@@ -49,6 +53,75 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
+    def test_adapter_export_accepts_saved_bundle_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            calibration = bundle / "hik_camera_calibration.json"
+            calibration.write_text("{}", encoding="utf-8")
+            with patch(
+                "aria_trace.adapters.filesystem.profile_registry.context_from_rig_calibration",
+                return_value=Mock(),
+            ), patch(
+                "aria_trace.workflows.adapter_export.export_resolved_adapter",
+                return_value={"output": str(bundle / "hikcam_adapter.py")},
+            ) as export:
+                _write_standalone_adapter(
+                    bundle, bundle / "hikcam_adapter.py", root / "profiles"
+                )
+            self.assertEqual(
+                bundle / "hikcam_adapter.py", export.call_args[0][0]
+            )
+
+    def test_rig_calibration_uses_configured_profile_root_for_default_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "shared-profiles"
+            configured = {
+                "devices": {"camera_id": "CAM-1", "phone_id": "PHONE-1"},
+                "rig_calibration": {"repeatability_policy": "relaxed"},
+            }
+            from aria_trace.adapters.filesystem.system_configuration import (
+                save_system_configuration,
+            )
+
+            save_system_configuration(configured, root)
+            session = Mock()
+            expected = root / "calibrations" / "hik-calibration-test"
+            session.run.return_value = expected
+            device = Mock(device_id="CAM-1", label="camera")
+            adapter = Mock()
+            adapter.devices.return_value = [device]
+            with patch.dict(os.environ, {"ARIA_PROFILE_ROOT": str(root)}), patch(
+                "aria_trace.apps.hik_rig_calibration.time.strftime",
+                return_value="test",
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.HikMvsCameraAdapter",
+                return_value=adapter,
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.connected_adb_devices",
+                return_value=["PHONE-1"],
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.resolve_adb_executable",
+                return_value=Path("adb"),
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.HikRigCalibrationSession",
+                return_value=session,
+            ) as session_type, patch(
+                "aria_trace.workflows.profile_management.publish_rig_calibration",
+                return_value={"revision_id": "rig-1", "publication": "new_revision"},
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration._write_standalone_adapter"
+            ) as exporter:
+                self.assertEqual(0, rig_calibration_main(["--headless", "--save"]))
+            options = session_type.call_args[0][0]
+            self.assertEqual(expected, options.output_directory)
+            self.assertEqual("relaxed", options.repeatability_policy)
+            self.assertEqual(12.0, options.save_max_displacement_px)
+            exporter.assert_called_once_with(
+                expected, expected / "hikcam_adapter.py", root.resolve()
+            )
+
     def test_compatibility_module_runs_the_canonical_cli(self):
         completed = subprocess.run(
             [

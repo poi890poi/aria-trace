@@ -310,6 +310,14 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    if arguments.game_id is None:
+        from aria_trace.adapters.filesystem.system_configuration import (
+            load_system_configuration,
+        )
+
+        arguments.game_id = load_system_configuration(arguments.profile_root)[
+            "game"
+        ].get("game_id")
     result = calibrate_game_color_session(
         arguments.session,
         arguments.output,

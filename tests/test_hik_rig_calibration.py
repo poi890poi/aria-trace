@@ -57,6 +57,52 @@ from acquisition.rig_calibration.geometry import estimate_screen_geometry
 
 
 class HikAlgorithmTests(unittest.TestCase):
+    def test_gui_positioning_waits_for_explicit_space_signal(self):
+        options = HikCalibrationOptions(
+            "fake", "phone", Path("unused"), headless=False
+        )
+        sample = mock.Mock(
+            image=np.zeros((48, 64, 3), np.uint8), metadata={}
+        )
+        camera = mock.Mock()
+        camera.read.return_value = sample
+        target = mock.Mock()
+        target.present_charuco.return_value = mock.Mock(revision=1)
+        session = HikRigCalibrationSession(
+            options,
+            camera=camera,
+            target=target,
+            progress=lambda _message: None,
+        )
+        session.charuco_layout = screen_filling_charuco_layout((64, 48))
+        session._wait_painted = mock.Mock()
+        with mock.patch(
+            "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
+            return_value={"corner_count": 12},
+        ), mock.patch.object(
+            session, "_preview_update", side_effect=[None, 32]
+        ):
+            self.assertTrue(session.wait_for_positioning_confirmation())
+        self.assertEqual(2, camera.read.call_count)
+
+    def test_focus_save_gate_requires_consecutive_displaced_frames(self):
+        options = HikCalibrationOptions(
+            "fake",
+            "phone",
+            Path("unused"),
+            save_max_displacement_px=12.0,
+            save_movement_consecutive_frames=3,
+        )
+        session = HikRigCalibrationSession(
+            options, camera=mock.Mock(), target=mock.Mock()
+        )
+        self.assertFalse(session._update_focus_save_gate(13.0, 12.0))
+        self.assertFalse(session._update_focus_save_gate(13.0, 12.0))
+        self.assertFalse(session._update_focus_save_gate(4.0, 12.0))
+        self.assertFalse(session._update_focus_save_gate(13.0, 12.0))
+        self.assertFalse(session._update_focus_save_gate(13.0, 12.0))
+        self.assertTrue(session._update_focus_save_gate(13.0, 12.0))
+
     def test_latency_rejects_cross_clock_negative_or_unbounded_values(self):
         elapsed = HikRigCalibrationSession._same_clock_elapsed_ms
         self.assertEqual(elapsed(1_000_000_000, 1_075_000_000, 1000.0), 75.0)

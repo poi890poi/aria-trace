@@ -661,6 +661,44 @@ class ProfileRegistry:
             )
         return self.revision(rows[0]["revision_id"])
 
+    def list_revisions(
+        self, *, kind: Optional[str] = None, active_only: bool = False
+    ) -> Sequence[Dict[str, Any]]:
+        """List immutable revisions without consulting artifact directories."""
+
+        if kind is not None and kind not in PROFILE_KINDS:
+            raise ValueError("Unsupported profile kind: {}".format(kind))
+        clauses = []
+        values = []
+        if kind is not None:
+            clauses.append("r.kind=?")
+            values.append(kind)
+        if active_only:
+            clauses.append("a.revision_id IS NOT NULL")
+        where = " WHERE {}".format(" AND ".join(clauses)) if clauses else ""
+        query = """SELECT r.*, CASE WHEN a.revision_id IS NULL THEN 0 ELSE 1 END AS active
+                   FROM revisions r
+                   LEFT JOIN active_profiles a ON a.revision_id=r.revision_id
+                   {} ORDER BY r.created_utc DESC""".format(where)
+        with self._connect() as connection:
+            rows = connection.execute(query, values).fetchall()
+        return [
+            {
+                "revision_id": row["revision_id"],
+                "kind": row["kind"],
+                "active": bool(row["active"]),
+                "review_state": row["review_state"],
+                "camera_id": row["camera_id"],
+                "phone_id": row["phone_id"],
+                "game_id": None if row["game_id"] == "_" else row["game_id"],
+                "created_utc": row["created_utc"],
+                "revision_directory": str(
+                    (self.root / row["relative_directory"]).resolve()
+                ),
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def runtime_file(profile: Mapping[str, Any], logical_name: str) -> Path:
         entry = (profile.get("runtime_files") or {}).get(logical_name)
@@ -802,6 +840,7 @@ __all__ = [
     "AdapterRequest",
     "ProfileContext",
     "ProfileKey",
+    "PROFILE_KINDS",
     "ProfileRegistry",
     "ProfileResolutionError",
     "context_from_rig_calibration",

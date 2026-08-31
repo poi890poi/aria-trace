@@ -18,6 +18,11 @@ from aria_trace.workflows.hik_rig_calibration import (
     HikCalibrationOptions,
     HikRigCalibrationSession,
 )
+from aria_trace.adapters.filesystem.profile_registry import default_profile_root
+from aria_trace.adapters.filesystem.system_configuration import (
+    load_system_configuration,
+    resolve_rig_repeatability_policy,
+)
 
 
 def _write_standalone_adapter(
@@ -30,7 +35,10 @@ def _write_standalone_adapter(
     )
     from aria_trace.workflows.adapter_export import export_resolved_adapter
 
-    document = json.loads(Path(calibration).read_text(encoding="utf-8"))
+    calibration = Path(calibration)
+    if calibration.is_dir():
+        calibration = calibration / "hik_camera_calibration.json"
+    document = json.loads(calibration.read_text(encoding="utf-8"))
     result = export_resolved_adapter(
         output,
         registry=ProfileRegistry(profile_root),
@@ -167,6 +175,35 @@ def _select(label: str, rows, description):
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    settings = load_system_configuration(arguments.profile_root)
+    repeatability = resolve_rig_repeatability_policy(settings)
+    arguments.camera_id = arguments.camera_id or settings["devices"].get(
+        "camera_id"
+    )
+    arguments.phone_serial = arguments.phone_serial or settings["devices"].get(
+        "phone_id"
+    )
+    arguments.adb = arguments.adb or settings["tools"].get("adb")
+    arguments.mvs_python_path = (
+        arguments.mvs_python_path or settings["tools"].get("mvs_python_path")
+    )
+    profile_root = default_profile_root(arguments.profile_root)
+    print(
+        "Profile root: {} ({})".format(
+            profile_root, settings["profile_root_source"]
+        )
+    )
+    print(
+        "Rig repeatability policy: {} (reuse correlation >= {:.3f}, MAE <= {:.1f} DN; "
+        "save is blocked after displacement > {:.1f} px for {} consecutive frames)."
+        .format(
+            repeatability["name"],
+            repeatability["reuse_minimum_correlation"],
+            repeatability["reuse_maximum_mae_dn"],
+            repeatability["save_max_displacement_px"],
+            repeatability["save_movement_consecutive_frames"],
+        )
+    )
     camera = HikMvsCameraAdapter(sdk_python_path=arguments.mvs_python_path)
     if arguments.list_cameras:
         for device in camera.devices(probe=True):
@@ -189,8 +226,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         print("Selected Android phone: {}".format(arguments.phone_serial))
     if arguments.output is None:
-        arguments.output = Path("artifacts") / "hik-calibration-{}".format(
-            time.strftime("%Y%m%d-%H%M%S")
+        arguments.output = profile_root / "calibrations" / (
+            "hik-calibration-{}".format(time.strftime("%Y%m%d-%H%M%S"))
         )
     if arguments.test:
         arguments.headless = True
@@ -209,11 +246,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Checking active rig profile before full calibration...")
         precheck = run_active_reuse_precheck(
             precheck_output,
-            profile_root=arguments.profile_root,
+            profile_root=profile_root,
             adb=str(adb),
             mvs_python_path=arguments.mvs_python_path,
             camera_id=arguments.camera_id,
             phone_serial=arguments.phone_serial,
+            minimum_correlation=repeatability["reuse_minimum_correlation"],
+            maximum_mae_dn=repeatability["reuse_maximum_mae_dn"],
+            sample_frames=repeatability["reuse_sample_frames"],
         )
         if (
             precheck.get("reusable")
@@ -238,7 +278,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _write_standalone_adapter(
                 Path(str(precheck["calibration"])),
                 arguments.output / "hikcam_adapter.py",
-                arguments.profile_root,
+                profile_root,
             )
             return 0
         print(
@@ -273,6 +313,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         strict_display_screenshot_verification=(
             arguments.strict_display_screenshot_verification
         ),
+        repeatability_policy=repeatability["name"],
+        save_max_displacement_px=repeatability["save_max_displacement_px"],
+        save_movement_consecutive_frames=repeatability[
+            "save_movement_consecutive_frames"
+        ],
     )
     phone = AdbPhoneSession(arguments.phone_serial, adb_executable=adb)
     result = HikRigCalibrationSession(options, camera=camera, phone=phone).run()
@@ -282,7 +327,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from aria_trace.workflows.profile_management import publish_rig_calibration
 
         profile = publish_rig_calibration(
-            result, profile_root=arguments.profile_root, activate=True
+            result, profile_root=profile_root, activate=True
         )
         print(
             "Active rig profile: {} ({})".format(
@@ -291,8 +336,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         _write_standalone_adapter(
             Path(result),
-            Path(result).parent / "hikcam_adapter.py",
-            arguments.profile_root,
+            Path(result) / "hikcam_adapter.py",
+            profile_root,
         )
     return 0
 

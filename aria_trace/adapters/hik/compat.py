@@ -79,12 +79,29 @@ def _registry_configuration(
         ProfileContext,
         ProfileRegistry,
     )
+    from aria_trace.adapters.filesystem.system_configuration import (
+        load_system_configuration,
+    )
 
-    camera_id = _camera_id_for_registry(ip, config)
-    game_id = config.get("game_id") or os.environ.get("ARIA_GAME_ID")
-    normalization = config.get("normalization")
+    profile_root = Path(config["profile_root"]) if config.get("profile_root") else None
+    settings = load_system_configuration(profile_root)
+    configured = dict(config)
+    for name, value in (
+        ("camera_id", settings["devices"].get("camera_id")),
+        ("phone_id", settings["devices"].get("phone_id")),
+        ("mvs_python_path", settings["tools"].get("mvs_python_path")),
+    ):
+        if not configured.get(name) and value:
+            configured[name] = value
+    camera_id = _camera_id_for_registry(ip, configured)
+    game_id = (
+        configured.get("game_id")
+        or os.environ.get("ARIA_GAME_ID")
+        or settings["game"].get("game_id")
+    )
+    normalization = configured.get("normalization")
     if normalization is None:
-        normalization = "auto" if bool(config.get("rectify", True)) else "none"
+        normalization = "auto" if bool(configured.get("rectify", True)) else "none"
     if normalization not in ("auto", "none"):
         raise ValueError(
             "HikCamera supports normalization='auto' or 'none'; explicit "
@@ -92,34 +109,34 @@ def _registry_configuration(
         )
     context = ProfileContext(
         game_id=str(game_id) if game_id else None,
-        platform=str(config.get("platform", "android")),
-        package=config.get("package"),
-        game_version=config.get("game_version"),
+        platform=str(configured.get("platform", "android")),
+        package=configured.get("package"),
+        game_version=configured.get("game_version"),
         camera_adapter="hik_mvs",
         camera_id=camera_id,
-        phone_id=config.get("phone_id") or config.get("phone_serial"),
-        phone_model=config.get("phone_model"),
-        panel_display=config.get("panel_display") or {},
-        game_display=config.get("game_display") or {},
+        phone_id=configured.get("phone_id") or configured.get("phone_serial"),
+        phone_model=configured.get("phone_model"),
+        panel_display=configured.get("panel_display") or {},
+        game_display=configured.get("game_display") or {},
     )
     request = AdapterRequest(
-        purpose=str(config.get("purpose", "application")),
-        mode=str(config.get("mode", "full")),
+        purpose=str(configured.get("purpose", "application")),
+        mode=str(configured.get("mode", "full")),
         normalization=str(normalization),
-        color_order=str(config.get("color_order", "RGB")),
-        color_policy=str(config.get("color_policy", "auto")),
-        roi_policy=str(config.get("roi_policy", "auto")),
-        minimap_margin_px=int(config.get("minimap_margin_px", 6)),
-        frame_rate_policy=str(config.get("frame_rate_policy", "calibrated")),
+        color_order=str(configured.get("color_order", "RGB")),
+        color_policy=str(configured.get("color_policy", "auto")),
+        roi_policy=str(configured.get("roi_policy", "auto")),
+        minimap_margin_px=int(configured.get("minimap_margin_px", 6)),
+        frame_rate_policy=str(configured.get("frame_rate_policy", "calibrated")),
         frame_rate=(
-            float(config["frame_rate"]) if config.get("frame_rate") is not None else None
+            float(configured["frame_rate"])
+            if configured.get("frame_rate") is not None
+            else None
         ),
     )
-    registry = ProfileRegistry(
-        Path(config["profile_root"]) if config.get("profile_root") else None
-    )
+    registry = ProfileRegistry(profile_root)
     resolved = registry.resolve_adapter(context, request)
-    effective = dict(config)
+    effective = dict(configured)
     effective.update(
         calibration=resolved["paths"]["rig_calibration"],
         mode=resolved["adapter_plan"]["mode"],

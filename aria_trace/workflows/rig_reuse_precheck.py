@@ -16,10 +16,19 @@ from aria_trace.adapters.android.hik_display import AdbDisplayTarget
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
+from aria_trace.adapters.filesystem.system_configuration import (
+    DEFAULT_RIG_REPEATABILITY_POLICY,
+    RIG_REPEATABILITY_POLICIES,
+)
 
 
-DEFAULT_MINIMUM_CORRELATION = 0.985
-DEFAULT_MAXIMUM_MAE_DN = 8.0
+_DEFAULT_REPEATABILITY = RIG_REPEATABILITY_POLICIES[
+    DEFAULT_RIG_REPEATABILITY_POLICY
+]
+DEFAULT_MINIMUM_CORRELATION = float(
+    _DEFAULT_REPEATABILITY["reuse_minimum_correlation"]
+)
+DEFAULT_MAXIMUM_MAE_DN = float(_DEFAULT_REPEATABILITY["reuse_maximum_mae_dn"])
 
 
 def resolve_calibration_file(path: Path) -> Path:
@@ -342,14 +351,19 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--phone-serial")
     value.add_argument("--adb")
     value.add_argument("--mvs-python-path")
-    value.add_argument("--minimum-correlation", type=float, default=DEFAULT_MINIMUM_CORRELATION)
-    value.add_argument("--maximum-mae-dn", type=float, default=DEFAULT_MAXIMUM_MAE_DN)
-    value.add_argument("--sample-frames", type=int, default=3)
     return value
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    from aria_trace.adapters.filesystem.system_configuration import (
+        load_system_configuration,
+        resolve_rig_repeatability_policy,
+    )
+
+    repeatability = resolve_rig_repeatability_policy(
+        load_system_configuration(arguments.profile_root)
+    )
     if arguments.diagnostic_calibration_override:
         calibration = resolve_calibration_file(
             arguments.diagnostic_calibration_override
@@ -363,9 +377,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     mvs_python_path=arguments.mvs_python_path,
                     camera_id=arguments.camera_id,
                     phone_serial=arguments.phone_serial,
-                    minimum_correlation=arguments.minimum_correlation,
-                    maximum_mae_dn=arguments.maximum_mae_dn,
-                    sample_frames=arguments.sample_frames,
+                    minimum_correlation=repeatability["reuse_minimum_correlation"],
+                    maximum_mae_dn=repeatability["reuse_maximum_mae_dn"],
+                    sample_frames=repeatability["reuse_sample_frames"],
                 )
             )
             result["calibration_selection"] = "diagnostic_explicit_path"
@@ -393,9 +407,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             mvs_python_path=arguments.mvs_python_path,
             camera_id=arguments.camera_id,
             phone_serial=arguments.phone_serial,
-            minimum_correlation=arguments.minimum_correlation,
-            maximum_mae_dn=arguments.maximum_mae_dn,
-            sample_frames=arguments.sample_frames,
+            minimum_correlation=repeatability["reuse_minimum_correlation"],
+            maximum_mae_dn=repeatability["reuse_maximum_mae_dn"],
+            sample_frames=repeatability["reuse_sample_frames"],
         )
         if result["status"] == "no_previous_calibration":
             print("Rig precheck: no active registry calibration is available.")

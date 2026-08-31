@@ -438,6 +438,22 @@ def _run_control_only(arguments) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argument_parser = parser()
     arguments = argument_parser.parse_args(argv)
+    from aria_trace.adapters.filesystem.system_configuration import (
+        load_system_configuration,
+    )
+
+    settings = load_system_configuration(arguments.profile_root)
+    arguments.camera_id = arguments.camera_id or settings["devices"].get(
+        "camera_id"
+    )
+    arguments.phone_serial = arguments.phone_serial or settings["devices"].get(
+        "phone_id"
+    )
+    arguments.game_id = arguments.game_id or settings["game"].get("game_id")
+    arguments.adb = arguments.adb or settings["tools"].get("adb")
+    arguments.mvs_python_path = (
+        arguments.mvs_python_path or settings["tools"].get("mvs_python_path")
+    )
     if arguments.control_only:
         return _run_control_only(arguments)
     adb = resolve_adb_executable(arguments.adb)

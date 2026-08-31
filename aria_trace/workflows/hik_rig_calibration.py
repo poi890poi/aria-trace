@@ -63,6 +63,10 @@ from aria_trace.services.calibration.rig.hik.patterns import (
     white_patch,
 )
 from aria_trace.adapters.android.phone import AdbPhoneSession, PhoneMetrics
+from aria_trace.adapters.filesystem.system_configuration import (
+    DEFAULT_RIG_REPEATABILITY_POLICY,
+    RIG_REPEATABILITY_POLICIES,
+)
 
 
 Progress = Callable[[str], None]
@@ -74,6 +78,9 @@ DATA_MATRIX_DEFAULT_TRIALS = 40
 DATA_MATRIX_MAX_PATTERNS_PER_SCREEN = 8
 PANEL_FONT_SCALE = 0.50
 PANEL_LINE_STEP_PX = 22
+_DEFAULT_REPEATABILITY = RIG_REPEATABILITY_POLICIES[
+    DEFAULT_RIG_REPEATABILITY_POLICY
+]
 
 
 def _default_progress(message: str) -> None:
@@ -135,6 +142,13 @@ class HikCalibrationOptions:
     data_matrix_initial_module_px: int = 1
     complete_grader_plugin: Optional[str] = None
     strict_display_screenshot_verification: bool = False
+    repeatability_policy: str = DEFAULT_RIG_REPEATABILITY_POLICY
+    save_max_displacement_px: float = float(
+        _DEFAULT_REPEATABILITY["save_max_displacement_px"]
+    )
+    save_movement_consecutive_frames: int = int(
+        _DEFAULT_REPEATABILITY["save_movement_consecutive_frames"]
+    )
 
     def __post_init__(self) -> None:
         if self.maximum_shutter_multiplier not in (2, 3):
@@ -159,6 +173,12 @@ class HikCalibrationOptions:
             raise ValueError("Operation timeout must be positive")
         if self.visible_screen_margin_px < 0:
             raise ValueError("Visible-screen coverage margin cannot be negative")
+        if self.save_max_displacement_px <= 0:
+            raise ValueError("Save displacement threshold must be positive")
+        if self.save_movement_consecutive_frames <= 0:
+            raise ValueError("Save movement frame count must be positive")
+        if self.repeatability_policy not in RIG_REPEATABILITY_POLICIES:
+            raise ValueError("Unknown rig repeatability policy")
 
 
 class HikRigCalibrationSession:
@@ -217,6 +237,7 @@ class HikRigCalibrationSession:
         self._focus_focal_length_px: Optional[float] = None
         self._focus_focal_candidates_px: List[float] = []
         self._focus_geometry_changed = False
+        self._focus_displaced_frames = 0
         self.data_matrix_result: Optional[Dict[str, Any]] = None
         self.data_matrix_evidence_directory: Optional[Path] = None
         self.data_matrix_failure_evidence: List[Dict[str, Any]] = []
@@ -239,6 +260,21 @@ class HikRigCalibrationSession:
         value = str(message)
         self.calibration_warnings.append(value)
         self.progress("Warning: {}".format(value))
+
+    def _update_focus_save_gate(
+        self, displacement_px: float, threshold_px: float
+    ) -> bool:
+        """Require repeated displacement so one noisy pose fit cannot block save."""
+
+        if float(displacement_px) > float(threshold_px):
+            self._focus_displaced_frames += 1
+        else:
+            self._focus_displaced_frames = 0
+        self._focus_geometry_changed = bool(
+            self._focus_displaced_frames
+            >= int(self.options.save_movement_consecutive_frames)
+        )
+        return self._focus_geometry_changed
 
     def _capture_balanced_white(
         self, white_mask: np.ndarray, source: str
@@ -510,11 +546,11 @@ class HikRigCalibrationSession:
         frame: np.ndarray,
         sample_metadata: Optional[Mapping[str, Any]] = None,
         **settings: Any
-    ) -> None:
+    ) -> Optional[int]:
         """Show an unobstructed fit overview with settings in a side panel."""
 
         if self._preview_disabled:
-            return
+            return None
         try:
             if not self._preview_created:
                 cv2.namedWindow(self._preview_window, cv2.WINDOW_NORMAL)
@@ -524,7 +560,7 @@ class HikRigCalibrationSession:
                 )
             elif cv2.getWindowProperty(self._preview_window, cv2.WND_PROP_VISIBLE) < 1:
                 self._close_preview(disable=True)
-                return
+                return None
             work_width, work_height = self._desktop_work_area()
             panel_width = min(400, max(300, int(work_width * 0.30)))
             maximum_width = max(320, int(work_width * 0.88) - panel_width)
@@ -547,11 +583,12 @@ class HikRigCalibrationSession:
             )
             cv2.resizeWindow(self._preview_window, canvas.shape[1], canvas.shape[0])
             cv2.imshow(self._preview_window, canvas)
-            cv2.waitKey(1)
+            return cv2.waitKey(1) & 0xFF
         except cv2.error as exc:
             self._preview_disabled = True
             self._preview_created = False
             self.progress("Live preview disabled after OpenCV window error: {}".format(exc))
+            return None
 
     def _close_preview(self, disable: bool = False) -> None:
         if self._preview_created:
@@ -1305,6 +1342,50 @@ class HikRigCalibrationSession:
                 self.orientation_evidence["camera_up_to_app_up_clockwise_degrees"],
             )
         )
+
+    def wait_for_positioning_confirmation(self) -> bool:
+        """Show the full ChArUco camera view until the GUI operator continues."""
+
+        if self.options.headless:
+            return True
+        layout = self._required(self.charuco_layout, "screen-filling ChArUco layout")
+        shown = self.target.present_charuco()
+        self._wait_painted(shown)
+        self._set_preview_stage(
+            "POSITION RIG - Enter/Space starts; Q/Esc cancels",
+            exposure_mode="camera auto positioning guide",
+        )
+        self.progress(
+            "Positioning pause: use the live camera view and full-screen ChArUco "
+            "board to adjust the rig. Press Enter/Space in the preview to start, "
+            "or Q/Esc to cancel."
+        )
+        while True:
+            sample = self.camera.read()
+            self.last_frame = sample.image.copy()
+            corner_count = 0
+            try:
+                corner_count = int(
+                    detect_charuco_correspondences(sample.image, layout)["corner_count"]
+                )
+            except RuntimeError:
+                pass
+            key = self._preview_update(
+                sample.image,
+                sample.metadata,
+                charuco_corners=corner_count,
+            )
+            if key in (10, 13, 32):
+                self.progress("Positioning confirmed; starting ChArUco calibration.")
+                return True
+            if key in (27, ord("q"), ord("Q")):
+                self.progress("Positioning cancelled; calibration was not started.")
+                return False
+            if self._preview_disabled:
+                raise RuntimeError(
+                    "The positioning preview was closed before confirmation; "
+                    "rerun or use --headless for unattended calibration"
+                )
 
     def _observe(self, multiplier: float, exposure_us: float, gain: float) -> ExposureObservation:
         white_mask = self._required(self.white_mask, "white-area camera mask")
@@ -2197,7 +2278,7 @@ class HikRigCalibrationSession:
             np.asarray(geometry.inverse_matrix_3x3, dtype=np.float64),
         ).reshape((-1, 2))
         geometry_change_threshold_px = max(
-            8.0,
+            float(self.options.save_max_displacement_px),
             3.0
             * float(
                 (self.cv_verification or {}).get(
@@ -2214,6 +2295,7 @@ class HikRigCalibrationSession:
         )
         self._wait_painted(shown)
         self._focus_geometry_changed = False
+        self._focus_displaced_frames = 0
         self._close_preview(disable=True)
         self.progress(
             "Focus: adjust against the framed target; R recalibrates after moving the rig, "
@@ -2241,8 +2323,9 @@ class HikRigCalibrationSession:
                     frame_displacement_px = float(
                         np.mean(np.linalg.norm(detected_quad - expected_frame_quad, axis=1))
                     )
-                    if frame_displacement_px > geometry_change_threshold_px:
-                        self._focus_geometry_changed = True
+                    self._update_focus_save_gate(
+                        frame_displacement_px, geometry_change_threshold_px
+                    )
                     if physical_pitch:
                         pose = estimate_focus_target_pose(
                             detected_quad,
@@ -2335,7 +2418,11 @@ class HikRigCalibrationSession:
                         and frame_displacement_px > geometry_change_threshold_px
                     ):
                         lines.append(
-                            "Rig moved: press R to rerun geometry and imaging before saving."
+                            "Rig moved: {}/{} displaced frames; press R before saving."
+                            .format(
+                                self._focus_displaced_frames,
+                                self.options.save_movement_consecutive_frames,
+                            )
                         )
                 else:
                     lines.append(
@@ -2916,6 +3003,7 @@ class HikRigCalibrationSession:
         output = Path(self.options.output_directory).resolve()
         if output.exists():
             raise FileExistsError("Calibration output already exists: {}".format(output))
+        output.parent.mkdir(parents=True, exist_ok=True)
         if self._opened:
             self.benchmark_final_stream()
         temporary = output.parent / ".{}.tmp-{}".format(output.name, uuid.uuid4().hex)
@@ -3071,6 +3159,19 @@ class HikRigCalibrationSession:
                     "cross_source_check": cross_source_check,
                     "focus_history": self.focus_history,
                     "focus_pose_history": self.focus_pose_history,
+                    "focus_save_gate": {
+                        "repeatability_policy": self.options.repeatability_policy,
+                        "base_max_displacement_camera_px": float(
+                            self.options.save_max_displacement_px
+                        ),
+                        "consecutive_frames_required": int(
+                            self.options.save_movement_consecutive_frames
+                        ),
+                        "effective_rule": (
+                            "max(base_max_displacement_camera_px, "
+                            "3 * final_charuco_reprojection_p95_camera_px)"
+                        ),
+                    },
                     "data_matrix": self.data_matrix_result,
                 },
             }
@@ -3111,6 +3212,8 @@ class HikRigCalibrationSession:
         self.open()
         try:
             try:
+                if not self.wait_for_positioning_confirmation():
+                    return None
                 self.calibrate_geometry()
                 self.calibrate_black_level()
                 self.calibrate_once_auto_imaging()

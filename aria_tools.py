@@ -38,6 +38,10 @@ def profile_management(argv: Optional[Sequence[str]] = None) -> int:
     return _invoke("aria_trace.workflows.profile_management", argv)
 
 
+def system_setup(argv: Optional[Sequence[str]] = None) -> int:
+    return _invoke("aria_trace.workflows.system_setup", argv)
+
+
 def camera_adapter_demo(argv: Optional[Sequence[str]] = None) -> int:
     return _invoke("aria_trace.apps.hik_stream", argv)
 
@@ -48,6 +52,7 @@ COMMANDS = {
     "minimap-calibration": minimap_calibration,
     "game-color-calibration": game_color_calibration,
     "profiles": profile_management,
+    "setup": system_setup,
     "camera-adapter-demo": camera_adapter_demo,
 }
 
@@ -74,6 +79,7 @@ __all__ = [
     "game_color_calibration",
     "profile_management",
     "rig_calibration",
+    "system_setup",
     "zigzag_acquisition",
 ]
 

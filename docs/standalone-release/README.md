@@ -62,6 +62,7 @@ environment; no bundled executable or interpreter is used:
 ```bat
 install-python-tools.bat
 python-tools.bat rig-calibration
+python-tools.bat setup show
 python-tools.bat zigzag-acquisition
 python-tools.bat minimap-calibration SESSION OUTPUT --rotation START END --movement START END
 python-tools.bat game-color-calibration SESSION OUTPUT
@@ -77,6 +78,22 @@ import aria_tools
 aria_tools.rig_calibration(["--headless", "--save"])
 aria_tools.zigzag_acquisition(["--android-package", "org.example.game"])
 ```
+
+Configure shared defaults once under the effective profile root:
+
+```bat
+python-tools.bat setup configure --camera-id DA9066154 --phone-id RFCR91GWXLX --game-id genshin-impact --rig-repeatability relaxed
+python-tools.bat setup show
+python-tools.bat setup profiles --active-only
+python-tools.bat profiles list --active-only
+python-tools.bat profiles show REVISION_ID
+python-tools.bat profiles activate REVISION_ID
+```
+
+`rig-repeatability` is the single gate policy for both conservative rig reuse
+and GUI save protection. `strict`, `balanced`, and `relaxed` expand to
+documented metric-specific limits internally; commands cannot persist
+independent thresholds that drift from the selected policy.
 
 The release `python` directory must be on `PYTHONPATH` when importing
 `aria_tools` or `hikcam` from outside that directory.
@@ -128,6 +145,12 @@ active profile is complete and the repeated ChArUco snapshot meets the saved
 correlation and intensity thresholds; otherwise the same command continues
 with full calibration.
 
+GUI calibration pauses with the full ChArUco board and live camera guide before
+collecting geometry. Press Enter/Space in that preview to begin, or Q/Esc to
+cancel. The default output is
+`%ARIA_PROFILE_ROOT%\calibrations\hik-calibration-TIMESTAMP` (or the same path
+under local `profiles\` when the environment variable is unset).
+
 Game contrast/color calibration consumes one complete synchronized ADB +
 rig-normalized HIK session. It verifies that the session used the currently
 active rig revision, fits MVS gamma and CCM on held-out frame pairs, publishes
@@ -151,10 +174,11 @@ python-tools.bat profiles export-adapter my_hikcam.py --game-id genshin-impact -
 
 ## Outputs and profiles
 
-The executables write below `artifacts/`, `sessions/`, and `profiles/` in the
-release directory unless overridden. Production camera opening resolves active
-profiles by camera, phone, game, display context, and adapter mode. Explicit
-calibration paths are diagnostic overrides only.
+Rig calibration and its generated adapter write below the effective profile
+root; analysis and synchronized capture tools continue to write below
+`artifacts/` and `sessions/` unless overridden. Production camera opening
+resolves active profiles by camera, phone, game, display context, and adapter
+mode. Explicit calibration paths are diagnostic overrides only.
 
 Automatic profile storage uses `ARIA_PROFILE_ROOT` when it is set; otherwise
 it uses `profiles/` below the current working directory. The release helper
