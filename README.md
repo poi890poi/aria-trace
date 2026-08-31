@@ -46,6 +46,193 @@ while physical cycles/mm is optional and requires measured display pitch. A
 one-pixel alternating phone pattern is `0.5 cycles/display-pixel`, not an
 unqualified `1 line/pixel` result.
 
+## Task-oriented `aria_tools` calibration workflows
+
+Run these commands from the repository root in a user-managed Python
+environment. `ARIA_PROFILE_ROOT` is the shared registry and calibration root;
+when it is unset, AriaTrace uses `profiles/` under the current directory.
+
+```powershell
+$env:ARIA_PROFILE_ROOT = "E:\aria-profiles"
+python -m aria_tools setup configure `
+  --camera-id CAMERA_SERIAL `
+  --phone-id ADB_SERIAL `
+  --game-id GAME_ID `
+  --rig-repeatability relaxed
+python -m aria_tools setup show
+```
+
+`phone` in a profile name means an Android/panel platform, not one handset.
+Phone serial and model are provenance. Panel dimensions, game identity, and
+game layout determine portability. An explicit incompatible import is allowed
+and records warnings; automatic camera opening never silently substitutes an
+unrelated rig calibration.
+
+### 1. Setup from scratch
+
+First position and focus the camera and phone, then run interactive rig
+calibration. The GUI shows the full ChArUco target and waits for the operator
+before collecting geometry. A successful save publishes the active local
+`rig` profile.
+
+```powershell
+python -m aria_tools rig-calibration
+```
+
+Prepare the game at a stable playable scene. Capture settled ADB images and
+matching rig-normalized HIK images for mini-map discovery and color fitting:
+
+```powershell
+python -m aria_tools zigzag-acquisition `
+  --game-id GAME_ID `
+  --android-capture adb-screenshot `
+  --require-hik
+```
+
+The command prints the resulting `SESSION` directory. It waits for operator
+confirmation before touching the game. `--require-hik` prevents an unnoticed
+ADB-only fallback because color fitting requires both sources.
+
+Publish the reviewed mini-map localization result and compose it with the
+active local rig:
+
+```powershell
+python -m aria_tools profiles publish-minimap `
+  LOCALIZATION_SUMMARY_OR_DIRECTORY `
+  --activate
+```
+
+`publish-minimap` expects `localization_summary.json` from the session-aware
+zigzag localization producer. The lower-level command below is a different
+contract: it calibrates boundary plus cursor from a standard acquisition
+session containing a `main` video and human-reviewed rotation/movement time
+intervals. It does not accept the settled zigzag session and its
+`calibration.json` is not a `localization_summary.json`.
+
+```powershell
+python -m aria_tools minimap-calibration `
+  STANDARD_SESSION MINIMAP_EVIDENCE_OUTPUT `
+  --rotation ROTATION_START ROTATION_END `
+  --movement MOVEMENT_START MOVEMENT_END
+```
+
+Fit game contrast/color from the synchronized zigzag session. This publishes
+a portable ADB-side `phone_game_color` reference and a local, rig-specific
+`rig_game_color` containing the HIK gamma/CCM result.
+
+```powershell
+python -m aria_tools game-color-calibration `
+  SESSION GAME_COLOR_EVIDENCE_OUTPUT `
+  --game-id GAME_ID
+```
+
+Verify selection, then open the dual-stream GUI:
+
+```powershell
+python -m aria_tools profiles resolve `
+  --game-id GAME_ID --mode dual --color-policy game_matched
+python -m aria_tools camera-adapter-demo `
+  --game-id GAME_ID --mode dual --color-policy game_matched --gui
+```
+
+### 2. Production use after possible rig repositioning
+
+Run this before starting gameplay on a fully calibrated system:
+
+```powershell
+python -m aria_tools rig-calibration `
+  --reuse-if-unchanged `
+  --headless `
+  --save
+```
+
+The command compares fresh ChArUco evidence with the active rig snapshot. It
+skips full calibration when the rig is unchanged; otherwise the same command
+performs and publishes a fresh headless rig calibration. It never scans for a
+newer artifact outside the registry. Because calibration presents ChArUco on
+the phone, launch or restore the game only after this command finishes.
+
+### 3. New game or new panel platform
+
+For a new game on the same panel, update the game default and keep the existing
+rig. For a new panel geometry, update the phone default and run rig calibration
+before game capture because the panel coordinate system changed.
+
+```powershell
+python -m aria_tools setup configure --phone-id ADB_SERIAL --game-id NEW_GAME_ID
+# Required for a different panel geometry; unnecessary for only a new game:
+python -m aria_tools rig-calibration
+```
+
+Then repeat the game-specific part of setup from scratch: zigzag acquisition,
+mini-map localization publication, and game-color calibration. Export the two
+portable, camera-independent revisions after review:
+
+```powershell
+python -m aria_tools profiles list --kind phone_game --active-only
+python -m aria_tools profiles export-portable PHONE_GAME_REVISION game-minimap.zip
+python -m aria_tools profiles list --kind phone_game_color --active-only
+python -m aria_tools profiles export-portable PHONE_GAME_COLOR_REVISION game-color.zip
+```
+
+Do not export `rig_game` or `rig_game_color` as portable data: they contain
+local rig composition or HIK-specific photometric controls.
+
+### 4. New rig for a calibrated platform/game
+
+Configure and calibrate the new camera/phone rig first:
+
+```powershell
+python -m aria_tools setup configure `
+  --camera-id NEW_CAMERA_SERIAL `
+  --phone-id ADB_SERIAL `
+  --game-id GAME_ID
+python -m aria_tools rig-calibration
+```
+
+Import the portable mini-map profile. Import is review-first by default;
+`--activate` explicitly activates the imported `phone_game` and the newly
+composed local `rig_game` that references this rig calibration.
+
+```powershell
+python -m aria_tools profiles import-portable game-minimap.zip `
+  --game-id GAME_ID `
+  --activate
+python -m aria_tools profiles import-portable game-color.zip `
+  --game-id GAME_ID
+```
+
+The portable color package supplies only the ADB target. It never applies a
+different rig's HIK gamma/CCM. Capture one fresh synchronized zigzag session on
+the new rig and run `game-color-calibration` to create its local
+`rig_game_color`, then verify with `profiles resolve` and
+`camera-adapter-demo` as shown above.
+
+### 5. Switch phones on a calibrated rig/game
+
+If the replacement phone has the same panel dimensions and game layout, the
+existing `phone_game` profiles remain compatible; the changed serial is only
+provenance. Preserve a portable copy of the active mini-map revision, update
+the configured serial, and let the rig precheck decide whether the physical
+swap changed camera geometry:
+
+```powershell
+python -m aria_tools profiles list --kind phone_game --active-only
+python -m aria_tools profiles export-portable PHONE_GAME_REVISION phone-game.zip
+python -m aria_tools setup configure --phone-id NEW_ADB_SERIAL --game-id GAME_ID
+python -m aria_tools rig-calibration --reuse-if-unchanged --headless --save
+python -m aria_tools profiles import-portable phone-game.zip `
+  --phone-id NEW_ADB_SERIAL `
+  --game-id GAME_ID `
+  --activate
+```
+
+Re-importing composes the portable phone/game geometry with the active rig
+revision; it does not rediscover the mini-map. If the rig calibration changed,
+capture fresh synchronized ADB/HIK images and rerun game-color calibration.
+If the replacement panel dimensions differ, follow **New game or new panel
+platform** instead and perform new panel/game calibration.
+
 For the Genshin POC, record each useful motion as its own session. After **CAPTURE COMPLETE**, return to the list and choose the matching label. Selecting a label is the single review action that promotes a successful recording to usable evidence. The machine-readable index at `artifacts/workbench/poc_evidence/genshin-impact-pc/evidence_index.json` links those labels to source sessions, confirmation markers, timing/count summaries, and profile provenance.
 
 Start with:
