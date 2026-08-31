@@ -57,6 +57,10 @@ class PersistentRoiBackend:
                 "maximum": 1080 - self.values["OffsetY"],
                 "increment": 4,
             }
+        if node == "OffsetX":
+            return {"minimum": 0, "maximum": 1408, "increment": 4}
+        if node == "OffsetY":
+            return {"minimum": 0, "maximum": 1072, "increment": 4}
         raise AssertionError(node)
 
 
@@ -89,6 +93,23 @@ class RuntimeAdapter:
 
 
 class HikRoiSpaceTests(unittest.TestCase):
+    def test_roi_alignment_uses_absolute_sensor_extent_after_persistent_crop(self):
+        backend = PersistentRoiBackend()
+        backend.values.update(
+            OffsetX=136, OffsetY=132, Width=1304, Height=948
+        )
+        adapter = HikMvsCameraAdapter(backend=backend)
+        adapter._opened = True
+
+        self.assertEqual(
+            [136, 132, 1304, 948],
+            adapter.align_roi([136, 132, 1304, 948]),
+        )
+        self.assertEqual(
+            [136, 132, 1304, 948],
+            adapter.set_roi([136, 132, 1304, 948]),
+        )
+
     def test_calibration_reset_clears_persistent_roi_to_full_sensor(self):
         backend = PersistentRoiBackend()
         adapter = HikMvsCameraAdapter(backend=backend)

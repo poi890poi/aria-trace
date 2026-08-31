@@ -77,6 +77,7 @@ classDiagram
     class HikCamera {
       +get_frame() ndarray
       +get_frames() dict
+      +get_aria_frame_metadata(stream_id=None) dict
       +read() tuple
       +isOpened() bool
       +release()

@@ -16,11 +16,10 @@ from aria_trace.workflows.system_setup import main as setup_main
 
 
 class SystemConfigurationTests(unittest.TestCase):
-    def test_default_repeatability_policy_relaxes_reuse_not_save_protection(self):
+    def test_default_repeatability_policy_relaxes_geometry_reuse_not_save_protection(self):
         policy = resolve_rig_repeatability_policy(default_system_configuration())
         self.assertEqual("relaxed", policy["name"])
-        self.assertEqual(0.90, policy["reuse_minimum_correlation"])
-        self.assertEqual(20.0, policy["reuse_maximum_mae_dn"])
+        self.assertEqual(16.0, policy["reuse_max_displacement_px"])
         self.assertEqual(12.0, policy["save_max_displacement_px"])
         self.assertEqual(3, policy["save_movement_consecutive_frames"])
 
@@ -40,9 +39,9 @@ class SystemConfigurationTests(unittest.TestCase):
                 "balanced", loaded["rig_calibration"]["repeatability_policy"]
             )
             self.assertEqual(
-                0.97,
+                8.0,
                 resolve_rig_repeatability_policy(loaded)[
-                    "reuse_minimum_correlation"
+                    "reuse_max_displacement_px"
                 ],
             )
             self.assertTrue((root / ".registry" / "settings.json").is_file())

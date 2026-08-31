@@ -146,8 +146,10 @@ python -m aria_tools rig-calibration `
   --save
 ```
 
-The command compares fresh ChArUco evidence with the active rig snapshot. It
-skips full calibration when the rig is unchanged; otherwise the same command
+The command resets HIK acquisition to the full sensor and compares detected
+ChArUco corners with the active rig's saved projection. It ignores lighting,
+color, and pixel-intensity changes. It skips full calibration when the rig is
+unchanged; otherwise the same command
 performs and publishes a fresh headless rig calibration. It never scans for a
 newer artifact outside the registry. Because calibration presents ChArUco on
 the phone, launch or restore the game only after this command finishes.

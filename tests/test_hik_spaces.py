@@ -13,6 +13,7 @@ from acquisition.dual_source_spaces import (
 from acquisition.rig_calibration.hik.camera import HikCamera
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
 from acquisition.rig_calibration.hik.spaces import RigCalibratedSpaceConverter
+from acquisition.rig_calibration.contracts import FrameSample
 
 
 def calibration_document():
@@ -47,6 +48,48 @@ def calibration_document():
 
 
 class HikSpaceConversionTests(unittest.TestCase):
+    def test_hik_compatible_frame_return_is_unchanged_and_metadata_is_additive(self):
+        class Reader:
+            def open(self):
+                return self
+
+            def release(self):
+                pass
+
+            def read_sample(self):
+                return FrameSample(
+                    np.zeros((4, 3, 3), np.uint8),
+                    1,
+                    metadata={
+                        "image_space": {
+                            "space_id": "hik_rig_rectified_visible_phone_pixels",
+                            "stored_size_px": [3, 4],
+                        }
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hik_camera_calibration.json"
+            path.write_text(json.dumps(calibration_document()), encoding="utf-8")
+            camera = HikCamera(
+                config={
+                    "diagnostic_calibration_override": str(path),
+                    "color_order": "BGR",
+                    "reader_factory": lambda _path: Reader(),
+                }
+            )
+            camera.open()
+            frame = camera.get_frame()
+            metadata = camera.get_aria_frame_metadata()
+            camera.close()
+
+        self.assertIsInstance(frame, np.ndarray)
+        self.assertEqual((4, 3, 3), frame.shape)
+        self.assertEqual(
+            "hik_rig_rectified_visible_phone_pixels",
+            metadata["image_space"]["space_id"],
+        )
+
     def test_android_only_yaml_declares_no_cross_source_conversion(self):
         with tempfile.TemporaryDirectory() as directory:
             session = Path(directory)

@@ -15,22 +15,19 @@ from .profile_registry import default_profile_root
 SCHEMA_VERSION = "1.0"
 RIG_REPEATABILITY_POLICIES = {
     "strict": {
-        "reuse_minimum_correlation": 0.985,
-        "reuse_maximum_mae_dn": 8.0,
+        "reuse_max_displacement_px": 4.0,
         "reuse_sample_frames": 3,
         "save_max_displacement_px": 8.0,
         "save_movement_consecutive_frames": 1,
     },
     "balanced": {
-        "reuse_minimum_correlation": 0.97,
-        "reuse_maximum_mae_dn": 10.0,
+        "reuse_max_displacement_px": 8.0,
         "reuse_sample_frames": 3,
         "save_max_displacement_px": 10.0,
         "save_movement_consecutive_frames": 2,
     },
     "relaxed": {
-        "reuse_minimum_correlation": 0.90,
-        "reuse_maximum_mae_dn": 20.0,
+        "reuse_max_displacement_px": 16.0,
         "reuse_sample_frames": 3,
         "save_max_displacement_px": 12.0,
         "save_movement_consecutive_frames": 3,
@@ -48,8 +45,8 @@ SETTINGS_COMMENTS = {
     "tools": "Optional external executable and SDK paths; null means auto-detect.",
     "game": "Default game identity for profile selection; commands may override it.",
     "rig_calibration": (
-        "One named repeatability policy owns both snapshot reuse and GUI save protection. "
-        "Snapshot reuse never fits alignment; GUI displacement uses full-sensor camera pixels."
+        "One named repeatability policy owns both ChArUco geometry reuse and GUI save protection. "
+        "Both displacement checks use full-sensor camera pixels; lighting is not gated."
     ),
 }
 

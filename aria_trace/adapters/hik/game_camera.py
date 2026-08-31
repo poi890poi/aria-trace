@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Union
 
@@ -138,6 +139,7 @@ class HikGameFrameSet:
     frame_number: Optional[int]
     streams: Mapping[str, np.ndarray]
     metadata: Mapping[str, object]
+    stream_metadata: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 class ProfiledHikGameCamera:
@@ -195,6 +197,7 @@ class ProfiledHikGameCamera:
         self._full_map_x: Optional[np.ndarray] = None
         self._full_map_y: Optional[np.ndarray] = None
         self._minimap_in_full_xywh: Optional[list[int]] = None
+        self._last_stream_metadata: Dict[str, Mapping[str, object]] = {}
 
     def _screen_crop(self) -> list[int]:
         crop = _source_crop_to_canonical_phone(self.minimap)
@@ -406,26 +409,81 @@ class ProfiledHikGameCamera:
                 ),
             }
         frame_number = sample.metadata.get("frame_number")
+        common = {
+            **dict(sample.metadata),
+            "mode": self.mode,
+            "rectified_minimap": self.rectify_minimap,
+            "rectified_full": bool(
+                self.rectify_minimap and self.mode != "minimap"
+            ),
+            "acquisition_roi_xywh": list(self._effective_roi),
+            "minimap_sensor_roi_xywh": list(self._minimap_sensor_roi),
+            "full_output_normalized_by_base_rig": bool(
+                self.rectify_minimap and self.mode != "minimap"
+            ),
+            "minimap_crop_in_full_output_xywh": list(self._minimap_in_full_xywh),
+            "one_acquisition_for_all_streams": True,
+        }
+        stream_metadata: Dict[str, Mapping[str, object]] = {}
+        for name, image in streams.items():
+            height, width = image.shape[:2]
+            if name == "full" and self.rectify_minimap:
+                image_space = {
+                    "schema_version": "1.0",
+                    "space_id": "hik_rig_rectified_visible_phone_pixels",
+                    "stored_size_px": [int(width), int(height)],
+                    "parent_space_id": "hik_full_sensor_camera_pixels",
+                    "source_roi_in_parent_xywh": list(self._effective_roi),
+                    "transform_reference": (
+                        "hik_camera_calibration.json#normalization."
+                        "full_sensor_camera_to_output_3x3"
+                    ),
+                    "orientation": "phone_app_up",
+                    "color_order": "BGR",
+                }
+            elif name == "minimap" and self.rectify_minimap:
+                image_space = {
+                    "schema_version": "1.0",
+                    "space_id": "hik_phone_game_normalized_minimap_pixels",
+                    "stored_size_px": [int(width), int(height)],
+                    "parent_space_id": "android_phone_natural_display_pixels",
+                    "roi_in_parent_xywh": list(self._screen_crop()),
+                    "orientation": "phone_app_up",
+                    "color_order": "BGR",
+                }
+            else:
+                roi = (
+                    list(self._effective_roi)
+                    if name == "full" or self.mode == "minimap"
+                    else list(self._minimap_sensor_roi)
+                )
+                image_space = {
+                    "schema_version": "1.0",
+                    "space_id": "hik_camera_adapter_roi_image_pixels",
+                    "stored_size_px": [int(width), int(height)],
+                    "parent_space_id": "hik_full_sensor_camera_pixels",
+                    "roi_in_parent_xywh": roi,
+                    "local_to_parent_3x3": [
+                        [1.0, 0.0, float(roi[0])],
+                        [0.0, 1.0, float(roi[1])],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    "orientation": "hik_camera_native",
+                    "color_order": "BGR",
+                }
+            stream_metadata[name] = {
+                **common,
+                "stream_id": name,
+                "image_space": image_space,
+            }
+        self._last_stream_metadata = dict(stream_metadata)
         return HikGameFrameSet(
             time_ns=int(sample.time_ns),
             receive_time_ns=int(sample.receive_time_ns or sample.time_ns),
             frame_number=(int(frame_number) if frame_number is not None else None),
             streams=streams,
-            metadata={
-                **dict(sample.metadata),
-                "mode": self.mode,
-                "rectified_minimap": self.rectify_minimap,
-                "rectified_full": bool(
-                    self.rectify_minimap and self.mode != "minimap"
-                ),
-                "acquisition_roi_xywh": list(self._effective_roi),
-                "minimap_sensor_roi_xywh": list(self._minimap_sensor_roi),
-                "full_output_normalized_by_base_rig": bool(
-                    self.rectify_minimap and self.mode != "minimap"
-                ),
-                "minimap_crop_in_full_output_xywh": list(self._minimap_in_full_xywh),
-                "one_acquisition_for_all_streams": True,
-            },
+            metadata=common,
+            stream_metadata=stream_metadata,
         )
 
     def read_sample(self, stream_id: Optional[str] = None) -> FrameSample:
@@ -442,7 +500,23 @@ class ProfiledHikGameCamera:
             time_ns=frame_set.time_ns,
             receive_time_ns=frame_set.receive_time_ns,
             source_id="hik_game:{}".format(selected),
-            metadata={**dict(frame_set.metadata), "stream_id": selected},
+            metadata=dict(frame_set.stream_metadata[selected]),
+        )
+
+    def get_aria_frame_metadata(
+        self, stream_id: Optional[str] = None
+    ) -> Mapping[str, object]:
+        """Return per-stream metadata without changing HIK-compatible reads."""
+
+        if stream_id is None:
+            if len(self._last_stream_metadata) == 1:
+                return copy.deepcopy(next(iter(self._last_stream_metadata.values())))
+            return copy.deepcopy({
+                name: dict(value)
+                for name, value in self._last_stream_metadata.items()
+            })
+        return copy.deepcopy(
+            self._last_stream_metadata.get(str(stream_id), {})
         )
 
     def read(self) -> tuple[bool, Optional[np.ndarray]]:

@@ -94,7 +94,7 @@ python-tools.bat profiles activate REVISION_ID
 and GUI save protection. `strict`, `balanced`, and `relaxed` expand to
 documented metric-specific limits internally; commands cannot persist
 independent thresholds that drift from the selected policy. The default
-`relaxed` reuse check accepts correlation >= 0.90 and grayscale MAE <= 20 DN;
+`relaxed` reuse check accepts ChArUco corner-alignment p95 <= 16 full-sensor px;
 its GUI save guard remains 12 camera pixels for three consecutive frames.
 
 The release `python` directory must be on `PYTHONPATH` when importing
@@ -132,6 +132,10 @@ frame. Use `camera.get_frame()` for one output and `camera.get_frames()` for
 dual output. Coordinate conversion methods are available on the same object:
 `adb_to_camera_adapter_points(...)` and
 `camera_adapter_to_adb_points(...)` when rectification is enabled.
+These HIK-compatible image return values are unchanged. AriaTrace consumers
+can separately call `camera.get_aria_frame_metadata()` (or pass `"full"` /
+`"minimap"` after `get_frames()`) to obtain the last image's declared space,
+ROI, orientation, and provenance.
 
 The adapter deliberately locks the calibrated exposure, gain, white balance,
 ROI, and optional MVS Bayer gamma/color matrix for the session.
@@ -142,10 +146,11 @@ Rig calibration can conservatively reuse the active immutable rig revision:
 rig-calibration.bat --reuse-if-unchanged --headless --save
 ```
 
-The precheck writes fresh/reference/difference evidence. It skips only when the
-active profile is complete and the repeated ChArUco snapshot meets the saved
-correlation and intensity thresholds; otherwise the same command continues
-with full calibration.
+The precheck resets acquisition to the full sensor and writes the fresh frame
+plus a saved-versus-detected ChArUco corner overlay. It skips only when the
+board alignment meets the configured full-sensor displacement limit. Pixel
+brightness, color, background, and environmental lighting are not reuse gates;
+otherwise the same command continues with full calibration.
 
 GUI calibration pauses with the full ChArUco board and live camera guide before
 collecting geometry. Press Enter/Space in that preview to begin, or Q/Esc to

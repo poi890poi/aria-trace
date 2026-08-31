@@ -143,8 +143,19 @@ class CalibratedHikFrameSource(FrameSource):
         metadata.update(
             {
                 "source": "hik_mvs_calibrated",
-                "coordinate_space": "hik_session_aligned_visible_phone_pixels",
-                "source_coordinate_space": "hik_rig_rectified_visible_phone_pixels",
+                "coordinate_space": (
+                    "hik_session_aligned_visible_phone_pixels"
+                    if self.rectify
+                    else "hik_session_rotated_camera_adapter_roi_pixels"
+                ),
+                "source_coordinate_space": (
+                    (sample.metadata.get("image_space") or {}).get("space_id")
+                    or (
+                        "hik_rig_rectified_visible_phone_pixels"
+                        if self.rectify
+                        else "hik_camera_adapter_roi_image_pixels"
+                    )
+                ),
                 "rig_calibration": str(self.calibration_file.resolve()),
                 "timestamp_timebase": "host perf_counter_ns at frame receive",
                 "device_timestamp_raw": raw_device_time,
@@ -160,6 +171,26 @@ class CalibratedHikFrameSource(FrameSource):
                     padding_right,
                     padding_bottom,
                 ],
+                "image_space": {
+                    "schema_version": "1.0",
+                    "space_id": (
+                        "hik_session_aligned_visible_phone_pixels"
+                        if self.rectify
+                        else "hik_session_rotated_camera_adapter_roi_pixels"
+                    ),
+                    "stored_size_px": [int(image.shape[1]), int(image.shape[0])],
+                    "valid_content_size_px": [
+                        int(content_width),
+                        int(content_height),
+                    ],
+                    "parent_space": dict(
+                        sample.metadata.get("image_space") or {}
+                    ),
+                    "operation": "rotate_quarter_turns_then_encoder_pad",
+                    "quarter_turns_clockwise_from_parent": int(output_turns),
+                    "padding_right_bottom_px": [padding_right, padding_bottom],
+                    "color_order": "BGR",
+                },
             }
         )
         return FramePacket(
@@ -191,8 +222,16 @@ class CalibratedHikFrameSource(FrameSource):
             "stream_id": self.stream_id,
             "calibration": str(self.calibration_file.resolve()),
             "rectified": self.rectify,
-            "coordinate_space": "hik_session_aligned_visible_phone_pixels",
-            "source_coordinate_space": "hik_rig_rectified_visible_phone_pixels",
+            "coordinate_space": (
+                "hik_session_aligned_visible_phone_pixels"
+                if self.rectify
+                else "hik_session_rotated_camera_adapter_roi_pixels"
+            ),
+            "source_coordinate_space": (
+                "hik_rig_rectified_visible_phone_pixels"
+                if self.rectify
+                else "hik_camera_adapter_roi_image_pixels"
+            ),
             "output_quarter_turns_clockwise_from_calibration_display": (
                 output_turns
             ),
@@ -263,8 +302,11 @@ class NativeHikFrameSource(FrameSource):
                 sensor_height = (self.controls.get("height") or {}).get(
                     "maximum", self.metadata.get("height_px", self.height_px)
                 )
+            reset = getattr(self.adapter, "reset_full_sensor_roi", None)
             self.full_sensor_roi = list(
-                self.adapter.set_roi(
+                reset()
+                if callable(reset)
+                else self.adapter.set_roi(
                     [0, 0, int(sensor_width), int(sensor_height)]
                 )
             )
@@ -312,6 +354,22 @@ class NativeHikFrameSource(FrameSource):
                     padding_right,
                     padding_bottom,
                 ],
+                "image_space": {
+                    "schema_version": "1.0",
+                    "space_id": "native_hik_sensor_bgr_pixels",
+                    "stored_size_px": [int(image.shape[1]), int(image.shape[0])],
+                    "valid_content_size_px": [
+                        int(sample.image.shape[1]),
+                        int(sample.image.shape[0]),
+                    ],
+                    "parent_space": dict(
+                        sample.metadata.get("image_space") or {}
+                    ),
+                    "operation": "full_sensor_copy_then_encoder_pad",
+                    "padding_right_bottom_px": [padding_right, padding_bottom],
+                    "orientation": "hik_camera_native",
+                    "color_order": "BGR",
+                },
             }
         )
         return FramePacket(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import importlib
 import json
@@ -562,6 +563,8 @@ class HikMvsCameraAdapter(CameraAdapter):
         self.configuration: Optional[CameraConfiguration] = None
         self.metadata: dict[str, Any] = {}
         self._opened = False
+        self._active_roi: Optional[list[int]] = None
+        self._last_frame_metadata: dict[str, Any] = {}
 
     @property
     def backend(self):
@@ -601,6 +604,12 @@ class HikMvsCameraAdapter(CameraAdapter):
             raise
         self.configuration = configuration
         self._opened = True
+        self._active_roi = [
+            int(self.backend.get_int("OffsetX")),
+            int(self.backend.get_int("OffsetY")),
+            int(self.backend.get_int("Width")),
+            int(self.backend.get_int("Height")),
+        ]
         metadata.update(
             {
                 "adapter_id": self.adapter_id,
@@ -621,13 +630,45 @@ class HikMvsCameraAdapter(CameraAdapter):
         # Keep the raw HIK device counter in metadata, but put the receive time
         # on the same host timebase as scrcpy's Android clock mapping.
         received = time.perf_counter_ns()
+        height, width = image.shape[:2]
+        roi = list(self._active_roi or [0, 0, int(width), int(height)])
+        image_space = {
+            "schema_version": "1.0",
+            "space_id": "hik_camera_acquisition_pixels",
+            "stored_size_px": [int(width), int(height)],
+            "parent_space_id": "hik_full_sensor_camera_pixels",
+            "roi_in_parent_xywh": roi,
+            "local_to_parent_3x3": [
+                [1.0, 0.0, float(roi[0])],
+                [0.0, 1.0, float(roi[1])],
+                [0.0, 0.0, 1.0],
+            ],
+            "orientation": "hik_camera_native",
+            "color_order": "BGR",
+        }
+        metadata = {
+            "adapter_id": self.adapter_id,
+            **frame_metadata,
+            "image_space": image_space,
+        }
+        self._last_frame_metadata = dict(metadata)
         return FrameSample(
             image=image,
             time_ns=received,
             receive_time_ns=received,
             source_id="hik:{}".format(self.metadata.get("device_id", "unknown")),
-            metadata={"adapter_id": self.adapter_id, **frame_metadata},
+            metadata=metadata,
         )
+
+    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+        """Return AriaTrace metadata for the most recently acquired frame.
+
+        This is deliberately additive: native HIK/OpenCV-style frame methods
+        keep returning images, while callers that understand AriaTrace spaces
+        can retrieve the corresponding capture metadata separately.
+        """
+
+        return copy.deepcopy(self._last_frame_metadata)
 
     def close(self) -> None:
         try:
@@ -636,6 +677,8 @@ class HikMvsCameraAdapter(CameraAdapter):
         finally:
             self.configuration = None
             self._opened = False
+            self._active_roi = None
+            self._last_frame_metadata = {}
 
     def controls(self) -> Mapping[str, Any]:
         result = {}
@@ -931,30 +974,45 @@ class HikMvsCameraAdapter(CameraAdapter):
 
     def align_roi(self, roi_xywh: Sequence[int]) -> list[int]:
         x, y, width, height = map(int, roi_xywh)
+        if width <= 0 or height <= 0:
+            raise ValueError("HIK ROI dimensions must be positive")
         controls = self.controls()
-        # Offset maxima are frequently dynamic and report zero while full Width/
-        # Height is active. Derive the static sensor allowance from dimension
-        # maxima/minima, retaining the offset node's declared increment.
+        # Width/Height maxima on this HIK model are residual values whose value
+        # changes with the persistent OffsetX/OffsetY. SensorWidth/SensorHeight
+        # are the state-independent raster bounds and must own ROI alignment.
+        try:
+            sensor_width = int(self.backend.get_int("SensorWidth"))
+            sensor_height = int(self.backend.get_int("SensorHeight"))
+        except Exception:
+            # Some test/plugin backends expose only GenICam ranges. Recover an
+            # absolute extent by adding the current persistent offset to the
+            # residual dimension maximum.
+            try:
+                current_x = int(self.backend.get_int("OffsetX"))
+                current_y = int(self.backend.get_int("OffsetY"))
+            except Exception:
+                current_x = 0
+                current_y = 0
+            sensor_width = current_x + int(controls["width"]["maximum"])
+            sensor_height = current_y + int(controls["height"]["maximum"])
         offset_x_limits = dict(controls["offset_x"])
         offset_y_limits = dict(controls["offset_y"])
         offset_x_limits["maximum"] = max(
             int(offset_x_limits.get("maximum", 0)),
-            int(controls["width"]["maximum"]) - int(controls["width"]["minimum"]),
+            sensor_width - int(controls["width"]["minimum"]),
         )
         offset_y_limits["maximum"] = max(
             int(offset_y_limits.get("maximum", 0)),
-            int(controls["height"]["maximum"]) - int(controls["height"]["minimum"]),
+            sensor_height - int(controls["height"]["minimum"]),
         )
         x = self._aligned(x, offset_x_limits, lower=True)
         y = self._aligned(y, offset_y_limits, lower=True)
-        width = self._aligned(width, controls["width"], lower=False)
-        height = self._aligned(height, controls["height"], lower=False)
         width_limits = dict(controls["width"])
         height_limits = dict(controls["height"])
-        width_limits["maximum"] = int(controls["width"]["maximum"]) - x
-        height_limits["maximum"] = int(controls["height"]["maximum"]) - y
-        width = self._aligned(width, width_limits, lower=True)
-        height = self._aligned(height, height_limits, lower=True)
+        width_limits["maximum"] = sensor_width - x
+        height_limits["maximum"] = sensor_height - y
+        width = self._aligned(width, width_limits, lower=False)
+        height = self._aligned(height, height_limits, lower=False)
         return [x, y, width, height]
 
     def set_roi(self, roi_xywh: Sequence[int]) -> list[int]:
@@ -979,6 +1037,13 @@ class HikMvsCameraAdapter(CameraAdapter):
             self.backend.get_int("Width"),
             self.backend.get_int("Height"),
         ]
+        if effective != [x, y, width, height]:
+            raise RuntimeError(
+                "HIK effective ROI {} differs from aligned request {}".format(
+                    effective, [x, y, width, height]
+                )
+            )
+        self._active_roi = list(effective)
         return effective
 
     def reset_full_sensor_roi(self) -> list[int]:
@@ -1026,6 +1091,7 @@ class HikMvsCameraAdapter(CameraAdapter):
                     effective
                 )
             )
+        self._active_roi = list(effective)
         return effective
 
 
@@ -1059,6 +1125,7 @@ class RectifiedHikCamera:
         self._dense_path = None
         self._effective_roi = None
         self._bayer_conversion = dict(bayer_conversion or {})
+        self._last_frame_metadata: dict[str, Any] = {}
 
     def is_calibrated(self) -> bool:
         """Return whether the saved bundle is sufficient for adapter streaming."""
@@ -1196,9 +1263,7 @@ class RectifiedHikCamera:
         if not self._opened:
             return False, None
         try:
-            sample = self.adapter.read()
-            rectified = self._rectify(sample.image)
-            return True, rectified
+            return True, self.read_sample().image
         except Exception:
             return False, None
 
@@ -1207,6 +1272,44 @@ class RectifiedHikCamera:
             raise RuntimeError("Rectified HIK stream is not open")
         sample = self.adapter.read()
         rectified = self._rectify(sample.image)
+        height, width = rectified.shape[:2]
+        if self._rectify_enabled:
+            image_space = {
+                "schema_version": "1.0",
+                "space_id": "hik_rig_rectified_visible_phone_pixels",
+                "stored_size_px": [int(width), int(height)],
+                "parent_space_id": "hik_full_sensor_camera_pixels",
+                "source_roi_in_parent_xywh": list(self._effective_roi),
+                "transform_reference": (
+                    "hik_camera_calibration.json#normalization."
+                    "full_sensor_camera_to_output_3x3"
+                ),
+                "orientation": "phone_app_up",
+                "color_order": "BGR",
+            }
+        else:
+            image_space = {
+                "schema_version": "1.0",
+                "space_id": "hik_camera_adapter_roi_image_pixels",
+                "stored_size_px": [int(width), int(height)],
+                "parent_space_id": "hik_full_sensor_camera_pixels",
+                "roi_in_parent_xywh": list(self._effective_roi),
+                "local_to_parent_3x3": [
+                    [1.0, 0.0, float(self._effective_roi[0])],
+                    [0.0, 1.0, float(self._effective_roi[1])],
+                    [0.0, 0.0, 1.0],
+                ],
+                "orientation": "hik_camera_native",
+                "color_order": "BGR",
+            }
+        metadata = {
+            **dict(sample.metadata),
+            "rectified": self._rectify_enabled,
+            "hardware_roi_output": not self._rectify_enabled,
+            "effective_hardware_roi_xywh": list(self._effective_roi),
+            "image_space": image_space,
+        }
+        self._last_frame_metadata = dict(metadata)
         return FrameSample(
             rectified,
             sample.time_ns,
@@ -1214,16 +1317,18 @@ class RectifiedHikCamera:
             receive_time_ns=sample.receive_time_ns,
             source_id=sample.source_id
             + (":rectified" if self._rectify_enabled else ":hardware-roi"),
-            metadata={
-                **dict(sample.metadata),
-                "rectified": self._rectify_enabled,
-                "hardware_roi_output": not self._rectify_enabled,
-            },
+            metadata=metadata,
         )
+
+    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+        """Return space/provenance metadata for the last successful read."""
+
+        return copy.deepcopy(self._last_frame_metadata)
 
     def release(self) -> None:
         self.adapter.close()
         self._opened = False
+        self._last_frame_metadata = {}
 
     def _rectify(self, image: np.ndarray) -> np.ndarray:
         if not self._rectify_enabled:

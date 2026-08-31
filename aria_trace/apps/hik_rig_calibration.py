@@ -66,7 +66,7 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "check the active registry rig first and skip full calibration only "
-            "when the saved ChArUco snapshot is unchanged"
+            "when full-sensor ChArUco corner alignment is unchanged"
         ),
     )
     value.add_argument(
@@ -194,12 +194,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     )
     print(
-        "Rig repeatability policy: {} (reuse correlation >= {:.3f}, MAE <= {:.1f} DN; "
+        "Rig repeatability policy: {} (reuse ChArUco displacement <= {:.1f} px; "
         "save is blocked after displacement > {:.1f} px for {} consecutive frames)."
         .format(
             repeatability["name"],
-            repeatability["reuse_minimum_correlation"],
-            repeatability["reuse_maximum_mae_dn"],
+            repeatability["reuse_max_displacement_px"],
             repeatability["save_max_displacement_px"],
             repeatability["save_movement_consecutive_frames"],
         )
@@ -252,8 +251,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             mvs_python_path=arguments.mvs_python_path,
             camera_id=arguments.camera_id,
             phone_serial=arguments.phone_serial,
-            minimum_correlation=repeatability["reuse_minimum_correlation"],
-            maximum_mae_dn=repeatability["reuse_maximum_mae_dn"],
+            maximum_displacement_px=repeatability["reuse_max_displacement_px"],
             sample_frames=repeatability["reuse_sample_frames"],
         )
         if (

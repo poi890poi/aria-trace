@@ -149,6 +149,14 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(1234, frame_set.time_ns)
         self.assertTrue(frame_set.metadata["one_acquisition_for_all_streams"])
         self.assertTrue(frame_set.metadata["full_output_normalized_by_base_rig"])
+        self.assertEqual(
+            "hik_rig_rectified_visible_phone_pixels",
+            frame_set.stream_metadata["full"]["image_space"]["space_id"],
+        )
+        self.assertEqual(
+            "hik_phone_game_normalized_minimap_pixels",
+            frame_set.stream_metadata["minimap"]["image_space"]["space_id"],
+        )
 
     def test_dual_mode_can_disable_all_geometric_rectification(self):
         adapter = FakeAdapter()
@@ -161,6 +169,16 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertFalse(frame_set.metadata["rectified_full"])
         self.assertFalse(frame_set.metadata["rectified_minimap"])
         self.assertFalse(frame_set.metadata["full_output_normalized_by_base_rig"])
+        self.assertEqual(
+            "hik_camera_adapter_roi_image_pixels",
+            frame_set.stream_metadata["full"]["image_space"]["space_id"],
+        )
+        self.assertEqual(
+            [10, 20, 30, 20],
+            frame_set.stream_metadata["minimap"]["image_space"][
+                "roi_in_parent_xywh"
+            ],
+        )
 
     def test_full_mode_returns_only_normalized_visible_phone_stream(self):
         adapter = FakeAdapter()

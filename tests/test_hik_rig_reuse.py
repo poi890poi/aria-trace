@@ -14,9 +14,10 @@ import numpy as np
 
 from acquisition.rig_calibration.hik.driver import RectifiedHikCamera
 from acquisition.rig_calibration.hik.reuse_precheck import (
-    compare_calibration_snapshots,
+    compare_charuco_alignment,
     discover_active_profile_calibration,
     format_reuse_precheck_failure,
+    run_reuse_precheck,
     main as reuse_precheck_main,
     parser as reuse_precheck_parser,
 )
@@ -35,7 +36,11 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
             "full_sensor_mode": {"width_px": 64, "height_px": 48, "fps": 30.0},
             "hardware_roi_xywh": [0, 0, 64, 48],
         },
-        "phone": {"serial": phone_serial},
+        "phone": {
+            "serial": phone_serial,
+            "screen_size_px": [64, 48],
+            "orientation_quarter_turns": 0,
+        },
         "imaging": {
             "exposure_us": 1000.0,
             "gain": 2.0,
@@ -49,6 +54,14 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
             "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
             "output_size_px": [64, 48],
         },
+        "geometry": {
+            "charuco_layout": {
+                "squares_x": 4,
+                "squares_y": 3,
+                "margin_px": [0, 0],
+            },
+            "screen_to_full_sensor_camera_3x3": np.eye(3).tolist(),
+        },
     }
     config_path = path / "hik_camera_calibration.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -56,22 +69,80 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
-    def test_repeatability_failure_message_names_metrics_limits_and_outcome(self):
+    def test_precheck_resets_full_sensor_and_uses_only_charuco_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calibration = write_calibration(root / "rig")
+            output = root / "precheck"
+            adapter = Mock()
+            adapter.reset_full_sensor_roi.return_value = [0, 0, 64, 48]
+            adapter.read.return_value = Mock(
+                image=np.zeros((48, 64, 3), np.uint8),
+                metadata={
+                    "image_space": {
+                        "space_id": "hik_camera_acquisition_pixels",
+                        "stored_size_px": [64, 48],
+                    }
+                },
+            )
+            target = Mock()
+            phone = Mock()
+            points = np.asarray(
+                [[10, 10], [30, 10], [10, 30], [30, 30]], np.float64
+            )
+            with patch(
+                "aria_trace.workflows.rig_reuse_precheck.RectifiedHikCamera"
+            ) as validator_type, patch(
+                "aria_trace.workflows.rig_reuse_precheck.HikMvsCameraAdapter",
+                return_value=adapter,
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.resolve_adb_executable",
+                return_value=Path("adb"),
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession",
+                return_value=phone,
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.AdbDisplayTarget",
+                return_value=target,
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",
+                return_value={
+                    "camera_points_xy": points,
+                    "screen_points_xy": points,
+                    "corner_count": 4,
+                },
+            ):
+                validator_type.return_value.is_calibrated.return_value = True
+                result = run_reuse_precheck(
+                    calibration,
+                    output,
+                    sample_frames=3,
+                    maximum_displacement_px=16.0,
+                )
+
+            self.assertTrue(result["reusable"])
+            adapter.reset_full_sensor_roi.assert_called_once_with()
+            self.assertEqual([0, 0, 64, 48], result["effective_full_sensor_roi_xywh"])
+            self.assertFalse((root / "rig" / "last_camera_frame.png").exists())
+            self.assertTrue((output / "fresh_full_sensor_frame.png").is_file())
+            self.assertEqual(
+                "hik_camera_acquisition_pixels",
+                result["image_space"]["space_id"],
+            )
+
+    def test_repeatability_failure_message_names_geometry_limit_and_outcome(self):
         message = format_reuse_precheck_failure(
             {
                 "status": "rig_moved",
                 "comparison": {
-                    "correlation": 0.88,
-                    "minimum_correlation": 0.90,
-                    "mean_absolute_error_dn": 12.0,
-                    "maximum_mae_dn": 20.0,
+                    "p95_displacement_px": 18.0,
+                    "maximum_allowed_displacement_px": 16.0,
                 },
             }
         )
-        self.assertIn("Rig reuse check failed", message)
-        self.assertIn("Correlation: 0.880000; required >= 0.900000 [FAIL]", message)
-        self.assertIn("Grayscale MAE: 12.000 DN; required <= 20.000 DN [PASS]", message)
-        self.assertIn("camera/phone may have moved", message)
+        self.assertIn("detected ChArUco board displacement", message)
+        self.assertIn("18.000 full-sensor px; allowed <= 16.000 px [FAIL]", message)
+        self.assertIn("Lighting and pixel brightness are not part", message)
 
     def test_adapter_export_accepts_saved_bundle_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -181,7 +252,7 @@ class HikRigReuseTests(unittest.TestCase):
                     "reusable": True,
                     "camera_adapter_is_calibrated": True,
                     "calibration": str(calibration),
-                    "comparison": {"correlation": 1.0},
+                    "comparison": {"p95_displacement_px": 1.0},
                 },
             ), patch(
                 "aria_trace.apps.hik_rig_calibration._write_standalone_adapter"
@@ -215,10 +286,8 @@ class HikRigReuseTests(unittest.TestCase):
                 "reusable": False,
                 "camera_adapter_is_calibrated": True,
                 "comparison": {
-                    "correlation": 0.88,
-                    "minimum_correlation": 0.90,
-                    "mean_absolute_error_dn": 12.0,
-                    "maximum_mae_dn": 20.0,
+                    "p95_displacement_px": 18.0,
+                    "maximum_allowed_displacement_px": 16.0,
                 },
             }
             output = io.StringIO()
@@ -251,7 +320,7 @@ class HikRigReuseTests(unittest.TestCase):
                 )
             text = output.getvalue()
             self.assertIn(
-                "Correlation: 0.880000; required >= 0.900000 [FAIL]", text
+                "18.000 full-sensor px; allowed <= 16.000 px [FAIL]", text
             )
             self.assertIn("Full rig calibration will start now.", text)
             self.assertIn("Repeatability evidence:", text)
@@ -305,18 +374,30 @@ class HikRigReuseTests(unittest.TestCase):
             path.write_text(json.dumps(config), encoding="utf-8")
             self.assertFalse(RectifiedHikCamera(path, rectify=False).is_calibrated())
 
-    def test_snapshot_check_accepts_repeat_noise_and_rejects_one_pixel_motion(self):
-        rng = np.random.RandomState(4)
-        reference = np.zeros((120, 160, 3), np.uint8)
-        for y in range(0, 120, 20):
-            for x in range(0, 160, 20):
-                if (x // 20 + y // 20) % 2 == 0:
-                    reference[y : y + 20, x : x + 20] = 240
-        noise = rng.normal(0.0, 1.0, reference.shape)
-        repeated = np.clip(reference.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-        moved = np.roll(reference, 1, axis=1)
-        self.assertTrue(compare_calibration_snapshots(reference, repeated)["matches"])
-        self.assertFalse(compare_calibration_snapshots(reference, moved)["matches"])
+    def test_charuco_alignment_ignores_pixels_and_detects_geometric_motion(self):
+        screen = np.asarray([[10, 10], [30, 10], [10, 30], [30, 30]], np.float64)
+        saved = np.asarray([[110, 60], [130, 60], [110, 80], [130, 80]], np.float64)
+        unchanged = {
+            "screen_points_xy": screen,
+            "camera_points_xy": saved + np.asarray([2.0, -1.0]),
+        }
+        moved = {
+            "screen_points_xy": screen,
+            "camera_points_xy": saved + np.asarray([20.0, 0.0]),
+        }
+        matrix = [[1, 0, 100], [0, 1, 50], [0, 0, 1]]
+        self.assertTrue(
+            compare_charuco_alignment(
+                [unchanged, unchanged, unchanged],
+                matrix,
+                maximum_displacement_px=16.0,
+            )["matches"]
+        )
+        result = compare_charuco_alignment(
+            [moved, moved, moved], matrix, maximum_displacement_px=16.0
+        )
+        self.assertFalse(result["matches"])
+        self.assertTrue(result["lighting_invariant"])
 
     def test_legacy_artifact_directory_is_not_used_for_selection(self):
         with tempfile.TemporaryDirectory() as directory:

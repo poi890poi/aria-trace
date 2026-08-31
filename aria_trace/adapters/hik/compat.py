@@ -17,6 +17,7 @@ per frame.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -225,6 +226,7 @@ class HikCamera:
         self._reader = None
         self._last_frame = None
         self.last_frame_metadata: Dict[str, Any] = {}
+        self._last_frame_metadata_by_stream: Dict[str, Dict[str, Any]] = {}
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
         self._rectify_enabled = bool(self.config.get("rectify", True))
         if self._color_order not in ("RGB", "BGR"):
@@ -382,6 +384,8 @@ class HikCamera:
         self.is_open = False
         if reader is not None:
             reader.release()
+        self.last_frame_metadata = {}
+        self._last_frame_metadata_by_stream = {}
 
     release = close
 
@@ -401,18 +405,38 @@ class HikCamera:
             return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         return bgr
 
+    def _public_frame_metadata(
+        self, metadata: Mapping[str, Any], frame: np.ndarray
+    ) -> Dict[str, Any]:
+        result = copy.deepcopy(dict(metadata))
+        image_space = dict(result.get("image_space") or {})
+        image_space.update(
+            stored_size_px=[int(frame.shape[1]), int(frame.shape[0])],
+            color_order=self._color_order,
+        )
+        result["image_space"] = image_space
+        return result
+
     def get_frame(self) -> np.ndarray:
         reader = self._require_reader()
         if hasattr(reader, "read_sample"):
             sample = reader.read_sample()
             bgr = sample.image
-            self.last_frame_metadata = dict(sample.metadata)
+            source_metadata = dict(sample.metadata)
         else:
             ok, bgr = reader.read()
             if not ok or bgr is None:
                 raise RuntimeError("HIK camera returned no rectified frame")
-            self.last_frame_metadata = {}
+            source_metadata = {}
         frame = self._convert_output(bgr)
+        self.last_frame_metadata = self._public_frame_metadata(
+            source_metadata, frame
+        )
+        self._last_frame_metadata_by_stream = {
+            str(self.last_frame_metadata.get("stream_id", "default")): dict(
+                self.last_frame_metadata
+            )
+        }
         self._last_frame = frame
         self.last_time_get_frame = time.time()
         self.shape = tuple(frame.shape)
@@ -426,10 +450,20 @@ class HikCamera:
         if not hasattr(reader, "read_streams"):
             return {"full": self.get_frame()}
         frame_set = reader.read_streams()
-        self.last_frame_metadata = dict(frame_set.metadata)
+        declared = getattr(frame_set, "stream_metadata", {}) or {}
         frames = {
             name: self._convert_output(frame)
             for name, frame in frame_set.streams.items()
+        }
+        self._last_frame_metadata_by_stream = {
+            str(name): self._public_frame_metadata(
+                declared.get(name) or frame_set.metadata, frames[name]
+            )
+            for name in frame_set.streams
+        }
+        self.last_frame_metadata = {
+            **dict(frame_set.metadata),
+            "streams": copy.deepcopy(self._last_frame_metadata_by_stream),
         }
         preferred = frames.get("minimap")
         if preferred is None:
@@ -444,6 +478,34 @@ class HikCamera:
                 * (preferred.shape[2] if preferred.ndim == 3 else 1)
             )
         return frames
+
+    def get_aria_frame_metadata(
+        self, stream_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return AriaTrace space/provenance metadata for the last frame.
+
+        HIK-compatible methods such as :meth:`get_frame`, :meth:`get_frames`,
+        and :meth:`read` deliberately keep their established image-only return
+        values. This proprietary additive method exposes metadata without
+        changing that native-facing surface.
+        """
+
+        if stream_id is not None:
+            return copy.deepcopy(
+                self._last_frame_metadata_by_stream.get(str(stream_id), {})
+            )
+        if len(self._last_frame_metadata_by_stream) == 1:
+            return copy.deepcopy(
+                next(iter(self._last_frame_metadata_by_stream.values()))
+            )
+        if self._last_frame_metadata_by_stream:
+            return copy.deepcopy({
+                "streams": {
+                    name: dict(value)
+                    for name, value in self._last_frame_metadata_by_stream.items()
+                }
+            })
+        return copy.deepcopy(self.last_frame_metadata)
 
     def get_frame_with_config(self) -> None:
         self._last_frame = self.get_frame()
