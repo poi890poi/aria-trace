@@ -760,9 +760,19 @@ def validate_hik_coordinate_contract(
                 "calibrated_output_image_to_camera_adapter_roi_image_3x3",
             )
         )
+    roundtrip_products = []
+    for forward, inverse in pairs:
+        product = matrices[forward].dot(matrices[inverse])
+        scale = float(product[2, 2])
+        if not np.isfinite(scale) or abs(scale) < 1.0e-12:
+            raise ValueError(
+                "Coordinate conversion {} round trip has invalid projective scale"
+                .format(forward)
+            )
+        roundtrip_products.append(product / scale)
     roundtrip_error = max(
-        float(np.max(np.abs(matrices[forward].dot(matrices[inverse]) - np.eye(3))))
-        for forward, inverse in pairs
+        float(np.max(np.abs(product - np.eye(3))))
+        for product in roundtrip_products
     )
     if max(composition_error, roundtrip_error) > 1.0e-6:
         raise ValueError("Coordinate conversion chain is internally inconsistent")

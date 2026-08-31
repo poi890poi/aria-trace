@@ -216,6 +216,42 @@ class HikRoiSpaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Effective HIK ROI"):
             validate_hik_coordinate_contract(calibration, [12, 20, 40, 30])
 
+    def test_projective_roundtrip_is_compared_up_to_homogeneous_scale(self):
+        full_to_screen = np.asarray(
+            [
+                [1.8, 0.07, 13.0],
+                [-0.04, 2.1, 9.0],
+                [0.0008, -0.0003, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        spaces = hik_image_space_conversions(
+            full_to_screen,
+            np.linalg.inv(full_to_screen),
+            np.eye(3),
+            [100, 80],
+            [10, 20, 40, 30],
+            [100, 80],
+            calibration_display_size_px=[100, 80],
+            phone_natural_size_px=[100, 80],
+        )
+        calibration = {
+            "camera": {
+                "full_sensor_mode": {"width_px": 100, "height_px": 80},
+                "hardware_roi_xywh": [10, 20, 40, 30],
+            },
+            "phone": {
+                "screen_size_px": [100, 80],
+                "natural_screen_size_px": [100, 80],
+            },
+            "normalization": {"output_size_px": [100, 80]},
+            "coordinate_spaces": spaces,
+        }
+        result = validate_hik_coordinate_contract(
+            calibration, [10, 20, 40, 30]
+        )
+        self.assertLess(result["maximum_matrix_roundtrip_error"], 1.0e-10)
+
     def test_distortion_contract_uses_one_precomputed_runtime_remap(self):
         lens = {
             "source": "measured",
