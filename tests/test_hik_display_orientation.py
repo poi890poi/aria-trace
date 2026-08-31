@@ -1,7 +1,9 @@
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+import cv2
 import numpy as np
 
 from acquisition.rig_calibration.geometry import CharucoLayout
@@ -13,6 +15,7 @@ class OrientationChangingPhone:
     def __init__(self, orientations):
         self.orientations = list(orientations)
         self.commands = []
+        self.runs = []
         self.viewer_activity = None
 
     def display_orientation_quarter_turns(self):
@@ -25,6 +28,13 @@ class OrientationChangingPhone:
 
     def shell(self, *args):
         self.commands.append(tuple(map(str, args)))
+        return ""
+
+    def run(self, *args):
+        values = tuple(map(str, args))
+        self.runs.append(values)
+        if values and values[0] == "pull":
+            cv2.imwrite(str(Path(values[2])), np.zeros((8, 8, 3), np.uint8))
         return ""
 
     def sleeper(self, _seconds):
@@ -117,6 +127,50 @@ class HikDisplayOrientationTests(unittest.TestCase):
                     quarter_turns,
                 )
                 target.stop()
+
+    def test_independent_presenters_never_reuse_gallery_or_probe_paths(self):
+        gallery_uris = []
+        probe_paths = []
+        for _ in range(2):
+            phone = OrientationChangingPhone([0, 0, 0, 0])
+            target = self._target(phone)
+            image = np.zeros((200, 100, 3), np.uint8)
+
+            target._launch_target(image, revision=1, orientation_attempt=1)
+            target._capture_screenshot(revision=1)
+
+            gallery_uris.append(
+                next(
+                    value
+                    for command in phone.commands
+                    for value in command
+                    if value.startswith("file:///sdcard/Download/")
+                )
+            )
+            probe_paths.append(
+                next(
+                    command[-1]
+                    for command in phone.commands
+                    if command and command[0] == "screencap"
+                )
+            )
+            force_stop_index = next(
+                index
+                for index, command in enumerate(phone.commands)
+                if command == ("am", "force-stop", "com.example")
+            )
+            launch_index = next(
+                index
+                for index, command in enumerate(phone.commands)
+                if command[:2] == ("am", "start")
+            )
+            self.assertLess(force_stop_index, launch_index)
+            target.stop()
+
+        self.assertNotEqual(gallery_uris[0], gallery_uris[1])
+        self.assertNotEqual(probe_paths[0], probe_paths[1])
+        self.assertIn("aria_trace_calibration_target_", gallery_uris[0])
+        self.assertIn("aria_trace_display_probe_", probe_paths[0])
 
     def test_portrait_target_keeps_existing_raster_and_launches_once(self):
         phone = OrientationChangingPhone([0, 0, 0, 0])

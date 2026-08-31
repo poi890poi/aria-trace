@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -51,6 +52,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._temporary: Optional[tempfile.TemporaryDirectory] = None
         self._revision = 0
         self._remote_files = []
+        self._remote_namespace = uuid.uuid4().hex
         self._acknowledgements = []
         self._warnings = []
         self._viewer: Dict[str, Any] = {}
@@ -142,11 +144,20 @@ class AdbDisplayTarget(PhoneTargetAdapter):
     def _capture_screenshot(self, revision: int) -> np.ndarray:
         if self._temporary is None:
             raise RuntimeError("Display target is not started")
-        remote = "/sdcard/Download/aria_trace_display_probe_{}.png".format(revision)
+        remote = (
+            "/sdcard/Download/aria_trace_display_probe_{}_{}.png".format(
+                self._remote_namespace, revision
+            )
+        )
         local = Path(self._temporary.name) / "screenshot_{}.png".format(revision)
-        self.phone.shell("screencap", "-p", remote)
-        self.phone.run("pull", remote, str(local))
-        self.phone.shell("rm", "-f", remote)
+        try:
+            self.phone.shell("screencap", "-p", remote)
+            self.phone.run("pull", remote, str(local))
+        finally:
+            try:
+                self.phone.shell("rm", "-f", remote)
+            except Exception:
+                pass
         screenshot = cv2.imread(str(local), cv2.IMREAD_COLOR)
         if screenshot is None or screenshot.size == 0:
             raise RuntimeError("Android Display screenshot was empty")
@@ -211,8 +222,10 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         local = Path(self._temporary.name) / "target_{}_{}.png".format(
             revision, orientation_attempt
         )
-        remote = "/sdcard/Download/aria_trace_calibration_target_{}_{}.png".format(
-            revision, orientation_attempt
+        remote = (
+            "/sdcard/Download/aria_trace_calibration_target_{}_{}_{}.png".format(
+                self._remote_namespace, revision, orientation_attempt
+            )
         )
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
@@ -220,6 +233,12 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         local.write_bytes(encoded.tobytes())
         self.phone.run("push", str(local), remote)
         self._remote_files.append(remote)
+        # Image viewers are allowed to retain the Activity and its decoded URI.
+        # AOSP Camera ITS force-stops its chart viewer before each scene for the
+        # same reason: a new VIEW intent must cause a fresh decode, rather than
+        # resuming a stale/missing image from the previous presenter session.
+        viewer_package = str(self.component).split("/", 1)[0]
+        self.phone.shell("am", "force-stop", viewer_package)
         self.phone.shell(
             "am",
             "start",
@@ -465,6 +484,11 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._charuco = generate_charuco_target(layout)
         self.component = self._resolve_component()
         self._temporary = tempfile.TemporaryDirectory(prefix="aria-hik-display-")
+        # Android Gallery caches the VIEW intent URI. A process-local revision
+        # is insufficient because every presenter and every later run starts
+        # again at revision 1. Give each started presenter a fresh URI namespace
+        # so a deleted target can never be mistaken for the newly pushed image.
+        self._remote_namespace = uuid.uuid4().hex
         configured_orientation = self._configured_canonical_orientation_quarter_turns
         self._canonical_orientation_quarter_turns = (
             self.phone.display_orientation_quarter_turns()
