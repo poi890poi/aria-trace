@@ -30,7 +30,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         minimum_screenshot_correlation: float = 0.98,
         minimum_matching_pixel_fraction: float = 0.995,
         minimum_stable_frame_fraction: float = 0.9995,
-        minimum_ui_settle_seconds: float = 1.0,
+        minimum_ui_settle_seconds: float = 2.0,
         stable_probe_count: int = 3,
         strict_screenshot_verification: bool = False,
     ) -> None:
@@ -171,6 +171,18 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             and float(elapsed_seconds) >= self.minimum_ui_settle_seconds
         )
 
+    def _complete_post_change_quiet_period(self, last_ui_action_time: float) -> float:
+        """Always allow transient viewer/SystemUI chrome to clear after an image change."""
+
+        remaining = max(
+            0.0,
+            self.minimum_ui_settle_seconds
+            - max(0.0, time.monotonic() - float(last_ui_action_time)),
+        )
+        if remaining > 0.0:
+            self.phone.sleeper(remaining)
+        return float(remaining)
+
     @staticmethod
     def _rotate_quarter_turns_clockwise(
         image: np.ndarray, quarter_turns: int
@@ -247,12 +259,14 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         stable_frame_fraction = 0.0
         orientation_changed = False
         verification_error = None
+        last_ui_action_time = time.monotonic()
         for orientation_attempt in range(1, 5):
             intended_orientation = int(display_orientation) % 4
             displayed_image, display_rotation = self._logical_target(
                 image, intended_orientation
             )
             self._launch_target(displayed_image, revision, orientation_attempt)
+            last_ui_action_time = time.monotonic()
             self.phone.sleeper(self.settle_seconds)
             try:
                 screenshot = self._capture_screenshot(revision)
@@ -283,6 +297,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             width, height = int(screenshot.shape[1]), int(screenshot.shape[0])
             self.phone.shell("input", "tap", str(width // 2), str(height // 2))
             tap_time = time.monotonic()
+            last_ui_action_time = tap_time
             deadline = time.monotonic() + self.presentation_timeout_seconds
             previous_screenshot = None
             stable_probes = 0
@@ -330,6 +345,9 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                 break
             if not orientation_changed:
                 break
+        additional_ui_settle_seconds = self._complete_post_change_quiet_period(
+            last_ui_action_time
+        )
         presentation_verified = bool(
             screenshot is not None and stable_probes >= self.stable_probe_count
         )
@@ -386,6 +404,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             "required_stable_screenshot_probe_count": self.stable_probe_count,
             "stable_frame_fraction": stable_frame_fraction,
             "minimum_ui_settle_seconds": self.minimum_ui_settle_seconds,
+            "additional_ui_settle_seconds": additional_ui_settle_seconds,
             "screenshot_verification_strict": self.strict_screenshot_verification,
             "screenshot_presentation_verified": presentation_verified,
             "screenshot_verification_warning": warning,
@@ -417,6 +436,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
                 "required_stable_screenshot_probe_count": self.stable_probe_count,
                 "stable_frame_fraction": stable_frame_fraction,
                 "minimum_ui_settle_seconds": self.minimum_ui_settle_seconds,
+                "additional_ui_settle_seconds": additional_ui_settle_seconds,
                 "screenshot_verification_strict": self.strict_screenshot_verification,
                 "screenshot_presentation_verified": presentation_verified,
                 "screenshot_verification_warning": warning,

@@ -152,6 +152,35 @@ class HikDisplayOrientationTests(unittest.TestCase):
         self.assertIsNone(target.last_screenshot)
         target.stop()
 
+    def test_probe_failure_still_waits_for_post_change_ui_quiet_period(self):
+        phone = OrientationChangingPhone([0, 0, 0, 0])
+        waits = []
+        phone.sleeper = waits.append
+        target = AdbDisplayTarget(
+            phone,
+            component="com.example/.Display",
+            settle_seconds=0.1,
+            presentation_timeout_seconds=1.0,
+            minimum_ui_settle_seconds=2.0,
+            stable_probe_count=1,
+        )
+        target._layout = CharucoLayout((100, 200), 5, 10, (0, 0))
+        target._temporary = tempfile.TemporaryDirectory()
+        target._canonical_orientation_quarter_turns = 0
+        canonical = np.zeros((200, 100, 3), np.uint8)
+        with mock.patch.object(target, "_launch_target"), mock.patch.object(
+            target,
+            "_capture_screenshot",
+            side_effect=RuntimeError("probe unavailable"),
+        ):
+            target._show(canonical, "image", "target", "quiet-period-test")
+        viewer = target.telemetry()["viewer"]
+        self.assertEqual(0.1, waits[0])
+        self.assertGreater(waits[-1], 1.9)
+        self.assertEqual(2.0, viewer["minimum_ui_settle_seconds"])
+        self.assertGreater(viewer["additional_ui_settle_seconds"], 1.9)
+        target.stop()
+
     def test_strict_screenshot_probe_remains_available_for_harnesses(self):
         phone = OrientationChangingPhone([0, 0, 0, 0])
         target = self._target(phone)
