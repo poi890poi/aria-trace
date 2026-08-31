@@ -32,6 +32,7 @@ from acquisition.rig_calibration.hik.driver import (
     create_camera_adapter,
 )
 from acquisition.rig_calibration.hik.display import AdbDisplayTarget
+from aria_trace.adapters.android.display import LocalPhoneTargetServer
 from acquisition.rig_calibration.hik.patterns import (
     camera_white_mask,
     focus_edge_regions,
@@ -57,6 +58,28 @@ from acquisition.rig_calibration.geometry import estimate_screen_geometry
 
 
 class HikAlgorithmTests(unittest.TestCase):
+    def test_owned_exact_pixel_presenter_is_default_and_gallery_is_explicit(self):
+        owned = HikRigCalibrationSession(
+            HikCalibrationOptions("fake", "phone", Path("unused")),
+            camera=mock.Mock(),
+            phone=mock.Mock(),
+        )
+        self.assertIsInstance(owned.target, LocalPhoneTargetServer)
+        self.assertEqual(owned.target.bind_host, "127.0.0.1")
+        self.assertEqual(owned.target.port, 0)
+
+        legacy = HikRigCalibrationSession(
+            HikCalibrationOptions(
+                "fake",
+                "phone",
+                Path("unused"),
+                target_presenter="legacy_gallery",
+            ),
+            camera=mock.Mock(),
+            phone=mock.Mock(),
+        )
+        self.assertIsInstance(legacy.target, AdbDisplayTarget)
+
     def test_gui_positioning_waits_for_explicit_space_signal(self):
         options = HikCalibrationOptions(
             "fake", "phone", Path("unused"), headless=False

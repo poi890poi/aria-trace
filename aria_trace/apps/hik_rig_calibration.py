@@ -105,10 +105,27 @@ def parser() -> argparse.ArgumentParser:
         help="HIK one-shot auto-gain upper limit in dB (default: 12)",
     )
     value.add_argument("--exposure-noise-frames", type=int, default=4)
-    value.add_argument("--target-port", type=int, default=8765)
+    value.add_argument(
+        "--target-presenter",
+        choices=("owned_http", "legacy_gallery"),
+        default="owned_http",
+        help=(
+            "phone target surface: Aria-owned exact-pixel HTTP surface through "
+            "ADB reverse (default), or the compatibility Gallery presenter"
+        ),
+    )
+    value.add_argument(
+        "--target-port",
+        type=int,
+        default=0,
+        help="local owned-target port; 0 chooses a free port (default)",
+    )
     value.add_argument(
         "--display-component",
-        help="Android image viewer component; auto-detects the built-in Gallery/Display app",
+        help=(
+            "legacy_gallery only: Android image-viewer component; otherwise "
+            "auto-detects the built-in Gallery/Display app"
+        ),
     )
     value.add_argument("--operation-timeout-seconds", type=float, default=8.0)
     value.add_argument("--geometry-frames", type=int, default=12)
@@ -295,6 +312,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         camera_height_px=arguments.camera_height,
         camera_fps=arguments.camera_fps,
         target_port=arguments.target_port,
+        target_presenter=arguments.target_presenter,
         display_component=arguments.display_component,
         operation_timeout_seconds=arguments.operation_timeout_seconds,
         refresh_hz_override=arguments.refresh_hz,

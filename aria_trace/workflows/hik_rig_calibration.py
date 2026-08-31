@@ -127,7 +127,8 @@ class HikCalibrationOptions:
     camera_width_px: int = 2448
     camera_height_px: int = 2048
     camera_fps: float = 30.0
-    target_port: int = 8765
+    target_port: int = 0
+    target_presenter: str = "owned_http"
     display_component: Optional[str] = None
     operation_timeout_seconds: float = 8.0
     refresh_hz_override: Optional[float] = None
@@ -182,6 +183,14 @@ class HikCalibrationOptions:
             raise ValueError("Save movement frame count must be positive")
         if self.repeatability_policy not in RIG_REPEATABILITY_POLICIES:
             raise ValueError("Unknown rig repeatability policy")
+        if self.target_presenter not in ("owned_http", "legacy_gallery"):
+            raise ValueError("Unknown phone target presenter")
+        if not 0 <= int(self.target_port) <= 65535:
+            raise ValueError("Phone target port must be within 0..65535")
+        if self.target_presenter == "owned_http" and self.display_component:
+            raise ValueError(
+                "display_component applies only to target_presenter=legacy_gallery"
+            )
 
 
 class HikRigCalibrationSession:
@@ -198,14 +207,23 @@ class HikRigCalibrationSession:
         self.options = options
         self.camera = camera or HikMvsCameraAdapter()
         self.phone = phone or AdbPhoneSession(options.phone_serial)
-        self.target = target or AdbDisplayTarget(
-            self.phone,
-            component=options.display_component,
-            presentation_timeout_seconds=options.operation_timeout_seconds,
-            strict_screenshot_verification=(
-                options.strict_display_screenshot_verification
-            ),
-        )
+        if target is not None:
+            self.target = target
+        elif options.target_presenter == "owned_http":
+            self.target = LocalPhoneTargetServer(
+                bind_host="127.0.0.1",
+                port=options.target_port,
+                advertised_host="127.0.0.1",
+            )
+        else:
+            self.target = AdbDisplayTarget(
+                self.phone,
+                component=options.display_component,
+                presentation_timeout_seconds=options.operation_timeout_seconds,
+                strict_screenshot_verification=(
+                    options.strict_display_screenshot_verification
+                ),
+            )
         self.progress = progress
         self.phone_metrics: Optional[PhoneMetrics] = None
         self.phone_display_brightness: Optional[Dict[str, Any]] = None

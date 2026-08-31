@@ -135,7 +135,13 @@ Save calibration.yaml, remap data, masks, metrics, and review images
 
 The wizard opens the requested UVC mode, then records the actual mode returned by the device. It samples focus, autofocus, exposure, auto-exposure, gain, white balance, and power-line frequency when the driver exposes them. Unsupported controls remain `unknown` rather than being filled with invented values.
 
-The phone displays targets full-screen with system bars hidden and fixed orientation. The captured phone resolution and orientation become part of calibration applicability.
+The default HIK workflow serves an Aria-owned exact-pixel target surface on a
+loopback port forwarded with ADB reverse. It reports target revision, drawing
+surface, natural target raster, fullscreen state, and host-received paint time.
+The former Android Gallery presenter remains available only as the explicit
+`legacy_gallery` compatibility option. The phone displays targets full-screen
+with system bars hidden and fixed orientation. The captured phone resolution
+and orientation become part of calibration applicability.
 
 ### 5.2 Intrinsic calibration
 
