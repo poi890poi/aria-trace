@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
+
+from aria_trace.adapters.rig.devices import CameraDevice
 
 from aria_trace.apps import hik_stream as stream
 
@@ -63,38 +65,66 @@ class HikStreamCliTests(unittest.TestCase):
 
     def test_parser_accepts_native_hik_library(self):
         arguments = stream.parser().parse_args(
-            ["--camera-library", "native", "--camera-id", "10.0.0.2", "--gui"]
+            ["--camera-library", "native", "--camera-id", "DA9066154", "--gui"]
         )
         self.assertEqual("native", arguments.camera_library)
-        self.assertEqual("10.0.0.2", arguments.camera_id)
+        self.assertEqual("DA9066154", arguments.camera_id)
         self.assertEqual("full", arguments.mode)
-
-    def test_native_hik_class_is_loaded_from_independent_module(self):
-        native_class = object()
-        module = Mock(HikCamera=native_class)
-        with patch.object(stream.importlib, "import_module", return_value=module) as importer:
-            self.assertIs(native_class, stream.hik_camera_class("native"))
-        importer.assert_called_once_with("hik_camera.hik_camera")
-
-    def test_missing_native_hik_library_has_actionable_error(self):
-        with patch.object(
-            stream.importlib, "import_module", side_effect=ImportError("missing")
-        ):
-            with self.assertRaisesRegex(RuntimeError, "Install hik_camera"):
-                stream.hik_camera_class("native")
 
     def test_adapter_hik_class_is_loaded_from_drop_in_module(self):
         adapter_class = object()
         module = Mock(HikCamera=adapter_class)
         with patch.object(stream.importlib, "import_module", return_value=module) as importer:
-            self.assertIs(adapter_class, stream.hik_camera_class("adapter"))
+            self.assertIs(adapter_class, stream.adapter_hik_camera_class())
         importer.assert_called_once_with("hikcam")
 
-    def test_native_hik_demo_uses_native_context_without_adapter_profiles(self):
-        camera = MagicMock()
-        camera.is_open = True
-        native_class = Mock(return_value=camera)
-        with patch.object(stream, "hik_camera_class", return_value=native_class):
+    def test_native_hik_source_uses_existing_mvs_adapter_and_full_sensor_source(self):
+        adapter = Mock()
+        source = Mock()
+        with patch.object(
+            stream, "HikMvsCameraAdapter", return_value=adapter
+        ) as adapter_class, patch.object(
+            stream, "NativeHikFrameSource", return_value=source
+        ) as source_class:
+            self.assertIs(
+                source,
+                stream.open_native_mvs_source("DA9066154", "MVS/MvImport"),
+            )
+        adapter_class.assert_called_once_with(sdk_python_path="MVS/MvImport")
+        source_class.assert_called_once_with("DA9066154", adapter=adapter)
+        source.start.assert_called_once_with()
+
+    def test_native_hik_source_requires_an_unambiguous_mvs_camera(self):
+        adapter = Mock()
+        adapter.devices.return_value = (
+            CameraDevice("camera-1", "HIK 1"),
+            CameraDevice("camera-2", "HIK 2"),
+        )
+        with patch.object(stream, "HikMvsCameraAdapter", return_value=adapter):
+            with self.assertRaisesRegex(RuntimeError, "pass --camera-id"):
+                stream.open_native_mvs_source(None, None)
+
+    def test_native_hik_source_auto_selects_one_mvs_camera(self):
+        adapter = Mock()
+        adapter.devices.return_value = (
+            CameraDevice("DA9066154", "USB3 MV-CS016-10UC"),
+        )
+        source = Mock()
+        with patch.object(
+            stream, "HikMvsCameraAdapter", return_value=adapter
+        ), patch.object(
+            stream, "NativeHikFrameSource", return_value=source
+        ) as source_class:
+            self.assertIs(source, stream.open_native_mvs_source(None, None))
+        adapter.devices.assert_called_once_with(probe=True)
+        source_class.assert_called_once_with("DA9066154", adapter=adapter)
+        source.start.assert_called_once_with()
+
+    def test_native_hik_demo_uses_mvs_source_without_adapter_profiles(self):
+        source = Mock()
+        with patch.object(
+            stream, "open_native_mvs_source", return_value=source
+        ) as opener:
             self.assertEqual(
                 0,
                 stream.main(
@@ -102,13 +132,14 @@ class HikStreamCliTests(unittest.TestCase):
                         "--camera-library",
                         "native",
                         "--camera-id",
-                        "10.0.0.2",
+                        "DA9066154",
+                        "--mvs-python-path",
+                        "MVS/MvImport",
                     ]
                 ),
             )
-        native_class.assert_called_once_with("10.0.0.2")
-        camera.__enter__.assert_called_once_with()
-        camera.__exit__.assert_called_once_with(None, None, None)
+        opener.assert_called_once_with("DA9066154", "MVS/MvImport")
+        source.stop.assert_called_once_with()
 
     def test_legacy_positional_paths_are_obsolete(self):
         with self.assertRaises(SystemExit):

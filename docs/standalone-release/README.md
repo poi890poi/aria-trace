@@ -140,17 +140,18 @@ ROI, orientation, and provenance.
 The adapter deliberately locks the calibrated exposure, gain, white balance,
 ROI, and optional MVS Bayer gamma/color matrix for the session.
 
-The same demo can instead import the independently installed native
-`hik_camera.hik_camera.HikCamera` and run its full-frame `get_frame()` stream. This is an
-interface-compatibility check; it bypasses AriaTrace profiles and calibration:
+The same demo can instead use Hikrobot's installed MVS Python SDK
+(`MvCameraControl_class`) through the native full-sensor acquisition source. This
+comparison bypasses AriaTrace profiles and calibration:
 
 ```bat
-camera-adapter-demo.bat --camera-library native --camera-id CAMERA_IP
+camera-adapter-demo.bat --camera-library native --camera-id CAMERA_ID
 ```
 
-The optional native `hik_camera` package is not bundled. Install it and its
-dependencies in the Python environment selected by `ARIA_PYTHON`. Native
-library mode supports `--mode full` only and does not manage a phone display.
+Hikrobot MVS is not bundled. Install MVS normally; if its Python wrapper cannot
+be found automatically, pass `--mvs-python-path` pointing to the directory that
+contains `MvCameraControl_class.py`. Native mode supports `--mode full` only and
+does not manage a phone display.
 
 Rig calibration can conservatively reuse the active immutable rig revision:
 

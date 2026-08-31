@@ -298,19 +298,20 @@ python -m aria_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --no-rectify --gui
 ```
 
-To verify drop-in interface compatibility, run the same GUI loop with the
-independently installed `hik_camera.hik_camera` library. This changes the selected
-`HikCamera` import; it does not invoke AriaTrace's MVS acquisition adapter or
-load profiles:
+To compare the calibrated adapter with the native camera path, run the same GUI
+loop against Hikrobot's installed MVS Python SDK (`MvCameraControl_class`). Native
+mode uses the existing full-sensor MVS acquisition source; it does not load rig or
+game profiles, normalize geometry, rectify images, or operate the phone:
 
 ```powershell
 python -m aria_tools camera-adapter-demo `
-  --camera-library native --camera-id CAMERA_IP --gui
+  --camera-library native --camera-id CAMERA_ID --gui
 ```
 
-Native-library verification supports the shared full-frame `get_frame()` path
-only. The upstream library and its dependencies are user-managed and must be
-installed in the Python environment running the command.
+Native MVS verification supports the full-sensor stream only. Hikrobot MVS,
+including `MvCameraControl_class.py` and its runtime DLLs, remains a user-managed
+system dependency. Use `--mvs-python-path` when automatic MVS discovery is not
+sufficient.
 
 Press `Q` or `Esc`, or close either window, to stop. Add
 `--manage-phone-display` only when the demo should best-effort wake the
@@ -322,7 +323,7 @@ From the standalone Windows release, the equivalent commands are:
 ```bat
 camera-adapter-demo.bat --mode full
 camera-adapter-demo.bat --game-id GAME_ID --mode dual --color-policy game_matched
-camera-adapter-demo.bat --camera-library native --camera-id CAMERA_IP
+camera-adapter-demo.bat --camera-library native --camera-id CAMERA_ID
 python-tools.bat camera-adapter-demo --game-id GAME_ID --mode dual --gui
 ```
 

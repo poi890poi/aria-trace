@@ -11,32 +11,42 @@ from typing import Optional, Sequence
 import cv2
 
 from aria_trace.adapters.hik.compat import Camera, HikCamera
+from aria_trace.adapters.hik.capture import NativeHikFrameSource
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
 from aria_trace.adapters.android.phone import AdbPhoneSession
 
 
-def hik_camera_class(camera_library: str):
-    """Return the selected drop-in HikCamera implementation."""
+def adapter_hik_camera_class():
+    """Import the public drop-in adapter exactly as application code does."""
 
-    if camera_library not in ("adapter", "native"):
-        raise ValueError("camera_library must be adapter or native")
-    module_name = (
-        "hikcam" if camera_library == "adapter" else "hik_camera.hik_camera"
-    )
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        if camera_library == "adapter":
-            raise
-        raise RuntimeError(
-            "Native HIK Python library is unavailable. Install hik_camera in "
-            "this Python environment, then retry --camera-library native."
-        ) from exc
+    module = importlib.import_module("hikcam")
     camera = getattr(module, "HikCamera", None)
     if camera is None:
-        raise RuntimeError("Native hik_camera module does not export HikCamera")
+        raise RuntimeError("The hikcam adapter module does not export HikCamera")
     return camera
+
+
+def open_native_mvs_source(
+    camera_id: Optional[str], mvs_python_path: Optional[str]
+) -> NativeHikFrameSource:
+    """Open an uncalibrated full-sensor stream through Hikrobot's MVS SDK."""
+
+    adapter = HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
+    selected_camera_id = str(camera_id).strip() if camera_id else ""
+    if not selected_camera_id:
+        devices = list(adapter.devices(probe=True))
+        if not devices:
+            raise RuntimeError("No HIK MVS camera was found")
+        if len(devices) != 1:
+            raise RuntimeError(
+                "Multiple HIK MVS cameras are connected; pass --camera-id: {}"
+                .format(", ".join(str(device.device_id) for device in devices))
+            )
+        selected_camera_id = str(devices[0].device_id)
+    source = NativeHikFrameSource(selected_camera_id, adapter=adapter)
+    source.start()
+    return source
 
 
 class PhoneDisplayPowerSession:
@@ -83,7 +93,7 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
             "Stream HIK video through either AriaTrace's calibrated drop-in "
-            "adapter or the native hik_camera library."
+            "adapter or Hikrobot's native MVS Python SDK."
         )
     )
     value.add_argument(
@@ -92,7 +102,7 @@ def parser() -> argparse.ArgumentParser:
         default="adapter",
         help=(
             "import AriaTrace's drop-in adapter (default) or the independently "
-            "installed native hik_camera package"
+            "installed Hikrobot MVS SDK (MvCameraControl_class)"
         ),
     )
     value.add_argument(
@@ -110,7 +120,7 @@ def parser() -> argparse.ArgumentParser:
         choices=("minimap", "full", "dual"),
         default="full",
         help=(
-            "adapter stream mode; native-library verification supports full only"
+            "adapter stream mode; native MVS verification supports full only"
         ),
     )
     value.add_argument("--mvs-python-path")
@@ -233,16 +243,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     display = None
     camera = None
-    native_context_open = False
     windows = []
     try:
-        selected_camera_class = hik_camera_class(arguments.camera_library)
         if arguments.camera_library == "native":
-            camera = selected_camera_class(arguments.camera_id)
+            camera = open_native_mvs_source(
+                arguments.camera_id, arguments.mvs_python_path
+            )
             configuration = None
-            camera.__enter__()
-            native_context_open = True
         elif arguments.diagnostic_calibration_override is None:
+            selected_camera_class = adapter_hik_camera_class()
             camera = selected_camera_class(
                 config={
                     "profile_root": arguments.profile_root,
@@ -305,11 +314,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 color_policy=arguments.color_policy,
                 minimap_margin_px=arguments.minimap_margin_px,
             )
-        elif not camera.is_open:
+        elif arguments.camera_library == "adapter" and not camera.is_open:
             camera.open()
         if not arguments.gui:
             label = (
-                "Native hik_camera stream"
+                "Native Hikrobot MVS stream"
                 if arguments.camera_library == "native"
                 else "Rectified stream"
             )
@@ -336,7 +345,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.mode
                 if profiled
                 else (
-                    "native hik_camera"
+                    "native Hikrobot MVS"
                     if arguments.camera_library == "native"
                     else "rectified phone"
                 )
@@ -353,7 +362,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     frame_set = camera.read_streams()
                     displayed = frame_set.streams
             else:
-                if hasattr(camera, "get_frame"):
+                if arguments.camera_library == "native":
+                    packet = camera.read()
+                    frame = None if packet is None else packet.image
+                    displayed = {stream_names[0]: frame} if frame is not None else {}
+                elif hasattr(camera, "get_frame"):
                     frame = camera.get_frame()
                     displayed = {stream_names[0]: frame} if frame is not None else {}
                 else:
@@ -372,8 +385,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     finally:
         try:
             if camera is not None and arguments.camera_library == "native":
-                if native_context_open:
-                    camera.__exit__(None, None, None)
+                camera.stop()
             elif camera is not None:
                 camera.release()
         finally:
