@@ -59,6 +59,12 @@ from .inspection import (
     render_latency_timeline,
 )
 from .normalizer import FrameNormalizer, build_rectification_maps
+from .presentation import (
+    HOST_MONOTONIC_CLOCK,
+    matching_paint_acknowledgement,
+    presentation_freshness_boundary_ns,
+    sample_host_time_ns,
+)
 from .spatial_export import export_spatial_fragment, validate_spatial_fragment
 
 __all__ = [
@@ -72,6 +78,7 @@ __all__ = [
     "FrameSample",
     "FrameStream",
     "GeometryEstimate",
+    "HOST_MONOTONIC_CLOCK",
     "SignalObservation",
     "SignalObserver",
     "TargetPresenter",
@@ -96,14 +103,17 @@ __all__ = [
     "load_calibration_yaml",
     "grade_data_matrix_decode",
     "measure_slanted_edge_esfr",
+    "matching_paint_acknowledgement",
     "nearest_neighbor_magnify",
     "render_geometry_overlay",
     "render_esfr_curve",
     "render_feature_matching_curve",
     "render_feature_matching_overlay",
     "render_latency_timeline",
+    "presentation_freshness_boundary_ns",
     "render_data_matrix_target",
     "select_visible_quality_region",
+    "sample_host_time_ns",
     "summarize_data_matrix_decode_sweep",
     "validate_calibration",
     "validate_spatial_fragment",

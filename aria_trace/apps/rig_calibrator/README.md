@@ -14,7 +14,10 @@ python -m aria_trace.apps.rig_calibrator
 
 The normal sequence is:
 
-1. Enter the phone's canonical pixel dimensions and start the target service.
+1. Enter the canonical target raster as `W × H` in the orientation being
+   calibrated and start the target service. This raster is not assumed to be
+   the phone panel, Android natural display, app surface, or physical size;
+   those remain separately named telemetry.
 2. Open its URL on the phone, tap fullscreen, and use the displayed ChArUco board.
 3. Enter a camera ID and click **Start camera**. Camera probing is optional and
    happens only through **Probe indices**, because probing briefly claims devices.
@@ -49,9 +52,10 @@ camera-visible intersection with the required ROI, so a camera may cover only
 part of the display. e-SFR uses pre-warp camera samples whose locations are
 mapped into display pixels; feature matching uses the atlas homography as
 ground truth. The former `MR95` controls and YAML output are no longer exposed.
-The built-in presenter also verifies that its physical canvas matches the
-declared display raster. Every controlled quality frame must be newer than a
-paint acknowledgement for that exact target revision, rather than merely
+The built-in presenter also verifies that its drawing surface and natural target
+image preserve the declared canonical target raster, while retaining Android
+logical/natural orientation as separate evidence. Every controlled geometry or
+quality frame must be newer than a paint acknowledgement for that exact target revision, rather than merely
 newer than a fixed delay.
 
 The e-SFR implementation records `non_certified` conformance and warns when a

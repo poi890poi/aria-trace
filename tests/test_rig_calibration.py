@@ -43,6 +43,12 @@ from acquisition.rig_calibration import (
     write_calibration_bundle,
 )
 from acquisition.rig_calibration.geometry import transform_points
+from aria_trace.adapters.android.display import Presentation
+from aria_trace.services.calibration.rig.presentation import (
+    matching_paint_acknowledgement,
+    presentation_freshness_boundary_ns,
+    sample_host_time_ns,
+)
 
 
 def synthetic_correspondences():
@@ -88,6 +94,63 @@ def calibration_bundle():
         status="accepted",
     )
     return value, geometry, mask
+
+
+class PresentationFreshnessTests(unittest.TestCase):
+    def test_acknowledgement_keeps_canonical_and_rotated_surface_sizes_separate(self):
+        presentation = Presentation("atlas", "image", 100, 7)
+        telemetry = {
+            "acknowledgements": [
+                {
+                    "revision": 7,
+                    "painted": True,
+                    "canonical_target_size_px": [1080, 2400],
+                    "logical_target_size_px": [2400, 1080],
+                    "canvas_width": 2400,
+                    "canvas_height": 1080,
+                    "server_receive_time_ns": 140,
+                }
+            ]
+        }
+        acknowledgement = matching_paint_acknowledgement(
+            telemetry, presentation, [1080, 2400]
+        )
+        self.assertIsNotNone(acknowledgement)
+        self.assertEqual(
+            presentation_freshness_boundary_ns(presentation, acknowledgement), 140
+        )
+
+    def test_browser_surface_must_match_canonical_target_raster(self):
+        presentation = Presentation("atlas", "image", 100, 2)
+        telemetry = {
+            "acknowledgements": [
+                {
+                    "revision": 2,
+                    "painted": True,
+                    "canvas_width": 1079,
+                    "canvas_height": 2400,
+                    "image_natural_width": 1080,
+                    "image_natural_height": 2400,
+                    "server_receive_time_ns": 120,
+                }
+            ]
+        }
+        self.assertIsNone(
+            matching_paint_acknowledgement(
+                telemetry, presentation, [1080, 2400]
+            )
+        )
+
+    def test_device_clock_requires_host_receive_timestamp(self):
+        sample = type(
+            "Sample",
+            (),
+            {"time_ns": 10, "clock_id": "hik_device_ticks", "receive_time_ns": None},
+        )()
+        with self.assertRaisesRegex(ValueError, "host-monotonic"):
+            sample_host_time_ns(sample)
+        sample.receive_time_ns = 25
+        self.assertEqual(sample_host_time_ns(sample), (25, "host_receive_monotonic"))
 
 
 class RigGeometryTests(unittest.TestCase):

@@ -54,6 +54,11 @@ from aria_trace.services.calibration.rig.inspection import (
     render_latency_timeline,
 )
 from aria_trace.services.calibration.rig.latency import estimate_latency
+from aria_trace.services.calibration.rig.presentation import (
+    matching_paint_acknowledgement,
+    presentation_freshness_boundary_ns,
+    sample_host_time_ns,
+)
 from aria_trace.adapters.rig.devices import (
     AdbAdapter,
     CameraAdapter,
@@ -223,7 +228,13 @@ class RigCalibrationWindow(QMainWindow):
         self._latency_timer = QTimer(self)
         self._latency_timer.setSingleShot(True)
         self._latency_timer.timeout.connect(self._latency_tick)
+        self._target_running = False
+        self._camera_active = False
+        self._geometry_pending = False
+        self._geometry_transaction: Optional[dict[str, Any]] = None
         self._build_ui()
+        self._connect_dependency_invalidation()
+        self._update_action_state()
         self._set_status(
             "Idle — camera, ADB, and phone target are not accessed until you request them."
         )
@@ -299,7 +310,7 @@ class RigCalibrationWindow(QMainWindow):
         dimensions.addWidget(self.screen_width)
         dimensions.addWidget(QLabel("×"))
         dimensions.addWidget(self.screen_height)
-        form.addRow("Canonical pixels", dimensions)
+        form.addRow("Canonical target raster W × H", dimensions)
         self.phone_diagonal = self._double(2.0, 30.0, 6.5, " in")
         form.addRow("Display diagonal", self.phone_diagonal)
         self.squares_x = self._spin(3, 30, 7)
@@ -318,14 +329,18 @@ class RigCalibrationWindow(QMainWindow):
         self.phone_qr.setMinimumHeight(150)
         form.addRow(self.phone_qr)
         buttons = QHBoxLayout()
-        start = QPushButton("Start target")
-        stop = QPushButton("Stop target")
-        start.clicked.connect(self._start_target)
-        stop.clicked.connect(self._stop_target)
-        buttons.addWidget(start)
-        buttons.addWidget(stop)
+        self.start_target_button = QPushButton("Start target")
+        self.stop_target_button = QPushButton("Stop target")
+        self.start_target_button.clicked.connect(self._start_target)
+        self.stop_target_button.clicked.connect(self._stop_target)
+        buttons.addWidget(self.start_target_button)
+        buttons.addWidget(self.stop_target_button)
         form.addRow(buttons)
-        note = QLabel("Open the URL on the phone and tap its fullscreen button. No port is bound before Start target.")
+        note = QLabel(
+            "W × H names the generated target raster in its current orientation—not "
+            "panel, Android natural-display, app-surface, or physical dimensions. "
+            "Those remain separate telemetry. Open the URL and enter fullscreen."
+        )
         note.setWordWrap(True)
         form.addRow(note)
         return group
@@ -349,14 +364,14 @@ class RigCalibrationWindow(QMainWindow):
         form.addRow("Requested mode", mode)
         buttons = QHBoxLayout()
         probe = QPushButton("Probe indices")
-        start = QPushButton("Start camera")
-        stop = QPushButton("Stop camera")
+        self.start_camera_button = QPushButton("Start camera")
+        self.stop_camera_button = QPushButton("Stop camera")
         probe.clicked.connect(self._probe_cameras)
-        start.clicked.connect(self._start_camera)
-        stop.clicked.connect(self._stop_camera)
+        self.start_camera_button.clicked.connect(self._start_camera)
+        self.stop_camera_button.clicked.connect(self._stop_camera)
         buttons.addWidget(probe)
-        buttons.addWidget(start)
-        buttons.addWidget(stop)
+        buttons.addWidget(self.start_camera_button)
+        buttons.addWidget(self.stop_camera_button)
         form.addRow(buttons)
         note = QLabel("Probing briefly opens candidate devices. It happens only when you click Probe indices.")
         note.setWordWrap(True)
@@ -382,9 +397,9 @@ class RigCalibrationWindow(QMainWindow):
         form.addRow("Required ROI", roi)
         self.camera_hfov = self._double(5.0, 175.0, 70.0, "°")
         form.addRow("Estimated camera HFOV", self.camera_hfov)
-        fit = QPushButton("Fit reviewed current frame")
-        fit.clicked.connect(self._fit_geometry)
-        form.addRow(fit)
+        self.fit_geometry_button = QPushButton("Fit fresh verified ChArUco frame")
+        self.fit_geometry_button.clicked.connect(self._fit_geometry)
+        form.addRow(self.fit_geometry_button)
         self.geometry_results = QTextEdit()
         self.geometry_results.setReadOnly(True)
         self.geometry_results.setMinimumHeight(190)
@@ -408,9 +423,9 @@ class RigCalibrationWindow(QMainWindow):
             "Slanted-edge geometry always comes from its exact generated specification."
         )
         form.addRow(self.quality_use_adb)
-        sweep = QPushButton("Run ISO e-SFR and feature-matching trials")
-        sweep.clicked.connect(self._start_quality_sweep)
-        form.addRow(sweep)
+        self.quality_button = QPushButton("Run ISO e-SFR and feature-matching trials")
+        self.quality_button.clicked.connect(self._start_quality_sweep)
+        form.addRow(self.quality_button)
         self.quality_result = QLabel("Fit the ChArUco atlas and review IoU first.")
         self.quality_result.setWordWrap(True)
         form.addRow(self.quality_result)
@@ -427,9 +442,9 @@ class RigCalibrationWindow(QMainWindow):
         self.latency_interval.setSuffix(" ms")
         form.addRow("Alternations", self.latency_transitions)
         form.addRow("Signal interval", self.latency_interval)
-        run = QPushButton("Run camera endpoint")
-        run.clicked.connect(self._start_latency)
-        form.addRow(run)
+        self.latency_button = QPushButton("Run camera endpoint")
+        self.latency_button.clicked.connect(self._start_latency)
+        form.addRow(self.latency_button)
         self.latency_result = QLabel("Not measured")
         self.latency_result.setWordWrap(True)
         form.addRow(self.latency_result)
@@ -464,9 +479,9 @@ class RigCalibrationWindow(QMainWindow):
         row.addWidget(self.output_path, 1)
         row.addWidget(browse)
         form.addRow("Artifact root", row)
-        save = QPushButton("Save reviewed calibration bundle")
-        save.clicked.connect(self._save)
-        form.addRow(save)
+        self.save_button = QPushButton("Save reviewed calibration bundle")
+        self.save_button.clicked.connect(self._save)
+        form.addRow(self.save_button)
         self.save_result = QLabel("Nothing saved yet")
         self.save_result.setWordWrap(True)
         form.addRow(self.save_result)
@@ -476,6 +491,80 @@ class RigCalibrationWindow(QMainWindow):
         self.status.setText(text)
         color = "#5b2026" if error else "#20252b"
         self.status.setStyleSheet("padding:9px;background:{};color:#f3f4f6;".format(color))
+
+    def _connect_dependency_invalidation(self) -> None:
+        self._target_controls = [
+            self.screen_width,
+            self.screen_height,
+            self.squares_x,
+            self.squares_y,
+        ]
+        self._camera_controls = [
+            self.camera_device,
+            self.camera_backend,
+            self.camera_width,
+            self.camera_height,
+            self.camera_fps,
+        ]
+        for widget in [
+            self.phone_diagonal,
+            self.roi_x,
+            self.roi_y,
+            self.roi_width,
+            self.roi_height,
+            self.camera_hfov,
+        ]:
+            widget.valueChanged.connect(
+                lambda _value, reason="Geometry input changed": self._invalidate_analysis(reason)
+            )
+        self.quality_use_adb.toggled.connect(
+            lambda _value: self._invalidate_quality("Feature-reference policy changed")
+        )
+        self.latency_transitions.valueChanged.connect(
+            lambda _value: self._invalidate_latency("Latency trial count changed")
+        )
+        self.latency_interval.valueChanged.connect(
+            lambda _value: self._invalidate_latency("Latency signal interval changed")
+        )
+
+    def _invalidate_latency(self, _reason: str) -> None:
+        self.timing = None
+        self.latency_result.setText("Not measured")
+        self._update_action_state()
+
+    def _invalidate_quality(self, reason: str) -> None:
+        self.image_quality = None
+        self.feature_matching = None
+        self.quality_evidence = {}
+        self.quality_result.setText("Not measured ({})".format(reason))
+        self.matching_result.setText("Feature matching not measured.")
+        self._invalidate_latency(reason)
+
+    def _invalidate_analysis(self, reason: str) -> None:
+        self.analysis = None
+        self._geometry_transaction = None
+        self.geometry_results.setPlainText("Geometry invalidated: {}".format(reason))
+        self._invalidate_quality(reason)
+
+    def _update_action_state(self) -> None:
+        busy = self._quality_active or self._latency_active or self._geometry_pending or (
+            self.analysis_thread is not None and self.analysis_thread.isRunning()
+        )
+        for widget in getattr(self, "_target_controls", []):
+            widget.setEnabled(not self._target_running)
+        for widget in getattr(self, "_camera_controls", []):
+            widget.setEnabled(not self._camera_active and self.camera_thread is None)
+        self.start_target_button.setEnabled(not self._target_running and not busy)
+        self.stop_target_button.setEnabled(self._target_running and not busy)
+        self.start_camera_button.setEnabled(
+            not self._camera_active and self.camera_thread is None and not busy
+        )
+        self.stop_camera_button.setEnabled(self.camera_thread is not None and not busy)
+        ready = self._target_running and self._camera_active and self.latest_sample is not None
+        self.fit_geometry_button.setEnabled(ready and not busy)
+        self.quality_button.setEnabled(ready and self.analysis is not None and not busy)
+        self.latency_button.setEnabled(ready and self.analysis is not None and not busy)
+        self.save_button.setEnabled(self.analysis is not None and not busy)
 
     def _current_layout(self) -> CharucoLayout:
         width, height = self.screen_width.value(), self.screen_height.value()
@@ -503,9 +592,11 @@ class RigCalibrationWindow(QMainWindow):
 
     def _start_target(self) -> None:
         try:
+            self._invalidate_analysis("Phone target restarted")
             self.layout = self._current_layout()
             self.target_image = generate_charuco_target(self.layout)
             url = self.phone_target.start(self.layout)
+            self._target_running = True
             self.phone_url.setText(url)
             QApplication.clipboard().setText(url)
             qr_rgb = np.asarray(qrcode.make(url).convert("RGB"), dtype=np.uint8)
@@ -517,16 +608,25 @@ class RigCalibrationWindow(QMainWindow):
             )
             self._set_status("Phone target ready. URL copied to clipboard; open it on the phone and enter fullscreen.")
         except Exception as exc:
+            self._target_running = False
             self._set_status("Cannot start phone target: {}".format(exc), True)
+        finally:
+            self._update_action_state()
 
     def _stop_target(self) -> None:
         try:
             self.phone_target.stop()
+            self._target_running = False
+            self.layout = None
+            self.target_image = None
+            self._invalidate_analysis("Phone target stopped")
             self.phone_url.clear()
             self.phone_qr.setText("QR appears after the service starts")
             self._set_status("Phone target stopped; its listening port is closed.")
         except Exception as exc:
             self._set_status("Cannot stop phone target: {}".format(exc), True)
+        finally:
+            self._update_action_state()
 
     def _probe_cameras(self) -> None:
         try:
@@ -545,6 +645,8 @@ class RigCalibrationWindow(QMainWindow):
             self._set_status("Camera is already running.")
             return
         try:
+            self.latest_sample = None
+            self._invalidate_analysis("Camera restarted")
             configuration = CameraConfiguration(
                 device_id=self.camera_device.text().strip(),
                 width_px=self.camera_width.value(),
@@ -562,6 +664,8 @@ class RigCalibrationWindow(QMainWindow):
             self._set_status("Opening the selected camera…")
         except Exception as exc:
             self._set_status("Cannot start camera: {}".format(exc), True)
+        finally:
+            self._update_action_state()
 
     def _stop_camera(self) -> bool:
         thread = self.camera_thread
@@ -577,14 +681,19 @@ class RigCalibrationWindow(QMainWindow):
 
     def _on_camera_opened(self, metadata: object) -> None:
         self.camera_metadata = dict(metadata)
+        self._camera_active = True
         self._set_status("Camera active: {}×{} at requested {:.1f} fps.".format(
             self.camera_metadata.get("width_px", "?"),
             self.camera_metadata.get("height_px", "?"),
             self.camera_fps.value(),
         ))
+        self._update_action_state()
 
     def _on_camera_stopped(self) -> None:
         self.camera_thread = None
+        self._camera_active = False
+        self.latest_sample = None
+        self._invalidate_analysis("Camera stopped")
 
     def _on_frame(self, sample: object) -> None:
         self.latest_sample = sample
@@ -604,14 +713,30 @@ class RigCalibrationWindow(QMainWindow):
             patch = sample.image[y0:y1, x0:x1]
             if patch.size:
                 probability_white = float(np.mean(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)) / 255.0)
+                try:
+                    observation_time_ns, observation_basis = sample_host_time_ns(sample)
+                except ValueError as exc:
+                    self._latency_active = False
+                    self._latency_timer.stop()
+                    self._set_status("Latency measurement rejected: {}".format(exc), True)
+                    self._update_action_state()
+                    return
                 self._latency_observations.append(
                     SignalObservation(
-                        time_ns=sample.time_ns,
+                        time_ns=observation_time_ns,
                         probabilities={"black": 1.0 - probability_white, "white": probability_white},
+                        clock_id="host_monotonic_ns",
                         source_id=sample.source_id,
-                        metadata={"mean_luma": probability_white * 255.0},
+                        metadata={
+                            "mean_luma": probability_white * 255.0,
+                            "time_basis": observation_basis,
+                            "adapter_clock_id": str(
+                                getattr(sample, "clock_id", "host_monotonic_ns")
+                            ),
+                        },
                     )
                 )
+        self._update_action_state()
 
     def _fit_geometry(self) -> None:
         if self.latest_sample is None:
@@ -623,42 +748,101 @@ class RigCalibrationWindow(QMainWindow):
         if self.analysis_thread is not None and self.analysis_thread.isRunning():
             return
         try:
-            browser = dict(self.phone_target.telemetry().get("browser", {}))
-            canvas_width = browser.get("canvas_width")
-            canvas_height = browser.get("canvas_height")
-            declared_width, declared_height = self._current_inputs().screen_size_px
-            if canvas_width is not None and canvas_height is not None and (
-                int(canvas_width) != declared_width
-                or int(canvas_height) != declared_height
-            ):
-                raise ValueError(
-                    "Phone canvas is {}x{} physical pixels, but the declared display "
-                    "raster is {}x{}. Enter fullscreen and make these values agree "
-                    "before fitting the atlas.".format(
-                        canvas_width,
-                        canvas_height,
-                        declared_width,
-                        declared_height,
-                    )
+            presentation = self.phone_target.present_charuco()
+            request = {
+                "presentation": presentation,
+                "inputs": self._current_inputs(),
+                "layout": self.layout,
+                "target": self.target_image.copy(),
+                "camera_metadata": dict(self.camera_metadata),
+                "attempts": 0,
+            }
+            self._geometry_pending = True
+            self._set_status(
+                "Waiting for target revision {} and a newer HIK frame…".format(
+                    presentation.revision
                 )
-            thread = AnalysisThread(
-                self.latest_sample.image,
-                self._current_inputs(),
-                self.layout,
-                self.target_image,
-                self.camera_metadata,
             )
-            thread.completed.connect(self._analysis_complete)
-            thread.failed.connect(self._analysis_failed)
-            thread.finished.connect(self._analysis_finished)
-            self.analysis_thread = thread
-            thread.start()
-            self._set_status("Fitting ChArUco geometry from the reviewed frame…")
+            self._fit_geometry_capture(request)
         except Exception as exc:
+            self._geometry_pending = False
             self._set_status("Cannot start geometry fit: {}".format(exc), True)
+            self._update_action_state()
+
+    def _fit_geometry_capture(self, request: dict[str, Any]) -> None:
+        presentation = request["presentation"]
+        expected = request["inputs"].screen_size_px
+        acknowledgement = matching_paint_acknowledgement(
+            self.phone_target.telemetry(), presentation, expected
+        )
+        request["attempts"] = int(request["attempts"]) + 1
+        if acknowledgement is None:
+            if request["attempts"] <= 40:
+                QTimer.singleShot(100, lambda: self._fit_geometry_capture(request))
+                return
+            self._set_status(
+                "Geometry fit rejected: the exact canonical target raster was not "
+                "acknowledged on the current phone surface.",
+                True,
+            )
+            self._geometry_pending = False
+            self._update_action_state()
+            return
+        try:
+            frame_time_ns, frame_time_basis = sample_host_time_ns(self.latest_sample)
+        except ValueError as exc:
+            self._geometry_pending = False
+            self._set_status("Geometry fit rejected: {}".format(exc), True)
+            self._update_action_state()
+            return
+        boundary_ns = presentation_freshness_boundary_ns(
+            presentation, acknowledgement
+        )
+        if frame_time_ns <= boundary_ns:
+            if request["attempts"] <= 40:
+                QTimer.singleShot(100, lambda: self._fit_geometry_capture(request))
+                return
+            self._set_status(
+                "Geometry fit rejected: no HIK frame newer than the verified target arrived.",
+                True,
+            )
+            self._geometry_pending = False
+            self._update_action_state()
+            return
+        self._geometry_transaction = {
+            "target_revision": int(presentation.revision),
+            "target_token": str(presentation.token),
+            "canonical_target_raster_wh": list(map(int, expected)),
+            "paint_ack_time_ns": int(acknowledgement["server_receive_time_ns"]),
+            "camera_frame_time_ns": int(frame_time_ns),
+            "camera_frame_time_basis": frame_time_basis,
+            "surface_evidence": dict(acknowledgement),
+        }
+        thread = AnalysisThread(
+            self.latest_sample.image,
+            request["inputs"],
+            request["layout"],
+            request["target"],
+            request["camera_metadata"],
+        )
+        thread.completed.connect(self._analysis_complete)
+        thread.failed.connect(self._analysis_failed)
+        thread.finished.connect(self._analysis_finished)
+        self.analysis_thread = thread
+        self._geometry_pending = False
+        thread.start()
+        self._set_status(
+            "Fitting geometry from verified target revision {} and its fresh HIK frame…"
+            .format(presentation.revision)
+        )
+        self._update_action_state()
 
     def _analysis_complete(self, value: object) -> None:
         self.analysis = value
+        if self._geometry_transaction is not None:
+            self.analysis.calibration["rig"]["phone"][
+                "geometry_presentation"
+            ] = dict(self._geometry_transaction)
         self.image_quality = None
         self.feature_matching = None
         self.quality_evidence = {}
@@ -708,12 +892,14 @@ class RigCalibrationWindow(QMainWindow):
         self.geometry_results.setPlainText("\n".join(lines))
         self.images.setCurrentWidget(self.image_panes["Geometry evidence"])
         self._set_status("Geometry evidence is ready for review. Inspect the overlay and exact-pixel focus tabs.")
+        self._update_action_state()
 
     def _analysis_failed(self, text: str) -> None:
         self._set_status("Geometry fit failed: {}".format(text), True)
 
     def _analysis_finished(self) -> None:
         self.analysis_thread = None
+        self._update_action_state()
 
     def _start_quality_sweep(self) -> None:
         if self.analysis is None:
