@@ -29,8 +29,8 @@ RIG_REPEATABILITY_POLICIES = {
         "save_movement_consecutive_frames": 2,
     },
     "relaxed": {
-        "reuse_minimum_correlation": 0.95,
-        "reuse_maximum_mae_dn": 12.0,
+        "reuse_minimum_correlation": 0.90,
+        "reuse_maximum_mae_dn": 20.0,
         "reuse_sample_frames": 3,
         "save_max_displacement_px": 12.0,
         "save_movement_consecutive_frames": 3,

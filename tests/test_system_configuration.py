@@ -7,6 +7,7 @@ from unittest import mock
 
 from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
 from aria_trace.adapters.filesystem.system_configuration import (
+    default_system_configuration,
     load_system_configuration,
     resolve_rig_repeatability_policy,
     save_system_configuration,
@@ -15,6 +16,14 @@ from aria_trace.workflows.system_setup import main as setup_main
 
 
 class SystemConfigurationTests(unittest.TestCase):
+    def test_default_repeatability_policy_relaxes_reuse_not_save_protection(self):
+        policy = resolve_rig_repeatability_policy(default_system_configuration())
+        self.assertEqual("relaxed", policy["name"])
+        self.assertEqual(0.90, policy["reuse_minimum_correlation"])
+        self.assertEqual(20.0, policy["reuse_maximum_mae_dn"])
+        self.assertEqual(12.0, policy["save_max_displacement_px"])
+        self.assertEqual(3, policy["save_movement_consecutive_frames"])
+
     def test_environment_profile_root_owns_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "shared-profiles"

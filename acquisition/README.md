@@ -225,6 +225,10 @@ python -m aria_tools setup configure --camera-id DA9066154 --phone-id RFCR91GWXL
 python -m aria_tools setup show
 ```
 
+The default `relaxed` policy accepts a saved rig snapshot at correlation >=
+0.90 and grayscale MAE <= 20 DN. Its separate GUI save guard still requires
+more than 12 camera pixels of displacement for three consecutive frames.
+
 For rig calibration with registry reuse, use:
 
 ```powershell

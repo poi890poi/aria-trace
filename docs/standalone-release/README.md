@@ -93,7 +93,9 @@ python-tools.bat profiles activate REVISION_ID
 `rig-repeatability` is the single gate policy for both conservative rig reuse
 and GUI save protection. `strict`, `balanced`, and `relaxed` expand to
 documented metric-specific limits internally; commands cannot persist
-independent thresholds that drift from the selected policy.
+independent thresholds that drift from the selected policy. The default
+`relaxed` reuse check accepts correlation >= 0.90 and grayscale MAE <= 20 DN;
+its GUI save guard remains 12 camera pixels for three consecutive frames.
 
 The release `python` directory must be on `PYTHONPATH` when importing
 `aria_tools` or `hikcam` from outside that directory.
