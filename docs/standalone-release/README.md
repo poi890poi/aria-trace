@@ -1,6 +1,6 @@
 # Aria Trace HIK calibration release
 
-This Windows x64 package contains three independent console applications and a
+This Windows x64 package contains four independent console applications and a
 source-distributed Python camera adapter. The applications are built with
 CPython 3.12.10 and PyInstaller in one-folder mode. One-folder mode was chosen
 over one-file extraction and Nuitka because it starts predictably, keeps native
@@ -35,6 +35,7 @@ Run these from the extracted release directory:
 rig-calibration.bat
 zigzag-acquisition.bat
 minimap-calibration.bat SESSION OUTPUT --rotation START END --movement START END
+game-color-calibration.bat SESSION OUTPUT
 camera-adapter-demo.bat --game-id genshin-impact --mode dual
 ```
 
@@ -63,6 +64,7 @@ install-python-tools.bat
 python-tools.bat rig-calibration
 python-tools.bat zigzag-acquisition
 python-tools.bat minimap-calibration SESSION OUTPUT --rotation START END --movement START END
+python-tools.bat game-color-calibration SESSION OUTPUT
 python-tools.bat camera-adapter-demo --game-id genshin-impact --mode dual --gui
 ```
 
@@ -114,6 +116,38 @@ dual output. Coordinate conversion methods are available on the same object:
 
 The adapter deliberately locks the calibrated exposure, gain, white balance,
 ROI, and optional MVS Bayer gamma/color matrix for the session.
+
+Rig calibration can conservatively reuse the active immutable rig revision:
+
+```bat
+rig-calibration.bat --reuse-if-unchanged --headless --save
+```
+
+The precheck writes fresh/reference/difference evidence. It skips only when the
+active profile is complete and the repeated ChArUco snapshot meets the saved
+correlation and intensity thresholds; otherwise the same command continues
+with full calibration.
+
+Game contrast/color calibration consumes one complete synchronized ADB +
+rig-normalized HIK session. It verifies that the session used the currently
+active rig revision, fits MVS gamma and CCM on held-out frame pairs, publishes
+an independent `rig_game_color` profile, and writes review images:
+
+```bat
+game-color-calibration.bat sessions\calibration\SESSION artifacts\game-color-SESSION
+```
+
+Every successful active rig or game-color calibration also writes
+`hikcam_adapter.py`. This generated module embeds the exact rig JSON, dense
+rectification map, and applicable game profiles. It reads no profile registry
+at runtime. It still requires the AriaTrace Python package and the installed
+HIK MVS runtime.
+
+An adapter snapshot can also be regenerated from automatic profile selection:
+
+```bat
+python-tools.bat profiles export-adapter my_hikcam.py --game-id genshin-impact --mode dual --color-policy game_matched
+```
 
 ## Outputs and profiles
 

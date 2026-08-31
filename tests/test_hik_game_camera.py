@@ -10,6 +10,7 @@ from acquisition.rig_calibration.hik.game_camera import (
     ProfiledHikGameCamera,
     _source_crop_to_canonical_phone,
 )
+from aria_trace.adapters.hik.driver import RectifiedHikCamera
 
 
 class FakeAdapter:
@@ -184,6 +185,23 @@ class HikGameCameraTests(unittest.TestCase):
         camera.read_streams()
         self.assertEqual(1, len(adapter.bayer_conversion_calls))
         self.assertEqual(0.75, adapter.bayer_conversion_calls[0][0])
+
+    def test_full_reader_applies_game_color_once_at_open(self):
+        adapter = FakeAdapter()
+        camera = RectifiedHikCamera(
+            self.rig_path,
+            adapter=adapter,
+            rectify=False,
+            bayer_conversion={
+                "status": "selected",
+                "gamma": 0.72,
+                "ccm_rgb_3x3": np.eye(3).tolist(),
+            },
+        ).open()
+        camera.read()
+        camera.read()
+        self.assertEqual(1, len(adapter.bayer_conversion_calls))
+        self.assertEqual(0.72, adapter.bayer_conversion_calls[0][0])
 
     def test_full_mode_uses_base_rig_hardware_roi_and_output_mapping(self):
         document = rig_document()

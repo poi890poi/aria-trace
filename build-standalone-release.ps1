@@ -65,7 +65,8 @@ if (-not $SkipApplicationBuild) {
 $Applications = @(
     [ordered]@{ Name = "aria-rig-calibration"; Entry = "packaging\windows\entrypoints\rig_calibration.py" },
     [ordered]@{ Name = "aria-zigzag-acquisition"; Entry = "packaging\windows\entrypoints\zigzag_acquisition.py" },
-    [ordered]@{ Name = "aria-minimap-calibration"; Entry = "packaging\windows\entrypoints\minimap_calibration.py" }
+    [ordered]@{ Name = "aria-minimap-calibration"; Entry = "packaging\windows\entrypoints\minimap_calibration.py" },
+    [ordered]@{ Name = "aria-game-color-calibration"; Entry = "packaging\windows\entrypoints\game_color_calibration.py" }
 )
 if ($SkipApplicationBuild) {
     foreach ($Application in $Applications) {
@@ -119,6 +120,12 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "acquisition") -Recurse -File
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
     Copy-Item -LiteralPath $_.FullName -Destination $Destination
 }
+Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "aria_trace") -Recurse -File -Filter "*.py" | ForEach-Object {
+    $Relative = $_.FullName.Substring($ProjectRoot.Length + 1)
+    $Destination = Join-Path $PythonSource $Relative
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+    Copy-Item -LiteralPath $_.FullName -Destination $Destination
+}
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "hikcam.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "aria_tools.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "requirements-hik-camera-adapter.txt") -Destination $PythonSource
@@ -166,6 +173,7 @@ $Manifest = @(
     "  - apps/aria-rig-calibration/aria-rig-calibration.exe",
     "  - apps/aria-zigzag-acquisition/aria-zigzag-acquisition.exe",
     "  - apps/aria-minimap-calibration/aria-minimap-calibration.exe",
+    "  - apps/aria-game-color-calibration/aria-game-color-calibration.exe",
     "camera_adapter_import: python/hikcam.py",
     "python_tools_import: python/aria_tools.py",
     "external_environment:",

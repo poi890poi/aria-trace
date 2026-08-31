@@ -233,7 +233,12 @@ def publish_minimap_profiles(
         review_state="accepted" if activate else "review_required",
         activate=activate,
     )
-    result = {"rig": rig_profile, "phone_game": phone_profile, "rig_game": None}
+    result = {
+        "rig": rig_profile,
+        "phone_game": phone_profile,
+        "rig_game": None,
+        "rig_game_color": None,
+    }
     if rig_profile is not None:
         rig_game_payload = {
             "profile_kind": "rig_game",
@@ -242,14 +247,10 @@ def publish_minimap_profiles(
                 "Apply the exact rig revision, then use the exact phone-game "
                 "crop. No optical geometry is fitted in this profile."
             ),
-            "hik_bayer_conversion": summary.get("hik_bayer_conversion"),
             "session_hik_observation": summary.get("rig_observation")
             or summary.get("hik_session_observation"),
             "capabilities": {
                 "modes": ["minimap", "dual"],
-                "game_matched_color": bool(
-                    (summary.get("hik_bayer_conversion") or {}).get("status") == "selected"
-                ),
             },
         }
         result["rig_game"] = store.publish(
@@ -268,6 +269,28 @@ def publish_minimap_profiles(
             review_state="accepted" if activate else "review_required",
             activate=activate,
         )
+        conversion = summary.get("hik_bayer_conversion")
+        if isinstance(conversion, Mapping):
+            result["rig_game_color"] = store.publish(
+                "rig_game_color",
+                context,
+                {
+                    "profile_kind": "rig_game_color",
+                    "hik_bayer_conversion": conversion,
+                    "capabilities": {
+                        "game_matched_color": conversion.get("status") == "selected",
+                        "runtime_frame_passes": 0,
+                    },
+                },
+                dependencies={"rig": rig_profile["revision_id"]},
+                provenance={
+                    "localization_summary": str(summary_path),
+                    "session_path": str(session_path),
+                    "producer": "legacy_combined_localization_result",
+                },
+                review_state="accepted" if activate else "review_required",
+                activate=activate,
+            )
     return result
 
 
@@ -291,6 +314,27 @@ def parser() -> argparse.ArgumentParser:
     resolve.add_argument("--mode", choices=("full", "minimap", "dual"), default="full")
     resolve.add_argument("--normalization", default="auto")
     resolve.add_argument("--color-order", default="RGB")
+    resolve.add_argument(
+        "--color-policy",
+        choices=("auto", "rig_locked", "game_matched", "unadjusted"),
+        default="auto",
+    )
+    export = subcommands.add_parser(
+        "export-adapter",
+        help="write one registry-resolved adapter with embedded calibration data",
+    )
+    export.add_argument("output", type=Path)
+    export.add_argument("--game-id")
+    export.add_argument("--camera-id")
+    export.add_argument("--phone-id")
+    export.add_argument("--mode", choices=("full", "minimap", "dual"), default="full")
+    export.add_argument("--normalization", default="auto")
+    export.add_argument("--color-order", default="RGB")
+    export.add_argument(
+        "--color-policy",
+        choices=("auto", "rig_locked", "game_matched", "unadjusted"),
+        default="auto",
+    )
     return value
 
 
@@ -313,6 +357,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Phone-game profile: {}".format(result["phone_game"]["revision_id"]))
         if result["rig_game"] is not None:
             print("Rig-game profile: {}".format(result["rig_game"]["revision_id"]))
+        if result["rig_game_color"] is not None:
+            print(
+                "Rig-game color profile: {}".format(
+                    result["rig_game_color"]["revision_id"]
+                )
+            )
         if not arguments.activate:
             print("Profiles are review-required candidates; activate after evidence review.")
         return 0
@@ -329,7 +379,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mode=arguments.mode,
         normalization=arguments.normalization,
         color_order=arguments.color_order,
+        color_policy=arguments.color_policy,
     )
+    if arguments.command == "export-adapter":
+        from aria_trace.workflows.adapter_export import export_resolved_adapter
+
+        result = export_resolved_adapter(
+            arguments.output,
+            registry=registry,
+            context=context,
+            request=request,
+        )
+        print("Standalone camera adapter: {}".format(result["output"]))
+        print("Embedded profiles: {}".format(result["profile_revisions"]))
+        return 0
     print(json.dumps(registry.resolve_adapter(context, request), indent=2))
     return 0
 

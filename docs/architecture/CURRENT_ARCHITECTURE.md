@@ -83,7 +83,8 @@ zigzag acquisition, sessions or the Workbench.
 ## Configuration and mutable data
 
 - `config/games/` and `config/routes/` are source-controlled definitions.
-- `profiles/phone_game/`, `profiles/rig/` and `profiles/rig_game/` are mutable,
+- `profiles/phone_game/`, `profiles/rig/`, `profiles/rig_game/`, and
+  `profiles/rig_game_color/` are mutable,
   machine/device-specific profile stores.
 - `sessions/` is operator working data.
 - `artifacts/` is generated analysis, evidence and compiled data.

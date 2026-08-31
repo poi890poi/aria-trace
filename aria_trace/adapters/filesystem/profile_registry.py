@@ -24,7 +24,7 @@ from .commented_yaml import write_commented_yaml
 
 
 SCHEMA_VERSION = "2.0"
-PROFILE_KINDS = ("rig", "phone_game", "rig_game")
+PROFILE_KINDS = ("rig", "phone_game", "rig_game", "rig_game_color")
 REVISION_STATES = ("review_required", "accepted")
 ADAPTER_MODES = ("full", "minimap", "dual")
 NORMALIZATION_MODES = ("auto", "dense_remap", "homography", "none")
@@ -219,7 +219,17 @@ class AdapterRequest:
 
     @property
     def requires_game_profile(self) -> bool:
-        return self.mode in ("minimap", "dual") or self.color_policy == "game_matched"
+        """Whether this request needs any game-scoped calibration."""
+
+        return self.requires_minimap_profile or self.requires_game_color
+
+    @property
+    def requires_minimap_profile(self) -> bool:
+        return self.mode in ("minimap", "dual")
+
+    @property
+    def requires_game_color(self) -> bool:
+        return self.color_policy == "game_matched"
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -612,12 +622,14 @@ class ProfileRegistry:
             ("r.game_id", context.game_id if kind != "rig" else None),
             (
                 "r.panel_signature",
-                context.panel_signature if kind in ("rig", "rig_game") else None,
+                context.panel_signature
+                if kind in ("rig", "rig_game", "rig_game_color")
+                else None,
             ),
             (
                 "r.game_signature",
                 context.game_display_signature
-                if kind in ("phone_game", "rig_game")
+                if kind in ("phone_game", "rig_game", "rig_game_color")
                 else None,
             ),
         ):
@@ -659,8 +671,8 @@ class ProfileRegistry:
     def resolve_adapter(
         self, context: ProfileContext, request: AdapterRequest
     ) -> Dict[str, Any]:
-        rig_game = phone_game = None
-        if request.requires_game_profile:
+        rig_game = phone_game = rig_game_color = None
+        if request.requires_minimap_profile:
             if not context.game_id:
                 raise ProfileResolutionError(
                     "Adapter mode {} requires a game_id".format(request.mode)
@@ -676,12 +688,61 @@ class ProfileRegistry:
                 )
         else:
             rig = self.resolve("rig", context)
+
+        if request.color_policy in ("auto", "game_matched") and context.game_id:
+            try:
+                candidate = self.resolve("rig_game_color", context)
+            except ProfileResolutionError as exc:
+                if request.requires_game_color or not str(exc).startswith(
+                    "No active rig_game_color profile"
+                ):
+                    raise
+            else:
+                color_rig_id = str((candidate.get("dependencies") or {}).get("rig") or "")
+                if color_rig_id != str(rig["revision_id"]):
+                    if request.requires_game_color:
+                        raise ProfileResolutionError(
+                            "Active game-color profile depends on rig {}, but adapter "
+                            "resolved rig {}".format(color_rig_id, rig["revision_id"])
+                        )
+                else:
+                    rig_game_color = candidate
+        elif request.requires_game_color:
+            raise ProfileResolutionError(
+                "Game-matched color requires a game_id"
+            )
+
+        # Older accepted rig-game revisions may carry the color payload. Keep
+        # them readable while new color calibration publishes an independent
+        # rig_game_color revision.
+        legacy_color_profile = None
+        if rig_game is not None:
+            conversion = (rig_game.get("payload") or {}).get(
+                "hik_bayer_conversion"
+            )
+            if isinstance(conversion, Mapping) and conversion.get("status") == "selected":
+                legacy_color_profile = rig_game
+        selected_color_profile = rig_game_color or legacy_color_profile
+        if request.requires_game_color and selected_color_profile is None:
+            raise ProfileResolutionError(
+                "No active game-color calibration matches the resolved rig and game"
+            )
         calibration_path = self.runtime_file(rig, "hik_camera_calibration")
         rig_game_path = (
             Path(rig_game["revision_directory"]) / "profile.json"
             if rig_game is not None
             else None
         )
+        game_color_path = (
+            Path(selected_color_profile["revision_directory"]) / "profile.json"
+            if selected_color_profile is not None
+            else None
+        )
+        effective_color_policy = request.color_policy
+        if request.color_policy == "auto":
+            effective_color_policy = (
+                "game_matched" if selected_color_profile is not None else "rig_locked"
+            )
         normalization = request.normalization
         result = {
             "schema_version": SCHEMA_VERSION,
@@ -692,17 +753,23 @@ class ProfileRegistry:
                 "rig": rig["revision_id"],
                 "phone_game": phone_game["revision_id"] if phone_game else None,
                 "rig_game": rig_game["revision_id"] if rig_game else None,
+                "rig_game_color": (
+                    rig_game_color["revision_id"] if rig_game_color else None
+                ),
             },
             "paths": {
                 "rig_calibration": str(calibration_path.resolve()),
                 "rig_game_profile": str(rig_game_path.resolve()) if rig_game_path else None,
+                "game_color_profile": (
+                    str(game_color_path.resolve()) if game_color_path else None
+                ),
             },
             "adapter_plan": {
                 "mode": request.mode,
                 "normalization": normalization,
                 "rectify": normalization != "none",
                 "color_order": request.color_order,
-                "color_policy": request.color_policy,
+                "color_policy": effective_color_policy,
                 "roi_policy": request.roi_policy,
                 "minimap_margin_px": int(request.minimap_margin_px),
                 "registry_reads_per_frame": 0,

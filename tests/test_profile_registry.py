@@ -146,6 +146,41 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual(0, dual["adapter_plan"]["registry_reads_per_frame"])
         self.assertEqual("none", dual["adapter_plan"]["phone_operations"])
 
+    def test_game_color_profile_is_independent_of_minimap_geometry(self):
+        rig = self.publish_rig()
+        color = self.registry.publish(
+            "rig_game_color",
+            context(),
+            {
+                "hik_bayer_conversion": {
+                    "status": "selected",
+                    "gamma": 0.8,
+                    "ccm_rgb_3x3": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                }
+            },
+            dependencies={"rig": rig["revision_id"]},
+            review_state="accepted",
+            activate=True,
+        )
+        resolved = self.registry.resolve_adapter(
+            context(),
+            AdapterRequest(mode="full", color_policy="game_matched"),
+        )
+        self.assertEqual(
+            color["revision_id"], resolved["profiles"]["rig_game_color"]
+        )
+        self.assertIsNone(resolved["profiles"]["rig_game"])
+        self.assertEqual("game_matched", resolved["adapter_plan"]["color_policy"])
+        self.assertTrue(Path(resolved["paths"]["game_color_profile"]).is_file())
+
+    def test_auto_color_falls_back_to_locked_rig_without_game_profile(self):
+        self.publish_rig()
+        resolved = self.registry.resolve_adapter(
+            context(), AdapterRequest(mode="full", color_policy="auto")
+        )
+        self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+        self.assertIsNone(resolved["paths"]["game_color_profile"])
+
     def test_options_do_not_change_selected_revision(self):
         rig = self.publish_rig()
         first = self.registry.resolve_adapter(

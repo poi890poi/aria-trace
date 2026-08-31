@@ -19,10 +19,14 @@ flowchart LR
 
     Session --> MiniExe[aria-minimap-calibration.exe]
     MiniExe -->|calibration + review evidence| MiniResult[(mini-map result)]
+    Session --> ColorExe[aria-game-color-calibration.exe]
+    ColorExe -->|gamma + CCM + review evidence| ColorProfile[(rig-game color profile)]
 
     RigProfile --> Registry[profile registry]
     MiniResult --> Registry
+    ColorProfile --> Registry
     Registry --> Adapter[import hikcam]
+    Registry -->|one-time resolved export| Embedded[generated hikcam_adapter.py]
     Adapter --> Full[rig-normalized phone]
     Adapter --> Mini[normalized mini-map]
     Adapter --> Dual[synchronized dual stream]

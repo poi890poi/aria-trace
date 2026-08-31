@@ -1043,6 +1043,7 @@ class RectifiedHikCamera:
         calibration_file: Union[str, Path],
         adapter: Optional[HikMvsCameraAdapter] = None,
         rectify: bool = True,
+        bayer_conversion: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.path = Path(calibration_file)
         self.config = json.loads(self.path.read_text(encoding="utf-8"))
@@ -1057,6 +1058,7 @@ class RectifiedHikCamera:
         self._map_y = None
         self._dense_path = None
         self._effective_roi = None
+        self._bayer_conversion = dict(bayer_conversion or {})
 
     def is_calibrated(self) -> bool:
         """Return whether the saved bundle is sufficient for adapter streaming."""
@@ -1117,7 +1119,14 @@ class RectifiedHikCamera:
             self.adapter.set_black_level(int(imaging["black_level"]))
         self.adapter.set_manual_imaging(imaging["exposure_us"], imaging["gain"])
         wb = imaging["white_balance"]
-        self.adapter.set_white_balance(wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"])
+        self.adapter.set_white_balance(
+            wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"]
+        )
+        if self._bayer_conversion.get("status") == "selected":
+            self.adapter.set_bayer_conversion(
+                float(self._bayer_conversion["gamma"]),
+                self._bayer_conversion["ccm_rgb_3x3"],
+            )
         effective_roi = self.adapter.set_roi(camera["hardware_roi_xywh"])
         normalization = self.config["normalization"]
         # Keep the calibrated mapping available even for the minimum-latency

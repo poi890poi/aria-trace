@@ -125,10 +125,15 @@ def _registry_configuration(
         mode=resolved["adapter_plan"]["mode"],
         rectify=bool(resolved["adapter_plan"]["rectify"]),
         color_order=resolved["adapter_plan"]["color_order"],
+        color_policy=resolved["adapter_plan"]["color_policy"],
         minimap_margin_px=resolved["adapter_plan"]["minimap_margin_px"],
     )
     if resolved["paths"]["rig_game_profile"]:
         effective["minimap_calibration"] = resolved["paths"]["rig_game_profile"]
+    if resolved["paths"].get("game_color_profile"):
+        effective["game_color_calibration"] = resolved["paths"][
+            "game_color_profile"
+        ]
     return Path(effective["calibration"]).resolve(), effective, resolved
 
 
@@ -171,6 +176,11 @@ class HikCamera:
                     "rig_game_profile": (
                         str(Path(self.config["minimap_calibration"]).resolve())
                         if self.config.get("minimap_calibration")
+                        else None
+                    ),
+                    "game_color_profile": (
+                        str(Path(self.config["game_color_calibration"]).resolve())
+                        if self.config.get("game_color_calibration")
                         else None
                     ),
                 },
@@ -298,21 +308,38 @@ class HikCamera:
         if factory is not None:
             return factory(self.calibration_path)
         minimap_calibration = self.config.get("minimap_calibration")
+        game_color = {}
+        game_color_path = self.config.get("game_color_calibration")
+        use_game_color = str(self.config.get("color_policy", "auto")) not in (
+            "rig_locked",
+            "unadjusted",
+        )
+        if game_color_path and use_game_color:
+            document = json.loads(
+                Path(game_color_path).read_text(encoding="utf-8")
+            )
+            payload = document.get("payload")
+            if isinstance(payload, Mapping):
+                document = {**document, **dict(payload)}
+            game_color = dict(document.get("hik_bayer_conversion") or {})
         if minimap_calibration is not None:
             from .game_camera import ProfiledHikGameCamera
 
+            options = {
+                "mode": str(self.config.get("mode", "minimap")),
+                "rectify_minimap": bool(self.config.get("rectify", True)),
+                "minimap_margin_px": int(self.config.get("minimap_margin_px", 6)),
+                "apply_game_color": use_game_color,
+            }
+            if game_color:
+                options["bayer_conversion"] = game_color
             return ProfiledHikGameCamera(
-                self.calibration_path,
-                minimap_calibration,
-                mode=str(self.config.get("mode", "minimap")),
-                rectify_minimap=bool(self.config.get("rectify", True)),
-                minimap_margin_px=int(self.config.get("minimap_margin_px", 6)),
-                apply_game_color=str(self.config.get("color_policy", "auto"))
-                not in ("rig_locked", "unadjusted"),
+                self.calibration_path, minimap_calibration, **options
             )
-        return RectifiedHikCamera(
-            self.calibration_path, rectify=self._rectify_enabled
-        )
+        options = {"rectify": self._rectify_enabled}
+        if game_color and use_game_color:
+            options["bayer_conversion"] = game_color
+        return RectifiedHikCamera(self.calibration_path, **options)
 
     def open(self) -> "HikCamera":
         if self.is_open:

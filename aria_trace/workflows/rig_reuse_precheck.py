@@ -256,6 +256,77 @@ def run_reuse_precheck(
     return result
 
 
+def run_active_reuse_precheck(
+    output: Path,
+    *,
+    profile_root: Optional[Path] = None,
+    adb: Optional[str] = None,
+    mvs_python_path: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+    minimum_correlation: float = DEFAULT_MINIMUM_CORRELATION,
+    maximum_mae_dn: float = DEFAULT_MAXIMUM_MAE_DN,
+    sample_frames: int = 3,
+) -> Mapping[str, object]:
+    """Resolve and check the active rig profile without accepting artifact paths.
+
+    This is the shared product boundary used by both the standalone precheck
+    command and the rig calibration application's reuse option.  An unavailable
+    check is deliberately non-gating: callers can continue with full
+    calibration using the returned status and retained evidence.
+    """
+
+    calibration = discover_active_profile_calibration(
+        profile_root,
+        camera_id=camera_id,
+        phone_serial=phone_serial,
+    )
+    if calibration is None:
+        result = {
+            "schema_version": "1.0",
+            "status": "no_previous_calibration",
+            "reusable": False,
+            "camera_adapter_is_calibrated": False,
+            "calibration_selection": "active_profile_registry",
+        }
+        _write_result(output, result)
+        return result
+    try:
+        result = dict(
+            run_reuse_precheck(
+                calibration,
+                output,
+                adb=adb,
+                mvs_python_path=mvs_python_path,
+                camera_id=camera_id,
+                phone_serial=phone_serial,
+                minimum_correlation=minimum_correlation,
+                maximum_mae_dn=maximum_mae_dn,
+                sample_frames=sample_frames,
+            )
+        )
+    except Exception as exc:
+        result = {
+            "schema_version": "1.0",
+            "status": "unavailable",
+            "reusable": False,
+            "camera_adapter_is_calibrated": False,
+            "calibration": str(calibration),
+            "reason": "{}: {}".format(type(exc).__name__, exc),
+        }
+        if output.exists():
+            (output / "precheck.json").write_text(
+                json.dumps(result, indent=2), encoding="utf-8"
+            )
+        else:
+            _write_result(output, result)
+    result["calibration_selection"] = "active_profile_registry"
+    (output / "precheck.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description="Reuse a saved HIK rig only when its repeated snapshot is unchanged"
@@ -279,38 +350,45 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
-    selection_source = (
-        "diagnostic_explicit_path"
-        if arguments.diagnostic_calibration_override
-        else None
-    )
-    calibration = (
-        resolve_calibration_file(arguments.diagnostic_calibration_override)
-        if arguments.diagnostic_calibration_override
-        else discover_active_profile_calibration(
-            arguments.profile_root,
-            camera_id=arguments.camera_id,
-            phone_serial=arguments.phone_serial,
+    if arguments.diagnostic_calibration_override:
+        calibration = resolve_calibration_file(
+            arguments.diagnostic_calibration_override
         )
-    )
-    if calibration is not None and selection_source is None:
-        selection_source = "active_profile_registry"
-    if calibration is None:
-        _write_result(
+        try:
+            result = dict(
+                run_reuse_precheck(
+                    calibration,
+                    arguments.output,
+                    adb=arguments.adb,
+                    mvs_python_path=arguments.mvs_python_path,
+                    camera_id=arguments.camera_id,
+                    phone_serial=arguments.phone_serial,
+                    minimum_correlation=arguments.minimum_correlation,
+                    maximum_mae_dn=arguments.maximum_mae_dn,
+                    sample_frames=arguments.sample_frames,
+                )
+            )
+            result["calibration_selection"] = "diagnostic_explicit_path"
+            (arguments.output / "precheck.json").write_text(
+                json.dumps(result, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            _write_result(
+                arguments.output,
+                {
+                    "schema_version": "1.0",
+                    "status": "unavailable",
+                    "reusable": False,
+                    "calibration": str(calibration),
+                    "reason": "{}: {}".format(type(exc).__name__, exc),
+                },
+            )
+            print("Rig precheck unavailable: {}".format(exc))
+            return 0
+    else:
+        result = run_active_reuse_precheck(
             arguments.output,
-            {
-                "schema_version": "1.0",
-                "status": "no_previous_calibration",
-                "reusable": False,
-                "camera_adapter_is_calibrated": False,
-            },
-        )
-        print("Rig precheck: no active registry calibration is available.")
-        return 0
-    try:
-        result = run_reuse_precheck(
-            calibration,
-            arguments.output,
+            profile_root=arguments.profile_root,
             adb=arguments.adb,
             mvs_python_path=arguments.mvs_python_path,
             camera_id=arguments.camera_id,
@@ -319,23 +397,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             maximum_mae_dn=arguments.maximum_mae_dn,
             sample_frames=arguments.sample_frames,
         )
-        result["calibration_selection"] = selection_source
-        (arguments.output / "precheck.json").write_text(
-            json.dumps(result, indent=2), encoding="utf-8"
-        )
-    except Exception as exc:
-        _write_result(
-            arguments.output,
-            {
-                "schema_version": "1.0",
-                "status": "unavailable",
-                "reusable": False,
-                "calibration": str(calibration),
-                "reason": "{}: {}".format(type(exc).__name__, exc),
-            },
-        )
-        print("Rig precheck unavailable: {}".format(exc))
-        return 0
+        if result["status"] == "no_previous_calibration":
+            print("Rig precheck: no active registry calibration is available.")
+            return 0
     comparison = result.get("comparison") or {}
     print(
         "Rig precheck: {}{}".format(

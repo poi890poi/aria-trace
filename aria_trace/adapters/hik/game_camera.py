@@ -160,6 +160,7 @@ class ProfiledHikGameCamera:
         adapter: Optional[HikMvsCameraAdapter] = None,
         minimap_margin_px: int = 6,
         apply_game_color: bool = True,
+        bayer_conversion: Optional[Mapping[str, object]] = None,
     ) -> None:
         if mode not in self.MODES:
             raise ValueError("HIK game stream mode must be minimap, full, or dual")
@@ -180,6 +181,7 @@ class ProfiledHikGameCamera:
         self.rectify_minimap = bool(rectify_minimap)
         self.minimap_margin_px = int(minimap_margin_px)
         self.apply_game_color = bool(apply_game_color)
+        self.bayer_conversion = dict(bayer_conversion or {})
         self.adapter = adapter or HikMvsCameraAdapter(
             sdk_python_path=self.rig.get("mvs_python_path")
         )
@@ -234,7 +236,11 @@ class ProfiledHikGameCamera:
         self.adapter.set_white_balance(
             wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"]
         )
-        conversion = self.minimap.get("hik_bayer_conversion") or {}
+        conversion = (
+            self.bayer_conversion
+            or self.minimap.get("hik_bayer_conversion")
+            or {}
+        )
         if (
             self.apply_game_color
             and

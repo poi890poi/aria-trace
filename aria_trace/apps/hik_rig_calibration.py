@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 from typing import Optional, Sequence
@@ -19,6 +20,26 @@ from aria_trace.workflows.hik_rig_calibration import (
 )
 
 
+def _write_standalone_adapter(
+    calibration: Path, output: Path, profile_root: Optional[Path]
+) -> None:
+    from aria_trace.adapters.filesystem.profile_registry import (
+        AdapterRequest,
+        ProfileRegistry,
+        context_from_rig_calibration,
+    )
+    from aria_trace.workflows.adapter_export import export_resolved_adapter
+
+    document = json.loads(Path(calibration).read_text(encoding="utf-8"))
+    result = export_resolved_adapter(
+        output,
+        registry=ProfileRegistry(profile_root),
+        context=context_from_rig_calibration(document),
+        request=AdapterRequest(mode="full", color_policy="rig_locked"),
+    )
+    print("Standalone camera adapter: {}".format(result["output"]))
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description="Calibrate a HIK MVS camera against one explicitly selected Android phone."
@@ -32,6 +53,19 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--adb", help="ADB executable; normally auto-detected")
     value.add_argument("--mvs-python-path")
     value.add_argument("--profile-root", type=Path)
+    value.add_argument(
+        "--reuse-if-unchanged",
+        action="store_true",
+        help=(
+            "check the active registry rig first and skip full calibration only "
+            "when the saved ChArUco snapshot is unchanged"
+        ),
+    )
+    value.add_argument(
+        "--reuse-evidence-output",
+        type=Path,
+        help="precheck evidence directory; defaults beside --output",
+    )
     value.add_argument(
         "--no-profile",
         action="store_true",
@@ -164,6 +198,54 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Mode: observation test; no calibration bundle will be saved.")
     else:
         print("Output: {}".format(arguments.output.resolve()))
+    if arguments.reuse_if_unchanged and not arguments.test:
+        from aria_trace.workflows.rig_reuse_precheck import (
+            run_active_reuse_precheck,
+        )
+
+        precheck_output = arguments.reuse_evidence_output or Path(
+            "{}-precheck".format(arguments.output)
+        )
+        print("Checking active rig profile before full calibration...")
+        precheck = run_active_reuse_precheck(
+            precheck_output,
+            profile_root=arguments.profile_root,
+            adb=str(adb),
+            mvs_python_path=arguments.mvs_python_path,
+            camera_id=arguments.camera_id,
+            phone_serial=arguments.phone_serial,
+        )
+        if (
+            precheck.get("reusable")
+            and precheck.get("camera_adapter_is_calibrated")
+        ):
+            arguments.output.mkdir(parents=True, exist_ok=False)
+            receipt = {
+                "schema_version": "1.0",
+                "status": "reused",
+                "calibration": precheck["calibration"],
+                "selection": "active_profile_registry",
+                "precheck": str((precheck_output / "precheck.json").resolve()),
+                "comparison": precheck.get("comparison"),
+            }
+            (arguments.output / "reused_calibration.json").write_text(
+                json.dumps(receipt, indent=2), encoding="utf-8"
+            )
+            print(
+                "Saved rig calibration is unchanged; full calibration skipped."
+            )
+            print("Calibration: {}".format(precheck["calibration"]))
+            _write_standalone_adapter(
+                Path(str(precheck["calibration"])),
+                arguments.output / "hikcam_adapter.py",
+                arguments.profile_root,
+            )
+            return 0
+        print(
+            "Rig reuse was not proven ({}); running full calibration.".format(
+                precheck.get("status", "unknown")
+            )
+        )
     options = HikCalibrationOptions(
         camera_id=arguments.camera_id,
         phone_serial=arguments.phone_serial,
@@ -206,6 +288,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Active rig profile: {} ({})".format(
                 profile["revision_id"], profile["publication"]
             )
+        )
+        _write_standalone_adapter(
+            Path(result),
+            Path(result).parent / "hikcam_adapter.py",
+            arguments.profile_root,
         )
     return 0
 

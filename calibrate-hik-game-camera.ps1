@@ -2,7 +2,7 @@ param(
     [string]$GameId = "genshin-impact",
     [string]$CameraId,
     [string]$PhoneSerial,
-    [string]$DiagnosticRigCalibrationOverride,
+    [string]$ProfileRoot,
     [string]$RigOutput
 )
 
@@ -28,55 +28,19 @@ function Invoke-AriaStage {
 }
 
 try {
-    $precheckOutput = "$RigOutput-precheck"
-    $precheckArguments = @(
-        "--output", $precheckOutput
+    $rigArguments = @(
+        "--reuse-if-unchanged",
+        "--headless",
+        "--save",
+        "--output", $RigOutput
     )
-    if ($DiagnosticRigCalibrationOverride) {
-        $precheckArguments += @(
-            "--diagnostic-calibration-override", $DiagnosticRigCalibrationOverride
-        )
-    }
-    if ($CameraId) { $precheckArguments += @("--camera-id", $CameraId) }
-    if ($PhoneSerial) { $precheckArguments += @("--phone-serial", $PhoneSerial) }
+    if ($CameraId) { $rigArguments += @("--camera-id", $CameraId) }
+    if ($PhoneSerial) { $rigArguments += @("--phone-serial", $PhoneSerial) }
+    if ($ProfileRoot) { $rigArguments += @("--profile-root", $ProfileRoot) }
     Invoke-AriaStage `
-        "[0/4] Check whether the saved HIK rig calibration is still valid" `
-        (Join-Path $root "precheck-hik-rig.bat") `
-        $precheckArguments
-
-    $precheckPath = Join-Path $precheckOutput "precheck.json"
-    if (-not (Test-Path -LiteralPath $precheckPath -PathType Leaf)) {
-        throw "Rig precheck did not produce $precheckPath"
-    }
-    $precheck = Get-Content -LiteralPath $precheckPath -Raw | ConvertFrom-Json
-    if ($precheck.reusable -and $precheck.camera_adapter_is_calibrated) {
-        $effectiveRigCalibration = [string]$precheck.calibration
-        New-Item -ItemType Directory -Path $RigOutput | Out-Null
-        [ordered]@{
-            schema_version = "1.0"
-            status = "reused"
-            calibration = $effectiveRigCalibration
-            precheck = $precheckPath
-            comparison = $precheck.comparison
-        } | ConvertTo-Json -Depth 12 | Set-Content `
-            -LiteralPath (Join-Path $RigOutput "reused_calibration.json") `
-            -Encoding UTF8
-        Write-Host "Saved rig calibration is unchanged; full rig calibration skipped." -ForegroundColor Green
-    }
-    else {
-        Write-Host "Rig reuse was not proven ($($precheck.status)); running full calibration." -ForegroundColor Yellow
-        $rigArguments = @("--headless", "--save", "--output", $RigOutput)
-        if ($CameraId) { $rigArguments += @("--camera-id", $CameraId) }
-        if ($PhoneSerial) { $rigArguments += @("--phone-serial", $PhoneSerial) }
-        Invoke-AriaStage `
-            "[1-2/4] Wake phone and calibrate the HIK rig" `
-            (Join-Path $root "calibrate-hik-rig.bat") `
-            $rigArguments
-        $effectiveRigCalibration = Join-Path $RigOutput "hik_camera_calibration.json"
-        if (-not (Test-Path -LiteralPath $effectiveRigCalibration -PathType Leaf)) {
-            throw "Rig calibration did not produce $effectiveRigCalibration"
-        }
-    }
+        "[1-2/4] Reuse or calibrate the HIK rig through the profile registry" `
+        (Join-Path $root "calibrate-hik-rig.bat") `
+        $rigArguments
 
     New-Item -ItemType Directory -Force -Path $captureRoot | Out-Null
     $existingSessions = @{}
@@ -87,13 +51,9 @@ try {
         "--game-id", $GameId,
         "--output-root", $captureRoot
     )
-    if ($DiagnosticRigCalibrationOverride) {
-        $captureArguments += @(
-            "--diagnostic-rig-calibration-override", $effectiveRigCalibration
-        )
-    }
     if ($CameraId) { $captureArguments += @("--camera-id", $CameraId) }
     if ($PhoneSerial) { $captureArguments += @("--phone-serial", $PhoneSerial) }
+    if ($ProfileRoot) { $captureArguments += @("--profile-root", $ProfileRoot) }
     Invoke-AriaStage `
         "[3-4/4] Launch game and retain dual-source source data" `
         (Join-Path $root "capture-game-minimap-zigzag.bat") `
@@ -111,7 +71,7 @@ try {
 
     Write-Host ""
     Write-Host "Rig calibration and source capture succeeded." -ForegroundColor Green
-    Write-Host "Rig:      $effectiveRigCalibration"
+    Write-Host "Rig:      active profile registry revision"
     Write-Host "Session:  $sessionPath"
     Write-Host "Mini-map: not run; the caller must select and feed image frames"
     exit 0

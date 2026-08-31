@@ -326,7 +326,7 @@ opening hardware:
 ```python
 import aria_trace.adapters.hik.compat as hikcam
 
-camera = hikcam.HikCamera(config={"calibration": "hik_camera_calibration.json"})
+camera = hikcam.HikCamera(config={"mode": "full", "rectify": True})
 adb_xy = camera.camera_adapter_to_adb_points(adapter_xy, surface_quarter_turns)
 adapter_xy = camera.adb_to_camera_adapter_points(adb_xy, surface_quarter_turns)
 matrices = camera.space_converter(surface_quarter_turns).describe()["conversion"]
@@ -341,21 +341,21 @@ socket for the gesture instead of starting one ADB process per touch event.
 Acquisition ends only after the controller reports the complete DOWN/MOVE/UP
 sequence and the configured tail has elapsed; incomplete control is rejected.
 
-The production HIK adapter consumes the base rig plus the optional rig-game
-profile:
+The production HIK adapter resolves the base rig, optional mini-map rig-game
+profile, and optional game-color profile once through `ProfileRegistry`:
 
 ```python
-from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
+import hikcam
 
-with ProfiledHikGameCamera(
-    "artifacts/hik-calibration-...",
-    "profiles/rig_game/<rig>/<game>/current.json",
-    mode="dual",                 # "minimap", "full", or "dual"
-    rectify_minimap=True,
-) as camera:
-    frame_set = camera.read_streams()
-    full = frame_set.streams["full"]
-    minimap = frame_set.streams["minimap"]
+with hikcam.HikCamera(config={
+    "game_id": "genshin-impact",
+    "mode": "dual",             # "minimap", "full", or "dual"
+    "rectify": True,
+    "color_policy": "auto",
+}) as camera:
+    streams = camera.get_frames()
+    full = streams["full"]
+    minimap = streams["minimap"]
 ```
 
 Dual products come from one acquisition and therefore share the frame number
@@ -364,7 +364,7 @@ visible-phone output, and `minimap` is a crop in that same normalized space.
 Mini-map-only mode applies a small hardware ROI to reduce camera and USB
 throughput.
 
-When a reviewed rig-game profile contains `hik_bayer_conversion`, the adapter
+When a reviewed `rig_game_color` profile contains `hik_bayer_conversion`, the adapter
 sets `MV_CC_SetGammaValue` and `MV_CC_SetBayerCCMParam` once while opening the
 MVS handle. Both operations are fused into the existing Bayer-to-BGR conversion:
 there is no LUT, extra image pass, extra image copy, or per-frame Python call.
@@ -373,21 +373,24 @@ using the fitted gamma/CCM measured 33.354 ms identity versus 33.286 ms adjusted
 median reads. The median did not regress; the +0.168 ms p95 difference remained
 inside observed block jitter rather than indicating an added frame stage.
 
-The existing `import ... as hikcam` facade accepts the same options and keeps
-`get_frame()` as the default single-frame interface; `get_frames()` returns the
-two synchronized products in dual mode:
+`get_frame()` remains the default single-frame interface; `get_frames()` returns
+the two synchronized products in dual mode. Arbitrary calibration/profile paths
+are diagnostic-only; production selection is automatic:
 
 ```python
 import aria_trace.adapters.hik.compat as hikcam
 
 with hikcam.HikCamera(config={
-    "calibration": "artifacts/hik-calibration-.../hik_camera_calibration.json",
-    "minimap_calibration": "profiles/rig_game/<rig>/<game>/current.json",
+    "game_id": "genshin-impact",
     "mode": "dual",
     "rectify": True,
 }) as camera:
     streams = camera.get_frames()
 ```
+
+Successful rig and game-color calibration bundles also contain a generated
+`hikcam_adapter.py`. That module embeds the exact resolved calibration data and
+performs no registry reads at runtime.
 
 ## Inspect
 

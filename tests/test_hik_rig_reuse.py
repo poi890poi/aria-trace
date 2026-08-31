@@ -1,7 +1,10 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -14,6 +17,7 @@ from acquisition.rig_calibration.hik.reuse_precheck import (
     parser as reuse_precheck_parser,
 )
 from acquisition.profile_registry import ProfileContext, ProfileRegistry
+from aria_trace.apps.hik_rig_calibration import main as rig_calibration_main
 
 
 def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> Path:
@@ -45,6 +49,66 @@ def write_calibration(path: Path, camera_id="CAM-1", phone_serial="PHONE-1") -> 
 
 
 class HikRigReuseTests(unittest.TestCase):
+    def test_compatibility_module_runs_the_canonical_cli(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "acquisition.rig_calibration.hik.reuse_precheck",
+                "--help",
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        )
+        self.assertEqual(0, completed.returncode, completed.stdout)
+        self.assertIn("--profile-root", completed.stdout)
+
+    def test_rig_calibration_reuse_option_skips_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calibration = write_calibration(root / "saved")
+            device = Mock(device_id="CAM-1", label="camera")
+            adapter = Mock()
+            adapter.devices.return_value = [device]
+            with patch(
+                "aria_trace.apps.hik_rig_calibration.HikMvsCameraAdapter",
+                return_value=adapter,
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.connected_adb_devices",
+                return_value=["PHONE-1"],
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration.resolve_adb_executable",
+                return_value=Path("adb"),
+            ), patch(
+                "aria_trace.workflows.rig_reuse_precheck.run_active_reuse_precheck",
+                return_value={
+                    "status": "reusable",
+                    "reusable": True,
+                    "camera_adapter_is_calibrated": True,
+                    "calibration": str(calibration),
+                    "comparison": {"correlation": 1.0},
+                },
+            ), patch(
+                "aria_trace.apps.hik_rig_calibration._write_standalone_adapter"
+            ) as exporter, patch(
+                "aria_trace.apps.hik_rig_calibration.HikRigCalibrationSession"
+            ) as session:
+                result = rig_calibration_main(
+                    [
+                        "--reuse-if-unchanged",
+                        "--headless",
+                        "--save",
+                        "--output",
+                        str(root / "output"),
+                    ]
+                )
+            self.assertEqual(0, result)
+            session.assert_not_called()
+            exporter.assert_called_once()
+            self.assertTrue((root / "output" / "reused_calibration.json").is_file())
+
     def test_legacy_calibration_option_is_obsolete(self):
         with self.assertRaises(SystemExit):
             reuse_precheck_parser().parse_args(
