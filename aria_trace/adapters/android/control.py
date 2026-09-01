@@ -126,7 +126,7 @@ class ScrcpyTouchController:
         if width <= 0 or height <= 0 or width > 65535 or height > 65535:
             raise ValueError("Invalid Android control screen size")
 
-        remote_server = "/data/local/tmp/aria-trace-scrcpy-control-v{}.jar".format(
+        remote_server = "/data/local/tmp/iris-scrcpy-control-v{}.jar".format(
             self.server_version
         )
         subprocess.check_call(

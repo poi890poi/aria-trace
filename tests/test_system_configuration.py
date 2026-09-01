@@ -26,10 +26,10 @@ class SystemConfigurationTests(unittest.TestCase):
     def test_environment_profile_root_owns_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "shared-profiles"
-            with mock.patch.dict(os.environ, {"ARIA_PROFILE_ROOT": str(root)}):
+            with mock.patch.dict(os.environ, {"IRIS_PROFILE_ROOT": str(root)}):
                 configured = load_system_configuration()
                 self.assertEqual(str(root.resolve()), configured["effective_profile_root"])
-                self.assertEqual("ARIA_PROFILE_ROOT", configured["profile_root_source"])
+                self.assertEqual("IRIS_PROFILE_ROOT", configured["profile_root_source"])
                 configured["devices"]["camera_id"] = "CAM-7"
                 configured["rig_calibration"]["repeatability_policy"] = "balanced"
                 save_system_configuration(configured)

@@ -63,6 +63,13 @@ class RigCalibratorGuiStateTests(unittest.TestCase):
         self.assertIsNone(self.window.image_quality)
         self.assertIsNone(self.window.timing)
 
+    def test_status_styling_changes_role_without_changing_message(self):
+        message = "Cannot save calibration: example"
+        self.window._set_status(message, True)
+        self.assertEqual(self.window.status.text(), "[ERROR] " + message)
+        self.assertEqual(self.window.status.accessibleDescription(), message)
+        self.assertEqual(self.window.status.property("messageKind"), "error")
+
 
 if __name__ == "__main__":
     unittest.main()

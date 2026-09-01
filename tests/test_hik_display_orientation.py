@@ -169,8 +169,8 @@ class HikDisplayOrientationTests(unittest.TestCase):
 
         self.assertNotEqual(gallery_uris[0], gallery_uris[1])
         self.assertNotEqual(probe_paths[0], probe_paths[1])
-        self.assertIn("aria_trace_calibration_target_", gallery_uris[0])
-        self.assertIn("aria_trace_display_probe_", probe_paths[0])
+        self.assertIn("iris_calibration_target_", gallery_uris[0])
+        self.assertIn("iris_display_probe_", probe_paths[0])
 
     def test_portrait_target_keeps_existing_raster_and_launches_once(self):
         phone = OrientationChangingPhone([0, 0, 0, 0])

@@ -1,11 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if defined ARIA_PYTHON (
-  set "ARIA_ADAPTER_PYTHON=%ARIA_PYTHON%"
+if defined IRIS_PYTHON (
+  set "IRIS_ADAPTER_PYTHON=%IRIS_PYTHON%"
 ) else (
-  set "ARIA_ADAPTER_PYTHON=python"
+  set "IRIS_ADAPTER_PYTHON=python"
 )
 set "PYTHONPATH=%~dp0python;%PYTHONPATH%"
-"%ARIA_ADAPTER_PYTHON%" -B -m acquisition.rig_calibration.hik.stream --gui %*
+"%IRIS_ADAPTER_PYTHON%" -B "%~dp0python\iris_tools.py" camera-adapter-demo --gui %*
 exit /b %errorlevel%

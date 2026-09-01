@@ -218,13 +218,14 @@ camera failure while retaining the exact-payload synchronization check.
 ### Spatially traceable evidence
 
 Rig image space belongs to the media producer. Every HIK-compatible adapter
-used by AriaTrace calibration supplies `FrameSample.metadata["image_space"]`
+used by IRIS calibration supplies `FrameSample.metadata["image_space"]`
 with its stored size, color order, orientation, parent full-sensor space,
 hardware ROI, and local-to-parent matrix. Calibration, reuse checks, and rig
 POCs reject a missing or inconsistent record; they never recover a space from
 a filename or raster dimensions. Image-only compatibility methods remain
 available to downstream HIK users, while `read_sample()` and
-`get_aria_frame_metadata()` expose the additive AriaTrace contract.
+`get_iris_frame_metadata()` exposes the additive IRIS contract. The previous
+`get_aria_frame_metadata()` spelling remains a compatibility alias.
 
 Raw measurement images stay unmodified for machine replay. Every camera image
 intended for human review also has an `*_expanded_review.png` canvas. The
@@ -244,7 +245,7 @@ Tests and POCs inside this repository follow the same rule even though external
 camera-adapter consumers are free to use the image-only compatibility API.
 
 Geometry follows the same rule as raster media. A circle, point, vector, mask,
-or polygon is invalid inside AriaTrace unless it carries its own coordinate
+or polygon is invalid inside IRIS unless it carries its own coordinate
 space and raster size. Consumers cannot combine geometry from different spaces;
 they must use an explicit registered transform, which returns newly bound
 geometry. In particular, mini-map boundaries and cursor rotation centers are
@@ -346,8 +347,9 @@ hardware-aligned ROI returned by the camera, adjusts the rectification origin,
 and enters the capture loop. Strict identity, geometry, orientation, exposure,
 and evidence checks remain in calibration only.
 
-Alternatively set `ARIA_HIK_CALIBRATION` and use `hikcam.HikCamera()` with no
-arguments. The facade implements `HikCamera`/`Camera`, context management,
+Configure the active registry under `IRIS_PROFILE_ROOT`, then use
+`hikcam.HikCamera()` with no arguments. The facade implements
+`HikCamera`/`Camera`, context management,
 `get_frame`, `robust_get_frame`, `read`, `get_shape`, `reset`, `get_all_ips`,
 exposure/gain/WB controls, RGB/BGR selection, and item-style common GenICam
 settings. It returns RGB by default; call `set_bgr()` for OpenCV order.

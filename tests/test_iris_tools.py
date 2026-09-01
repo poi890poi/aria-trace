@@ -1,17 +1,17 @@
 import unittest
 from unittest import mock
 
-import aria_tools
+import iris_tools
 
 
-class AriaToolsTests(unittest.TestCase):
+class IrisToolsTests(unittest.TestCase):
     def test_public_helper_forwards_arguments_to_owned_module(self):
         module = mock.Mock()
         module.main.return_value = 7
         with mock.patch.object(
-            aria_tools.importlib, "import_module", return_value=module
+            iris_tools.importlib, "import_module", return_value=module
         ) as importer:
-            result = aria_tools.zigzag_acquisition(["--moves", "4"])
+            result = iris_tools.zigzag_acquisition(["--moves", "4"])
         importer.assert_called_once_with(
             "aria_trace.workflows.minimap_capture"
         )
@@ -21,11 +21,11 @@ class AriaToolsTests(unittest.TestCase):
     def test_dispatcher_uses_user_python_helper_command(self):
         helper = mock.Mock(return_value=3)
         with mock.patch.dict(
-            aria_tools.COMMANDS,
+            iris_tools.COMMANDS,
             {"zigzag-acquisition": helper},
             clear=True,
         ):
-            result = aria_tools.main(
+            result = iris_tools.main(
                 ["zigzag-acquisition", "--android-package", "org.example.game"]
             )
         helper.assert_called_once_with(
@@ -36,11 +36,11 @@ class AriaToolsTests(unittest.TestCase):
     def test_dispatcher_forwards_selected_tool_help(self):
         helper = mock.Mock(return_value=0)
         with mock.patch.dict(
-            aria_tools.COMMANDS,
+            iris_tools.COMMANDS,
             {"rig-calibration": helper},
             clear=True,
         ):
-            result = aria_tools.main(["rig-calibration", "--help"])
+            result = iris_tools.main(["rig-calibration", "--help"])
         helper.assert_called_once_with(["--help"])
         self.assertEqual(0, result)
 

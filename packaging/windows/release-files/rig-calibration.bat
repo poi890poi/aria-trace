@@ -1,5 +1,5 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-"%~dp0apps\aria-rig-calibration\aria-rig-calibration.exe" %*
+"%~dp0apps\iris-rig-calibration\iris-rig-calibration.exe" %*
 exit /b %errorlevel%

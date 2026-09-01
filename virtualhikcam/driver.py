@@ -1,6 +1,6 @@
 """Persistent Android-camera virtual implementation of the HIK adapter API.
 
-The adapter is intended for exercising the real AriaTrace rig pipeline without
+The adapter is intended for exercising the real IRIS rig pipeline without
 claiming physical HIK behavior.  Android Camera2 supplies full decoded frames;
 zoom and ROI are deterministic software operations whose spaces are explicit in
 every FrameSample.
@@ -37,13 +37,13 @@ ADAPTER_ID = "virtual_hik_android_camera"
 def _state_root(explicit: Optional[Path] = None) -> Path:
     if explicit is not None:
         return Path(explicit).resolve()
-    configured = os.environ.get("ARIA_VIRTUAL_HIK_STATE_ROOT")
+    configured = os.environ.get("IRIS_VIRTUAL_HIK_STATE_ROOT")
     if configured:
         return Path(configured).resolve()
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        return (Path(local) / "AriaTrace" / "virtual-cameras").resolve()
-    return (Path.home() / ".aria-trace" / "virtual-cameras").resolve()
+        return (Path(local) / "IRIS" / "virtual-cameras").resolve()
+    return (Path.home() / ".iris" / "virtual-cameras").resolve()
 
 
 def _number(query: Mapping[str, Sequence[str]], name: str, default: float) -> float:
@@ -401,8 +401,13 @@ class VirtualHikCameraAdapter(CameraAdapter):
             metadata=metadata,
         )
 
-    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+    def get_iris_frame_metadata(self) -> Mapping[str, Any]:
         return copy.deepcopy(self._last_frame_metadata)
+
+    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+        """Compatibility alias for :meth:`get_iris_frame_metadata`."""
+
+        return self.get_iris_frame_metadata()
 
     @staticmethod
     def _align_roi(roi_xywh: Sequence[int], full_size: Sequence[int]) -> list[int]:

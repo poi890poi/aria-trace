@@ -1,4 +1,4 @@
-"""Stable, dependency-light contracts for the AriaTrace system."""
+"""Stable, dependency-light contracts for IRIS and its host integrations."""
 
 from .domain.envelope import DataEnvelope, DiagnosticValue, EnvelopeIdentity
 

@@ -221,8 +221,8 @@ mapping; copying only a video would discard the synchronization authority.
 Configure shared device identities and the centralized repeatability policy:
 
 ```powershell
-python -m aria_tools setup configure --camera-id DA9066154 --phone-id RFCR91GWXLX --rig-repeatability relaxed
-python -m aria_tools setup show
+python -m iris_tools setup configure --camera-id DA9066154 --phone-id RFCR91GWXLX --rig-repeatability relaxed
+python -m iris_tools setup show
 ```
 
 The default `relaxed` policy accepts a saved rig snapshot at correlation >=
@@ -232,12 +232,12 @@ more than 12 camera pixels of displacement for three consecutive frames.
 For rig calibration with registry reuse, use:
 
 ```powershell
-python -m aria_tools rig-calibration --reuse-if-unchanged
+python -m iris_tools rig-calibration --reuse-if-unchanged
 ```
 
 GUI mode displays the complete ChArUco board and live camera guide, then waits
 for Enter/Space before collecting geometry. The active profile is resolved only
-from `ARIA_PROFILE_ROOT` (or local `profiles/` when unset); it never scans
+from `IRIS_PROFILE_ROOT` (or local `profiles/` when unset); it never scans
 `artifacts/`. A moved, missing, invalid, or unavailable rig falls back to full
 calibration. The default saved bundle is under the effective profile root's
 `calibrations/` directory.
@@ -245,7 +245,7 @@ calibration. The default saved bundle is under the effective profile root's
 With the game awake and ready and an existing rig result, run capture with:
 
 ```powershell
-python -m aria_tools zigzag-acquisition --game-id genshin-impact --require-hik
+python -m iris_tools zigzag-acquisition --game-id genshin-impact --require-hik
 ```
 
 For the one-time phone/game calibration when HIK is unavailable or occupied,
@@ -288,13 +288,13 @@ does not inject game input or modify camera/calibration controls.
 To record source data without analysis, use:
 
 ```powershell
-python -m aria_tools zigzag-acquisition --game-id genshin-impact --require-hik
+python -m iris_tools zigzag-acquisition --game-id genshin-impact --require-hik
 ```
 
 For a settled endpoint capture that never starts scrcpy, use:
 
 ```powershell
-python -m aria_tools zigzag-acquisition --game-id genshin-impact --android-capture adb-screenshot --require-hik
+python -m iris_tools zigzag-acquisition --game-id genshin-impact --android-capture adb-screenshot --require-hik
 ```
 
 This mode sends the same long swipe through Android's ADB input transport,
@@ -331,7 +331,7 @@ for their coordinate relationship. It records the rig revision, device IDs,
 stream and content dimensions, encoder-only padding, Android surface rotation,
 forward/inverse 3x3 matrices, timestamp authorities, and direct HIK-video crop
 placement in the full ADB raster. The explanatory comments make the file usable
-without importing AriaTrace.
+without importing IRIS.
 
 The rig adapter raster is explicitly in the logical display space used during
 rig calibration, where output-up is app-up. It is not implicitly phone-natural.

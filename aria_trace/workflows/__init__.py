@@ -1,1 +1,1 @@
-"""Application-independent orchestration of AriaTrace services and ports."""
+"""Application-independent orchestration of IRIS services and ports."""

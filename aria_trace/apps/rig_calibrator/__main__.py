@@ -1,4 +1,4 @@
-"""Launch the standalone AriaTrace rig-calibration desktop application."""
+"""Launch the standalone IRIS rig-calibration desktop application."""
 
 from .application import main
 

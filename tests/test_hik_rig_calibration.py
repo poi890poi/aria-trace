@@ -1241,7 +1241,7 @@ class HikPhoneTests(unittest.TestCase):
                 args = list(command[3:])
                 if args[:4] == ["shell", "pm", "list", "packages"]:
                     self.commands.append(args)
-                    return "package:io.ariatrace.phonetarget"
+                    return "package:io.iris.phonetarget"
                 return super().__call__(command, timeout)
 
         runner = NativeRunner()
@@ -1257,14 +1257,14 @@ class HikPhoneTests(unittest.TestCase):
         self.assertEqual(len(launches), 1)
         self.assertTrue(
             any(
-                "io.ariatrace.phonetarget.PhoneTargetActivity" in item
+                "io.iris.phonetarget.PhoneTargetActivity" in item
                 for item in launches[0]
             )
         )
         self.assertNotIn("input", [item for row in launches for item in row])
         self.assertEqual(
             phone.viewer_activity,
-            "io.ariatrace.phonetarget/io.ariatrace.phonetarget.PhoneTargetActivity",
+            "io.iris.phonetarget/io.iris.phonetarget.PhoneTargetActivity",
         )
         phone.cleanup(turn_display_off=True)
 
@@ -1281,7 +1281,7 @@ class HikPhoneTests(unittest.TestCase):
                 if args[:4] == ["shell", "pm", "list", "packages"]:
                     self.commands.append(args)
                     return (
-                        "package:io.ariatrace.phonetarget"
+                        "package:io.iris.phonetarget"
                         if self.installed
                         else ""
                     )

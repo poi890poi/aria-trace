@@ -60,7 +60,7 @@ def write_commented_yaml(
     return path
 
 
-HIK_CONFIG_HEADER = """# AriaTrace HIK camera adapter configuration.
+HIK_CONFIG_HEADER = """# IRIS HIK camera adapter configuration.
 #
 # This file owns camera controls, camera-to-phone geometry, and the normalized
 # complete visible-phone output. Pixel coordinates use top-left origin, +X
@@ -107,7 +107,7 @@ HIK_CONFIG_COMMENTS = {
     ),
 }
 
-PROFILE_HEADER = """# AriaTrace calibration profile.
+PROFILE_HEADER = """# IRIS calibration profile.
 #
 # Profiles are immutable revisions. `current` files are pointers only. A
 # profile's coordinate_space fields define where every XY/WH value lives;

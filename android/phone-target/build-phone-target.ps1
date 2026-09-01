@@ -21,7 +21,7 @@ $BuildTools = Get-ChildItem -LiteralPath (Join-Path $AndroidSdk "build-tools") -
     Select-Object -First 1
 if (-not $Platform -or -not $BuildTools) { throw "Android platform/build-tools are missing" }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $Repository ".tools\phone-target-build" }
-if (-not $Output) { $Output = Join-Path $Repository "artifacts\android-phone-target\aria-phone-target.apk" }
+if (-not $Output) { $Output = Join-Path $Repository "artifacts\android-phone-target\iris-phone-target.apk" }
 $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
 $Output = [IO.Path]::GetFullPath($Output)
 if (Test-Path -LiteralPath $BuildDirectory) { Remove-Item -LiteralPath $BuildDirectory -Recurse -Force }
@@ -44,7 +44,7 @@ $Unsigned = Join-Path $BuildDirectory "unsigned.apk"
 & $Aapt2 link -o $Unsigned -I $AndroidJar --manifest (Join-Path $Project "AndroidManifest.xml") $CompiledResources
 if ($LASTEXITCODE -ne 0) { throw "aapt2 link failed" }
 & javac -encoding UTF-8 --release 8 -classpath $AndroidJar -d $Classes `
-    (Join-Path $Project "src\io\ariatrace\phonetarget\PhoneTargetActivity.java")
+    (Join-Path $Project "src\io\iris\phonetarget\PhoneTargetActivity.java")
 if ($LASTEXITCODE -ne 0) { throw "javac failed" }
 $ClassJar = Join-Path $BuildDirectory "classes.jar"
 & jar cf $ClassJar -C $Classes .
@@ -72,7 +72,7 @@ if ($ApkEntries -contains "dex/classes.dex") {
 $KeyStore = Join-Path $Repository ".tools\phone-target-debug.keystore"
 if (-not (Test-Path -LiteralPath $KeyStore)) {
     & keytool -genkeypair -keystore $KeyStore -storepass android -keypass android `
-        -alias androiddebugkey -dname "CN=AriaTrace Local Target,O=AriaTrace,C=TW" `
+        -alias androiddebugkey -dname "CN=IRIS Local Target,O=IRIS" `
         -keyalg RSA -keysize 2048 -validity 10000 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Cannot create local signing key" }
 }

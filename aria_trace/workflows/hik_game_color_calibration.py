@@ -559,7 +559,7 @@ def parser() -> argparse.ArgumentParser:
         "output",
         type=Path,
         nargs="?",
-        help="diagnostic evidence override; default is under ARIA_PROFILE_ROOT",
+        help="diagnostic evidence override; default is under IRIS_PROFILE_ROOT",
     )
     value.add_argument("--profile-root", type=Path)
     value.add_argument("--game-id")

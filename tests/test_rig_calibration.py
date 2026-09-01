@@ -240,7 +240,7 @@ class RigArtifactTests(unittest.TestCase):
             root = Path(temporary)
             yaml_path = write_calibration_bundle(root, value, mask)
             text = yaml_path.read_text(encoding="utf-8")
-            self.assertTrue(text.startswith("# AriaTrace camera-to-phone rig calibration."))
+            self.assertTrue(text.startswith("# IRIS camera-to-phone rig calibration."))
             self.assertIn("# Stable downstream contract", text)
             loaded = load_calibration_yaml(yaml_path)
             normalizer = FrameNormalizer(loaded, root)

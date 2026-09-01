@@ -1,1 +1,1 @@
-"""Platform-independent AriaTrace algorithms and state services."""
+"""Platform-independent IRIS algorithms and state services."""

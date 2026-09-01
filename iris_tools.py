@@ -1,4 +1,4 @@
-"""Pure-Python public helpers for the Aria Trace calibration tools.
+"""Pure-Python public helpers for IRIS calibration and acquisition tools.
 
 These functions use the caller's Python environment. They do not select or
 start a bundled interpreter and accept the same argument sequences as the
@@ -75,7 +75,7 @@ COMMANDS = {
 def main(argv: Optional[Sequence[str]] = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
-        description="Run Aria Trace tools with the current Python environment."
+        description="Run IRIS tools with the current Python environment."
     )
     parser.add_argument("command", choices=tuple(COMMANDS))
     if not values or values[0] in ("-h", "--help"):

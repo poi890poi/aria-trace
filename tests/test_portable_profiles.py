@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
@@ -50,6 +51,13 @@ class PortableProfileTests(unittest.TestCase):
             package = root / "portable.zip"
             export_portable_profile(
                 source["revision_id"], package, registry=source_registry
+            )
+            with zipfile.ZipFile(str(package), "r") as archive:
+                manifest = json.loads(
+                    archive.read("portable_profile.json").decode("utf-8")
+                )
+            self.assertEqual(
+                "iris_portable_calibration", manifest["package_kind"]
             )
 
             target_registry = ProfileRegistry(root / "target-profiles")

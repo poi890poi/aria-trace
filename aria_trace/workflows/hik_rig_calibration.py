@@ -96,6 +96,7 @@ from aria_trace.adapters.filesystem.system_configuration import (
     DEFAULT_RIG_REPEATABILITY_POLICY,
     RIG_REPEATABILITY_POLICIES,
 )
+from aria_trace.apps.rig_presentation import console_print
 
 
 Progress = Callable[[str], None]
@@ -109,13 +110,14 @@ PANEL_FONT_SCALE = 0.50
 PANEL_LINE_STEP_PX = 22
 OPERATOR_PROMPT_FONT_SCALE = 0.56
 OPERATOR_PROMPT_LINE_STEP_PX = 25
+PANEL_TEXT_REFRESH_SECONDS = 0.50
 _DEFAULT_REPEATABILITY = RIG_REPEATABILITY_POLICIES[
     DEFAULT_RIG_REPEATABILITY_POLICY
 ]
 
 
 def _default_progress(message: str) -> None:
-    print(message, flush=True)
+    console_print(message, flush=True)
 
 
 def screen_filling_charuco_layout(screen_size_px: Sequence[int]) -> CharucoLayout:
@@ -382,6 +384,7 @@ class HikRigCalibrationSession:
         self._preview_disabled = bool(options.headless)
         self._preview_stage = "Starting"
         self._preview_settings: Dict[str, Any] = {}
+        self._panel_text_cache: Dict[str, Dict[str, Any]] = {}
         self._opened = False
         self._saved = False
         self.stage_timings: List[Dict[str, Any]] = []
@@ -708,6 +711,25 @@ class HikRigCalibrationSession:
     def _set_preview_stage(self, stage: str, **settings: Any) -> None:
         self._preview_stage = str(stage)
         self._preview_settings = dict(settings)
+        self._panel_text_cache.pop("preview", None)
+
+    def _readable_panel_lines(
+        self,
+        channel: str,
+        lines: Sequence[str],
+        now: Optional[float] = None,
+    ) -> List[str]:
+        """Hold telemetry text briefly while camera and calibration remain live."""
+
+        current = time.monotonic() if now is None else float(now)
+        cached = self._panel_text_cache.get(str(channel))
+        if (
+            cached is None
+            or current - float(cached["time"]) >= PANEL_TEXT_REFRESH_SECONDS
+        ):
+            cached = {"time": current, "lines": list(map(str, lines))}
+            self._panel_text_cache[str(channel)] = cached
+        return list(cached["lines"])
 
     @staticmethod
     def _format_metric(value: Any, digits: int = 2) -> str:
@@ -788,14 +810,25 @@ class HikRigCalibrationSession:
         maximum_lines = max(1, (canvas.shape[0] - 12) // selected_step)
         selected_lines = selected_lines[:maximum_lines]
         for index, line in enumerate(selected_lines):
+            baseline_y = 24 + index * selected_step
+            lower = line.lower()
+            if index == 0:
+                color, thickness = (255, 225, 135), 2
+            elif any(
+                token in lower
+                for token in ("failed", "blocked", "moved:", "unavailable")
+            ):
+                color, thickness = (120, 190, 255), 2
+            else:
+                color, thickness = (235, 238, 242), 1
             cv2.putText(
                 canvas,
                 line,
-                (left, 24 + index * selected_step),
+                (left, baseline_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 selected_scale,
-                (230, 230, 230),
-                1,
+                color,
+                thickness,
                 cv2.LINE_AA,
             )
         return selected_lines
@@ -834,14 +867,14 @@ class HikRigCalibrationSession:
             canvas,
             (int(panel_left), 0),
             (right, max(0, height - 1)),
-            (38, 54, 82),
+                (18, 28, 46),
             -1,
         )
         cv2.rectangle(
             canvas,
             (int(panel_left), 0),
             (right, max(0, height - 1)),
-            (0, 210, 255),
+                (0, 200, 255),
             2,
         )
         for index, line in enumerate(wrapped):
@@ -851,7 +884,7 @@ class HikRigCalibrationSession:
                 (left, 22 + index * OPERATOR_PROMPT_LINE_STEP_PX),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 OPERATOR_PROMPT_FONT_SCALE,
-                (80, 235, 255),
+                (245, 250, 255) if index else (80, 225, 255),
                 2 if index == 0 else 1,
                 cv2.LINE_AA,
             )
@@ -873,6 +906,9 @@ class HikRigCalibrationSession:
         exposure_us = values.get("exposure_us")
         lines = [
             self._preview_stage,
+            "Telemetry text refresh: {:.1f} Hz; camera acquisition remains live".format(
+                1.0 / PANEL_TEXT_REFRESH_SECONDS
+            ),
             "{}  {}".format(
                 self.camera_metadata.get("model", "HIK camera"),
                 self.camera_metadata.get("serial", self.options.camera_id),
@@ -954,6 +990,7 @@ class HikRigCalibrationSession:
             preview_lines = self._preview_lines(frame, sample_metadata, **settings)
             if prompt_lines and preview_lines:
                 preview_lines = preview_lines[1:]
+            preview_lines = self._readable_panel_lines("preview", preview_lines)
             panel = canvas[prompt_height:, image_width:]
             self._draw_text_panel(
                 panel,
@@ -3115,6 +3152,9 @@ class HikRigCalibrationSession:
                 }
                 lines = [
                     "Complete positioning view at left; native 1:1 crops: TL / TR / BL / BR",
+                    "Telemetry text refresh: {:.1f} Hz; camera acquisition remains live".format(
+                        1.0 / PANEL_TEXT_REFRESH_SECONDS
+                    ),
                     "Laplacian {:.2f}  max {:.2f}".format(measurement["laplacian"], maxima["laplacian"]),
                     "MTF50 min(4 edges) {}  max {} cy/display-px".format(
                         self._format_metric(measurement.get("mtf50"), 4),
@@ -3247,7 +3287,12 @@ class HikRigCalibrationSession:
                     left = overview_width + 6 + (index % 2) * (tile_width + 6)
                     top = (index // 2) * (tile_height + 6)
                     view[top : top + crop.shape[0], left : left + crop.shape[1]] = crop
-                self._draw_text_panel(view, image_width, panel_width, lines)
+                self._draw_text_panel(
+                    view,
+                    image_width,
+                    panel_width,
+                    self._readable_panel_lines("focus", lines),
+                )
                 cv2.resizeWindow(window, view.shape[1], view.shape[0])
                 cv2.imshow(window, view)
                 key = cv2.waitKey(1) & 0xFF
@@ -3607,7 +3652,7 @@ class HikRigCalibrationSession:
             screenshot = getattr(self.target, "last_screenshot", None)
             screenshot_path = evidence_directory / "adb_full_screenshot.png"
             if screenshot is None:
-                remote = "/sdcard/Download/aria_trace_cross_source_{}.png".format(
+                remote = "/sdcard/Download/iris_cross_source_{}.png".format(
                     uuid.uuid4().hex
                 )
                 try:

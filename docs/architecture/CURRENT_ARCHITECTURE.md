@@ -104,7 +104,7 @@ python -m aria_trace.apps.workbench
 python -m aria_trace.apps.rig_calibrator
 python -m aria_trace.apps.hik_rig_calibration
 python -m aria_trace.apps.hik_stream
-python -m aria_tools setup show
+python -m iris_tools setup show
 ```
 
 Compatibility commands remain available as documented in

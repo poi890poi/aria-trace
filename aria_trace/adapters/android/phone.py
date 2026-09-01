@@ -569,10 +569,10 @@ class AdbPhoneSession:
         local_target_port: int,
         screen_size_px: Sequence[int],
         rotation_quarter_turns: int = 0,
-        package_name: str = "io.ariatrace.phonetarget",
+        package_name: str = "io.iris.phonetarget",
         component_name: str = (
-            "io.ariatrace.phonetarget/"
-            "io.ariatrace.phonetarget.PhoneTargetActivity"
+            "io.iris.phonetarget/"
+            "io.iris.phonetarget.PhoneTargetActivity"
         ),
         apk_path: Optional[Path] = None,
     ) -> None:
@@ -588,9 +588,9 @@ class AdbPhoneSession:
             if not installed:
                 if apk_path is None or not Path(apk_path).is_file():
                     raise RuntimeError(
-                        "AriaTrace native phone target is not installed and its APK "
+                        "IRIS native phone target is not installed and its APK "
                         "was not found. Build android\\phone-target\\build-phone-target.bat, "
-                        "set ARIA_PHONE_TARGET_APK, or pass --phone-target-apk."
+                        "set IRIS_PHONE_TARGET_APK, or pass --phone-target-apk."
                     )
                 self.run("install", "-r", str(Path(apk_path).resolve()))
                 installed = self._package_is_installed(package_name)

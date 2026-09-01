@@ -717,7 +717,7 @@ class ProfiledHikGameCamera:
             metadata=dict(frame_set.stream_metadata[selected]),
         )
 
-    def get_aria_frame_metadata(
+    def get_iris_frame_metadata(
         self, stream_id: Optional[str] = None
     ) -> Mapping[str, object]:
         """Return per-stream metadata without changing HIK-compatible reads."""
@@ -732,6 +732,13 @@ class ProfiledHikGameCamera:
         return copy.deepcopy(
             self._last_stream_metadata.get(str(stream_id), {})
         )
+
+    def get_aria_frame_metadata(
+        self, stream_id: Optional[str] = None
+    ) -> Mapping[str, object]:
+        """Compatibility alias for :meth:`get_iris_frame_metadata`."""
+
+        return self.get_iris_frame_metadata(stream_id)
 
     def read(self) -> tuple[bool, Optional[np.ndarray]]:
         if not self._opened:

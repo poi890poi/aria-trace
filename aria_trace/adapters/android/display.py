@@ -66,7 +66,7 @@ class PhoneTargetAdapter(ABC):
 _PHONE_PAGE = r"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>AriaTrace calibration target</title><style>
+<title>IRIS calibration target</title><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111;color:#fff;
 font:16px system-ui,sans-serif}canvas{position:fixed;inset:0;width:100vw;height:100vh}
 #gate{position:fixed;z-index:2;inset:0;display:grid;place-items:center;background:#151515}
@@ -262,7 +262,7 @@ class LocalPhoneTargetServer(PhoneTargetAdapter):
         self._server = server
         self._thread = threading.Thread(
             target=server.serve_forever,
-            name="aria-rig-phone-target",
+            name="iris-rig-phone-target",
             daemon=True,
         )
         self._thread.start()
@@ -323,10 +323,10 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
     """Host half of the native immersive Android SurfaceView presenter."""
 
     adapter_id = "android_native_surface"
-    package_name = "io.ariatrace.phonetarget"
+    package_name = "io.iris.phonetarget"
     component_name = (
-        "io.ariatrace.phonetarget/"
-        "io.ariatrace.phonetarget.PhoneTargetActivity"
+        "io.iris.phonetarget/"
+        "io.iris.phonetarget.PhoneTargetActivity"
     )
 
     def __init__(
@@ -341,7 +341,7 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
 
     @staticmethod
     def default_apk_candidates() -> List[Path]:
-        configured = os.environ.get("ARIA_PHONE_TARGET_APK")
+        configured = os.environ.get("IRIS_PHONE_TARGET_APK")
         repository = Path(__file__).resolve().parents[3]
         candidates = []
         if configured:
@@ -351,18 +351,18 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
                 repository
                 / "android"
                 / "phone-target"
-                / "aria-phone-target.apk",
+                / "iris-phone-target.apk",
                 repository
                 / "artifacts"
                 / "android-phone-target"
-                / "aria-phone-target.apk",
-                repository / "phone-target" / "aria-phone-target.apk",
-                Path.cwd() / "phone-target" / "aria-phone-target.apk",
+                / "iris-phone-target.apk",
+                repository / "phone-target" / "iris-phone-target.apk",
+                Path.cwd() / "phone-target" / "iris-phone-target.apk",
             ]
         )
         executable = Path(sys.executable).resolve()
         candidates.extend(
-            parent / "phone-target" / "aria-phone-target.apk"
+            parent / "phone-target" / "iris-phone-target.apk"
             for parent in executable.parents
         )
         return candidates

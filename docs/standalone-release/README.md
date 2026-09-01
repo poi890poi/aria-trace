@@ -1,6 +1,6 @@
-# Aria Trace HIK calibration release
+# IRIS HIK calibration release
 
-This Windows x64 package contains four independent console applications and a
+This Windows x64 package contains five independent console applications and a
 source-distributed Python camera adapter. The applications are built with
 CPython 3.12.10 and PyInstaller in one-folder mode. One-folder mode was chosen
 over one-file extraction and Nuitka because it starts predictably, keeps native
@@ -24,7 +24,7 @@ without a C compiler.
   `install-python-tools.bat` once in that environment.
 
 Python executables, their Python/native-wheel dependencies, Python source, and
-the small AriaTrace native phone-target APK are bundled. ADB and HIK MVS remain
+the small IRIS native phone-target APK are bundled. ADB and HIK MVS remain
 user-managed environment dependencies; scrcpy and FFmpeg are user-managed only
 for continuous scrcpy acquisition. Rig calibration
 installs the target APK only when its package is absent, then launches its
@@ -59,7 +59,7 @@ harnesses can opt into the old strict behavior with
 `--strict-display-screenshot-verification`.
 
 The default native presenter removes browser/Gallery fullscreen behavior. Set
-`ARIA_PHONE_TARGET_APK` or pass `--phone-target-apk` only when the bundled APK
+`IRIS_PHONE_TARGET_APK` or pass `--phone-target-apk` only when the bundled APK
 is relocated. `--panel-scale auto` enables ChArUco/native-surface scaling on MTK
 platforms; use `--panel-scale adb` or `--panel-scale hik_charuco` explicitly to
 override it. Active-app size mismatch and physical-DPI anisotropy are saved as
@@ -80,14 +80,14 @@ python-tools.bat game-color-calibration SESSION
 python-tools.bat camera-adapter-demo --game-id genshin-impact --mode dual --gui
 ```
 
-Set `ARIA_PYTHON` before these commands to select a particular interpreter.
+Set `IRIS_PYTHON` before these commands to select a particular interpreter.
 Python applications can call the helpers without a subprocess:
 
 ```python
-import aria_tools
+import iris_tools
 
-aria_tools.rig_calibration(["--headless", "--save"])
-aria_tools.zigzag_acquisition(["--android-package", "org.example.game"])
+iris_tools.rig_calibration(["--headless", "--save"])
+iris_tools.zigzag_acquisition(["--android-package", "org.example.game"])
 ```
 
 Configure shared defaults once under the effective profile root:
@@ -109,7 +109,7 @@ independent thresholds that drift from the selected policy. The default
 its GUI save guard remains 12 camera pixels for three consecutive frames.
 
 The release `python` directory must be on `PYTHONPATH` when importing
-`aria_tools` or `hikcam` from outside that directory.
+`iris_tools` or `hikcam` from outside that directory.
 
 ## Camera adapter
 
@@ -143,8 +143,8 @@ frame. Use `camera.get_frame()` for one output and `camera.get_frames()` for
 dual output. Coordinate conversion methods are available on the same object:
 `adb_to_camera_adapter_points(...)` and
 `camera_adapter_to_adb_points(...)` when rectification is enabled.
-These HIK-compatible image return values are unchanged. AriaTrace consumers
-can separately call `camera.get_aria_frame_metadata()` (or pass `"full"` /
+These HIK-compatible image return values are unchanged. IRIS consumers
+can separately call `camera.get_iris_frame_metadata()` (or pass `"full"` /
 `"minimap"` after `get_frames()`) to obtain the last image's declared space,
 ROI, orientation, and provenance.
 
@@ -153,7 +153,7 @@ ROI, and optional MVS Bayer gamma/color matrix for the session.
 
 The same demo can instead use Hikrobot's installed MVS Python SDK
 (`MvCameraControl_class`) through the native full-sensor acquisition source. This
-comparison bypasses AriaTrace profiles and calibration:
+comparison bypasses IRIS profiles and calibration:
 
 ```bat
 camera-adapter-demo.bat --camera-library native --camera-id CAMERA_ID
@@ -179,7 +179,7 @@ otherwise the same command continues with full calibration.
 GUI calibration pauses with the full ChArUco board and live camera guide before
 collecting geometry. Press Enter/Space in that preview to begin, or Q/Esc to
 cancel. The default output is
-`%ARIA_PROFILE_ROOT%\calibrations\hik-calibration-TIMESTAMP` (or the same path
+`%IRIS_PROFILE_ROOT%\calibrations\hik-calibration-TIMESTAMP` (or the same path
 under local `profiles\` when the environment variable is unset).
 
 Game contrast/color calibration consumes one complete synchronized ADB +
@@ -241,7 +241,7 @@ Use `--candidate` when the evidence should be retained without activation.
 Every successful active rig or game-color calibration also writes
 `hikcam_adapter.py`. This generated module embeds the exact rig JSON, dense
 rectification map, and applicable game profiles. It reads no profile registry
-at runtime. It still requires the AriaTrace Python package and the installed
+at runtime. It still requires the IRIS Python package and the installed
 HIK MVS runtime.
 
 An adapter snapshot can also be regenerated from automatic profile selection:
@@ -258,11 +258,11 @@ effective profile root; synchronized capture sessions continue to write below
 resolves active profiles by camera, phone, game, display context, and adapter
 mode. Explicit calibration paths are diagnostic overrides only.
 
-Automatic profile storage uses `ARIA_PROFILE_ROOT` when it is set; otherwise
+Automatic profile storage uses `IRIS_PROFILE_ROOT` when it is set; otherwise
 it uses `profiles/` below the current working directory. The release helper
 scripts start from the extracted release directory, so the executables and
 `import hikcam` share the same local registry. Applications launched from a
-different directory should set `ARIA_PROFILE_ROOT` to the shared registry.
+different directory should set `IRIS_PROFILE_ROOT` to the shared registry.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams and
 [REFERENCE_BENCHMARKS.md](REFERENCE_BENCHMARKS.md) for measured reference data.

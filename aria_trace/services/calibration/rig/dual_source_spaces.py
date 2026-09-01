@@ -15,7 +15,7 @@ from aria_trace.evidence.media_trace import image_size_px, raster_record, valida
 from .hik.spaces import RigCalibratedSpaceConverter
 
 
-DUAL_SOURCE_SPACES_HEADER = """# AriaTrace dual-source coordinate spaces.
+DUAL_SOURCE_SPACES_HEADER = """# IRIS dual-source coordinate spaces.
 #
 # This file is the human-readable authority for converting coordinates among
 # the saved ADB video, the saved rig-normalized HIK video, and the reusable
@@ -33,7 +33,7 @@ DUAL_SOURCE_SPACES_COMMENTS = {
     "usage": "Short operational rules for downstream developers.",
 }
 
-ANDROID_SOURCE_SPACES_HEADER = """# AriaTrace Android-only coordinate space.
+ANDROID_SOURCE_SPACES_HEADER = """# IRIS Android-only coordinate space.
 #
 # This session intentionally contains no HIK stream. Coordinates are Android
 # logical-display pixel centers with top-left [0, 0], +X right, and +Y down."""

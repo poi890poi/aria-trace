@@ -80,7 +80,7 @@ def export_spatial_fragment(calibration: Mapping[str, Any]) -> Dict[str, Any]:
                 calibration.get("confidence", {}).get("geometry", 0.0)
             ),
             "status": calibration.get("status"),
-            "estimator": {"name": "aria_rig_calibration", "version": "1.0"},
+            "estimator": {"name": "iris_rig_calibration", "version": "1.0"},
         }
     ]
     scale_x, scale_y = map(

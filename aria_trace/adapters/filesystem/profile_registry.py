@@ -40,7 +40,7 @@ COLOR_ORDERS = ("RGB", "BGR")
 COLOR_POLICIES = ("auto", "rig_locked", "game_matched", "unadjusted")
 ROI_POLICIES = ("auto", "full_phone", "minimap_only")
 
-PROFILE_HEADER = """# AriaTrace production profile revision.
+PROFILE_HEADER = """# IRIS production profile revision.
 #
 # Revisions are immutable. The SQLite registry is the activation authority;
 # this commented YAML is the human-readable payload and provenance record."""
@@ -91,7 +91,7 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 def default_profile_root(explicit: Optional[Path] = None) -> Path:
     if explicit is not None:
         return Path(explicit).resolve()
-    configured = os.environ.get("ARIA_PROFILE_ROOT")
+    configured = os.environ.get("IRIS_PROFILE_ROOT")
     if configured:
         return Path(configured).resolve()
     return (Path.cwd() / "profiles").resolve()

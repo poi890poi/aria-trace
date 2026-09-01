@@ -1,6 +1,6 @@
 """Minimal profile-selected HIK adapter example.
 
-Set ARIA_GAME_ID or replace the game_id value. The adapter performs no phone
+Set IRIS_GAME_ID or replace the game_id value. The adapter performs no phone
 operation while streaming.
 """
 

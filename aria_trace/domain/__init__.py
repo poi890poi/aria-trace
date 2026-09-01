@@ -1,4 +1,4 @@
-"""Universal values exchanged across AriaTrace component boundaries."""
+"""Universal values exchanged across IRIS component boundaries."""
 
 from .artifacts import ArtifactRef
 from .behaviors import TeleportBehaviorSample

@@ -14,8 +14,8 @@ virtual-hik://RFCR91GWXLX/camera/1?width=1280&height=720&fps=30&zoom=1&bit_rate=
 
 Different Camera2 IDs, resolutions, frame rates, or zooms are different camera
 models and therefore have independent persistent state. State defaults under
-`%LOCALAPPDATA%\AriaTrace\virtual-cameras`; set
-`ARIA_VIRTUAL_HIK_STATE_ROOT` to override it.
+`%LOCALAPPDATA%\IRIS\virtual-cameras`; set
+`IRIS_VIRTUAL_HIK_STATE_ROOT` to override it.
 
 ROI is persisted in full-frame coordinates. Every acquired frame declares its
 effective ROI and local-to-parent transform. Zoom and ROI are software

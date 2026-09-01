@@ -46,20 +46,20 @@ while physical cycles/mm is optional and requires measured display pitch. A
 one-pixel alternating phone pattern is `0.5 cycles/display-pixel`, not an
 unqualified `1 line/pixel` result.
 
-## Task-oriented `aria_tools` calibration workflows
+## Task-oriented `iris_tools` calibration workflows
 
 Run these commands from the repository root in a user-managed Python
-environment. `ARIA_PROFILE_ROOT` is the shared registry and calibration root;
+environment. `IRIS_PROFILE_ROOT` is the shared registry and calibration root;
 when it is unset, AriaTrace uses `profiles/` under the current directory.
 
 ```powershell
-$env:ARIA_PROFILE_ROOT = "E:\aria-profiles"
-python -m aria_tools setup configure `
+$env:IRIS_PROFILE_ROOT = "E:\aria-profiles"
+python -m iris_tools setup configure `
   --camera-id CAMERA_SERIAL `
   --phone-id ADB_SERIAL `
   --game-id GAME_ID `
   --rig-repeatability relaxed
-python -m aria_tools setup show
+python -m iris_tools setup show
 ```
 
 `phone` in a profile name means an Android/panel platform, not one handset.
@@ -76,7 +76,7 @@ before collecting geometry. A successful save publishes the active local
 `rig` profile.
 
 ```powershell
-python -m aria_tools rig-calibration
+python -m iris_tools rig-calibration
 ```
 
 Rig calibration uses the bundled native immersive Android target by default:
@@ -100,7 +100,7 @@ checked-in binary after changing the Activity:
 ```
 
 Use `--phone-target-apk PATH` for one calibration run, or set
-`ARIA_PHONE_TARGET_APK` for a persistent explicit override. Standalone releases
+`IRIS_PHONE_TARGET_APK` for a persistent explicit override. Standalone releases
 place the same APK at `phone-target/aria-phone-target.apk`. The presenter uses
 ADB only for installation, launch, reverse-port setup, and acknowledgements;
 ADB itself remains a user-managed dependency.
@@ -109,7 +109,7 @@ Prepare the game at a stable playable scene. Capture settled ADB images and
 matching rig-normalized HIK images for mini-map discovery and color fitting:
 
 ```powershell
-python -m aria_tools zigzag-acquisition `
+python -m iris_tools zigzag-acquisition `
   --game-id GAME_ID `
   --android-capture adb-screenshot `
   --require-hik
@@ -136,7 +136,7 @@ After a mini-map boundary has been calibrated once, capture the cursor's
 rotation center and rigid shape with balanced short movement-joystick pulses:
 
 ```powershell
-python -m aria_tools zigzag-acquisition `
+python -m iris_tools zigzag-acquisition `
   --capture-mode cursor-orbit `
   --game-id GAME_ID `
   --android-capture adb-screenshot
@@ -152,7 +152,7 @@ count, repetitions, and pulse duration are all CLI-configurable.
 For the normal task-oriented path, give that immutable session to one command:
 
 ```powershell
-python -m aria_tools game-calibration SESSION --game-id GAME_ID
+python -m iris_tools game-calibration SESSION --game-id GAME_ID
 ```
 
 `game-calibration` inspects the data instead of requiring every calibration.
@@ -179,7 +179,7 @@ Publish the reviewed mini-map localization result and compose it with the
 active local rig:
 
 ```powershell
-python -m aria_tools profiles publish-minimap `
+python -m iris_tools profiles publish-minimap `
   LOCALIZATION_SUMMARY_OR_DIRECTORY `
   --activate
 ```
@@ -191,14 +191,14 @@ rotation/movement intervals and accepts either a traceable PNG image series or
 a video stream.
 
 ```powershell
-python -m aria_tools minimap-calibration `
+python -m iris_tools minimap-calibration `
   STANDARD_SESSION `
   --rotation ROTATION_START ROTATION_END `
   --movement MOVEMENT_START MOVEMENT_END
 ```
 
 The evidence directory is selected automatically below the effective
-`ARIA_PROFILE_ROOT`, and successful results publish and activate the matching
+`IRIS_PROFILE_ROOT`, and successful results publish and activate the matching
 `phone_game` plus optional `rig_game` revisions. Add an explicit output path
 only for diagnostics, or `--candidate` to retain review evidence without
 activation.
@@ -208,7 +208,7 @@ a portable ADB-side `phone_game_color` reference and a local, rig-specific
 `rig_game_color` containing the HIK gamma/CCM result.
 
 ```powershell
-python -m aria_tools game-color-calibration `
+python -m iris_tools game-color-calibration `
   SESSION `
   --game-id GAME_ID
 ```
@@ -225,9 +225,9 @@ within the recorded safety limit; otherwise the identity conversion is kept.
 Verify selection, then open the dual-stream GUI:
 
 ```powershell
-python -m aria_tools profiles resolve `
+python -m iris_tools profiles resolve `
   --game-id GAME_ID --mode dual --color-policy game_matched
-python -m aria_tools camera-adapter-demo `
+python -m iris_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --color-policy game_matched --gui
 ```
 
@@ -236,7 +236,7 @@ python -m aria_tools camera-adapter-demo `
 Run this before starting gameplay on a fully calibrated system:
 
 ```powershell
-python -m aria_tools rig-calibration `
+python -m iris_tools rig-calibration `
   --reuse-if-unchanged `
   --headless `
   --save
@@ -255,7 +255,7 @@ check without launching the app, sending input, changing display settings, or
 running rig calibration:
 
 ```powershell
-python -m aria_tools game-repeatability --game-id GAME_ID
+python -m iris_tools game-repeatability --game-id GAME_ID
 # Equivalent human-friendly launcher:
 .\game-repeatability-check.bat --game-id GAME_ID
 ```
@@ -274,9 +274,9 @@ For test apps without a mini-map profile, capture a baseline and then compare
 the same app using the explicitly diagnostic whole-screen mode:
 
 ```powershell
-python -m aria_tools game-repeatability --adb-only `
+python -m iris_tools game-repeatability --adb-only `
   --create-diagnostic-reference --output REFERENCE_DIRECTORY
-python -m aria_tools game-repeatability --adb-only `
+python -m iris_tools game-repeatability --adb-only `
   --diagnostic-reference-result REFERENCE_DIRECTORY
 ```
 
@@ -290,7 +290,7 @@ without running any geometry gate:
 ```powershell
 .\rig-evidence-review.bat
 # Or:
-python -m aria_tools rig-evidence-review
+python -m iris_tools rig-evidence-review
 ```
 
 The script does not launch an app, send input, change display power, or run
@@ -308,9 +308,9 @@ rig. For a new panel geometry, update the phone default and run rig calibration
 before game capture because the panel coordinate system changed.
 
 ```powershell
-python -m aria_tools setup configure --phone-id ADB_SERIAL --game-id NEW_GAME_ID
+python -m iris_tools setup configure --phone-id ADB_SERIAL --game-id NEW_GAME_ID
 # Required for a different panel geometry; unnecessary for only a new game:
-python -m aria_tools rig-calibration
+python -m iris_tools rig-calibration
 ```
 
 Then repeat the game-specific part of setup from scratch: zigzag acquisition,
@@ -318,10 +318,10 @@ mini-map localization publication, and game-color calibration. Export the two
 portable, camera-independent revisions after review:
 
 ```powershell
-python -m aria_tools profiles list --kind phone_game --active-only
-python -m aria_tools profiles export-portable PHONE_GAME_REVISION game-minimap.zip
-python -m aria_tools profiles list --kind phone_game_color --active-only
-python -m aria_tools profiles export-portable PHONE_GAME_COLOR_REVISION game-color.zip
+python -m iris_tools profiles list --kind phone_game --active-only
+python -m iris_tools profiles export-portable PHONE_GAME_REVISION game-minimap.zip
+python -m iris_tools profiles list --kind phone_game_color --active-only
+python -m iris_tools profiles export-portable PHONE_GAME_COLOR_REVISION game-color.zip
 ```
 
 Do not export `rig_game` or `rig_game_color` as portable data: they contain
@@ -351,11 +351,11 @@ instead of silently falling back to zero turns.
 Configure and calibrate the new camera/phone rig first:
 
 ```powershell
-python -m aria_tools setup configure `
+python -m iris_tools setup configure `
   --camera-id NEW_CAMERA_SERIAL `
   --phone-id ADB_SERIAL `
   --game-id GAME_ID
-python -m aria_tools rig-calibration
+python -m iris_tools rig-calibration
 ```
 
 Import the portable mini-map profile. Import is review-first by default;
@@ -363,10 +363,10 @@ Import the portable mini-map profile. Import is review-first by default;
 composed local `rig_game` that references this rig calibration.
 
 ```powershell
-python -m aria_tools profiles import-portable game-minimap.zip `
+python -m iris_tools profiles import-portable game-minimap.zip `
   --game-id GAME_ID `
   --activate
-python -m aria_tools profiles import-portable game-color.zip `
+python -m iris_tools profiles import-portable game-color.zip `
   --game-id GAME_ID
 ```
 
@@ -385,11 +385,11 @@ the configured serial, and let the rig precheck decide whether the physical
 swap changed camera geometry:
 
 ```powershell
-python -m aria_tools profiles list --kind phone_game --active-only
-python -m aria_tools profiles export-portable PHONE_GAME_REVISION phone-game.zip
-python -m aria_tools setup configure --phone-id NEW_ADB_SERIAL --game-id GAME_ID
-python -m aria_tools rig-calibration --reuse-if-unchanged --headless --save
-python -m aria_tools profiles import-portable phone-game.zip `
+python -m iris_tools profiles list --kind phone_game --active-only
+python -m iris_tools profiles export-portable PHONE_GAME_REVISION phone-game.zip
+python -m iris_tools setup configure --phone-id NEW_ADB_SERIAL --game-id GAME_ID
+python -m iris_tools rig-calibration --reuse-if-unchanged --headless --save
+python -m iris_tools profiles import-portable phone-game.zip `
   --phone-id NEW_ADB_SERIAL `
   --game-id GAME_ID `
   --activate
@@ -405,7 +405,7 @@ platform** instead and perform new panel/game calibration.
 
 The production adapter uses the active profile registry; it does not scan
 `artifacts/` or select an arbitrary calibration path. Configure
-`ARIA_PROFILE_ROOT` and the camera/phone/game defaults first, then use the
+`IRIS_PROFILE_ROOT` and the camera/phone/game defaults first, then use the
 HIK-shaped `hikcam` interface:
 
 ```python
@@ -424,16 +424,16 @@ with hikcam.HikCamera(config={
 
     # Proprietary additive API; ordinary HIK/OpenCV-style frame returns stay
     # image-only. Keep this metadata with every stored or transformed image.
-    phone_space = camera.get_aria_frame_metadata("full")
-    minimap_space = camera.get_aria_frame_metadata("minimap")
+    phone_space = camera.get_iris_frame_metadata("full")
+    minimap_space = camera.get_iris_frame_metadata("minimap")
 ```
 
 For a single stream, call `camera.get_frame()` or `camera.read()`, then call
-`camera.get_aria_frame_metadata()` for the matching space, hardware ROI,
+`camera.get_iris_frame_metadata()` for the matching space, hardware ROI,
 orientation, transform provenance, stored size, and color order. Do not infer a
 HIK image's coordinate space from its dimensions or filename.
 
-AriaTrace's own rig calibration, tests, and POCs use the atomic
+IRIS rig calibration, tests, and POCs use the atomic
 `FrameSample`/`read_sample()` form so pixels cannot be separated from that
 metadata. Persisted raw images retain the producer's space record. Human review
 images use an expanded magenta-checker canvas: yellow outlines the complete
@@ -472,18 +472,18 @@ Run a live GUI stream from the repository root:
 
 ```powershell
 # Rig-normalized full phone view; requires an active rig profile.
-python -m aria_tools camera-adapter-demo `
+python -m iris_tools camera-adapter-demo `
   --mode full --gui
 
 # Synchronized normalized full + mini-map views; requires active rig-game data.
-python -m aria_tools camera-adapter-demo `
+python -m iris_tools camera-adapter-demo `
   --game-id GAME_ID `
   --mode dual `
   --color-policy game_matched `
   --gui
 
 # Lowest geometric-processing latency. Output remains explicitly space-tagged.
-python -m aria_tools camera-adapter-demo `
+python -m iris_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --no-rectify --gui
 ```
 
@@ -498,7 +498,7 @@ mode uses the existing full-sensor MVS acquisition source; it does not load rig 
 game profiles, normalize geometry, rectify images, or operate the phone:
 
 ```powershell
-python -m aria_tools camera-adapter-demo `
+python -m iris_tools camera-adapter-demo `
   --camera-library native --camera-id CAMERA_ID --gui
 ```
 

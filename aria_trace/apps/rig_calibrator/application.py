@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from aria_trace.apps.rig_presentation import RIG_CALIBRATOR_STYLE_SHEET
+
 from aria_trace.services.calibration.rig.contracts import ControlEvent, SignalObservation
 from aria_trace.services.calibration.rig.feature_matching import (
     aggregate_feature_matching,
@@ -233,6 +235,7 @@ class RigCalibrationWindow(QMainWindow):
         self._geometry_pending = False
         self._geometry_transaction: Optional[dict[str, Any]] = None
         self._build_ui()
+        self.setStyleSheet(RIG_CALIBRATOR_STYLE_SHEET)
         self._connect_dependency_invalidation()
         self._update_action_state()
         self._set_status(
@@ -240,13 +243,15 @@ class RigCalibrationWindow(QMainWindow):
         )
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("AriaTrace Rig Calibration")
+        self.setWindowTitle("IRIS Rig Calibration")
         self.resize(1440, 920)
         central = QWidget()
         outer = QVBoxLayout(central)
         self.status = QLabel()
+        self.status.setObjectName("rigStatus")
         self.status.setWordWrap(True)
-        self.status.setStyleSheet("padding:9px;background:#20252b;color:#e5e7eb;")
+        self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.status.setAccessibleName("Rig calibration status")
         outer.addWidget(self.status)
         body = QHBoxLayout()
         outer.addLayout(body, 1)
@@ -401,6 +406,7 @@ class RigCalibrationWindow(QMainWindow):
         self.fit_geometry_button.clicked.connect(self._fit_geometry)
         form.addRow(self.fit_geometry_button)
         self.geometry_results = QTextEdit()
+        self.geometry_results.setObjectName("rigResults")
         self.geometry_results.setReadOnly(True)
         self.geometry_results.setMinimumHeight(190)
         form.addRow(self.geometry_results)
@@ -488,9 +494,12 @@ class RigCalibrationWindow(QMainWindow):
         return group
 
     def _set_status(self, text: str, error: bool = False) -> None:
-        self.status.setText(text)
-        color = "#5b2026" if error else "#20252b"
-        self.status.setStyleSheet("padding:9px;background:{};color:#f3f4f6;".format(color))
+        prefix = "[ERROR] " if error else "[STATUS] "
+        self.status.setText(prefix + text)
+        self.status.setAccessibleDescription(text)
+        self.status.setProperty("messageKind", "error" if error else "normal")
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     def _connect_dependency_invalidation(self) -> None:
         self._target_controls = [
@@ -1418,8 +1427,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     application = QApplication(sys.argv[:1] + list(argv or []))
-    application.setApplicationName("AriaTrace Rig Calibration")
-    application.setOrganizationName("AriaTrace")
+    application.setApplicationName("IRIS Rig Calibration")
+    application.setOrganizationName("IRIS")
     application.setStyle("Fusion")
     window = RigCalibrationWindow(
         camera=create_camera_adapter(args.camera_adapter),

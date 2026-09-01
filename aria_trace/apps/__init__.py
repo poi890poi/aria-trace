@@ -1,1 +1,1 @@
-"""Application composition layers for AriaTrace entry points."""
+"""Application composition layers for IRIS entry points."""

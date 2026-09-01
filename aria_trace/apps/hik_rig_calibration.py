@@ -24,6 +24,7 @@ from aria_trace.adapters.filesystem.system_configuration import (
     load_system_configuration,
     resolve_rig_repeatability_policy,
 )
+from aria_trace.apps.rig_presentation import console_print as print
 
 
 def _write_standalone_adapter(
@@ -126,7 +127,7 @@ def parser() -> argparse.ArgumentParser:
         "--phone-target-apk",
         type=Path,
         help=(
-            "native presenter APK; normally resolved from ARIA_PHONE_TARGET_APK, "
+            "native presenter APK; normally resolved from IRIS_PHONE_TARGET_APK, "
             "the release package, or artifacts/android-phone-target"
         ),
     )

@@ -139,14 +139,14 @@ touches, launches, or powers off the phone.
 `dense_remap` versus `homography` is reserved by the registry schema but is not
 accepted by the current facade because it cannot yet enforce that distinction.
 
-Automatic registry discovery checks `ARIA_PROFILE_ROOT` first. When that
+Automatic registry discovery checks `IRIS_PROFILE_ROOT` first. When that
 environment variable is not set, it uses `profiles/` below the process's
 current working directory. The supplied release helper scripts set that
 directory to the extracted release root so every executable and the Python
 camera adapter share one store. An explicit `profile_root` API/CLI argument
-still overrides automatic discovery. `ARIA_HIK_CALIBRATION`, positional
-calibration paths, and the old `calibration` config value are obsolete and
-rejected. A diagnostic that genuinely needs to bypass selection must use the
+still overrides automatic discovery. Legacy calibration environment variables,
+positional calibration paths, and the old `calibration` config value are
+obsolete and rejected. A diagnostic that genuinely needs to bypass selection must use the
 deliberately conspicuous `diagnostic_calibration_override` config value or the
 corresponding `--diagnostic-...-override` stream options.
 

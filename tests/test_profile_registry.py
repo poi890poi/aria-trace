@@ -65,14 +65,14 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_profile_root_environment_has_priority_over_local_directory(self):
         configured = self.root / "configured-profiles"
         local = self.root / "application"
-        with mock.patch.dict("os.environ", {"ARIA_PROFILE_ROOT": str(configured)}):
+        with mock.patch.dict("os.environ", {"IRIS_PROFILE_ROOT": str(configured)}):
             with mock.patch.object(profile_registry_module.Path, "cwd", return_value=local):
                 self.assertEqual(configured.resolve(), default_profile_root())
 
     def test_explicit_profile_root_has_priority_over_environment(self):
         explicit = self.root / "explicit-profiles"
         configured = self.root / "configured-profiles"
-        with mock.patch.dict("os.environ", {"ARIA_PROFILE_ROOT": str(configured)}):
+        with mock.patch.dict("os.environ", {"IRIS_PROFILE_ROOT": str(configured)}):
             self.assertEqual(explicit.resolve(), default_profile_root(explicit))
 
     def test_display_dimensions_and_refresh_are_compatibility_dimensions(self):

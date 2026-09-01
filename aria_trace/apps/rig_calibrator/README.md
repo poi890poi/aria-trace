@@ -110,5 +110,5 @@ there, and writes a one-folder distribution beneath the ignored
 globally and does not launch the resulting application. The executable is:
 
 ```text
-artifacts/rig-calibration-app/windows/AriaTraceRigCalibration/AriaTraceRigCalibration.exe
+artifacts/rig-calibration-app/windows/IRISRigCalibration/IRISRigCalibration.exe
 ```

@@ -1,4 +1,4 @@
-"""Configure shared AriaTrace defaults and inspect the active profile registry."""
+"""Configure shared IRIS defaults and inspect the active profile registry."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from aria_trace.adapters.filesystem.system_configuration import (
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
-        description="Configure shared device/tool defaults under ARIA_PROFILE_ROOT"
+        description="Configure shared device/tool defaults under IRIS_PROFILE_ROOT"
     )
     value.add_argument("--profile-root", type=Path)
     commands = value.add_subparsers(dest="command", required=True)

@@ -712,15 +712,20 @@ class HikMvsCameraAdapter(CameraAdapter):
             metadata=metadata,
         )
 
-    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
-        """Return AriaTrace metadata for the most recently acquired frame.
+    def get_iris_frame_metadata(self) -> Mapping[str, Any]:
+        """Return IRIS metadata for the most recently acquired frame.
 
         This is deliberately additive: native HIK/OpenCV-style frame methods
-        keep returning images, while callers that understand AriaTrace spaces
+        keep returning images, while callers that understand IRIS spaces
         can retrieve the corresponding capture metadata separately.
         """
 
         return copy.deepcopy(self._last_frame_metadata)
+
+    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+        """Compatibility alias for :meth:`get_iris_frame_metadata`."""
+
+        return self.get_iris_frame_metadata()
 
     def close(self) -> None:
         try:
@@ -1450,10 +1455,15 @@ class RectifiedHikCamera:
             metadata=metadata,
         )
 
-    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+    def get_iris_frame_metadata(self) -> Mapping[str, Any]:
         """Return space/provenance metadata for the last successful read."""
 
         return copy.deepcopy(self._last_frame_metadata)
+
+    def get_aria_frame_metadata(self) -> Mapping[str, Any]:
+        """Compatibility alias for :meth:`get_iris_frame_metadata`."""
+
+        return self.get_iris_frame_metadata()
 
     def release(self) -> None:
         self.adapter.close()

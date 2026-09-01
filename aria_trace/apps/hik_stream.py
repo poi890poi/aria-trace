@@ -12,6 +12,8 @@ from typing import Mapping, Optional, Sequence
 
 import cv2
 
+from aria_trace.apps.rig_presentation import console_print as print
+
 from aria_trace.adapters.hik.compat import Camera, HikCamera
 from aria_trace.adapters.hik.capture import NativeHikFrameSource
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
@@ -95,7 +97,9 @@ def overlay_stream_telemetry(frame, telemetry: LiveStreamTelemetry):
 
 
 def _last_stream_metadata(camera, stream_name: str) -> Mapping[str, object]:
-    getter = getattr(camera, "get_aria_frame_metadata", None)
+    getter = getattr(camera, "get_iris_frame_metadata", None)
+    if not callable(getter):
+        getter = getattr(camera, "get_aria_frame_metadata", None)
     if not callable(getter):
         return {}
     try:
@@ -186,7 +190,7 @@ class PhoneDisplayPowerSession:
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
-            "Stream HIK video through either AriaTrace's calibrated drop-in "
+            "Stream HIK video through either IRIS's calibrated drop-in "
             "adapter or Hikrobot's native MVS Python SDK."
         )
     )
@@ -195,7 +199,7 @@ def parser() -> argparse.ArgumentParser:
         choices=("adapter", "native"),
         default="adapter",
         help=(
-            "import AriaTrace's drop-in adapter (default) or the independently "
+            "import IRIS's drop-in adapter (default) or the independently "
             "installed Hikrobot MVS SDK (MvCameraControl_class)"
         ),
     )

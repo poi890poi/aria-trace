@@ -11,7 +11,7 @@ from .contracts import matrix_3x3
 
 
 CALIBRATION_SCHEMA_VERSION = "1.0"
-_HEADER = """# AriaTrace camera-to-phone rig calibration.
+_HEADER = """# IRIS camera-to-phone rig calibration.
 #
 # Consumer fast path:
 #   1. Obtain a frame in normalization.input_space from the calibrated source.

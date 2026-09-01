@@ -44,7 +44,7 @@ def parser() -> argparse.ArgumentParser:
         "output",
         type=Path,
         nargs="?",
-        help="diagnostic evidence override; default is under ARIA_PROFILE_ROOT",
+        help="diagnostic evidence override; default is under IRIS_PROFILE_ROOT",
     )
     value.add_argument(
         "--rotation", nargs=2, type=float, required=True, metavar=("START", "END")

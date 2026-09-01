@@ -1,4 +1,4 @@
-package io.ariatrace.phonetarget;
+package io.iris.phonetarget;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
@@ -65,7 +65,7 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
         setContentView(surface);
         baseUrl = getIntent().getDataString();
         if (baseUrl == null || !baseUrl.startsWith("http://127.0.0.1:")) {
-            throw new IllegalArgumentException("A loopback AriaTrace target URL is required");
+            throw new IllegalArgumentException("A loopback IRIS target URL is required");
         }
         if (!baseUrl.endsWith("/")) baseUrl += "/";
         hideSystemBars();

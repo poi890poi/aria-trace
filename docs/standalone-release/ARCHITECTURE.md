@@ -8,20 +8,20 @@ the `.mmd` files can also be rendered with Mermaid CLI.
 
 ```mermaid
 flowchart LR
-    Phone[Android phone] -->|ADB target display| RigExe[aria-rig-calibration.exe]
+    Phone[Android phone] -->|ADB target display| RigExe[iris-rig-calibration.exe]
     Hik[HIK MVS camera] -->|native frames| RigExe
     RigExe -->|rig bundle + evidence| RigProfile[(rig profile)]
 
-    Phone -->|scrcpy frames| Zigzag[aria-zigzag-acquisition.exe]
+    Phone -->|scrcpy frames| Zigzag[iris-zigzag-acquisition.exe]
     RigProfile -->|optional normalized HIK source| Zigzag
     Hik -->|optional current-session frames| Zigzag
     Zigzag -->|ADB PNG series + optional HIK video + timestamps + YAML spaces| Session[(capture session)]
 
-    Session --> GameExe[aria-game-calibration.exe]
+    Session --> GameExe[iris-game-calibration.exe]
     GameExe -->|screen upright| OrientationProfile[(rig-game orientation)]
-    Session --> MiniExe[aria-minimap-calibration.exe]
+    Session --> MiniExe[iris-minimap-calibration.exe]
     MiniExe -->|calibration + review evidence| MiniResult[(mini-map result)]
-    Session --> ColorExe[aria-game-color-calibration.exe]
+    Session --> ColorExe[iris-game-color-calibration.exe]
     ColorExe -->|gamma + CCM + review evidence| ColorProfile[(rig-game color profile)]
 
     RigProfile --> Registry[profile registry]
@@ -80,7 +80,7 @@ classDiagram
     class HikCamera {
       +get_frame() ndarray
       +get_frames() dict
-      +get_aria_frame_metadata(stream_id=None) dict
+      +get_iris_frame_metadata(stream_id=None) dict
       +read() tuple
       +isOpened() bool
       +release()

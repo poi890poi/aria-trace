@@ -192,7 +192,7 @@ class ScrcpyCaptureHub:
         if not self.scrcpy_server.is_file():
             raise RuntimeError("scrcpy-server does not exist: {}".format(self.scrcpy_server))
         self.clock.calibrate()
-        remote_server = "/data/local/tmp/aria-trace-scrcpy-server-v{}.jar".format(
+        remote_server = "/data/local/tmp/iris-scrcpy-server-v{}.jar".format(
             SCRCPY_SERVER_VERSION
         )
         subprocess.check_call(

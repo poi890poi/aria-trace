@@ -97,7 +97,7 @@ def _registry_configuration(
     camera_id = _camera_id_for_registry(ip, configured)
     game_id = (
         configured.get("game_id")
-        or os.environ.get("ARIA_GAME_ID")
+        or os.environ.get("IRIS_GAME_ID")
         or settings["game"].get("game_id")
     )
     normalization = configured.get("normalization")
@@ -508,10 +508,10 @@ class HikCamera:
             )
         return frames
 
-    def get_aria_frame_metadata(
+    def get_iris_frame_metadata(
         self, stream_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Return AriaTrace space/provenance metadata for the last frame.
+        """Return IRIS space/provenance metadata for the last frame.
 
         HIK-compatible methods such as :meth:`get_frame`, :meth:`get_frames`,
         and :meth:`read` deliberately keep their established image-only return
@@ -535,6 +535,13 @@ class HikCamera:
                 }
             })
         return copy.deepcopy(self.last_frame_metadata)
+
+    def get_aria_frame_metadata(
+        self, stream_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compatibility alias for :meth:`get_iris_frame_metadata`."""
+
+        return self.get_iris_frame_metadata(stream_id)
 
     def get_frame_with_config(self) -> None:
         self._last_frame = self.get_frame()

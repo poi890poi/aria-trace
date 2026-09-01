@@ -80,7 +80,8 @@ class HikSpaceConversionTests(unittest.TestCase):
             )
             camera.open()
             frame = camera.get_frame()
-            metadata = camera.get_aria_frame_metadata()
+            metadata = camera.get_iris_frame_metadata()
+            legacy_metadata = camera.get_aria_frame_metadata()
             camera.close()
 
         self.assertIsInstance(frame, np.ndarray)
@@ -89,6 +90,7 @@ class HikSpaceConversionTests(unittest.TestCase):
             "hik_rig_rectified_visible_phone_pixels",
             metadata["image_space"]["space_id"],
         )
+        self.assertEqual(metadata, legacy_metadata)
 
     def test_android_only_yaml_declares_no_cross_source_conversion(self):
         with tempfile.TemporaryDirectory() as directory:

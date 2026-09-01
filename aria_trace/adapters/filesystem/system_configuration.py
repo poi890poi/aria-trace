@@ -35,9 +35,9 @@ RIG_REPEATABILITY_POLICIES = {
 }
 DEFAULT_RIG_REPEATABILITY_POLICY = "relaxed"
 
-SETTINGS_HEADER = """# AriaTrace operator defaults.
+SETTINGS_HEADER = """# IRIS operator defaults.
 #
-# This file lives under the effective ARIA_PROFILE_ROOT and is shared by all
+# This file lives under the effective IRIS_PROFILE_ROOT and is shared by all
 # Python commands. Command-line arguments always override these values."""
 
 SETTINGS_COMMENTS = {
@@ -88,8 +88,8 @@ def load_system_configuration(profile_root: Optional[Path] = None) -> Dict[str, 
     result["profile_root_source"] = (
         "explicit"
         if profile_root is not None
-        else "ARIA_PROFILE_ROOT"
-        if os.environ.get("ARIA_PROFILE_ROOT")
+        else "IRIS_PROFILE_ROOT"
+        if os.environ.get("IRIS_PROFILE_ROOT")
         else "current_directory_fallback"
     )
     result["effective_rig_repeatability"] = resolve_rig_repeatability_policy(

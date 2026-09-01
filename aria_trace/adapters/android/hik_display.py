@@ -145,7 +145,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         if self._temporary is None:
             raise RuntimeError("Display target is not started")
         remote = (
-            "/sdcard/Download/aria_trace_display_probe_{}_{}.png".format(
+            "/sdcard/Download/iris_display_probe_{}_{}.png".format(
                 self._remote_namespace, revision
             )
         )
@@ -223,7 +223,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
             revision, orientation_attempt
         )
         remote = (
-            "/sdcard/Download/aria_trace_calibration_target_{}_{}_{}.png".format(
+            "/sdcard/Download/iris_calibration_target_{}_{}_{}.png".format(
                 self._remote_namespace, revision, orientation_attempt
             )
         )
@@ -483,7 +483,7 @@ class AdbDisplayTarget(PhoneTargetAdapter):
         self._layout = layout
         self._charuco = generate_charuco_target(layout)
         self.component = self._resolve_component()
-        self._temporary = tempfile.TemporaryDirectory(prefix="aria-hik-display-")
+        self._temporary = tempfile.TemporaryDirectory(prefix="iris-hik-display-")
         # Android Gallery caches the VIEW intent URI. A process-local revision
         # is insufficient because every presenter and every later run starts
         # again at revision 1. Give each started presenter a fresh URI namespace

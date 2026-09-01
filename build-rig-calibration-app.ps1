@@ -38,7 +38,7 @@ finally {
     $env:PYINSTALLER_CONFIG_DIR = $PreviousPyInstallerConfig
 }
 
-$Executable = Join-Path $DistributionRoot "AriaTraceRigCalibration\AriaTraceRigCalibration.exe"
+$Executable = Join-Path $DistributionRoot "IRISRigCalibration\IRISRigCalibration.exe"
 if (-not (Test-Path -LiteralPath $Executable)) {
     throw "Build completed without the expected executable: $Executable"
 }

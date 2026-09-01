@@ -21,9 +21,11 @@ from aria_trace.adapters.filesystem.profile_registry import (
 
 
 PORTABLE_SCHEMA_VERSION = "1.0"
+PORTABLE_PACKAGE_KIND = "iris_portable_calibration"
+LEGACY_PORTABLE_PACKAGE_KINDS = {"aria_trace_portable_calibration"}
 PORTABLE_PROFILE_KINDS = ("phone_game", "phone_game_color")
 
-PORTABLE_HEADER = """# AriaTrace portable phone-platform calibration.
+PORTABLE_HEADER = """# IRIS portable phone-platform calibration.
 #
 # This package contains no camera identity, sensor ROI, rectification map, or
 # HIK imaging control. Import composes it with a separately calibrated local rig."""
@@ -78,7 +80,7 @@ def _portable_manifest(
         )
     return {
         "schema_version": PORTABLE_SCHEMA_VERSION,
-        "package_kind": "aria_trace_portable_calibration",
+        "package_kind": PORTABLE_PACKAGE_KIND,
         "profile_kind": kind,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "portable_context": context.as_dict(),
@@ -172,7 +174,7 @@ def _open_package(package: Path) -> tuple[Path, Optional[Path]]:
         raise FileNotFoundError(
             "Portable package must be a directory or ZIP file: {}".format(package)
         )
-    temporary = Path(tempfile.mkdtemp(prefix="aria-portable-import-"))
+    temporary = Path(tempfile.mkdtemp(prefix="iris-portable-import-"))
     try:
         with zipfile.ZipFile(str(package), "r") as archive:
             for member in archive.infolist():
@@ -224,8 +226,10 @@ def import_portable_profile(
                 "Portable package has no portable_profile.json: {}".format(root)
             )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("package_kind") != "aria_trace_portable_calibration":
-            raise ValueError("Not an AriaTrace portable calibration package")
+        if manifest.get("package_kind") not in (
+            {PORTABLE_PACKAGE_KIND} | LEGACY_PORTABLE_PACKAGE_KINDS
+        ):
+            raise ValueError("Not an IRIS portable calibration package")
         kind = str(manifest.get("profile_kind") or "")
         if kind not in PORTABLE_PROFILE_KINDS:
             raise ValueError("Unsupported portable profile kind: {}".format(kind))

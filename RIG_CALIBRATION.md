@@ -1,11 +1,11 @@
-# AriaTrace Camera-to-Phone Rig Calibration
+# IRIS Camera-to-Phone Rig Calibration
 
 The standalone HIK MVS camera/Android-display workflow and rectified stream are
 documented in [`aria_trace/services/calibration/rig/hik/README.md`](aria_trace/services/calibration/rig/hik/README.md).
 
 ## 1. Purpose
 
-This document specifies how AriaTrace calibrates a fixed USB camera that observes an Android phone screen. The process must work when the camera sees the entire display, only the task-relevant part of the display, or additional area outside the display.
+This document specifies how IRIS calibrates a fixed USB camera that observes an Android phone screen. The process must work when the camera sees the entire display, only the task-relevant part of the display, or additional area outside the display.
 
 The calibration has five outputs:
 
@@ -135,7 +135,7 @@ Save calibration.yaml, remap data, masks, metrics, and review images
 
 The wizard opens the requested UVC mode, then records the actual mode returned by the device. It samples focus, autofocus, exposure, auto-exposure, gain, white balance, and power-line frequency when the driver exposes them. Unsupported controls remain `unknown` rather than being filled with invented values.
 
-The default HIK workflow launches the bundled AriaTrace native target Activity
+The default HIK workflow launches the bundled IRIS native target Activity
 over a loopback port forwarded with ADB reverse. The Activity hides system bars
 with `WindowInsetsController`, keeps the display on, and paints every revision
 into a full-bleed `SurfaceView`. It reports the native surface extent, natural
@@ -237,7 +237,7 @@ The required mini-map ROI and its guard band are evaluated independently:
 - local camera pixels per canonical screen pixel;
 - perspective scale ratio across the ROI.
 
-A partial-screen view may be excellent for AriaTrace even when full-screen IoU is low. The preferred pose is the closest view that keeps 100% of the required ROI and guard band while satisfying matchability and uncertainty limits.
+A partial-screen view may be excellent for IRIS even when full-screen IoU is low. The preferred pose is the closest view that keeps 100% of the required ROI and guard band while satisfying matchability and uncertainty limits.
 
 The target presenter must report its physical drawing-buffer dimensions and a
 paint acknowledgement for every controlled target revision. The dimensions
@@ -649,7 +649,7 @@ artifacts/rig_calibrations/<rig-id>/<calibration-id>/
 ## 11. Commented YAML Contract
 
 ```yaml
-# AriaTrace camera-to-phone rig calibration.
+# IRIS camera-to-phone rig calibration.
 # Consumer fast path:
 #   1. Obtain a frame in normalization.input_space from the calibrated source.
 #   2. warpPerspective(frame, normalization.matrix_3x3,

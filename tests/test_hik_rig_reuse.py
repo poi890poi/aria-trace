@@ -306,7 +306,7 @@ class HikRigReuseTests(unittest.TestCase):
             device = Mock(device_id="CAM-1", label="camera")
             adapter = Mock()
             adapter.devices.return_value = [device]
-            with patch.dict(os.environ, {"ARIA_PROFILE_ROOT": str(root)}), patch(
+            with patch.dict(os.environ, {"IRIS_PROFILE_ROOT": str(root)}), patch(
                 "aria_trace.apps.hik_rig_calibration.time.strftime",
                 return_value="test",
             ), patch(
