@@ -555,6 +555,57 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertEqual((landscape.squares_x, landscape.squares_y), (20, 9))
         self.assertEqual(landscape.board_size_px, (2400, 1080))
 
+    def test_rig_open_locks_rotation_zero_before_assigning_charuco_space(self):
+        initial = PhoneMetrics(
+            "phone", "Example", "Phone", "14", [2400, 1080], 420, 60.0,
+            orientation_quarter_turns=1,
+            natural_screen_size_px=[1080, 2400],
+        )
+        canonical = PhoneMetrics(
+            "phone", "Example", "Phone", "14", [1080, 2400], 420, 60.0,
+            orientation_quarter_turns=0,
+            natural_screen_size_px=[1080, 2400],
+        )
+        phone = mock.Mock()
+        phone.metrics.side_effect = [initial, canonical]
+        phone.display_brightness_state.return_value = {
+            "brightness_value": 255,
+            "declared_maximum": 255,
+        }
+        target = mock.Mock()
+        target.telemetry.return_value = {
+            "viewer": {
+                "canvas_width": 1080,
+                "canvas_height": 2400,
+                "canonical_target_size_px": [1080, 2400],
+                "logical_target_size_px": [1080, 2400],
+                "fullscreen": True,
+            }
+        }
+        camera = mock.Mock()
+        camera.open.return_value = {
+            "width_px": 1440,
+            "height_px": 1080,
+            "fps": 30.0,
+        }
+        camera.reset_full_sensor_roi.return_value = [0, 0, 1440, 1080]
+        camera.controls.return_value = {}
+        session = HikRigCalibrationSession(
+            HikCalibrationOptions("camera", "phone", Path("unused")),
+            camera=camera,
+            phone=phone,
+            target=target,
+            progress=lambda _message: None,
+        )
+        session._wait_auto_imaging = lambda: {"status": "settled"}
+
+        session.open()
+
+        target.configure_canonical_orientation.assert_called_once_with(0)
+        phone.wake_and_hold_display.assert_called_once_with(0)
+        self.assertEqual(session.charuco_layout.screen_size_px, (1080, 2400))
+        self.assertEqual(session.phone_metrics.orientation_quarter_turns, 0)
+
     def test_refresh_quantization_and_exposure_selection(self):
         self.assertAlmostEqual(refresh_quantized_exposure_us(60.0, 2), 8333.333333, places=3)
         self.assertAlmostEqual(

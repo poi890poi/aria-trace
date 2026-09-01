@@ -1354,72 +1354,90 @@ class HikRigCalibrationSession:
         if self._opened:
             return
         self.progress("Reading phone and HIK camera specifications...")
-        self.phone_metrics = self.phone.metrics(self.options.refresh_hz_override)
-        detected_rotation = int(self.phone_metrics.orientation_quarter_turns) * 90
-        self.progress(
-            "Phone: {} {} ({}), {}x{} px at {:.3f} Hz; rotation {} degrees ({}), "
-            "natural raster {}x{} px.".format(
-                self.phone_metrics.manufacturer,
-                self.phone_metrics.model,
-                self.phone_metrics.serial,
-                self.phone_metrics.screen_size_px[0],
-                self.phone_metrics.screen_size_px[1],
-                self.phone_metrics.refresh_hz,
-                detected_rotation,
-                self.phone_metrics.to_dict()["orientation_name"],
-                self.phone_metrics.natural_screen_size_px[0],
-                self.phone_metrics.natural_screen_size_px[1],
-            )
-        )
-        phone_scale = self.phone_metrics.to_dict()
-        if phone_scale.get("physical_pixel_pitch_mm_xy"):
-            self.progress(
-                "Phone physical scale: pitch {:.6f} x {:.6f} mm/px, active {:.2f} x {:.2f} mm "
-                "({}).".format(
-                    phone_scale["physical_pixel_pitch_mm_xy"][0],
-                    phone_scale["physical_pixel_pitch_mm_xy"][1],
-                    phone_scale["physical_size_mm"][0],
-                    phone_scale["physical_size_mm"][1],
-                    phone_scale["physical_size_source"],
-                )
-            )
-        else:
-            self.progress(
-                "Phone physical pixel pitch is unavailable; focus MTF will remain in cycles/display-pixel."
-            )
-        layout = screen_filling_charuco_layout(self.phone_metrics.screen_size_px)
+        probed_metrics = self.phone.metrics(self.options.refresh_hz_override)
+        canonical_size = list(map(int, probed_metrics.natural_screen_size_px))
+        layout = screen_filling_charuco_layout(canonical_size)
         self.charuco_layout = layout
-        self.progress(
-            "ChArUco atlas: {}x{} complete squares, {}x{} px board on {}x{} px display."
-            .format(
-                layout.squares_x,
-                layout.squares_y,
-                layout.board_size_px[0],
-                layout.board_size_px[1],
-                layout.screen_size_px[0],
-                layout.screen_size_px[1],
-            )
-        )
         try:
             if isinstance(self.target, LocalPhoneTargetServer):
                 self.target.start(layout)
                 self.phone.wake_and_hold(
                     self.target.bound_port,
-                    self.phone_metrics.screen_size_px,
-                    self.phone_metrics.orientation_quarter_turns,
+                    canonical_size,
+                    0,
                 )
             else:
                 configure_orientation = getattr(
                     self.target, "configure_canonical_orientation", None
                 )
                 if callable(configure_orientation):
-                    configure_orientation(
+                    configure_orientation(0)
+                self.phone.wake_and_hold_display(0)
+                self.target.start(layout)
+            # Android rotation 0 is the only rig-canonical display raster.  The
+            # setting write above is merely a request; re-probe the effective
+            # surface after the viewer has launched and reject a silent app or
+            # OEM override before assigning ChArUco screen coordinates.
+            self.phone_metrics = self.phone.metrics(
+                self.options.refresh_hz_override
+            )
+            if int(self.phone_metrics.orientation_quarter_turns) != 0:
+                raise RuntimeError(
+                    "Android did not enter canonical rotation 0; effective "
+                    "surface rotation is {} quarter-turn(s)".format(
                         self.phone_metrics.orientation_quarter_turns
                     )
-                self.phone.wake_and_hold_display(
-                    self.phone_metrics.orientation_quarter_turns
                 )
-                self.target.start(layout)
+            if list(map(int, self.phone_metrics.screen_size_px)) != canonical_size:
+                raise RuntimeError(
+                    "Android rotation-0 raster {} does not match the probed "
+                    "natural raster {}".format(
+                        self.phone_metrics.screen_size_px, canonical_size
+                    )
+                )
+            detected_rotation = int(self.phone_metrics.orientation_quarter_turns) * 90
+            self.progress(
+                "Phone: {} {} ({}), {}x{} px at {:.3f} Hz; rotation {} degrees ({}), "
+                "natural raster {}x{} px.".format(
+                    self.phone_metrics.manufacturer,
+                    self.phone_metrics.model,
+                    self.phone_metrics.serial,
+                    self.phone_metrics.screen_size_px[0],
+                    self.phone_metrics.screen_size_px[1],
+                    self.phone_metrics.refresh_hz,
+                    detected_rotation,
+                    self.phone_metrics.to_dict()["orientation_name"],
+                    self.phone_metrics.natural_screen_size_px[0],
+                    self.phone_metrics.natural_screen_size_px[1],
+                )
+            )
+            phone_scale = self.phone_metrics.to_dict()
+            if phone_scale.get("physical_pixel_pitch_mm_xy"):
+                self.progress(
+                    "Phone physical scale: pitch {:.6f} x {:.6f} mm/px, active {:.2f} x {:.2f} mm "
+                    "({}).".format(
+                        phone_scale["physical_pixel_pitch_mm_xy"][0],
+                        phone_scale["physical_pixel_pitch_mm_xy"][1],
+                        phone_scale["physical_size_mm"][0],
+                        phone_scale["physical_size_mm"][1],
+                        phone_scale["physical_size_source"],
+                    )
+                )
+            else:
+                self.progress(
+                    "Phone physical pixel pitch is unavailable; focus MTF will remain in cycles/display-pixel."
+                )
+            self.progress(
+                "ChArUco atlas: {}x{} complete squares, {}x{} px board on {}x{} px "
+                "canonical rotation-0 display.".format(
+                    layout.squares_x,
+                    layout.squares_y,
+                    layout.board_size_px[0],
+                    layout.board_size_px[1],
+                    layout.screen_size_px[0],
+                    layout.screen_size_px[1],
+                )
+            )
             self.phone_display_brightness = dict(self.phone.display_brightness_state())
             self.progress(
                 "Phone calibration brightness: manual {}/{}; original setting will be restored."
@@ -3582,6 +3600,21 @@ class HikRigCalibrationSession:
                 **phone_metrics.to_dict(),
                 "calibration_display_brightness": self.phone_display_brightness,
                 "viewer": dict(self.viewer_metrics),
+                "canonical_panel_space": {
+                    "space_id": "android_phone_natural_display_pixels",
+                    "definition": "Android logical display raster at effective Surface rotation 0",
+                    "orientation_quarter_turns_clockwise_from_natural": 0,
+                    "size_px": list(map(int, phone_metrics.screen_size_px)),
+                    "established_by": (
+                        "fullscreen asymmetric ChArUco marker correspondences "
+                        "observed by the rig camera"
+                    ),
+                    "camera_corner_observation_count": int(
+                        len(correspondences["camera_points_xy"])
+                    ),
+                    "geometry_confidence": geometry.confidence,
+                    "android_presentation": dict(self.viewer_metrics),
+                },
             }
             x, y, width, height = visible_region["xywh"]
             full_size = [int(self.camera_metadata["width_px"]), int(self.camera_metadata["height_px"])]
