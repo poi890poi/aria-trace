@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 Runner = Callable[[Sequence[str], float], str]
+_ADB_RECOVERY_LOCK = threading.Lock()
+_ADB_RECOVERY_GENERATIONS: Dict[str, int] = {}
 
 
 def resolve_adb_executable(value: Optional[str] = None) -> str:
@@ -73,8 +76,10 @@ def probe_android_capture_surface(
     return selected, phone.capture_surface()
 
 
-def _subprocess_runner(command: Sequence[str], timeout_seconds: float) -> str:
-    completed = subprocess.run(
+def _run_adb_command_once(
+    command: Sequence[str], timeout_seconds: float
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
         list(command),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -84,6 +89,52 @@ def _subprocess_runner(command: Sequence[str], timeout_seconds: float) -> str:
         encoding="utf-8",
         errors="replace",
     )
+
+
+def _restart_adb_server(adb_executable: str, timeout_seconds: float) -> None:
+    recovery_timeout = max(5.0, min(float(timeout_seconds), 30.0))
+    try:
+        _run_adb_command_once([adb_executable, "kill-server"], recovery_timeout)
+    except subprocess.TimeoutExpired:
+        # A wedged server can also stall its own shutdown. Starting the server is
+        # still worth attempting because subprocess.run has terminated the client.
+        pass
+    try:
+        started = _run_adb_command_once(
+            [adb_executable, "start-server"], recovery_timeout
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ADB server restart timed out") from exc
+    if started.returncode != 0:
+        raise RuntimeError(
+            "ADB server restart failed ({}): {}".format(
+                started.returncode,
+                started.stderr.strip() or started.stdout.strip(),
+            )
+        )
+
+
+def _subprocess_runner(command: Sequence[str], timeout_seconds: float) -> str:
+    values = list(command)
+    if not values:
+        raise ValueError("ADB command must not be empty")
+    recovery_key = os.path.normcase(os.path.abspath(str(values[0])))
+    with _ADB_RECOVERY_LOCK:
+        observed_generation = _ADB_RECOVERY_GENERATIONS.get(recovery_key, 0)
+    try:
+        completed = _run_adb_command_once(values, timeout_seconds)
+    except subprocess.TimeoutExpired:
+        with _ADB_RECOVERY_LOCK:
+            current_generation = _ADB_RECOVERY_GENERATIONS.get(recovery_key, 0)
+            if current_generation == observed_generation:
+                _restart_adb_server(str(values[0]), timeout_seconds)
+                _ADB_RECOVERY_GENERATIONS[recovery_key] = current_generation + 1
+        try:
+            completed = _run_adb_command_once(values, timeout_seconds)
+        except subprocess.TimeoutExpired as retry_timeout:
+            raise RuntimeError(
+                "ADB command timed out after one server restart and retry"
+            ) from retry_timeout
     if completed.returncode != 0:
         raise RuntimeError(
             "ADB command failed ({}): {}".format(

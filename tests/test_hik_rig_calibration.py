@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -1322,6 +1323,44 @@ class HikPhoneTests(unittest.TestCase):
             self.assertEqual(_subprocess_runner(["adb", "devices"], 1.0), "display � text")
         self.assertEqual(run.call_args[1]["encoding"], "utf-8")
         self.assertEqual(run.call_args[1]["errors"], "replace")
+
+    def test_subprocess_runner_restarts_adb_and_retries_once_after_timeout(self):
+        timeout = subprocess.TimeoutExpired(["adb", "devices"], 1.0)
+        success = mock.Mock(returncode=0, stdout="devices", stderr="")
+        recovery = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[timeout, recovery, recovery, success],
+        ) as run:
+            self.assertEqual(_subprocess_runner(["adb", "devices"], 1.0), "devices")
+        self.assertEqual(
+            [call[0][0] for call in run.call_args_list],
+            [
+                ["adb", "devices"],
+                ["adb", "kill-server"],
+                ["adb", "start-server"],
+                ["adb", "devices"],
+            ],
+        )
+
+    def test_subprocess_runner_does_not_restart_for_non_timeout_failure(self):
+        failure = mock.Mock(returncode=1, stdout="", stderr="unauthorized")
+        with mock.patch("subprocess.run", return_value=failure) as run:
+            with self.assertRaisesRegex(RuntimeError, "unauthorized"):
+                _subprocess_runner(["adb", "devices"], 1.0)
+        self.assertEqual(run.call_count, 1)
+
+    def test_subprocess_runner_stops_after_one_recovery_retry(self):
+        first = subprocess.TimeoutExpired(["adb", "devices"], 1.0)
+        second = subprocess.TimeoutExpired(["adb", "devices"], 1.0)
+        recovery = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[first, recovery, recovery, second],
+        ) as run:
+            with self.assertRaisesRegex(RuntimeError, "one server restart"):
+                _subprocess_runner(["adb", "devices"], 1.0)
+        self.assertEqual(run.call_count, 4)
 
     def test_adb_discovery_and_connected_device_parsing(self):
         with tempfile.TemporaryDirectory() as directory:
