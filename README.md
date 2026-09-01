@@ -115,6 +115,11 @@ python -m aria_tools zigzag-acquisition `
   --require-hik
 ```
 
+Every diagonal stroke defaults to 20% of the landscape display height on both
+axes (216 px horizontally and vertically on a 2400x1080 game raster).
+Override either distance independently with
+`--horizontal-swipe-distance-px PX` or `--vertical-swipe-distance-px PX`.
+
 This settled-screenshot mode locates neither scrcpy nor external FFmpeg. It
 retains each original ADB PNG and writes the existing session compatibility
 videos with OpenCV MJPEG so current mini-map and color-calibration readers keep

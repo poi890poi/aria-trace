@@ -265,8 +265,11 @@ horizontally while alternating horizon/sky/horizon/ground returns.
 Each long diagonal stroke starts on the unobstructed central look-control
 surface, away from the right-side action cluster. It emits progressive MOVE
 events while the pointer remains down, matching the first verified camera-drag
-transport. Twelve strokes use 486 vertical pixels and 243 horizontal pixels
-per stroke. Duplicating each direction from the original pattern produces six
+transport. By default, each stroke uses 20% of the landscape display height
+on both axes: 216 vertical pixels and 216 horizontal pixels on a 2400x1080
+game raster. Override these independently with
+`--vertical-swipe-distance-px PX` and `--horizontal-swipe-distance-px PX`.
+Duplicating each direction from the original pattern produces six
 up and six down strokes, returns pitch to the horizon, and caps the gesture at
 120 touch events.
 

@@ -197,6 +197,11 @@ To collect the session without running scrcpy, use:
 zigzag-acquisition.bat --android-capture adb-screenshot --require-hik
 ```
 
+Swipe distances default to 20% of landscape display height on both axes
+(216 px horizontally and vertically at 2400x1080). Use
+`--horizontal-swipe-distance-px PX` and `--vertical-swipe-distance-px PX` to
+override them independently.
+
 One lossless ADB screenshot and one rig-normalized HIK frame are retained after
 each settled swipe. Omitting `--require-hik` permits an Android-only mini-map
 session, but such a session cannot fit HIK color because it contains no HIK

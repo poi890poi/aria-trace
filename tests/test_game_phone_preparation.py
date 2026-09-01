@@ -78,6 +78,38 @@ class GamePhonePreparationTests(unittest.TestCase):
         self.assertEqual("adb-screenshot", arguments.android_capture)
         self.assertEqual(0.6, arguments.screenshot_settle_seconds)
 
+    def test_swipe_distance_defaults_are_device_scaled(self):
+        arguments = capture.parser().parse_args([])
+        plan = capture._build_zigzag_plan(arguments, 2400, 1080)
+        self.assertEqual([1320, 540], plan.start_xy)
+        self.assertEqual(1104, plan.end_x)
+        self.assertEqual(216, plan.vertical_amplitude_px)
+
+    def test_swipe_distances_can_be_overridden_in_pixels(self):
+        arguments = capture.parser().parse_args(
+            [
+                "--horizontal-swipe-distance-px",
+                "320",
+                "--vertical-swipe-distance-px",
+                "600",
+            ]
+        )
+        plan = capture._build_zigzag_plan(arguments, 2400, 1080)
+        self.assertEqual([1320, 540], plan.start_xy)
+        self.assertEqual(1000, plan.end_x)
+        self.assertEqual(600, plan.vertical_amplitude_px)
+
+    def test_swipe_distance_override_must_fit_the_display(self):
+        arguments = capture.parser().parse_args(
+            ["--vertical-swipe-distance-px", "1080"]
+        )
+        with self.assertRaisesRegex(ValueError, "does not fit display height"):
+            capture._build_zigzag_plan(arguments, 2400, 1080)
+
+    def test_swipe_distance_override_must_be_positive(self):
+        with self.assertRaises(SystemExit):
+            capture.parser().parse_args(["--horizontal-swipe-distance-px", "0"])
+
     def test_adb_screenshot_uses_exec_out_png_and_midpoint_timestamp(self):
         image = np.full((10, 12, 3), 40, np.uint8)
         ok, encoded = cv2.imencode(".png", image)
@@ -232,8 +264,8 @@ class GamePhonePreparationTests(unittest.TestCase):
         self.assertEqual(2, surface.call_count)
         constructor.assert_called_once_with(
             start_xy=[1320, 540],
-            end_x=1077,
-            vertical_amplitude_px=486,
+            end_x=1104,
+            vertical_amplitude_px=216,
             move_count=12,
             step_seconds=0.35,
             settle_seconds=1.5,

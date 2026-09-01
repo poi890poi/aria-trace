@@ -255,6 +255,13 @@ def _dismiss_game_booster_lock(
     return result
 
 
+def _positive_pixel_distance(value: str) -> int:
+    distance = int(value)
+    if distance <= 0:
+        raise argparse.ArgumentTypeError("swipe distance must be a positive integer")
+    return distance
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
@@ -315,6 +322,24 @@ def parser() -> argparse.ArgumentParser:
         "--output-root", type=Path, default=Path("sessions") / "calibration"
     )
     value.add_argument("--moves", type=int, default=12)
+    value.add_argument(
+        "--horizontal-swipe-distance-px",
+        type=_positive_pixel_distance,
+        metavar="PX",
+        help=(
+            "horizontal distance of every diagonal swipe; default is 20%% "
+            "of the landscape display height (216 px at 2400x1080)"
+        ),
+    )
+    value.add_argument(
+        "--vertical-swipe-distance-px",
+        type=_positive_pixel_distance,
+        metavar="PX",
+        help=(
+            "vertical distance of every diagonal swipe; default is 20%% "
+            "of the landscape display height (216 px at 2400x1080)"
+        ),
+    )
     value.add_argument("--step-seconds", type=float, default=0.35)
     value.add_argument("--reset-seconds", type=float, default=0.10)
     value.add_argument("--settle-seconds", type=float, default=1.5)
@@ -342,13 +367,38 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
-    horizontal_distance = round(height * 0.225)
-    vertical_distance = round(height * 0.45)
+    horizontal_distance = getattr(arguments, "horizontal_swipe_distance_px", None)
+    if horizontal_distance is None:
+        horizontal_distance = round(height * 0.20)
+    vertical_distance = getattr(arguments, "vertical_swipe_distance_px", None)
+    if vertical_distance is None:
+        vertical_distance = round(height * 0.20)
+    horizontal_distance = int(horizontal_distance)
+    vertical_distance = int(vertical_distance)
+    if horizontal_distance <= 0:
+        raise ValueError("Horizontal swipe distance must be positive")
+    if vertical_distance <= 0:
+        raise ValueError("Vertical swipe distance must be positive")
     # Start on the typical unobstructed look-control surface. A right-side
     # action cluster can consume DOWN before the camera handler sees it.
     start_x = round(width * 0.55)
+    horizon_y = round(height * 0.50)
+    upper_y = horizon_y - round(vertical_distance / 2.0)
+    lower_y = upper_y + vertical_distance
+    if start_x - horizontal_distance < 0:
+        raise ValueError(
+            "Horizontal swipe distance {} px exceeds the available {} px".format(
+                horizontal_distance, start_x
+            )
+        )
+    if upper_y < 0 or lower_y >= height:
+        raise ValueError(
+            "Vertical swipe distance {} px does not fit display height {} px".format(
+                vertical_distance, height
+            )
+        )
     plan = ZigzagTouchPlan(
-        start_xy=[start_x, round(height * 0.50)],
+        start_xy=[start_x, horizon_y],
         end_x=start_x - horizontal_distance,
         vertical_amplitude_px=vertical_distance,
         move_count=arguments.moves,
