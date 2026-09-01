@@ -449,6 +449,11 @@ python -m aria_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --no-rectify --gui
 ```
 
+The GUI overlays rolling acquisition FPS and blocking read time. It also shows
+frame age when the producer supplies a host `perf_counter_ns` timestamp; for a
+source that exposes only a different clock, it reports `age n/a` rather than
+presenting an invalid latency number.
+
 To compare the calibrated adapter with the native camera path, run the same GUI
 loop against Hikrobot's installed MVS Python SDK (`MvCameraControl_class`). Native
 mode uses the existing full-sensor MVS acquisition source; it does not load rig or

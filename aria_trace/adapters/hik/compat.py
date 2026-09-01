@@ -438,7 +438,14 @@ class HikCamera:
         if hasattr(reader, "read_sample"):
             sample = reader.read_sample()
             bgr = sample.image
-            source_metadata = dict(sample.metadata)
+            source_metadata = {
+                **dict(sample.metadata),
+                "host_capture_time_ns": int(sample.time_ns),
+                "host_receive_time_ns": int(
+                    sample.receive_time_ns or sample.time_ns
+                ),
+                "host_timestamp_clock_id": str(sample.clock_id),
+            }
         else:
             ok, bgr = reader.read()
             if not ok or bgr is None:
@@ -473,7 +480,13 @@ class HikCamera:
         }
         self._last_frame_metadata_by_stream = {
             str(name): self._public_frame_metadata(
-                declared.get(name) or frame_set.metadata, frames[name]
+                {
+                    **dict(declared.get(name) or frame_set.metadata),
+                    "host_capture_time_ns": int(frame_set.time_ns),
+                    "host_receive_time_ns": int(frame_set.receive_time_ns),
+                    "host_timestamp_clock_id": "host_perf_counter_ns",
+                },
+                frames[name],
             )
             for name in frame_set.streams
         }

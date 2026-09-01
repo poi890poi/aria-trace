@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import importlib
 import json
+import time
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import cv2
 
@@ -15,6 +17,98 @@ from aria_trace.adapters.hik.capture import NativeHikFrameSource
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
 from aria_trace.adapters.android.phone import AdbPhoneSession
+
+
+class LiveStreamTelemetry:
+    """Measured GUI throughput and latency without mixing clock domains."""
+
+    def __init__(self, history: int = 60) -> None:
+        self._ends = deque(maxlen=max(2, int(history)))
+        self.fps = 0.0
+        self.read_latency_ms = 0.0
+        self.frame_age_ms: Optional[float] = None
+
+    def observe(
+        self,
+        read_started_ns: int,
+        read_finished_ns: int,
+        metadata: Optional[Mapping[str, object]] = None,
+    ) -> None:
+        finished = int(read_finished_ns)
+        self._ends.append(finished)
+        self.read_latency_ms = max(
+            0.0, (finished - int(read_started_ns)) / 1.0e6
+        )
+        if len(self._ends) >= 2:
+            elapsed = (self._ends[-1] - self._ends[0]) / 1.0e9
+            self.fps = (
+                (len(self._ends) - 1) / elapsed if elapsed > 0.0 else 0.0
+            )
+        values = dict(metadata or {})
+        clock_id = str(values.get("host_timestamp_clock_id") or "")
+        capture_ns = values.get("host_capture_time_ns")
+        if clock_id in (
+            "host_perf_counter_ns",
+            "host_monotonic",
+            "host_monotonic_ns",
+        ) and capture_ns is not None:
+            age = (finished - int(capture_ns)) / 1.0e6
+            self.frame_age_ms = age if age >= 0.0 else None
+        else:
+            self.frame_age_ms = None
+
+    def label(self) -> str:
+        age = (
+            "{:.1f} ms".format(self.frame_age_ms)
+            if self.frame_age_ms is not None
+            else "n/a"
+        )
+        return "FPS {:.1f} | read {:.1f} ms | age {}".format(
+            self.fps, self.read_latency_ms, age
+        )
+
+
+def overlay_stream_telemetry(frame, telemetry: LiveStreamTelemetry):
+    rendered = frame.copy()
+    label = telemetry.label()
+    (text_width, text_height), baseline = cv2.getTextSize(
+        label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
+    )
+    cv2.rectangle(
+        rendered,
+        (4, 4),
+        (14 + text_width, 14 + text_height + baseline),
+        (12, 12, 12),
+        -1,
+    )
+    cv2.putText(
+        rendered,
+        label,
+        (9, 10 + text_height),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (245, 245, 245),
+        1,
+        cv2.LINE_AA,
+    )
+    return rendered
+
+
+def _last_stream_metadata(camera, stream_name: str) -> Mapping[str, object]:
+    getter = getattr(camera, "get_aria_frame_metadata", None)
+    if not callable(getter):
+        return {}
+    try:
+        value = getter(stream_name)
+    except TypeError:
+        value = getter()
+    if not isinstance(value, Mapping):
+        return {}
+    streams = value.get("streams")
+    if isinstance(streams, Mapping):
+        selected = streams.get(stream_name)
+        return dict(selected) if isinstance(selected, Mapping) else {}
+    return dict(value)
 
 
 def adapter_hik_camera_class():
@@ -354,7 +448,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         for window in windows:
             cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
+        telemetry = LiveStreamTelemetry()
         while True:
+            read_started_ns = time.perf_counter_ns()
+            native_packet = None
             if profiled and arguments.mode == "dual":
                 if hasattr(camera, "get_frames"):
                     displayed = camera.get_frames()
@@ -364,6 +461,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             else:
                 if arguments.camera_library == "native":
                     packet = camera.read()
+                    native_packet = packet
                     frame = None if packet is None else packet.image
                     displayed = {stream_names[0]: frame} if frame is not None else {}
                 elif hasattr(camera, "get_frame"):
@@ -372,8 +470,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     ok, frame = camera.read()
                     displayed = {stream_names[0]: frame} if ok and frame is not None else {}
+            read_finished_ns = time.perf_counter_ns()
+            representative_name = next(iter(displayed), None)
+            if representative_name is not None:
+                metadata = (
+                    {
+                        "host_capture_time_ns": int(
+                            native_packet.host_capture_time_ns
+                        ),
+                        "host_timestamp_clock_id": "host_perf_counter_ns",
+                    }
+                    if native_packet is not None
+                    else _last_stream_metadata(camera, representative_name)
+                )
+                telemetry.observe(
+                    read_started_ns, read_finished_ns, metadata
+                )
             for name, frame in displayed.items():
-                cv2.imshow("HIK {}".format(name), frame)
+                cv2.imshow(
+                    "HIK {}".format(name),
+                    overlay_stream_telemetry(frame, telemetry),
+                )
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q"), ord("Q")):
                 return 0

@@ -2,12 +2,58 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 from aria_trace.adapters.rig.devices import CameraDevice
 
 from aria_trace.apps import hik_stream as stream
 
 
 class HikStreamCliTests(unittest.TestCase):
+    def test_live_telemetry_reports_measured_fps_read_time_and_same_clock_age(self):
+        telemetry = stream.LiveStreamTelemetry(history=4)
+        telemetry.observe(
+            0,
+            10_000_000,
+            {
+                "host_capture_time_ns": 9_000_000,
+                "host_timestamp_clock_id": "host_perf_counter_ns",
+            },
+        )
+        telemetry.observe(
+            30_000_000,
+            40_000_000,
+            {
+                "host_capture_time_ns": 38_000_000,
+                "host_timestamp_clock_id": "host_perf_counter_ns",
+            },
+        )
+        self.assertAlmostEqual(33.333, telemetry.fps, places=2)
+        self.assertEqual(10.0, telemetry.read_latency_ms)
+        self.assertEqual(2.0, telemetry.frame_age_ms)
+        self.assertIn("FPS 33.3", telemetry.label())
+        self.assertIn("read 10.0 ms", telemetry.label())
+        self.assertIn("age 2.0 ms", telemetry.label())
+
+    def test_live_telemetry_does_not_mix_unknown_timestamp_clocks(self):
+        telemetry = stream.LiveStreamTelemetry()
+        telemetry.observe(
+            0,
+            10_000_000,
+            {"host_capture_time_ns": 9_000_000, "host_timestamp_clock_id": "device"},
+        )
+        self.assertIsNone(telemetry.frame_age_ms)
+        self.assertIn("age n/a", telemetry.label())
+
+    def test_telemetry_overlay_preserves_input_frame(self):
+        telemetry = stream.LiveStreamTelemetry()
+        frame = np.zeros((80, 320, 3), np.uint8)
+        rendered = stream.overlay_stream_telemetry(frame, telemetry)
+        self.assertEqual(frame.shape, rendered.shape)
+        self.assertFalse(np.shares_memory(frame, rendered))
+        self.assertEqual(0, int(frame.max()))
+        self.assertGreater(int(rendered.max()), 0)
+
     def test_open_camera_delegates_profiled_modes_to_existing_game_adapter(self):
         adapter = object()
         opened = object()
