@@ -146,6 +146,40 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual([], compatibility["warnings"])
         self.assertTrue(compatibility["provenance_notes"])
 
+    def test_game_model_is_game_scoped_and_resolved_into_adapter_plan(self):
+        rig = self.publish_rig()
+        model = self.registry.publish(
+            "game_model",
+            ProfileContext(game_id="genshin-impact"),
+            {
+                "cursor_follows": "camera",
+                "cursor_behavior_by_acquisition": {
+                    "zigzag": "rotating",
+                    "micro_movement": "static",
+                },
+                "minimap_orientation": "rotating",
+            },
+            review_state="accepted",
+            activate=True,
+        )
+        resolved = self.registry.resolve_adapter(context(), AdapterRequest(mode="full"))
+        self.assertEqual(rig["revision_id"], resolved["profiles"]["rig"])
+        self.assertEqual(model["revision_id"], resolved["profiles"]["game_model"])
+        self.assertEqual(
+            "rotating",
+            resolved["adapter_plan"]["game_model"][
+                "cursor_behavior_by_acquisition"
+            ]["zigzag"],
+        )
+
+    def test_mask_policy_requires_rectified_minimap_output(self):
+        with self.assertRaisesRegex(ValueError, "masking requires"):
+            AdapterRequest(
+                mode="minimap", normalization="none", mask_policy="minimap_circle"
+            )
+        with self.assertRaisesRegex(ValueError, "minimap or dual"):
+            AdapterRequest(mode="full", mask_policy="minimap_circle")
+
     def test_explicit_incompatible_revision_warns_but_is_returned(self):
         profile = self.registry.publish(
             "phone_game",

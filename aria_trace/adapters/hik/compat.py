@@ -127,6 +127,7 @@ def _registry_configuration(
         color_order=str(configured.get("color_order", "RGB")),
         color_policy=str(configured.get("color_policy", "auto")),
         roi_policy=str(configured.get("roi_policy", "auto")),
+        mask_policy=str(configured.get("mask_policy", "none")),
         minimap_margin_px=int(configured.get("minimap_margin_px", 6)),
         frame_rate_policy=str(configured.get("frame_rate_policy", "calibrated")),
         frame_rate=(
@@ -145,6 +146,8 @@ def _registry_configuration(
         color_order=resolved["adapter_plan"]["color_order"],
         color_policy=resolved["adapter_plan"]["color_policy"],
         minimap_margin_px=resolved["adapter_plan"]["minimap_margin_px"],
+        mask_policy=resolved["adapter_plan"]["mask_policy"],
+        game_model=resolved["adapter_plan"]["game_model"],
         game_upright_quarter_turns_clockwise=resolved["adapter_plan"].get(
             "game_upright_quarter_turns_clockwise", 0
         ),
@@ -209,6 +212,16 @@ class HikCamera:
                     "mode": str(self.config.get("mode", "full")),
                     "rectify": bool(self.config.get("rectify", True)),
                     "color_order": str(self.config.get("color_order", "RGB")).upper(),
+                    "mask_policy": str(self.config.get("mask_policy", "none")),
+                    "game_model": {
+                        "cursor_follows": "character",
+                        "cursor_behavior_by_acquisition": {
+                            "zigzag": "static",
+                            "micro_movement": "rotating",
+                        },
+                        "minimap_orientation": "unspecified",
+                        "source": "iris_default",
+                    },
                     "registry_reads_per_frame": 0,
                     "phone_operations": "none",
                 },
@@ -362,6 +375,7 @@ class HikCamera:
                 "minimap_margin_px": int(self.config.get("minimap_margin_px", 6)),
                 "apply_game_color": use_game_color,
                 "output_quarter_turns_clockwise": self._game_upright_turns,
+                "mask_policy": str(self.config.get("mask_policy", "none")),
             }
             if game_color:
                 options["bayer_conversion"] = game_color
@@ -535,6 +549,35 @@ class HikCamera:
                 }
             })
         return copy.deepcopy(self.last_frame_metadata)
+
+    def get_game_model(self) -> Dict[str, Any]:
+        """Return the resolved game-behavior model without reading a frame."""
+
+        return copy.deepcopy(
+            dict(
+                self.config.get("game_model")
+                or {
+                    "cursor_follows": "character",
+                    "cursor_behavior_by_acquisition": {
+                        "zigzag": "static",
+                        "micro_movement": "rotating",
+                    },
+                    "minimap_orientation": "unspecified",
+                    "source": "iris_default",
+                }
+            )
+        )
+
+    def get_cursor_geometry(
+        self, stream_id: str = "minimap"
+    ) -> Dict[str, Any]:
+        """Return calibrated cursor center and size with explicit space metadata."""
+
+        reader = self._require_reader()
+        method = getattr(reader, "get_cursor_geometry", None)
+        if method is None:
+            return {}
+        return copy.deepcopy(dict(method(stream_id)))
 
     def get_aria_frame_metadata(
         self, stream_id: Optional[str] = None

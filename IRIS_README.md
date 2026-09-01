@@ -60,6 +60,33 @@ Capture a game-agnostic zigzag session from the prepared foreground game:
 python -m iris_tools zigzag-acquisition --android-capture adb-screenshot
 ```
 
+Capture balanced short movement pulses when a separate character-motion series
+is useful:
+
+```powershell
+python -m iris_tools zigzag-acquisition `
+  --capture-mode micro-movement `
+  --android-capture adb-screenshot
+```
+
+The acquisition name describes only the physical input pattern. It does not
+claim that the on-screen cursor rotates. The active game model supplies that
+meaning:
+
+| `cursor_follows` | Zigzag series | Micro-movement series |
+|---|---|---|
+| `character` (default) | static cursor | rotating cursor |
+| `camera` | rotating cursor | static cursor |
+
+Configure the model before calibration when the default is wrong:
+
+```powershell
+python -m iris_tools profiles configure-game GAME_ID `
+  --cursor-follows camera `
+  --minimap-orientation rotating
+python -m iris_tools profiles show-game GAME_ID
+```
+
 If synchronized HIK evidence is required, add `--require-hik`. Use
 `--game-id GAME_ID` when the resulting calibration should be published under a
 stable game identity.
@@ -71,7 +98,12 @@ python -m iris_tools game-calibration SESSION --game-id GAME_ID
 ```
 
 The workflow uses the available, space-tagged evidence and skips calibration
-that cannot be supported by the session. Dedicated commands remain available:
+that cannot be supported by the session. Cursor evidence is optional: a
+rotating series fits the rotation center, rotating envelope diameter, and
+shape; a static series fits only the observable shape/span unless a verified
+center already exists; both series may accumulate into the same active
+phone-game profile. IRIS never fabricates a rotation center from static data.
+Dedicated commands remain available:
 
 ```powershell
 python -m iris_tools minimap-calibration SESSION `
@@ -92,6 +124,19 @@ python -m iris_tools profiles activate REVISION_ID
 Portable phone/game geometry and color references can be exported and imported.
 Rig and rig/game compositions remain local because they depend on the camera,
 lens, panel position, and the exact rig revision.
+
+Export or import every active portable game model and calibration in one
+deployment bundle:
+
+```powershell
+python -m iris_tools profiles export-deployment iris-games.zip
+python -m iris_tools profiles import-deployment iris-games.zip --activate
+```
+
+The bundle contains game models, canonical phone-game geometry (including
+cursor geometry), and portable phone-game color references for all games. It
+does not contain a rig or camera calibration; import composes compatible
+phone-game geometry with the active local rig.
 
 ## Camera adapter
 
@@ -168,11 +213,26 @@ with hikcam.HikCamera(config={
     "rectify": True,
     "color_order": "BGR",
     "color_policy": "game_matched",
+    "mask_policy": "minimap_circle",  # or "none"
 }) as camera:
     frames = camera.get_frames()
     phone_frame = frames["full"]
     minimap_frame = frames["minimap"]
+    cursor = camera.get_cursor_geometry("minimap")
+    game_model = camera.get_game_model()
 ```
+
+`get_cursor_geometry()` reports canonical spatial geometry and, when a verified
+rotation center exists, its center and rotating-envelope diameter in the
+selected runtime stream space. Static-only calibration reports the observed
+static span but explicitly leaves the rotation center unavailable.
+
+`mask_policy="minimap_circle"` is optional and requires rectification. IRIS
+uses the final verified outer-boundary circle (the radial temporal fit, not the
+raw heatmap or coarse Hough seed), writes `[-1, -1]` for off-circle entries in
+the prebuilt mini-map remap, and therefore retains one `cv2.remap` call per
+frame. In dual mode only the mini-map product is masked; the full phone stream
+is unchanged.
 
 Rectification is enabled by default. A rectified game profile folds game-upright
 orientation into the existing transformation map, so it does not add a second

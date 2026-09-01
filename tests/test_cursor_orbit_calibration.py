@@ -9,11 +9,28 @@ from aria_trace.adapters.android.cursor_orbit import CursorOrbitTouchPlan
 from aria_trace.domain.spatial import bind_geometry, raster_space
 from aria_trace.services.calibration.minimap.calibration import (
     calibrate_cursor_orbit_frames,
+    calibrate_cursor_static_frames,
 )
+from aria_trace.workflows.profile_management import cursor_behavior_by_acquisition
 from aria_trace.workflows.minimap_capture import _build_control_plan, parser
 
 
 class CursorOrbitCalibrationTests(unittest.TestCase):
+    def test_game_model_separates_acquisition_pattern_from_cursor_behavior(self):
+        self.assertEqual(
+            {"zigzag": "static", "micro_movement": "rotating"},
+            cursor_behavior_by_acquisition("character"),
+        )
+        self.assertEqual(
+            {"zigzag": "rotating", "micro_movement": "static"},
+            cursor_behavior_by_acquisition("camera"),
+        )
+
+    def test_micro_movement_is_the_nonsemantic_public_capture_name(self):
+        arguments = parser().parse_args(["--capture-mode", "micro-movement"])
+        plan = _build_control_plan(arguments, 2400, 1080)
+        self.assertEqual("balanced_micro_movement", plan.as_dict()["plan_kind"])
+
     def test_capture_defaults_use_short_pulses_and_twelve_directions(self):
         arguments = parser().parse_args(["--capture-mode", "cursor-orbit"])
         plan = _build_control_plan(arguments, 2400, 1080)
@@ -101,6 +118,52 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             self.assertIn("cursor_center_orbit.png", declared)
             self.assertIn("cursor_shape_polar_correlation.png", declared)
             self.assertTrue((Path(temporary) / "model.npz").is_file())
+
+    def test_static_series_reports_shape_without_inventing_rotation_center(self):
+        height, width = 180, 220
+        space = raster_space("current_minimap_crop_pixels", [width, height])
+        boundary = bind_geometry(
+            {"center_x": 110.0, "center_y": 90.0, "radius": 70.0},
+            "circle",
+            space,
+        )
+        cursor_color = tuple(
+            int(value)
+            for value in cv2.cvtColor(
+                np.uint8([[[93, 230, 240]]]), cv2.COLOR_HSV2BGR
+            )[0, 0]
+        )
+        frames = []
+        for value in range(8):
+            image = np.full((height, width, 3), 25 + value, np.uint8)
+            cv2.fillConvexPoly(
+                image,
+                np.asarray([[104, 83], [104, 97], [122, 90]], np.int32),
+                cursor_color,
+                cv2.LINE_AA,
+            )
+            frames.append(image)
+        with tempfile.TemporaryDirectory() as temporary:
+            result = calibrate_cursor_static_frames(
+                np.stack(frames),
+                Path(temporary),
+                outer_boundary=boundary,
+                frame_space=space,
+            )
+            self.assertIsNone(result["rotation_center"])
+            self.assertEqual(
+                "not_observable_from_static_cursor",
+                result["rotation_center_status"],
+            )
+            self.assertIsNone(
+                result["cursor_shape"]["rotating_cursor_envelope_diameter_px"]
+            )
+            self.assertGreater(
+                result["cursor_shape"]["observed_static_cursor_max_span_px"], 10.0
+            )
+            self.assertTrue(
+                (Path(temporary) / "cursor_static_shape_overlay.png").is_file()
+            )
 
 
 if __name__ == "__main__":

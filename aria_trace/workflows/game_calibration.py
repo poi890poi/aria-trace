@@ -20,6 +20,7 @@ from aria_trace.adapters.filesystem.system_configuration import (
 from aria_trace.domain.spatial import raster_space
 from aria_trace.services.calibration.minimap.calibration import (
     calibrate_cursor_orbit_frames,
+    calibrate_cursor_static_frames,
     calibrate_minimap_boundary_frames,
 )
 from aria_trace.services.calibration.minimap.discovery import (
@@ -32,7 +33,12 @@ from aria_trace.workflows.hik_game_color_calibration import (
     calibrate_game_color_session,
     decode_session_records,
 )
-from aria_trace.workflows.profile_management import publish_minimap_profiles
+from aria_trace.workflows.profile_management import (
+    DEFAULT_GAME_MODEL,
+    cursor_behavior_by_acquisition,
+    publish_minimap_profiles,
+    resolve_game_model,
+)
 from aria_trace.workflows.game_repeatability import (
     _logical_profile_crop,
     _profile_for_current_game,
@@ -268,14 +274,45 @@ def _calibrate_available_minimap_boundary(
     return summary
 
 
-def _is_cursor_orbit_session(reader: SessionReader) -> bool:
+def _available_cursor_acquisition_series(
+    reader: SessionReader,
+) -> list[Mapping[str, str]]:
+    """Describe recorded motion patterns without guessing cursor behavior."""
+
     context = dict(reader.manifest.get("context") or {})
-    if context.get("capture_kind") == "cursor_orbit_game_calibration_source_data":
-        return True
-    return any(event.get("kind") == "cursor_orbit_touch" for event in reader.inputs)
+    capture_kind = str(context.get("capture_kind") or "")
+    result = []
+    if _touch_intervals(reader, "zigzag_touch"):
+        result.append(
+            {"acquisition_pattern": "zigzag", "touch_kind": "zigzag_touch"}
+        )
+    if (
+        _touch_intervals(reader, "micro_movement_touch")
+        or _touch_intervals(reader, "cursor_orbit_touch")
+        or capture_kind in (
+            "micro_movement_game_calibration_source_data",
+            "cursor_orbit_game_calibration_source_data",
+        )
+    ):
+        touch_kind = (
+            "micro_movement_touch"
+            if _touch_intervals(reader, "micro_movement_touch")
+            else "cursor_orbit_touch"
+        )
+        result.append(
+            {
+                "acquisition_pattern": "micro_movement",
+                "touch_kind": touch_kind,
+            }
+        )
+    if not result and reader.frames_by_stream:
+        result.append(
+            {"acquisition_pattern": "uncontrolled", "touch_kind": ""}
+        )
+    return result
 
 
-def _calibrate_available_cursor_orbit(
+def _calibrate_available_cursor_series(
     reader: SessionReader,
     output: Path,
     *,
@@ -284,8 +321,14 @@ def _calibrate_available_cursor_orbit(
     phone_id: Optional[str],
     camera_id: Optional[str],
     activate: bool,
+    acquisition_pattern: str,
+    cursor_behavior: str,
+    touch_kind: str = "",
 ) -> Mapping[str, object]:
-    """Fit cursor geometry against the active, already-verified map boundary."""
+    """Fit one modeled cursor response against the verified map boundary."""
+
+    if cursor_behavior not in ("rotating", "static"):
+        raise ValueError("cursor_behavior must be rotating or static")
 
     capture_context = dict(reader.manifest.get("context") or {})
     surface = dict(capture_context.get("phone_surface_orientation") or {})
@@ -300,7 +343,9 @@ def _calibrate_available_cursor_orbit(
     profile = _profile_for_current_game(registry, context, revision_id=None)
     crop, boundary = _logical_profile_crop(profile, surface)
     records, selection = _select_android_records(
-        reader, maximum_frames=48, touch_kind="cursor_orbit_touch"
+        reader,
+        maximum_frames=48,
+        touch_kind=touch_kind or "cursor_series_without_touch_labels",
     )
     frames = decode_session_records(reader, selection["stream_id"], records)
     x, y, width, height = crop
@@ -311,17 +356,26 @@ def _calibrate_available_cursor_orbit(
             )
         )
     cropped = frames[:, y : y + height, x : x + width, :]
-    result = calibrate_cursor_orbit_frames(
+    provenance = {
+        "session_path": str(reader.path.resolve()),
+        "session_id": reader.manifest.get("session_id"),
+        "stream_id": selection["stream_id"],
+        "frame_selection": selection,
+        "source_phone_game_revision": profile.get("revision_id"),
+        "acquisition_pattern": acquisition_pattern,
+        "expected_cursor_behavior": cursor_behavior,
+        "touch_kind": touch_kind or None,
+    }
+    calibrator = (
+        calibrate_cursor_orbit_frames
+        if cursor_behavior == "rotating"
+        else calibrate_cursor_static_frames
+    )
+    result = calibrator(
         cropped,
         output,
         outer_boundary=boundary,
-        provenance={
-            "session_path": str(reader.path.resolve()),
-            "session_id": reader.manifest.get("session_id"),
-            "stream_id": selection["stream_id"],
-            "frame_selection": selection,
-            "source_phone_game_revision": profile.get("revision_id"),
-        },
+        provenance=provenance,
         frame_space=boundary["space"],
     )
     result.update(
@@ -337,6 +391,8 @@ def _calibrate_available_cursor_orbit(
                 "rotation_center": result["rotation_center"],
             },
             "frame_selection": selection,
+            "acquisition_pattern": acquisition_pattern,
+            "expected_cursor_behavior": cursor_behavior,
         }
     )
     summary_path = output / "calibration.json"
@@ -388,7 +444,25 @@ def calibrate_game_session(
     output.mkdir(parents=True, exist_ok=False)
     capabilities = {}
     current_phone_game_revision = None
-    cursor_orbit_session = _is_cursor_orbit_session(reader)
+    game_model = (
+        resolve_game_model(registry, selected_game)
+        if selected_game
+        else dict(DEFAULT_GAME_MODEL)
+    )
+    cursor_series = _available_cursor_acquisition_series(reader)
+    behavior_map = dict(
+        game_model.get("cursor_behavior_by_acquisition")
+        or cursor_behavior_by_acquisition(
+            str(game_model.get("cursor_follows") or "character")
+        )
+    )
+    if set(behavior_map) != {"zigzag", "micro_movement"} or any(
+        value not in ("static", "rotating") for value in behavior_map.values()
+    ):
+        raise ValueError(
+            "Game model cursor_behavior_by_acquisition must map zigzag and "
+            "micro_movement to static or rotating"
+        )
 
     try:
         value = calibrate_game_orientation_session(
@@ -415,12 +489,18 @@ def calibrate_game_session(
             profile_activated=value["profile_activated"],
         )
 
-    if cursor_orbit_session:
+    has_zigzag_series = any(
+        item["acquisition_pattern"] == "zigzag" for item in cursor_series
+    )
+    has_micro_movement_series = any(
+        item["acquisition_pattern"] == "micro_movement" for item in cursor_series
+    )
+    if has_micro_movement_series and not has_zigzag_series:
         capabilities["minimap_boundary"] = _outcome(
             "skipped_existing_profile_reused",
             reason=(
-                "Cursor-orbit acquisition preserves the active verified mini-map "
-                "boundary instead of rediscovering it"
+                "This session has no zigzag series; cursor calibration preserves "
+                "the active verified mini-map boundary"
             ),
         )
     else:
@@ -451,37 +531,73 @@ def calibrate_game_session(
                 profiles=value["profiles"],
             )
 
-    if cursor_orbit_session:
-        try:
-            value = _calibrate_available_cursor_orbit(
-                reader,
-                output / "cursor",
-                registry=registry,
-                game_id=selected_game,
-                phone_id=settings["devices"].get("phone_id"),
-                camera_id=settings["devices"].get("camera_id"),
-                activate=activate,
-            )
-        except (ValueError, FileNotFoundError, RuntimeError) as exc:
-            capabilities["cursor_pose"] = _outcome(
-                "skipped_missing_or_ineligible_data", reason=str(exc)
-            )
-        except Exception as exc:
-            capabilities["cursor_pose"] = _outcome(
-                "failed", error="{}: {}".format(type(exc).__name__, exc)
-            )
-        else:
-            current_phone_game_revision = value["profiles"].get("phone_game")
-            capabilities["cursor_pose"] = _outcome(
-                value["status"],
-                calibration=str(output / "cursor" / "calibration.json"),
-                profiles=value["profiles"],
-            )
+    if cursor_series:
+        series_outcomes = {}
+        # A rotating series is authoritative for the pivot. Run it before a
+        # static series so profile composition can preserve that geometry.
+        ordered = sorted(
+            cursor_series,
+            key=lambda item: 0
+            if behavior_map.get(item["acquisition_pattern"], "static") == "rotating"
+            else 1,
+        )
+        for series in ordered:
+            pattern = series["acquisition_pattern"]
+            behavior = behavior_map.get(pattern, "static")
+            series_output = output / "cursor" / pattern
+            try:
+                value = _calibrate_available_cursor_series(
+                    reader,
+                    series_output,
+                    registry=registry,
+                    game_id=selected_game,
+                    phone_id=settings["devices"].get("phone_id"),
+                    camera_id=settings["devices"].get("camera_id"),
+                    activate=activate,
+                    acquisition_pattern=pattern,
+                    cursor_behavior=behavior,
+                    touch_kind=series["touch_kind"],
+                )
+            except (ValueError, FileNotFoundError, RuntimeError) as exc:
+                series_outcomes[pattern] = _outcome(
+                    "skipped_missing_or_ineligible_data",
+                    cursor_behavior=behavior,
+                    reason=str(exc),
+                )
+            except Exception as exc:
+                series_outcomes[pattern] = _outcome(
+                    "failed",
+                    cursor_behavior=behavior,
+                    error="{}: {}".format(type(exc).__name__, exc),
+                )
+            else:
+                current_phone_game_revision = value["profiles"].get("phone_game")
+                series_outcomes[pattern] = _outcome(
+                    value["status"],
+                    cursor_behavior=behavior,
+                    calibration=str(series_output / "calibration.json"),
+                    profiles=value["profiles"],
+                )
+        accepted_series = [
+            name for name, value in series_outcomes.items()
+            if value["status"] in ("accepted", "review_required")
+        ]
+        failed_series = [
+            name for name, value in series_outcomes.items()
+            if value["status"] == "failed"
+        ]
+        capabilities["cursor_pose"] = _outcome(
+            "complete" if accepted_series and not failed_series else (
+                "partial" if accepted_series else "skipped_missing_or_ineligible_data"
+            ),
+            series=series_outcomes,
+            selected_profile_revision=current_phone_game_revision,
+        )
     else:
         capabilities["cursor_pose"] = _outcome(
             "skipped_missing_or_ineligible_data",
             reason=(
-                "No cursor-orbit acquisition; movement remains optional"
+                "No Android image series is available for cursor calibration"
             ),
         )
 
@@ -517,7 +633,7 @@ def calibrate_game_session(
 
     successful = [
         name for name, value in capabilities.items()
-        if value["status"] in ("accepted", "review_required")
+        if value["status"] in ("accepted", "review_required", "complete", "partial")
     ]
     failed = [name for name, value in capabilities.items() if value["status"] == "failed"]
     summary = {
@@ -529,6 +645,7 @@ def calibrate_game_session(
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "session": str(session),
         "game_id": selected_game,
+        "game_model": game_model,
         "profile_root": str(registry.root),
         "activation_policy": "accepted_capabilities_only" if activate else "candidate_only",
         "capabilities": capabilities,

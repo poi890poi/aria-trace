@@ -28,6 +28,7 @@ from aria_trace.adapters.android.game_launcher import launch_android_game
 from aria_trace.adapters.android.zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from aria_trace.adapters.android.cursor_orbit import (
     AndroidCursorOrbitInputSource,
+    AndroidMicroMovementInputSource,
     CursorOrbitTouchPlan,
 )
 from aria_trace.services.calibration.rig.dual_source_spaces import (
@@ -270,8 +271,9 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
             "Record Android and, when available, rig-normalized HIK images during "
-            "one horizon-returning zigzag. Android capture may be continuous "
-            "scrcpy or settled ADB screenshots. No calibration is run or published."
+            "one selected acquisition pattern. Android capture may be continuous "
+            "scrcpy or settled ADB screenshots. Cursor response is not inferred at "
+            "capture time. No calibration is run or published."
         )
     )
     value.add_argument(
@@ -328,11 +330,12 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--moves", type=int, default=12)
     value.add_argument(
         "--capture-mode",
-        choices=("zigzag", "cursor-orbit"),
+        choices=("zigzag", "micro-movement", "cursor-orbit"),
         default="zigzag",
         help=(
-            "zigzag isolates the mini-map; cursor-orbit uses balanced short "
-            "movement-joystick pulses to fit the cursor shape and pivot"
+            "zigzag uses long camera-look strokes; micro-movement uses balanced "
+            "short movement-joystick pulses. Cursor behavior is interpreted later "
+            "from the active game model. cursor-orbit is a legacy alias."
         ),
     )
     value.add_argument(
@@ -358,18 +361,34 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--settle-seconds", type=float, default=1.5)
     value.add_argument("--tail-seconds", type=float, default=1.5)
     value.add_argument(
+        "--micro-movement-radius-px",
         "--cursor-orbit-radius-px",
+        dest="cursor_orbit_radius_px",
         type=_positive_pixel_distance,
-        help="cursor-orbit joystick pulse radius; default is 6%% of display height",
+        help="micro-movement joystick pulse radius; default is 6%% of display height",
     )
     value.add_argument(
+        "--micro-movement-pulse-seconds",
         "--cursor-pulse-seconds",
+        dest="cursor_pulse_seconds",
         type=float,
         default=0.12,
-        help="duration of each short cursor-orbit joystick pulse (default: 0.12)",
+        help="duration of each short micro-movement pulse (default: 0.12)",
     )
-    value.add_argument("--cursor-orbit-directions", type=int, default=12)
-    value.add_argument("--cursor-orbit-repeats", type=int, default=2)
+    value.add_argument(
+        "--micro-movement-directions",
+        "--cursor-orbit-directions",
+        dest="cursor_orbit_directions",
+        type=int,
+        default=12,
+    )
+    value.add_argument(
+        "--micro-movement-repeats",
+        "--cursor-orbit-repeats",
+        dest="cursor_orbit_repeats",
+        type=int,
+        default=2,
+    )
     value.add_argument(
         "--joystick-center-x-fraction", type=float, default=0.18
     )
@@ -481,17 +500,18 @@ def _build_cursor_orbit_plan(
 
 
 def _build_control_plan(arguments, width: int, height: int):
-    if arguments.capture_mode == "cursor-orbit":
+    if arguments.capture_mode in ("micro-movement", "cursor-orbit"):
         return _build_cursor_orbit_plan(arguments, width, height)
     return _build_zigzag_plan(arguments, width, height)
 
 
 def _input_source(arguments, adb: Path, serial: str, plan, controller=None):
-    source = (
-        AndroidCursorOrbitInputSource
-        if arguments.capture_mode == "cursor-orbit"
-        else AndroidZigzagInputSource
-    )
+    if arguments.capture_mode == "micro-movement":
+        source = AndroidMicroMovementInputSource
+    elif arguments.capture_mode == "cursor-orbit":
+        source = AndroidCursorOrbitInputSource
+    else:
+        source = AndroidZigzagInputSource
     return source(adb, serial, plan, controller=controller)
 
 
@@ -571,7 +591,7 @@ def _run_control_only(arguments) -> int:
     preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
         phone, adb, server, serial, [width, height]
     )
-    if arguments.capture_mode == "cursor-orbit":
+    if arguments.capture_mode in ("micro-movement", "cursor-orbit"):
         print(
             "Running {} balanced short joystick pulses...".format(
                 len(plan.strokes())
@@ -777,14 +797,15 @@ def _record_adb_screenshot_zigzag(
                 flush=True,
             )
 
-    touch_kind = (
-        "cursor_orbit_touch" if capture_mode == "cursor-orbit" else "zigzag_touch"
-    )
-    control_class = (
-        AndroidCursorOrbitInputSource
-        if capture_mode == "cursor-orbit"
-        else AndroidZigzagInputSource
-    )
+    if capture_mode == "micro-movement":
+        touch_kind = "micro_movement_touch"
+        control_class = AndroidMicroMovementInputSource
+    elif capture_mode == "cursor-orbit":
+        touch_kind = "cursor_orbit_touch"
+        control_class = AndroidCursorOrbitInputSource
+    else:
+        touch_kind = "zigzag_touch"
+        control_class = AndroidZigzagInputSource
     control = control_class(adb, serial, plan, controller=None)
     screenshot_source = _AdbSettledScreenshotSource(
         adb, serial, screenshot_settle_seconds, capture_mode
@@ -800,7 +821,7 @@ def _record_adb_screenshot_zigzag(
         if screenshot_settle_seconds:
             time.sleep(float(screenshot_settle_seconds))
         trigger = "settled_after_{}_UP".format(touch_kind)
-        if capture_mode == "cursor-orbit":
+        if capture_mode in ("micro-movement", "cursor-orbit"):
             adb_packet, _raw_png = _capture_adb_screenshot_packet(
                 adb, serial, stroke_index, trigger=trigger
             )
@@ -979,7 +1000,9 @@ def _record_adb_screenshot_zigzag(
     )
     context = {
         "capture_kind": (
-            "cursor_orbit_game_calibration_source_data"
+            "micro_movement_game_calibration_source_data"
+            if capture_mode == "micro-movement"
+            else "cursor_orbit_game_calibration_source_data"
             if capture_mode == "cursor-orbit"
             else "zigzag_minimap_source_data"
         ),
@@ -1005,7 +1028,9 @@ def _record_adb_screenshot_zigzag(
         "phone_preparation": preparation,
         "game_launch": game_launch,
         (
-            "cursor_orbit_plan"
+            "micro_movement_plan"
+            if capture_mode == "micro-movement"
+            else "cursor_orbit_plan"
             if capture_mode == "cursor-orbit"
             else "zigzag_plan"
         ): plan.as_dict(),
@@ -1439,7 +1464,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         frame_processors=frame_processors,
         session_context={
             "capture_kind": (
-                "cursor_orbit_game_calibration_source_data"
+                "micro_movement_game_calibration_source_data"
+                if arguments.capture_mode == "micro-movement"
+                else "cursor_orbit_game_calibration_source_data"
                 if arguments.capture_mode == "cursor-orbit"
                 else "zigzag_minimap_source_data"
             ),
@@ -1450,7 +1477,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "phone_preparation": preparation,
             "game_launch": game_launch,
             (
-                "cursor_orbit_plan"
+                "micro_movement_plan"
+                if arguments.capture_mode == "micro-movement"
+                else "cursor_orbit_plan"
                 if arguments.capture_mode == "cursor-orbit"
                 else "zigzag_plan"
             ): plan.as_dict(),

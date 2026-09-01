@@ -29,8 +29,116 @@ from aria_trace.domain.spatial import (
 )
 
 
+DEFAULT_GAME_MODEL = {
+    "schema_version": "1.0",
+    "cursor_follows": "character",
+    "cursor_behavior_by_acquisition": {
+        "zigzag": "static",
+        "micro_movement": "rotating",
+    },
+    "minimap_orientation": "unspecified",
+    "source": "iris_default",
+}
+CURSOR_FOLLOWS_VALUES = ("character", "camera")
+MINIMAP_ORIENTATION_VALUES = ("unspecified", "rotating", "north_up")
+
+
+def cursor_behavior_by_acquisition(cursor_follows: str) -> Dict[str, str]:
+    """Map physical acquisition motion to the cursor response it should expose."""
+
+    selected = str(cursor_follows)
+    if selected == "character":
+        return {"zigzag": "static", "micro_movement": "rotating"}
+    if selected == "camera":
+        return {"zigzag": "rotating", "micro_movement": "static"}
+    raise ValueError("cursor_follows must be character or camera")
+
+
 def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def resolve_game_model(
+    registry: ProfileRegistry,
+    game_id: str,
+    *,
+    platform: str = "android",
+    package: Optional[str] = None,
+    game_version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve declared game behavior or return the documented safe default."""
+
+    context = ProfileContext(
+        game_id=game_id,
+        platform=platform,
+        package=package,
+        game_version=game_version,
+    )
+    try:
+        profile = registry.resolve("game_model", context)
+    except ProfileResolutionError:
+        return {**DEFAULT_GAME_MODEL, "game_id": context.game_id, "revision_id": None}
+    payload = {**DEFAULT_GAME_MODEL, **dict(profile.get("payload") or {})}
+    payload["cursor_behavior_by_acquisition"] = cursor_behavior_by_acquisition(
+        str(payload["cursor_follows"])
+    )
+    payload.update(
+        game_id=context.game_id,
+        revision_id=profile["revision_id"],
+        source="active_game_model_profile",
+    )
+    return payload
+
+
+def publish_game_model(
+    registry: ProfileRegistry,
+    game_id: str,
+    *,
+    cursor_follows: Optional[str] = None,
+    minimap_orientation: Optional[str] = None,
+    platform: str = "android",
+    package: Optional[str] = None,
+    game_version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Publish one portable game-ID-scoped behavior model."""
+
+    current = resolve_game_model(
+        registry,
+        game_id,
+        platform=platform,
+        package=package,
+        game_version=game_version,
+    )
+    selected_cursor = str(cursor_follows or current["cursor_follows"])
+    selected_map = str(minimap_orientation or current["minimap_orientation"])
+    if selected_cursor not in CURSOR_FOLLOWS_VALUES:
+        raise ValueError("cursor_follows must be character or camera")
+    if selected_map not in MINIMAP_ORIENTATION_VALUES:
+        raise ValueError(
+            "minimap_orientation must be unspecified, rotating, or north_up"
+        )
+    context = ProfileContext(
+        game_id=game_id,
+        platform=platform,
+        package=package,
+        game_version=game_version,
+    )
+    return registry.publish(
+        "game_model",
+        context,
+        {
+            "schema_version": "1.0",
+            "profile_kind": "game_model",
+            "cursor_follows": selected_cursor,
+            "minimap_orientation": selected_map,
+            "cursor_behavior_by_acquisition": cursor_behavior_by_acquisition(
+                selected_cursor
+            ),
+        },
+        provenance={"configured_by": "iris_tools profiles configure-game"},
+        review_state="accepted",
+        activate=True,
+    )
 
 
 def _rig_calibration_file(path: Path) -> Path:
@@ -127,6 +235,7 @@ def _rig_game_payload_from_phone_game(
         ),
         "outer_boundary": phone_payload.get("outer_boundary"),
         "rotation_center": phone_payload.get("rotation_center"),
+        "cursor_geometry": phone_payload.get("cursor_geometry"),
         "composition_rule": (
             "Apply the exact rig revision, then use portable phone-game "
             "geometry in canonical phone-panel coordinates. No game images "
@@ -492,6 +601,20 @@ def publish_minimap_profiles(
     if selected_rig is None:
         selected_rig = ((capture_context.get("hik_capture") or {}).get("rig_calibration"))
     store = registry or ProfileRegistry(profile_root)
+    source_phone_payload: Dict[str, Any] = {}
+    source_phone_revision = str(
+        (summary.get("provenance") or {}).get("source_phone_game_revision") or ""
+    )
+    if source_phone_revision:
+        try:
+            source_profile = store.revision(source_phone_revision)
+        except (KeyError, FileNotFoundError, ProfileResolutionError):
+            source_profile = None
+        if (
+            source_profile is not None
+            and (source_profile.get("identity") or {}).get("kind") == "phone_game"
+        ):
+            source_phone_payload = dict(source_profile.get("payload") or {})
     rig_profile = rig_context = None
     if selected_rig:
         rig_file = _rig_calibration_file(Path(selected_rig))
@@ -572,6 +695,57 @@ def publish_minimap_profiles(
             logical_crop_xywh=logical_crop,
             quarter_turns_clockwise_from_natural=turns,
         )
+    if canonical_rotation_center is None and isinstance(
+        source_phone_payload.get("rotation_center"), Mapping
+    ):
+        canonical_rotation_center = dict(source_phone_payload["rotation_center"])
+    cursor_shape = summary.get("cursor_shape") or android_result.get("cursor_shape")
+    cursor_geometry = (
+        dict(source_phone_payload.get("cursor_geometry") or {}) or None
+    )
+    if isinstance(cursor_shape, Mapping):
+        cursor_geometry = cursor_geometry or {
+            "schema_version": "1.0",
+            "rotation_center": canonical_rotation_center,
+        }
+        cursor_geometry["rotation_center"] = canonical_rotation_center
+        cursor_geometry["measurement_space"] = canonical_boundary["space"]
+        cursor_geometry["cursor_polygon_max_span_px"] = float(
+            cursor_shape.get("cursor_polygon_max_span_px", 0.0)
+        )
+        if cursor_shape.get("observed_static_cursor_max_span_px") is not None:
+            cursor_geometry["observed_static_cursor_max_span_px"] = float(
+                cursor_shape["observed_static_cursor_max_span_px"]
+            )
+        cursor_geometry["latest_shape_source"] = str(
+            cursor_shape.get("source") or summary.get("calibration_kind") or "unknown"
+        )
+        envelope_diameter = cursor_shape.get(
+            "rotating_cursor_envelope_diameter_px"
+        )
+        envelope_radius = cursor_shape.get("rotating_cursor_envelope_radius_px")
+        if (
+            canonical_rotation_center is not None
+            and envelope_diameter is not None
+            and envelope_radius is not None
+        ):
+            cursor_geometry.update(
+                rotating_cursor_envelope_radius_px=float(envelope_radius),
+                rotating_cursor_envelope_diameter_px=float(envelope_diameter),
+                centroid_orbit_radius_px=float(
+                    canonical_rotation_center.get("centroid_orbit_radius_px", 0.0)
+                ),
+                centroid_orbit_diameter_px=float(
+                    2.0
+                    * float(
+                        canonical_rotation_center.get(
+                            "centroid_orbit_radius_px", 0.0
+                        )
+                    )
+                ),
+                measurement_space=canonical_rotation_center["space"],
+                size_definition=str(cursor_shape.get("size_definition") or ""),
+            )
     evidence = summary.get("evidence") or android_result.get(
         "verified_backend_evidence"
     ) or []
@@ -588,6 +762,7 @@ def publish_minimap_profiles(
         "phone_surface_orientation": surface,
         "outer_boundary": canonical_boundary,
         "rotation_center": canonical_rotation_center,
+        "cursor_geometry": cursor_geometry,
         "source_boundary": source_boundary,
         "shift_estimation_mask": android_result.get("shift_estimation_mask"),
         "capabilities": {"adb_minimap": True, "camera_independent": True},
@@ -698,6 +873,27 @@ def parser() -> argparse.ArgumentParser:
     list_profiles.add_argument("--active-only", action="store_true")
     show = subcommands.add_parser("show")
     show.add_argument("revision_id")
+    configure_game = subcommands.add_parser(
+        "configure-game",
+        help="declare cursor and mini-map behavior for one game ID",
+    )
+    configure_game.add_argument("game_id")
+    configure_game.add_argument(
+        "--cursor-follows", choices=CURSOR_FOLLOWS_VALUES
+    )
+    configure_game.add_argument(
+        "--minimap-orientation", choices=MINIMAP_ORIENTATION_VALUES
+    )
+    configure_game.add_argument("--platform", default="android")
+    configure_game.add_argument("--package-id")
+    configure_game.add_argument("--game-version")
+    show_game = subcommands.add_parser(
+        "show-game", help="show the effective behavior model for one game ID"
+    )
+    show_game.add_argument("game_id")
+    show_game.add_argument("--platform", default="android")
+    show_game.add_argument("--package-id")
+    show_game.add_argument("--game-version")
     resolve = subcommands.add_parser("resolve")
     resolve.add_argument("--game-id")
     resolve.add_argument("--camera-id")
@@ -709,6 +905,9 @@ def parser() -> argparse.ArgumentParser:
         "--color-policy",
         choices=("auto", "rig_locked", "game_matched", "unadjusted"),
         default="auto",
+    )
+    resolve.add_argument(
+        "--mask-policy", choices=("none", "minimap_circle"), default="none"
     )
     export = subcommands.add_parser(
         "export-adapter",
@@ -725,6 +924,9 @@ def parser() -> argparse.ArgumentParser:
         "--color-policy",
         choices=("auto", "rig_locked", "game_matched", "unadjusted"),
         default="auto",
+    )
+    export.add_argument(
+        "--mask-policy", choices=("none", "minimap_circle"), default="none"
     )
     portable_export = subcommands.add_parser(
         "export-portable",
@@ -750,6 +952,21 @@ def parser() -> argparse.ArgumentParser:
         help="explicitly activate the imported and locally composed revisions",
     )
     portable_import.add_argument("--no-compose-rig", action="store_true")
+    deployment_export = subcommands.add_parser(
+        "export-deployment",
+        help="export all active portable game calibrations as one package",
+    )
+    deployment_export.add_argument("output", type=Path)
+    deployment_import = subcommands.add_parser(
+        "import-deployment",
+        help="import every game calibration in an IRIS deployment package",
+    )
+    deployment_import.add_argument("package", type=Path)
+    deployment_import.add_argument("--camera-id")
+    deployment_import.add_argument("--phone-id")
+    deployment_import.add_argument("--panel-size", type=int, nargs=2, metavar=("W", "H"))
+    deployment_import.add_argument("--activate", action="store_true")
+    deployment_import.add_argument("--no-compose-rig", action="store_true")
     return value
 
 
@@ -819,6 +1036,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if arguments.command == "show":
         print(json.dumps(registry.revision(arguments.revision_id), indent=2))
         return 0
+    if arguments.command == "configure-game":
+        result = publish_game_model(
+            registry,
+            arguments.game_id,
+            cursor_follows=arguments.cursor_follows,
+            minimap_orientation=arguments.minimap_orientation,
+            platform=arguments.platform,
+            package=arguments.package_id,
+            game_version=arguments.game_version,
+        )
+        print("Game model: {}".format(result["revision_id"]))
+        print(json.dumps(result["payload"], indent=2))
+        return 0
+    if arguments.command == "show-game":
+        print(
+            json.dumps(
+                resolve_game_model(
+                    registry,
+                    arguments.game_id,
+                    platform=arguments.platform,
+                    package=arguments.package_id,
+                    game_version=arguments.game_version,
+                ),
+                indent=2,
+            )
+        )
+        return 0
     if arguments.command == "export-portable":
         from aria_trace.workflows.portable_profiles import export_portable_profile
 
@@ -828,11 +1072,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Portable calibration: {}".format(result["output"]))
         print("Source revision: {}".format(result["source_revision"]))
         return 0
+    if arguments.command == "export-deployment":
+        from aria_trace.workflows.portable_profiles import export_deployment_package
+
+        result = export_deployment_package(arguments.output, registry=registry)
+        print("IRIS deployment: {}".format(result["output"]))
+        print("Portable profiles: {}".format(result["profile_count"]))
+        return 0
     from aria_trace.adapters.filesystem.system_configuration import (
         load_system_configuration,
     )
 
     settings = load_system_configuration(arguments.profile_root)
+    if arguments.command == "import-deployment":
+        from aria_trace.workflows.portable_profiles import import_deployment_package
+
+        requested = ProfileContext(
+            camera_id=arguments.camera_id or settings["devices"].get("camera_id"),
+            phone_id=arguments.phone_id or settings["devices"].get("phone_id"),
+            panel_display=(
+                {"natural_panel_px": arguments.panel_size}
+                if arguments.panel_size
+                else {}
+            ),
+        )
+        result = import_deployment_package(
+            arguments.package,
+            registry=registry,
+            requested_context=requested,
+            activate=arguments.activate,
+            compose_local_rig=not arguments.no_compose_rig,
+        )
+        print("Imported portable profiles: {}".format(result["profile_count"]))
+        for profile in result["profiles"]:
+            print(
+                "  {profile_kind} {game_id}: {revision_id}".format(**profile)
+            )
+        for message in result["warnings"]:
+            print("Warning: {}".format(message))
+        if not arguments.activate:
+            print("Imported revisions are review-required candidates.")
+        return 0
     if arguments.command == "import-portable":
         from aria_trace.workflows.portable_profiles import import_portable_profile
 
@@ -896,6 +1176,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         normalization=arguments.normalization,
         color_order=arguments.color_order,
         color_policy=arguments.color_policy,
+        mask_policy=arguments.mask_policy,
     )
     if arguments.command == "export-adapter":
         from aria_trace.workflows.adapter_export import export_resolved_adapter

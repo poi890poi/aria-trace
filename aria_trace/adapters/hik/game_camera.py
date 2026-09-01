@@ -173,6 +173,7 @@ class ProfiledHikGameCamera:
         apply_game_color: bool = True,
         bayer_conversion: Optional[Mapping[str, object]] = None,
         output_quarter_turns_clockwise: int = 0,
+        mask_policy: str = "none",
     ) -> None:
         if mode not in self.MODES:
             raise ValueError("HIK game stream mode must be minimap, full, or dual")
@@ -197,6 +198,13 @@ class ProfiledHikGameCamera:
         self.output_quarter_turns_clockwise = (
             int(output_quarter_turns_clockwise) % 4
         )
+        self.mask_policy = str(mask_policy)
+        if self.mask_policy not in ("none", "minimap_circle"):
+            raise ValueError("Mask policy must be none or minimap_circle")
+        if self.mask_policy != "none" and self.mode not in ("minimap", "dual"):
+            raise ValueError("Mini-map masking requires minimap or dual mode")
+        if self.mask_policy != "none" and not self.rectify_minimap:
+            raise ValueError("Mini-map masking requires rectification")
         self.adapter = adapter or HikMvsCameraAdapter(
             sdk_python_path=self.rig.get("mvs_python_path")
         )
@@ -212,6 +220,10 @@ class ProfiledHikGameCamera:
         self._minimap_map_x: Optional[np.ndarray] = None
         self._minimap_map_y: Optional[np.ndarray] = None
         self._minimap_in_full_xywh: Optional[list[int]] = None
+        self._screen_crop_xywh: Optional[list[int]] = None
+        self._normalization_origin_xy = (0.0, 0.0)
+        self._screen_units_per_output_pixel_xy = (1.0, 1.0)
+        self._minimap_mask_precomposed = False
         self._upright_to_base_full = np.eye(3, dtype=np.float64)
         self._upright_to_base_minimap = np.eye(3, dtype=np.float64)
         self._last_stream_metadata: Dict[str, Mapping[str, object]] = {}
@@ -289,6 +301,141 @@ class ProfiledHikGameCamera:
                 conversion["ccm_rgb_3x3"],
             )
 
+    @staticmethod
+    def _transform_xy(matrix: np.ndarray, point_xy: Sequence[float]) -> np.ndarray:
+        point = np.asarray([float(point_xy[0]), float(point_xy[1]), 1.0])
+        transformed = np.asarray(matrix, dtype=np.float64).dot(point)
+        return transformed[:2] / transformed[2]
+
+    def _canonical_phone_to_upright_full_xy(
+        self, point_xy: Sequence[float]
+    ) -> np.ndarray:
+        origin_x, origin_y = self._normalization_origin_xy
+        scale_x, scale_y = self._screen_units_per_output_pixel_xy
+        base = np.asarray(
+            [
+                (float(point_xy[0]) - origin_x) / scale_x,
+                (float(point_xy[1]) - origin_y) / scale_y,
+            ],
+            dtype=np.float64,
+        )
+        return self._transform_xy(np.linalg.inv(self._upright_to_base_full), base)
+
+    def _cursor_envelope_size_xy(self) -> Optional[list[float]]:
+        geometry = dict(self.minimap.get("cursor_geometry") or {})
+        value = geometry.get("rotating_cursor_envelope_diameter_px")
+        if value is None:
+            return None
+        diameter = float(value)
+        scale_x, scale_y = self._screen_units_per_output_pixel_xy
+        size = [diameter / scale_x, diameter / scale_y]
+        if self.output_quarter_turns_clockwise % 2:
+            size.reverse()
+        return [float(value) for value in size]
+
+    def _precompose_minimap_mask(self) -> None:
+        if self.mask_policy == "none":
+            return
+        if self._minimap_map_x is None or self._minimap_map_y is None:
+            raise RuntimeError(
+                "Mini-map circle masking requires a prebuilt dense rectification map"
+            )
+        boundary = require_spatial_geometry(
+            self.minimap.get("outer_boundary"),
+            "circle",
+            expected_space_id="android_phone_natural_display_pixels",
+        )
+        center_full = self._canonical_phone_to_upright_full_xy(
+            [boundary["center_x"], boundary["center_y"]]
+        )
+        crop_x, crop_y, _, _ = self._minimap_in_full_xywh
+        center = center_full - np.asarray([crop_x, crop_y], dtype=np.float64)
+        scale_x, scale_y = self._screen_units_per_output_pixel_xy
+        radii = [float(boundary["radius"]) / scale_x, float(boundary["radius"]) / scale_y]
+        if self.output_quarter_turns_clockwise % 2:
+            radii.reverse()
+        mask = np.zeros(self._minimap_map_x.shape, dtype=np.uint8)
+        cv2.ellipse(
+            mask,
+            tuple(np.round(center).astype(int)),
+            tuple(max(1, int(round(value))) for value in radii),
+            0.0,
+            0.0,
+            360.0,
+            255,
+            -1,
+            cv2.LINE_8,
+        )
+        self._minimap_map_x = self._minimap_map_x.copy()
+        self._minimap_map_y = self._minimap_map_y.copy()
+        self._minimap_map_x[mask == 0] = -1.0
+        self._minimap_map_y[mask == 0] = -1.0
+        self._minimap_mask_precomposed = True
+
+    def get_cursor_geometry(self, stream_id: str = "minimap") -> Mapping[str, object]:
+        """Return calibrated cursor geometry in canonical and runtime spaces."""
+
+        canonical = dict(self.minimap.get("cursor_geometry") or {})
+        if not canonical:
+            return {}
+        if not self._opened:
+            raise RuntimeError("Camera must be open to query runtime cursor geometry")
+        selected = str(stream_id)
+        if selected not in ("minimap", "full", "canonical_phone"):
+            raise ValueError("Cursor geometry stream must be minimap, full, or canonical_phone")
+        result = {
+            "schema_version": "1.0",
+            "available": True,
+            "canonical_phone": copy.deepcopy(canonical),
+            "stream_id": selected,
+        }
+        if selected == "canonical_phone":
+            return result
+        if not self.rectify_minimap:
+            result.update(
+                available_in_stream_space=False,
+                reason="Unrectified camera ROI is projective; use canonical_phone geometry",
+            )
+            return result
+        center_geometry = canonical.get("rotation_center") or self.minimap.get(
+            "rotation_center"
+        )
+        if not isinstance(center_geometry, Mapping):
+            result.update(
+                available_in_stream_space=False,
+                reason=(
+                    "Static cursor evidence has no verified rotation center; "
+                    "canonical_phone contains the observed static size"
+                ),
+            )
+            return result
+        center = require_spatial_geometry(
+            center_geometry,
+            "point",
+            expected_space_id="android_phone_natural_display_pixels",
+        )
+        center_full = self._canonical_phone_to_upright_full_xy(
+            [center["x"], center["y"]]
+        )
+        if selected == "minimap":
+            crop_x, crop_y, _, _ = self._minimap_in_full_xywh
+            center_runtime = center_full - np.asarray([crop_x, crop_y])
+        else:
+            center_runtime = center_full
+        size_xy = self._cursor_envelope_size_xy()
+        metadata = self._last_stream_metadata.get(selected) or {}
+        result.update(
+            available_in_stream_space=True,
+            center_xy_px=[float(center_runtime[0]), float(center_runtime[1])],
+            image_space=copy.deepcopy(dict(metadata.get("image_space") or {})),
+        )
+        if size_xy is not None:
+            result.update(
+                rotating_cursor_envelope_size_xy_px=size_xy,
+                rotating_cursor_envelope_diameter_px=float(max(size_xy)),
+            )
+        return result
+
     def open(self) -> "ProfiledHikGameCamera":
         if self._opened:
             return self
@@ -306,6 +453,7 @@ class ProfiledHikGameCamera:
         try:
             self._apply_locked_imaging()
             screen_crop = self._screen_crop()
+            self._screen_crop_xywh = list(screen_crop)
             coordinate_schema = int(
                 (self.rig.get("coordinate_spaces") or {}).get("schema_version", 0)
             )
@@ -365,6 +513,8 @@ class ProfiledHikGameCamera:
                 float,
                 normalization.get("screen_units_per_output_pixel_xy", [1, 1]),
             )
+            self._normalization_origin_xy = (origin_x, origin_y)
+            self._screen_units_per_output_pixel_xy = (scale_x, scale_y)
             self._minimap_in_full_xywh = [
                 int(round((crop_x - origin_x) / scale_x)),
                 int(round((crop_y - origin_y) / scale_y)),
@@ -458,6 +608,7 @@ class ProfiledHikGameCamera:
                         turns,
                     )[0]
                 )
+            self._precompose_minimap_mask()
             self._opened = True
         except Exception:
             self.adapter.close()
@@ -570,6 +721,17 @@ class ProfiledHikGameCamera:
                 if self.rectify_minimap else None
             ),
             "one_acquisition_for_all_streams": True,
+            "mask_policy": self.mask_policy,
+            "minimap_mask_precomposed_in_rectification_map": bool(
+                self._minimap_mask_precomposed
+            ),
+            "minimap_mask_off_pixel_map_coordinate_xy": (
+                [-1.0, -1.0] if self._minimap_mask_precomposed else None
+            ),
+            "minimap_mask_geometry_source": (
+                "verified_radial_circle_fit_seeded_by_hough_from_temporal_and_average_evidence"
+                if self._minimap_mask_precomposed else None
+            ),
             "game_upright_quarter_turns_clockwise": (
                 self.output_quarter_turns_clockwise
             ),

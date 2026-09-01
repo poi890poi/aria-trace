@@ -198,6 +198,21 @@ by the session and skips unavailable ones without inventing results:
 game-calibration.bat sessions\calibration\SESSION --game-id GAME_ID
 ```
 
+Cursor interpretation comes from the active game model, independently of the
+acquisition name. The default (`cursor_follows=character`) treats zigzag as a
+static-cursor series and micro-movement as a rotating-cursor series; a
+camera-following cursor reverses that mapping:
+
+```bat
+python-tools.bat profiles configure-game GAME_ID --cursor-follows camera
+zigzag-acquisition.bat --capture-mode micro-movement --android-capture adb-screenshot
+```
+
+Static and rotating cursor series are both optional. Static-only evidence does
+not manufacture a rotation center. A rotating series adds the center and
+rotating-envelope diameter to the active phone-game profile, which callers can
+query with `camera.get_cursor_geometry()`.
+
 Its JSON summary distinguishes `accepted`, `review_required`,
 `skipped_missing_or_ineligible_data`, and `failed`. Screen-upright orientation
 is calibrated from multiple synchronized ADB/HIK still pairs and published as
@@ -249,6 +264,18 @@ An adapter snapshot can also be regenerated from automatic profile selection:
 ```bat
 python-tools.bat profiles export-adapter my_hikcam.py --game-id genshin-impact --mode dual --color-policy game_matched
 ```
+
+The optional `--mask-policy minimap_circle` adapter setting precomposes the
+verified fitted mini-map circle into the dense map and retains one remap per
+frame. Export every active portable game model, mini-map/cursor geometry, and
+phone-game color reference with:
+
+```bat
+python-tools.bat profiles export-deployment iris-games.zip
+python-tools.bat profiles import-deployment iris-games.zip --activate
+```
+
+Rig and camera calibration remain local and are never included in this bundle.
 
 ## Outputs and profiles
 

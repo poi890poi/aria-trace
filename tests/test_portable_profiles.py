@@ -6,7 +6,9 @@ from pathlib import Path
 
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
 from aria_trace.workflows.portable_profiles import (
+    export_deployment_package,
     export_portable_profile,
+    import_deployment_package,
     import_portable_profile,
 )
 
@@ -31,6 +33,59 @@ def phone_context(game="game-1", phone="PHONE-1", panel=(1080, 2400)):
 
 
 class PortableProfileTests(unittest.TestCase):
+    def test_deployment_contains_all_active_games_and_game_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = ProfileRegistry(root / "source")
+            for game in ("game-1", "game-2"):
+                context = phone_context(game=game)
+                source.publish(
+                    "game_model",
+                    ProfileContext(game_id=game),
+                    {
+                        "cursor_follows": "character",
+                        "cursor_behavior_by_acquisition": {
+                            "zigzag": "static",
+                            "micro_movement": "rotating",
+                        },
+                    },
+                    review_state="accepted",
+                    activate=True,
+                )
+                source.publish(
+                    "phone_game",
+                    context,
+                    {"canonical_phone_crop_xywh": [10, 20, 100, 100]},
+                    review_state="accepted",
+                    activate=True,
+                )
+            package = root / "deployment.zip"
+            exported = export_deployment_package(package, registry=source)
+            self.assertEqual(4, exported["profile_count"])
+            with zipfile.ZipFile(str(package), "r") as archive:
+                manifest = json.loads(archive.read("deployment.json"))
+            self.assertEqual(
+                "iris_portable_calibration_deployment",
+                manifest["package_kind"],
+            )
+
+            target = ProfileRegistry(root / "target")
+            imported = import_deployment_package(
+                package,
+                registry=target,
+                requested_context=ProfileContext(
+                    phone_id="PHONE-2",
+                    panel_display={"natural_panel_px": [1080, 2400]},
+                ),
+                activate=True,
+                compose_local_rig=False,
+            )
+            self.assertEqual(4, imported["profile_count"])
+            self.assertEqual(
+                {"game-1", "game-2"},
+                {item["game_id"] for item in imported["profiles"]},
+            )
+
     def test_export_import_composes_with_local_rig_and_does_not_activate_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

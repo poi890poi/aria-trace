@@ -15,9 +15,43 @@ from aria_trace.adapters.filesystem.profile_registry import (
 from aria_trace.services.calibration.minimap.discovery import (
     discover_android_minimap_crop,
 )
+from aria_trace.workflows.game_calibration import (
+    _available_cursor_acquisition_series,
+)
 
 
 class GameCalibrationTests(unittest.TestCase):
+    def test_cursor_series_classification_describes_input_not_cursor_behavior(self):
+        class Reader:
+            manifest = {
+                "context": {
+                    "capture_kind": "micro_movement_game_calibration_source_data"
+                }
+            }
+            frames_by_stream = {"android_phone": [{"frame_index": 0}]}
+            inputs = [
+                {
+                    "kind": "micro_movement_touch",
+                    "session_time_ns": 10,
+                    "payload": {"action": "DOWN"},
+                },
+                {
+                    "kind": "micro_movement_touch",
+                    "session_time_ns": 20,
+                    "payload": {"action": "UP"},
+                },
+            ]
+
+        self.assertEqual(
+            [
+                {
+                    "acquisition_pattern": "micro_movement",
+                    "touch_kind": "micro_movement_touch",
+                }
+            ],
+            _available_cursor_acquisition_series(Reader()),
+        )
+
     def test_bounded_discovery_finds_dynamic_upper_left_circle(self):
         height, width = 360, 640
         frames = []

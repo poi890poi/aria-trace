@@ -23,9 +23,11 @@ from aria_trace.adapters.filesystem.profile_registry import (
 PORTABLE_SCHEMA_VERSION = "1.0"
 PORTABLE_PACKAGE_KIND = "iris_portable_calibration"
 LEGACY_PORTABLE_PACKAGE_KINDS = {"aria_trace_portable_calibration"}
-PORTABLE_PROFILE_KINDS = ("phone_game", "phone_game_color")
+PORTABLE_PROFILE_KINDS = ("game_model", "phone_game", "phone_game_color")
+DEPLOYMENT_SCHEMA_VERSION = "1.0"
+DEPLOYMENT_PACKAGE_KIND = "iris_portable_calibration_deployment"
 
-PORTABLE_HEADER = """# IRIS portable phone-platform calibration.
+PORTABLE_HEADER = """# IRIS portable game/platform calibration.
 #
 # This package contains no camera identity, sensor ROI, rectification map, or
 # HIK imaging control. Import composes it with a separately calibrated local rig."""
@@ -350,8 +352,166 @@ def import_portable_profile(
             shutil.rmtree(str(cleanup), ignore_errors=True)
 
 
+def _write_directory_or_zip(temporary: Path, output: Path) -> None:
+    if output.suffix.lower() == ".zip":
+        temporary_zip = output.with_suffix(output.suffix + ".tmp")
+        with zipfile.ZipFile(
+            str(temporary_zip), "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            for path in sorted(temporary.rglob("*")):
+                if path.is_file():
+                    archive.write(str(path), str(path.relative_to(temporary)))
+        os.replace(str(temporary_zip), str(output))
+    else:
+        os.replace(str(temporary), str(output))
+
+
+def export_deployment_package(
+    output: Path,
+    *,
+    registry: ProfileRegistry,
+) -> Dict[str, Any]:
+    """Export every active portable game profile into one deployment package."""
+
+    output = Path(output).resolve()
+    if output.exists():
+        raise FileExistsError("Deployment output already exists: {}".format(output))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=".iris-deployment-", dir=str(output.parent))
+    )
+    moved = False
+    try:
+        entries = []
+        index = 0
+        for kind in PORTABLE_PROFILE_KINDS:
+            for row in registry.list_revisions(kind=kind, active_only=True):
+                revision_id = str(row["revision_id"])
+                relative = Path("profiles") / "{:04d}-{}-{}".format(
+                    index, kind, revision_id
+                )
+                export_portable_profile(
+                    revision_id,
+                    temporary / relative,
+                    registry=registry,
+                )
+                profile = registry.revision(revision_id)
+                profile_context = ProfileContext.from_dict(
+                    profile.get("context") or {}
+                )
+                entries.append(
+                    {
+                        "path": relative.as_posix(),
+                        "profile_kind": kind,
+                        "game_id": profile_context.game_id,
+                        "source_revision": revision_id,
+                        "content_sha256": profile.get("content_sha256"),
+                    }
+                )
+                index += 1
+        manifest = {
+            "schema_version": DEPLOYMENT_SCHEMA_VERSION,
+            "package_kind": DEPLOYMENT_PACKAGE_KIND,
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "profile_count": len(entries),
+            "profiles": entries,
+            "scope": (
+                "All active portable IRIS game models, phone-game geometry, and "
+                "phone-game color references. Camera and rig calibration are excluded."
+            ),
+        }
+        (temporary / "deployment.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+        write_commented_yaml(
+            temporary / "deployment.yaml",
+            manifest,
+            header=(
+                "# IRIS portable deployment bundle.\n#\n"
+                "# Import composes portable game data with separately calibrated local rigs."
+            ),
+            section_comments={
+                "profiles": "Every active portable profile included in this bundle.",
+                "scope": "Explicit exclusion of camera-specific and rig-specific data.",
+            },
+        )
+        _write_directory_or_zip(temporary, output)
+        moved = output.suffix.lower() != ".zip"
+        return {
+            "output": str(output),
+            "profile_count": len(entries),
+            "profiles": entries,
+        }
+    finally:
+        if not moved:
+            shutil.rmtree(str(temporary), ignore_errors=True)
+
+
+def import_deployment_package(
+    package: Path,
+    *,
+    registry: ProfileRegistry,
+    requested_context: Optional[ProfileContext] = None,
+    activate: bool = False,
+    compose_local_rig: bool = True,
+) -> Dict[str, Any]:
+    """Import all portable profiles while retaining each package game ID."""
+
+    root, cleanup = _open_package(package)
+    try:
+        manifest_path = root / "deployment.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                "Deployment package has no deployment.json: {}".format(root)
+            )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("package_kind") != DEPLOYMENT_PACKAGE_KIND:
+            raise ValueError("Not an IRIS portable deployment package")
+        imported = []
+        warnings = []
+        for entry in manifest.get("profiles") or []:
+            relative = Path(str(entry.get("path") or ""))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("Unsafe deployment profile path: {}".format(relative))
+            profile_root = root / relative
+            result = import_portable_profile(
+                profile_root,
+                registry=registry,
+                requested_context=requested_context,
+                activate=activate,
+                compose_local_rig=compose_local_rig,
+            )
+            portable = result["portable_profile"]
+            imported_context = ProfileContext.from_dict(
+                portable.get("context") or {}
+            )
+            imported.append(
+                {
+                    "profile_kind": (portable.get("identity") or {}).get("kind"),
+                    "game_id": imported_context.game_id,
+                    "revision_id": portable["revision_id"],
+                    "rig_game_revision": (
+                        (result.get("rig_game") or {}).get("revision_id")
+                    ),
+                    "compatibility": result.get("compatibility"),
+                }
+            )
+            warnings.extend(result.get("warnings") or [])
+        return {
+            "package": str(Path(package).resolve()),
+            "profile_count": len(imported),
+            "profiles": imported,
+            "warnings": warnings,
+        }
+    finally:
+        if cleanup is not None:
+            shutil.rmtree(str(cleanup), ignore_errors=True)
+
+
 __all__ = [
     "PORTABLE_PROFILE_KINDS",
+    "export_deployment_package",
     "export_portable_profile",
+    "import_deployment_package",
     "import_portable_profile",
 ]

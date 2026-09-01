@@ -24,9 +24,10 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 from .commented_yaml import write_commented_yaml
 
 
-SCHEMA_VERSION = "2.2"
+SCHEMA_VERSION = "2.3"
 PROFILE_KINDS = (
     "rig",
+    "game_model",
     "phone_game",
     "phone_game_color",
     "rig_game",
@@ -39,6 +40,7 @@ NORMALIZATION_MODES = ("auto", "dense_remap", "homography", "none")
 COLOR_ORDERS = ("RGB", "BGR")
 COLOR_POLICIES = ("auto", "rig_locked", "game_matched", "unadjusted")
 ROI_POLICIES = ("auto", "full_phone", "minimap_only")
+MASK_POLICIES = ("none", "minimap_circle")
 
 PROFILE_HEADER = """# IRIS production profile revision.
 #
@@ -223,6 +225,7 @@ class AdapterRequest:
     color_order: str = "RGB"
     color_policy: str = "auto"
     roi_policy: str = "auto"
+    mask_policy: str = "none"
     minimap_margin_px: int = 6
     frame_rate_policy: str = "calibrated"
     frame_rate: Optional[float] = None
@@ -240,6 +243,12 @@ class AdapterRequest:
             raise ValueError("Unsupported color policy")
         if self.roi_policy not in ROI_POLICIES:
             raise ValueError("Unsupported ROI policy")
+        if self.mask_policy not in MASK_POLICIES:
+            raise ValueError("Unsupported mask policy")
+        if self.mask_policy != "none" and self.mode not in ("minimap", "dual"):
+            raise ValueError("Mini-map masking requires minimap or dual mode")
+        if self.mask_policy != "none" and self.normalization == "none":
+            raise ValueError("Mini-map masking requires rectification")
         if int(self.minimap_margin_px) < 0:
             raise ValueError("Mini-map margin cannot be negative")
         if self.frame_rate_policy not in ("calibrated", "exact"):
@@ -269,6 +278,7 @@ class AdapterRequest:
             "color_order": self.color_order,
             "color_policy": self.color_policy,
             "roi_policy": self.roi_policy,
+            "mask_policy": self.mask_policy,
             "minimap_margin_px": int(self.minimap_margin_px),
             "frame_rate": {
                 "policy": self.frame_rate_policy,
@@ -299,6 +309,10 @@ class ProfileKey:
                 context.panel_signature,
                 "_",
             )
+        if kind == "game_model":
+            if not context.game_id:
+                raise ValueError("Game-model profiles require a game_id")
+            return cls(kind, context.platform, context.game_id, "_", "_")
         if kind in ("phone_game", "phone_game_color"):
             if (
                 not context.game_id
@@ -394,15 +408,16 @@ def _profile_compatibility(
         compare("camera_id", requested.camera_id, stored.camera_id)
         compare("panel_display", requested.panel_display, stored.panel_display)
     if kind in (
-        "phone_game", "phone_game_color", "rig_game", "rig_game_color",
-        "rig_game_orientation",
+        "game_model", "phone_game", "phone_game_color", "rig_game",
+        "rig_game_color", "rig_game_orientation",
     ):
         compare("game_id", requested.game_id, stored.game_id)
         compare("game_package", requested.package, stored.package)
         compare("game_version", requested.game_version, stored.game_version)
-        if kind in ("phone_game", "phone_game_color"):
-            compare("panel_display", requested.panel_display, stored.panel_display)
-        compare("game_display", requested.game_display, stored.game_display)
+        if kind != "game_model":
+            if kind in ("phone_game", "phone_game_color"):
+                compare("panel_display", requested.panel_display, stored.panel_display)
+            compare("game_display", requested.game_display, stored.game_display)
 
     if requested.phone_id and stored.phone_id and requested.phone_id != stored.phone_id:
         notes.append(
@@ -730,7 +745,7 @@ class ProfileRegistry:
         if kind != "rig" and context.game_id:
             clauses.append("r.game_id=?")
             values.append(context.game_id)
-        if context.panel_signature:
+        if context.panel_signature and kind != "game_model":
             if kind in ("phone_game", "phone_game_color"):
                 # Schema 2.0 phone-game revisions used '_' here and retained
                 # the real panel in context_json. Keep those revisions usable.
@@ -738,7 +753,7 @@ class ProfileRegistry:
             else:
                 clauses.append("r.panel_signature=?")
             values.append(context.panel_signature)
-        if kind != "rig" and context.game_display_signature:
+        if kind not in ("rig", "game_model") and context.game_display_signature:
             clauses.append("r.game_signature=?")
             values.append(context.game_display_signature)
         query = """SELECT r.* FROM active_profiles a
@@ -871,6 +886,7 @@ class ProfileRegistry:
         self, context: ProfileContext, request: AdapterRequest
     ) -> Dict[str, Any]:
         rig_game = phone_game = rig_game_color = rig_game_orientation = None
+        game_model = None
         if request.requires_minimap_profile:
             if not context.game_id:
                 raise ProfileResolutionError(
@@ -911,6 +927,11 @@ class ProfileRegistry:
         # It is therefore optional for every game-scoped adapter mode and is
         # accepted only when it depends on the exact resolved rig revision.
         if context.game_id:
+            try:
+                game_model = self.resolve("game_model", context)
+            except ProfileResolutionError as exc:
+                if not str(exc).startswith("No active game_model profile"):
+                    raise
             try:
                 candidate = self.resolve("rig_game_orientation", context)
             except ProfileResolutionError as exc:
@@ -989,6 +1010,27 @@ class ProfileRegistry:
                 "game_matched" if selected_color_profile is not None else "rig_locked"
             )
         normalization = request.normalization
+        game_model_plan = dict(
+            (game_model.get("payload") or {})
+            if game_model
+            else {
+                "cursor_follows": "character",
+                "minimap_orientation": "unspecified",
+                "source": "iris_default",
+            }
+        )
+        if "cursor_behavior_by_acquisition" not in game_model_plan:
+            game_model_plan["cursor_behavior_by_acquisition"] = (
+                {
+                    "zigzag": "rotating",
+                    "micro_movement": "static",
+                }
+                if game_model_plan.get("cursor_follows") == "camera"
+                else {
+                    "zigzag": "static",
+                    "micro_movement": "rotating",
+                }
+            )
         result = {
             "schema_version": SCHEMA_VERSION,
             "resolved_utc": datetime.now(timezone.utc).isoformat(),
@@ -1005,6 +1047,9 @@ class ProfileRegistry:
                     rig_game_orientation["revision_id"]
                     if rig_game_orientation else None
                 ),
+                "game_model": (
+                    game_model["revision_id"] if game_model else None
+                ),
             },
             "paths": {
                 "rig_calibration": str(calibration_path.resolve()),
@@ -1019,6 +1064,10 @@ class ProfileRegistry:
                     )
                     if rig_game_orientation else None
                 ),
+                "game_model_profile": (
+                    str((Path(game_model["revision_directory"]) / "profile.json").resolve())
+                    if game_model else None
+                ),
             },
             "adapter_plan": {
                 "mode": request.mode,
@@ -1027,6 +1076,7 @@ class ProfileRegistry:
                 "color_order": request.color_order,
                 "color_policy": effective_color_policy,
                 "roi_policy": request.roi_policy,
+                "mask_policy": request.mask_policy,
                 "minimap_margin_px": int(request.minimap_margin_px),
                 "game_upright_quarter_turns_clockwise": int(
                     ((rig_game_orientation.get("payload") or {}).get(
@@ -1034,6 +1084,7 @@ class ProfileRegistry:
                         0,
                     ))
                 ) % 4 if rig_game_orientation else 0,
+                "game_model": game_model_plan,
                 "registry_reads_per_frame": 0,
                 "phone_operations": "none",
             },
@@ -1044,6 +1095,7 @@ class ProfileRegistry:
             "rig_game": rig_game,
             "rig_game_color": rig_game_color,
             "rig_game_orientation": rig_game_orientation,
+            "game_model": game_model,
         }
         profile_compatibility = {}
         compatibility_warnings = []
@@ -1098,6 +1150,7 @@ __all__ = [
     "ProfileContext",
     "ProfileKey",
     "PROFILE_KINDS",
+    "MASK_POLICIES",
     "ProfileRegistry",
     "ProfileResolutionError",
     "context_from_rig_calibration",

@@ -190,6 +190,80 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(remap.call_count, 1)
         self.assertTrue(frame_set.metadata["rectified_minimap"])
 
+    def test_minimap_circle_mask_is_precomposed_into_the_single_remap(self):
+        document = rig_document()
+        document["coordinate_spaces"] = {"schema_version": 3}
+        document["optics"] = {
+            "lens_model": {
+                "source": "measured",
+                "model": "opencv_radtan",
+                "camera_matrix_3x3": [
+                    [100.0, 0.0, 50.0],
+                    [0.0, 100.0, 40.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        }
+        document["normalization"].update(
+            {
+                "dense_map_file": "rectification_maps.npz",
+                "lens_correction_in_dense_map": True,
+            }
+        )
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        xx, yy = np.meshgrid(np.arange(100), np.arange(80))
+        np.savez_compressed(
+            str(self.rig_path.parent / "rectification_maps.npz"),
+            map_x=xx.astype(np.float32),
+            map_y=yy.astype(np.float32),
+        )
+        space = raster_space("android_phone_natural_display_pixels", [100, 80])
+        minimap = {
+            "canonical_phone_crop_xywh": [10, 20, 30, 20],
+            "outer_boundary": bind_geometry(
+                {"center_x": 25.0, "center_y": 30.0, "radius": 6.0},
+                "circle",
+                space,
+            ),
+            "rotation_center": bind_geometry(
+                {"x": 25.0, "y": 30.0}, "point", space
+            ),
+            "cursor_geometry": {
+                "rotation_center": bind_geometry(
+                    {"x": 25.0, "y": 30.0}, "point", space
+                ),
+                "rotating_cursor_envelope_diameter_px": 12.0,
+                "measurement_space": space,
+            },
+        }
+        self.minimap_path.write_text(json.dumps(minimap), encoding="utf-8")
+        adapter = FakeAdapter()
+        camera = ProfiledHikGameCamera(
+            self.rig_path,
+            self.minimap_path,
+            mode="minimap",
+            rectify_minimap=True,
+            minimap_margin_px=0,
+            mask_policy="minimap_circle",
+            adapter=adapter,
+        ).open()
+        real_remap = __import__("cv2").remap
+        with mock.patch(
+            "aria_trace.adapters.hik.game_camera.cv2.remap", wraps=real_remap
+        ) as remap:
+            frame_set = camera.read_streams()
+        frame = frame_set.streams["minimap"]
+        self.assertEqual(1, remap.call_count)
+        self.assertEqual([0, 0, 0], frame[0, 0].tolist())
+        self.assertNotEqual([0, 0, 0], frame[10, 15].tolist())
+        self.assertTrue(
+            frame_set.metadata["minimap_mask_precomposed_in_rectification_map"]
+        )
+        geometry = camera.get_cursor_geometry("minimap")
+        self.assertTrue(geometry["available_in_stream_space"])
+        self.assertAlmostEqual(12.0, geometry["rotating_cursor_envelope_diameter_px"])
+
     def test_rectified_full_rotation_is_precomposed_into_dense_remap(self):
         document = rig_document()
         document["normalization"].update(

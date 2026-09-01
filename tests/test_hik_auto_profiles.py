@@ -121,6 +121,7 @@ class HikAutoProfileTests(unittest.TestCase):
                 minimap_margin_px=12,
                 apply_game_color=False,
                 output_quarter_turns_clockwise=0,
+                mask_policy="none",
             )
 
     def test_adapter_rejects_rig_game_pinned_to_superseded_active_rig(self):

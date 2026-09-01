@@ -109,7 +109,7 @@ class CursorOrbitTouchPlan:
 
     def as_dict(self) -> dict:
         return {
-            "plan_kind": "balanced_cursor_orbit",
+            "plan_kind": "balanced_micro_movement",
             "center_xy": list(map(int, self.center_xy)),
             "radius_px": int(self.radius_px),
             "direction_count": int(self.direction_count),
@@ -128,7 +128,7 @@ class CursorOrbitTouchPlan:
 
 
 class AndroidCursorOrbitInputSource(AndroidZigzagInputSource):
-    """Issue cursor-orbit touches through the verified touch transport."""
+    """Legacy name for micro-movement touches through the verified transport."""
 
     source_id = "android_cursor_orbit_control"
     touch_kind = "cursor_orbit_touch"
@@ -136,4 +136,17 @@ class AndroidCursorOrbitInputSource(AndroidZigzagInputSource):
     thread_name = "android-cursor-orbit"
 
 
-__all__ = ["AndroidCursorOrbitInputSource", "CursorOrbitTouchPlan"]
+class AndroidMicroMovementInputSource(AndroidCursorOrbitInputSource):
+    """Issue short balanced movements without assuming how the cursor responds."""
+
+    source_id = "android_micro_movement_control"
+    touch_kind = "micro_movement_touch"
+    error_kind = "micro_movement_control_error"
+    thread_name = "android-micro-movement"
+
+
+__all__ = [
+    "AndroidCursorOrbitInputSource",
+    "AndroidMicroMovementInputSource",
+    "CursorOrbitTouchPlan",
+]

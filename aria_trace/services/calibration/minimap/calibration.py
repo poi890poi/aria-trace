@@ -765,6 +765,20 @@ def _cursor_shape(
         "correlation_margin": float(np.clip(np.median(margins) / 0.025, 0.0, 1.0)),
     }
     confidence = float(np.prod([max(v, 0.02) for v in component_scores.values()]) ** 0.2)
+    polygon_relative = np.asarray(
+        symmetric_model["polygon_relative_xy"], dtype=np.float64
+    )
+    rotating_envelope_radius = float(
+        np.max(np.linalg.norm(polygon_relative, axis=1))
+    )
+    polygon_span = float(
+        np.max(
+            np.linalg.norm(
+                polygon_relative[:, None, :] - polygon_relative[None, :, :],
+                axis=2,
+            )
+        )
+    )
     return {
         "masks": masks,
         "indices": indices,
@@ -809,6 +823,16 @@ def _cursor_shape(
             "polygon_vertices_relative_xy": symmetric_model[
                 "polygon_relative_xy"
             ].tolist(),
+            "rotating_cursor_envelope_radius_px": rotating_envelope_radius,
+            "rotating_cursor_envelope_diameter_px": float(
+                2.0 * rotating_envelope_radius
+            ),
+            "cursor_polygon_max_span_px": polygon_span,
+            "size_definition": (
+                "rotating_cursor_envelope_diameter_px is twice the greatest "
+                "distance from the fitted rotation center to the persistent "
+                "cursor polygon; it contains the cursor at every rotation angle"
+            ),
             "median_frame_template_iou": float(np.median(ious)),
             "p10_frame_template_iou": float(np.percentile(ious, 10)),
             "pose_shift_std_deg": float(np.std(shifts)),
@@ -1391,6 +1415,125 @@ def calibrate_cursor_orbit_frames(
         "overall_confidence": float(
             math.sqrt(max(0.0, pivot["confidence"] * shape["metrics"]["confidence"]))
         ),
+        "confidence_scale": "0..1 experimental; human evidence review is authoritative",
+        "model_file": "model.npz",
+        "evidence": evidence,
+    }
+    _atomic_json(output_path / "calibration.json", result)
+    return result
+
+
+def calibrate_cursor_static_frames(
+    frames: np.ndarray,
+    output_path: Path,
+    *,
+    outer_boundary: dict,
+    existing_rotation_center: Optional[dict] = None,
+    config: Optional[dict] = None,
+    provenance: Optional[dict] = None,
+    progress=None,
+    frame_space: Optional[dict] = None,
+) -> dict:
+    """Fit observable cursor shape without inventing rotation-center evidence."""
+
+    if frames.ndim != 4:
+        raise ValueError("Static cursor frames must be N x H x W x C arrays")
+    if len(frames) < 4:
+        raise ValueError("Static cursor calibration requires at least four frames")
+    merged = _merged_config(config)
+    space = _prepared_frame_space(frames, frame_space, "cursor_static_crop_pixels")
+    boundary = require_spatial_geometry(outer_boundary, "circle")
+    if boundary["space"] != space:
+        raise ValueError("Static cursor frames and mini-map boundary must share one space")
+    center_status = "existing_verified_rotation_center"
+    if existing_rotation_center is not None:
+        center = require_spatial_geometry(existing_rotation_center, "point")
+        require_same_space(boundary, center)
+    else:
+        initial = np.asarray(
+            [boundary["center_x"], boundary["center_y"]], dtype=np.float64
+        )
+        _, centroids, _ = _cursor_components(frames, initial, merged["cursor"])
+        observed = np.median(centroids, axis=0)
+        center = bind_geometry(
+            {
+                "x": float(observed[0]),
+                "y": float(observed[1]),
+                "confidence": 0.0,
+                "confidence_level": "unavailable",
+            },
+            "point",
+            space,
+        )
+        center_status = "not_observable_from_static_cursor"
+    if progress:
+        progress("Fitting static cursor shape from persistent color components")
+    shape = _cursor_shape(frames, center, merged["cursor"])
+    shape["metrics"]["source"] = "static_cursor_persistence"
+    shape["metrics"]["observed_static_cursor_max_span_px"] = float(
+        shape["metrics"]["cursor_polygon_max_span_px"]
+    )
+    if existing_rotation_center is None:
+        shape["metrics"]["rotating_cursor_envelope_radius_px"] = None
+        shape["metrics"]["rotating_cursor_envelope_diameter_px"] = None
+        shape["metrics"]["size_definition"] = (
+            "Only observed_static_cursor_max_span_px is supported by static data; "
+            "a rotating envelope requires a verified rotation center"
+        )
+
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    probability = _color_heatmap(shape["probability"])
+    binary = (shape["binary"] * 255).astype(np.uint8)
+    edge = cv2.Canny(binary, 50, 150)
+    overlay = frames.mean(axis=0).astype(np.uint8)
+    polygon = np.round(
+        np.asarray(shape["symmetric_model"]["polygon_relative_xy"])
+        + np.asarray([center["x"], center["y"]])
+    ).astype(np.int32)
+    cv2.polylines(overlay, [polygon], True, (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.drawMarker(
+        overlay,
+        (int(round(center["x"])), int(round(center["y"]))),
+        (0, 0, 255),
+        cv2.MARKER_CROSS,
+        14,
+        1,
+    )
+    evidence_images = {
+        "cursor_static_probability.png": probability,
+        "cursor_static_binary.png": binary,
+        "cursor_static_edge.png": edge,
+        "cursor_static_shape_overlay.png": overlay,
+    }
+    evidence = []
+    for name, image in evidence_images.items():
+        if not cv2.imwrite(str(output_path / name), image):
+            raise RuntimeError("Could not write cursor evidence {}".format(name))
+        evidence.append({"name": name, "category": "cursor_shape"})
+    np.savez_compressed(
+        output_path / "model.npz",
+        cursor_probability=shape["probability"],
+        cursor_binary=shape["binary"],
+        cursor_polygon_relative_xy=shape["symmetric_model"]["polygon_relative_xy"],
+        shape_center=np.asarray([center["x"], center["y"]]),
+        geometry_spatial_schema_version=np.asarray([SPATIAL_SCHEMA_VERSION]),
+        shape_center_space_id=np.asarray(str(space["space_id"])),
+    )
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "review_required",
+        "calibration_kind": "cursor_static",
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "provenance": provenance or {},
+        "config": merged,
+        "outer_boundary": boundary,
+        "rotation_center": center if existing_rotation_center is not None else None,
+        "rotation_center_status": center_status,
+        "shape_center": center,
+        "cursor_shape": shape["metrics"],
+        "geometry_space": space,
+        "overall_confidence": float(shape["metrics"]["confidence"]),
         "confidence_scale": "0..1 experimental; human evidence review is authoritative",
         "model_file": "model.npz",
         "evidence": evidence,
