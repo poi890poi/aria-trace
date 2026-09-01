@@ -10,6 +10,7 @@ from typing import Mapping
 import numpy as np
 
 from aria_trace.adapters.filesystem.commented_yaml import write_commented_yaml
+from aria_trace.adapters.android.spaces import natural_to_logical_matrix
 from aria_trace.evidence.media_trace import image_size_px, raster_record, validate_media_registry
 from .hik.spaces import RigCalibratedSpaceConverter
 
@@ -38,9 +39,9 @@ ANDROID_SOURCE_SPACES_HEADER = """# AriaTrace Android-only coordinate space.
 # logical-display pixel centers with top-left [0, 0], +X right, and +Y down."""
 
 ANDROID_SOURCE_SPACES_COMMENTS = {
-    "spaces": "The single saved Android raster and its orientation.",
+    "spaces": "The saved Android raster and canonical rotation-0 panel raster.",
     "streams": "Video filename, size, and timestamp authority.",
-    "conversions": "No cross-source conversion exists in an Android-only session.",
+    "conversions": "Explicit Android logical/canonical mappings; no cross-source mapping exists.",
     "usage": "Rules for the one-time phone-game mini-map calibration input.",
 }
 
@@ -440,6 +441,25 @@ def write_android_source_space_yaml(
     if first_android is None:
         raise RuntimeError("ADB-only session has no Android frame metadata")
     size = [int(first_android["width"]), int(first_android["height"])]
+    turns = int(
+        phone_surface_orientation.get(
+            "quarter_turns_clockwise_from_natural", 0
+        )
+    ) % 4
+    natural_size = phone_surface_orientation.get("natural_size_px")
+    if natural_size is None:
+        natural_size = [size[1], size[0]] if turns % 2 else list(size)
+    natural_size = list(map(int, natural_size))
+    expected_logical = (
+        [natural_size[1], natural_size[0]] if turns % 2 else list(natural_size)
+    )
+    if size != expected_logical:
+        raise RuntimeError(
+            "ADB frame size {} does not match canonical panel size {} at "
+            "quarter-turn {}".format(size, natural_size, turns)
+        )
+    canonical_to_logical = natural_to_logical_matrix(natural_size, turns)
+    logical_to_canonical = np.linalg.inv(canonical_to_logical)
     video = (manifest.get("videos") or {}).get("android_phone")
     android_capture = (manifest.get("context") or {}).get("android_capture") or {}
     android_timestamp_authority = (
@@ -452,16 +472,19 @@ def write_android_source_space_yaml(
         "schema_version": "1.0",
         "capture_mode": "android_only",
         "spaces": {
+            "android_phone_natural_display_pixels": {
+                "size_px": natural_size,
+                "origin": "top_left_pixel_center_at_android_rotation_0",
+                "x_axis": "right",
+                "y_axis": "down",
+                "canonical": True,
+            },
             "android_logical_display_pixels": {
                 "size_px": size,
                 "origin": "top_left_pixel_center",
                 "x_axis": "right",
                 "y_axis": "down",
-                "quarter_turns_clockwise_from_phone_natural": int(
-                    phone_surface_orientation.get(
-                        "quarter_turns_clockwise_from_natural", 0
-                    )
-                ),
+                "quarter_turns_clockwise_from_phone_natural": turns,
             }
         },
         "streams": {
@@ -473,6 +496,12 @@ def write_android_source_space_yaml(
             }
         },
         "conversions": {
+            "android_phone_natural_to_logical_3x3": (
+                canonical_to_logical.tolist()
+            ),
+            "android_logical_to_phone_natural_3x3": (
+                logical_to_canonical.tolist()
+            ),
             "cross_source": None,
             "reason": "No HIK stream was acquired for this session",
         },

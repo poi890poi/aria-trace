@@ -1168,9 +1168,18 @@ class WorkbenchTests(unittest.TestCase):
             {"register": lambda self, _stream_id: object()},
         )()
         input_source = object()
+        surface = {
+            "natural_size_px": [1080, 2400],
+            "logical_size_px": [2400, 1080],
+            "quarter_turns_clockwise_from_natural": 1,
+            "source": "unit_test",
+        }
         factory._adb = lambda _config: Path("adb")
         with patch(
             "aria_trace.apps.workbench.sources.AdbClockMapper", return_value=clock
+        ), patch(
+            "aria_trace.apps.workbench.sources.probe_android_capture_surface",
+            return_value=("ANDROID123", surface),
         ), patch(
             "aria_trace.apps.workbench.sources.find_scrcpy_server",
             return_value=Path("server"),
@@ -1188,6 +1197,7 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIs(captured_input, input_source)
         self.assertIs(hub_type.call_args[1]["clock"], clock)
         self.assertIs(input_type.call_args[1]["clock"], clock)
+        self.assertEqual(frame.image_space_context, surface)
 
     def test_simple_android_session_uses_scrcpy_and_getevent(self):
         with tempfile.TemporaryDirectory() as temporary:

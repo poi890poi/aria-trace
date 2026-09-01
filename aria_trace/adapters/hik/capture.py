@@ -7,12 +7,16 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 import cv2
+import numpy as np
 
 from aria_trace.domain.packets import FramePacket
 from aria_trace.adapters.rig.devices import CameraConfiguration
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
 from aria_trace.adapters.hik.driver import RectifiedHikCamera
 from aria_trace.adapters.sources import FrameSource
+from aria_trace.services.calibration.rig.hik.spaces import (
+    RigCalibratedSpaceConverter,
+)
 
 
 def rotate_quarter_turns_clockwise(image, quarter_turns: int):
@@ -50,6 +54,36 @@ class CalibratedHikFrameSource(FrameSource):
         self._started = False
         self._orientation_lock = threading.Lock()
         self._orientation_evidence = None
+        self._space_converters = {}
+
+    def _canonical_space_mapping(self, output_turns: int) -> dict:
+        if not self.rectify:
+            return {}
+        turns = int(output_turns) % 4
+        converter = self._space_converters.get(turns)
+        if converter is None:
+            base = RigCalibratedSpaceConverter(self.calibration_file)
+            surface_turns = (
+                base.calibration_display_quarter_turns_clockwise_from_natural
+                + turns
+            ) % 4
+            converter = RigCalibratedSpaceConverter(
+                self.calibration_file, surface_turns
+            )
+            self._space_converters[turns] = converter
+        local_to_canonical = (
+            converter.adapter_to_phone_natural_3x3
+            @ converter.output_image_to_adapter_3x3
+        )
+        return {
+            "canonical_space_id": "android_phone_natural_display_pixels",
+            "canonical_size_px": list(converter.phone_natural_size_px),
+            "local_to_canonical_3x3": local_to_canonical.tolist(),
+            "canonical_to_local_3x3": np.linalg.inv(
+                local_to_canonical
+            ).tolist(),
+            "orientation": "android_surface_up",
+        }
 
     def set_output_orientation(
         self,
@@ -140,6 +174,25 @@ class CalibratedHikFrameSource(FrameSource):
             low = metadata.get("device_timestamp_low")
             if high is not None and low is not None:
                 raw_device_time = (int(high) << 32) | int(low)
+        image_space = {
+            "schema_version": "1.0",
+            "space_id": (
+                "hik_session_aligned_visible_phone_pixels"
+                if self.rectify
+                else "hik_session_rotated_camera_adapter_roi_pixels"
+            ),
+            "stored_size_px": [int(image.shape[1]), int(image.shape[0])],
+            "valid_content_size_px": [
+                int(content_width),
+                int(content_height),
+            ],
+            "parent_space": dict(sample.metadata.get("image_space") or {}),
+            "operation": "rotate_quarter_turns_then_encoder_pad",
+            "quarter_turns_clockwise_from_parent": int(output_turns),
+            "padding_right_bottom_px": [padding_right, padding_bottom],
+            "color_order": "BGR",
+        }
+        image_space.update(self._canonical_space_mapping(output_turns))
         metadata.update(
             {
                 "source": "hik_mvs_calibrated",
@@ -171,26 +224,7 @@ class CalibratedHikFrameSource(FrameSource):
                     padding_right,
                     padding_bottom,
                 ],
-                "image_space": {
-                    "schema_version": "1.0",
-                    "space_id": (
-                        "hik_session_aligned_visible_phone_pixels"
-                        if self.rectify
-                        else "hik_session_rotated_camera_adapter_roi_pixels"
-                    ),
-                    "stored_size_px": [int(image.shape[1]), int(image.shape[0])],
-                    "valid_content_size_px": [
-                        int(content_width),
-                        int(content_height),
-                    ],
-                    "parent_space": dict(
-                        sample.metadata.get("image_space") or {}
-                    ),
-                    "operation": "rotate_quarter_turns_then_encoder_pad",
-                    "quarter_turns_clockwise_from_parent": int(output_turns),
-                    "padding_right_bottom_px": [padding_right, padding_bottom],
-                    "color_order": "BGR",
-                },
+                "image_space": image_space,
             }
         )
         return FramePacket(

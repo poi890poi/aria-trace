@@ -17,6 +17,7 @@ from aria_trace.adapters.android.capture import (
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
+from aria_trace.adapters.android.phone import probe_android_capture_surface
 from aria_trace.adapters.hik.capture import CalibratedHikFrameSource, NativeHikFrameSource
 from aria_trace.adapters.rig.dual_capture import (
     build_calibrated_rig_recording_bundle,
@@ -201,6 +202,7 @@ class SourceFactory:
         if not serial:
             raise ValueError("Choose a connected Android device")
         adb = self._adb(frame_config)
+        serial, surface = probe_android_capture_surface(str(adb), serial)
         clock = AdbClockMapper(adb, serial)
         server_config = frame_config.get("scrcpy_server")
         bundled_server = self._bundled_tool("scrcpy-server")
@@ -218,6 +220,7 @@ class SourceFactory:
         frame_source = AndroidRoiFrameSource(
             hub,
             AndroidRoiSpec("main", 0, 0, 0, 0),
+            image_space_context=surface,
         )
         if input_config.get("adapter") == "adb_getevent":
             input_source = AdbGetEventSource(
@@ -272,11 +275,16 @@ class SourceFactory:
                 fps=config.get("fps"),
             )
         if adapter == "adb_screenshot":
+            adb = self._adb(config)
+            serial, surface = probe_android_capture_surface(
+                str(adb), config.get("serial")
+            )
             return AdbScreenshotFrameSource(
-                self._adb(config),
-                serial=config.get("serial"),
+                adb,
+                serial=serial,
                 stream_id=config.get("stream_id", "main"),
                 fps=float(config.get("fps", 2.0)),
+                image_space_context=surface,
             )
         if adapter == "hik_mvs":
             camera_id = str(config.get("camera_id") or "").strip()

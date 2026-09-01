@@ -9,7 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 Runner = Callable[[Sequence[str], float], str]
@@ -53,6 +53,24 @@ def connected_adb_devices(adb_executable: Optional[str] = None) -> List[str]:
         for line in text.splitlines()[1:]
         if "\tdevice" in line and line.split("\t", 1)[0].strip()
     ]
+
+
+def probe_android_capture_surface(
+    adb_executable: str, serial: Optional[str] = None
+) -> Tuple[str, Dict[str, Any]]:
+    """Resolve one device and return its current raster-to-panel contract."""
+
+    selected = str(serial or "").strip()
+    if not selected:
+        devices = connected_adb_devices(adb_executable)
+        if len(devices) != 1:
+            raise RuntimeError(
+                "An explicit Android serial is required when {} devices are "
+                "connected".format(len(devices))
+            )
+        selected = devices[0]
+    phone = AdbPhoneSession(selected, adb_executable=adb_executable)
+    return selected, phone.capture_surface()
 
 
 def _subprocess_runner(command: Sequence[str], timeout_seconds: float) -> str:
@@ -299,6 +317,21 @@ class AdbPhoneSession:
         except RuntimeError:
             display_text = ""
         return self._orientation_from_dumpsys(input_text, display_text)
+
+    def capture_surface(self) -> Dict[str, Any]:
+        """Describe the current logical raster relative to rotation-0 panel space."""
+
+        metrics = self.metrics()
+        quarter_turns = int(metrics.orientation_quarter_turns) % 4
+        return {
+            "quarter_turns_clockwise_from_natural": quarter_turns,
+            "degrees_clockwise_from_natural": quarter_turns * 90,
+            "logical_size_px": list(map(int, metrics.screen_size_px)),
+            "natural_size_px": list(
+                map(int, metrics.natural_screen_size_px or metrics.screen_size_px)
+            ),
+            "source": "adb_surface_orientation_at_capture",
+        }
 
     def metrics(self, refresh_hz_override: Optional[float] = None) -> PhoneMetrics:
         size_text = self.shell("wm", "size")

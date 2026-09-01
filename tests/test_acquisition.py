@@ -209,7 +209,13 @@ class AcquisitionTests(unittest.TestCase):
 
         hub = FakeHub()
         source = AndroidRoiFrameSource(
-            hub, parse_android_roi("roi=2,3,8,6,4,2,20")
+            hub,
+            parse_android_roi("roi=2,3,8,6,4,2,20"),
+            image_space_context={
+                "natural_size_px": [12, 16],
+                "quarter_turns_clockwise_from_natural": 1,
+                "source": "unit_test",
+            },
         )
         source.start()
         image = np.arange(12 * 16 * 3, dtype=np.uint8).reshape((12, 16, 3))
@@ -220,6 +226,14 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(packet.host_capture_time_ns, 222)
         self.assertEqual(packet.host_receive_time_ns, 333)
         self.assertEqual(packet.metadata["source_sequence"], 7)
+        self.assertEqual(
+            "android_phone_natural_display_pixels",
+            packet.metadata["image_space"]["canonical_space_id"],
+        )
+        np.testing.assert_allclose(
+            packet.metadata["image_space"]["local_to_canonical_3x3"],
+            [[0, 3, 4], [-2, 0, 12.5], [0, 0, 1]],
+        )
         self.assertEqual(packet.dropped_before, 2)
 
     def test_deferred_recording_starts_at_first_qualifying_input(self):

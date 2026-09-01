@@ -461,6 +461,14 @@ class GamePhonePreparationTests(unittest.TestCase):
             self.assertTrue(control.completed)
             self.assertEqual("complete", manifest["status"])
             self.assertEqual(4, len(reader.frames_by_stream["android_phone"]))
+            first_space = reader.frames_by_stream["android_phone"][0][
+                "metadata"
+            ]["image_space"]
+            self.assertEqual(
+                "android_phone_natural_display_pixels",
+                first_space["canonical_space_id"],
+            )
+            self.assertEqual([24, 32], first_space["canonical_size_px"])
             self.assertEqual(8, len(reader.inputs))
             self.assertEqual(
                 "settled_swipe_endpoint_screenshots",

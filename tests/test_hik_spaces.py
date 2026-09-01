@@ -102,7 +102,10 @@ class HikSpaceConversionTests(unittest.TestCase):
             )
             path = write_android_source_space_yaml(
                 session,
-                {"quarter_turns_clockwise_from_natural": 1},
+                {
+                    "quarter_turns_clockwise_from_natural": 1,
+                    "natural_size_px": [1080, 2400],
+                },
                 {"videos": {"android_phone": "video_android_phone.mkv"}},
             )
             result = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -110,6 +113,14 @@ class HikSpaceConversionTests(unittest.TestCase):
         self.assertIsNone(result["conversions"]["cross_source"])
         self.assertEqual(
             [2400, 1080], result["streams"]["android_phone"]["stored_size_px"]
+        )
+        self.assertEqual(
+            [1080, 2400],
+            result["spaces"]["android_phone_natural_display_pixels"]["size_px"],
+        )
+        np.testing.assert_allclose(
+            result["conversions"]["android_phone_natural_to_logical_3x3"],
+            [[0, -1, 2399], [1, 0, 0], [0, 0, 1]],
         )
 
     def test_forward_inverse_and_bounds_match_rotated_adb_pixels(self):

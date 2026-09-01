@@ -98,6 +98,9 @@ class RigDualCaptureTests(unittest.TestCase):
             clock_type.assert_called_once_with(Path("adb.exe"), "PHONE456")
             self.assertIs(hub_type.call_args[1]["clock"], clock)
             self.assertEqual(android_type.call_args[0][1].stream_id, "android_phone")
+            self.assertEqual(
+                surface, android_type.call_args[1]["image_space_context"]
+            )
             self.assertEqual(hik_type.call_args[0][1], "hik_phone")
             self.assertEqual(
                 orient.call_args[1]["android_reported_quarter_turns"], 3

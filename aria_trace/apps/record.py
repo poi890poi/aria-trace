@@ -22,6 +22,7 @@ from aria_trace.adapters.android.capture import (
     parse_android_roi,
     push_session_archive_to_device,
 )
+from aria_trace.adapters.android.phone import probe_android_capture_surface
 from aria_trace.adapters.windows import (
     WindowsKeyboardMouseSource,
     WindowsRawKeyboardMouseSource,
@@ -124,6 +125,15 @@ def main() -> None:
     if (args.adb_screenshot or args.getevent or args.android_roi) and args.adb is None:
         parser.error("ADB is required; install it on PATH or pass --adb PATH")
 
+    android_surface = None
+    if args.adb_screenshot or args.android_roi:
+        try:
+            args.serial, android_surface = probe_android_capture_surface(
+                str(args.adb), args.serial
+            )
+        except RuntimeError as exc:
+            parser.error(str(exc))
+
     frame_sources = []
     for index, specification in enumerate(args.video):
         stream_id, path = parse_assignment(specification, "video{}".format(index))
@@ -148,7 +158,13 @@ def main() -> None:
         )
     if args.adb_screenshot:
         frame_sources.append(
-            AdbScreenshotFrameSource(args.adb, args.serial, "adb", args.adb_fps)
+            AdbScreenshotFrameSource(
+                args.adb,
+                args.serial,
+                "adb",
+                args.adb_fps,
+                image_space_context=android_surface,
+            )
         )
     android_clock = None
     android_hub = None
@@ -172,7 +188,10 @@ def main() -> None:
             max_fps=args.android_max_fps,
         )
         frame_sources.extend(
-            AndroidRoiFrameSource(android_hub, spec) for spec in android_specs
+            AndroidRoiFrameSource(
+                android_hub, spec, image_space_context=android_surface
+            )
+            for spec in android_specs
         )
     if not frame_sources:
         parser.error("Specify at least one --window, --video, --camera, or --adb-screenshot source")

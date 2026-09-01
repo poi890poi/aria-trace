@@ -19,11 +19,12 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Mapping, Optional, Tuple
 
 import cv2
 import numpy as np
 
+from aria_trace.adapters.android.spaces import image_space_from_surface
 from aria_trace.domain.packets import FramePacket
 from aria_trace.adapters.sources import AdbClockMapper, FrameSource
 from aria_trace.adapters.filesystem.video import find_ffmpeg
@@ -477,9 +478,17 @@ class ScrcpyCaptureHub:
 
 
 class AndroidRoiFrameSource(FrameSource):
-    def __init__(self, hub: ScrcpyCaptureHub, spec: AndroidRoiSpec) -> None:
+    def __init__(
+        self,
+        hub: ScrcpyCaptureHub,
+        spec: AndroidRoiSpec,
+        image_space_context: Optional[Mapping[str, object]] = None,
+    ) -> None:
         self.hub = hub
         self.spec = spec
+        self.image_space_context = (
+            dict(image_space_context) if image_space_context is not None else None
+        )
         self.stream_id = spec.stream_id
         self._queue = hub.register(self.stream_id)
         self._started = False
@@ -535,21 +544,29 @@ class AndroidRoiFrameSource(FrameSource):
             if clock is not None and callable(getattr(clock, "describe", None))
             else {}
         )
+        packet_metadata = {
+            "source": "android_scrcpy",
+            "source_sequence": sequence,
+            "source_size": [frame_width, frame_height],
+            "roi_xywh": [self.spec.x, self.spec.y, width, height],
+            "target_size": [cropped.shape[1], cropped.shape[0]],
+            "timestamp_timebase": "scrcpy_media_pts_mapped_to_host",
+            "timestamp_mapping": timestamp_mapping,
+        }
+        if self.image_space_context is not None:
+            packet_metadata["image_space"] = image_space_from_surface(
+                self.image_space_context,
+                source_size_px=[frame_width, frame_height],
+                roi_xywh=[self.spec.x, self.spec.y, width, height],
+                stored_size_px=[cropped.shape[1], cropped.shape[0]],
+            )
         return FramePacket(
             self.stream_id,
             cropped,
             capture_ns,
             receive_ns,
             source_time_ns=source_ns,
-            metadata={
-                "source": "android_scrcpy",
-                "source_sequence": sequence,
-                "source_size": [frame_width, frame_height],
-                "roi_xywh": [self.spec.x, self.spec.y, width, height],
-                "target_size": [cropped.shape[1], cropped.shape[0]],
-                "timestamp_timebase": "scrcpy_media_pts_mapped_to_host",
-                "timestamp_mapping": timestamp_mapping,
-            },
+            metadata=packet_metadata,
             dropped_before=self.hub.take_drops(self.stream_id),
         )
 
@@ -559,7 +576,7 @@ class AndroidRoiFrameSource(FrameSource):
             self.hub.stop()
 
     def describe(self) -> Dict[str, object]:
-        return {
+        result = {
             "type": type(self).__name__,
             "stream_id": self.stream_id,
             "roi_xywh": [self.spec.x, self.spec.y, self.spec.width, self.spec.height],
@@ -571,6 +588,20 @@ class AndroidRoiFrameSource(FrameSource):
             "video_crf": self.spec.crf,
             "shared_capture": self.hub.describe(),
         }
+        if self.image_space_context is not None:
+            result["image_space_contract"] = {
+                "canonical_space_id": "android_phone_natural_display_pixels",
+                "canonical_size_px": list(
+                    self.image_space_context["natural_size_px"]
+                ),
+                "surface_quarter_turns_clockwise_from_canonical": int(
+                    self.image_space_context[
+                        "quarter_turns_clockwise_from_natural"
+                    ]
+                ),
+                "per_frame_metadata": "frames.jsonl#metadata.image_space",
+            }
+        return result
 
 
 def push_session_archive_to_device(

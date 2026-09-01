@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -91,10 +94,34 @@ class NativeHikFrameSourceTests(unittest.TestCase):
 
 
 class CalibratedHikFrameSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.calibration = Path(self.temporary.name) / "rig.json"
+        self.calibration.write_text(
+            json.dumps(
+                {
+                    "phone": {
+                        "natural_screen_size_px": [10, 20],
+                        "screen_size_px": [10, 20],
+                        "orientation_quarter_turns": 0,
+                    },
+                    "normalization": {
+                        "output_size_px": [5, 3],
+                        "origin_screen_xy": [2, 4],
+                        "screen_units_per_output_pixel_xy": [1, 1],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
     def test_rotates_rectified_phone_view_to_android_logical_orientation(self):
         reader = FakeRectifiedReader()
         source = CalibratedHikFrameSource(
-            "rig.json",
+            self.calibration,
             reader=reader,
             output_quarter_turns_clockwise=1,
         )
@@ -120,13 +147,24 @@ class CalibratedHikFrameSourceTests(unittest.TestCase):
         )
         self.assertEqual([1, 1], packet.metadata["video_encoding_padding_right_bottom_px"])
         np.testing.assert_array_equal(packet.image[0, 2], [1, 2, 3])
+        self.assertEqual(
+            "android_phone_natural_display_pixels",
+            packet.metadata["image_space"]["canonical_space_id"],
+        )
+        self.assertEqual(
+            [10, 20], packet.metadata["image_space"]["canonical_size_px"]
+        )
+        np.testing.assert_allclose(
+            packet.metadata["image_space"]["local_to_canonical_3x3"],
+            [[0, 1, 2], [-1, 0, 6], [0, 0, 1]],
+        )
         source.stop()
         self.assertTrue(reader.released)
 
     def test_orientation_can_be_updated_from_evidence_before_recording(self):
         reader = FakeRectifiedReader()
         source = CalibratedHikFrameSource(
-            "rig.json",
+            self.calibration,
             reader=reader,
             output_quarter_turns_clockwise=0,
         )
@@ -154,7 +192,7 @@ class CalibratedHikFrameSourceTests(unittest.TestCase):
     def test_unrectified_stream_rectifies_only_explicit_evidence_image(self):
         reader = FakeRectifiedReader()
         source = CalibratedHikFrameSource(
-            "rig.json",
+            self.calibration,
             reader=reader,
             rectify=False,
             output_quarter_turns_clockwise=1,

@@ -5,11 +5,12 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Mapping, Optional
 
 import cv2
 import numpy as np
 
+from aria_trace.adapters.android.spaces import image_space_from_surface
 from aria_trace.domain.packets import FramePacket, InputPacket
 
 
@@ -155,11 +156,15 @@ class AdbScreenshotFrameSource(FrameSource):
         serial: Optional[str] = None,
         stream_id: str = "adb",
         fps: float = 2.0,
+        image_space_context: Optional[Mapping[str, object]] = None,
     ) -> None:
         self.adb = Path(adb)
         self.serial = serial
         self.stream_id = stream_id
         self.fps = fps
+        self.image_space_context = (
+            dict(image_space_context) if image_space_context is not None else None
+        )
         self._running = False
         self._next_frame_ns = 0
 
@@ -190,7 +195,21 @@ class AdbScreenshotFrameSource(FrameSource):
         image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise RuntimeError("ADB returned an invalid screenshot")
-        return FramePacket(self.stream_id, image, capture_time, receive_time)
+        height, width = image.shape[:2]
+        metadata = {
+            "source": "android_adb_screencap",
+            "coordinate_space": "android_logical_display_pixels",
+        }
+        if self.image_space_context is not None:
+            metadata["image_space"] = image_space_from_surface(
+                self.image_space_context,
+                source_size_px=[width, height],
+                roi_xywh=[0, 0, width, height],
+                stored_size_px=[width, height],
+            )
+        return FramePacket(
+            self.stream_id, image, capture_time, receive_time, metadata=metadata
+        )
 
     def stop(self) -> None:
         self._running = False
@@ -198,6 +217,14 @@ class AdbScreenshotFrameSource(FrameSource):
     def describe(self) -> Dict[str, object]:
         result = super().describe()
         result.update({"adb": str(self.adb.resolve()), "serial": self.serial, "requested_fps": self.fps})
+        if self.image_space_context is not None:
+            result["image_space_contract"] = {
+                "canonical_space_id": "android_phone_natural_display_pixels",
+                "canonical_size_px": list(
+                    self.image_space_context["natural_size_px"]
+                ),
+                "per_frame_metadata": "frames.jsonl#metadata.image_space",
+            }
         return result
 
 

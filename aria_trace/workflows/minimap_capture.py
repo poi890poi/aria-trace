@@ -23,6 +23,7 @@ from aria_trace.adapters.android.capture import (
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
+from aria_trace.adapters.android.spaces import image_space_from_surface
 from aria_trace.adapters.android.game_launcher import launch_android_game
 from aria_trace.adapters.android.zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from aria_trace.services.calibration.rig.dual_source_spaces import (
@@ -62,17 +63,7 @@ def _select_phone(adb: Path, configured: Optional[str]) -> str:
 
 def _phone_surface(adb: Path, serial: str) -> dict:
     phone = AdbPhoneSession(serial, adb_executable=adb)
-    metrics = phone.metrics()
-    quarter_turns = int(metrics.orientation_quarter_turns)
-    natural = list(map(int, metrics.natural_screen_size_px))
-    logical = list(map(int, metrics.screen_size_px))
-    return {
-        "quarter_turns_clockwise_from_natural": quarter_turns,
-        "degrees_clockwise_from_natural": quarter_turns * 90,
-        "logical_size_px": logical,
-        "natural_size_px": natural,
-        "source": "adb_surface_orientation_at_capture",
-    }
+    return phone.capture_surface()
 
 
 def _resolve_rig_calibration(path: Path) -> Path:
@@ -634,6 +625,13 @@ def _record_adb_screenshot_zigzag(
         adb_packet, raw_png = _capture_adb_screenshot_packet(
             adb, serial, stroke_index
         )
+        adb_height, adb_width = adb_packet.image.shape[:2]
+        adb_packet.metadata["image_space"] = image_space_from_surface(
+            surface,
+            source_size_px=[adb_width, adb_height],
+            roi_xywh=[0, 0, adb_width, adb_height],
+            stored_size_px=[adb_width, adb_height],
+        )
         adb_packet.metadata["trigger_input_up_host_time_ns"] = int(
             packet.host_time_ns
         )
@@ -1091,7 +1089,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         max_fps=60.0,
     )
     android = AndroidRoiFrameSource(
-        hub, AndroidRoiSpec("android_phone", 0, 0, 0, 0)
+        hub,
+        AndroidRoiSpec("android_phone", 0, 0, 0, 0),
+        image_space_context=surface,
     )
     hik = None
     orientation_match = None

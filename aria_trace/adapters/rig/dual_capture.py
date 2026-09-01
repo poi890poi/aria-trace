@@ -63,15 +63,7 @@ def _resolve_calibration_file(value: Path) -> Path:
 
 
 def _phone_surface(adb: Path, serial: str) -> dict:
-    metrics = AdbPhoneSession(serial, adb_executable=str(adb)).metrics()
-    quarter_turns = int(metrics.orientation_quarter_turns)
-    return {
-        "quarter_turns_clockwise_from_natural": quarter_turns,
-        "degrees_clockwise_from_natural": quarter_turns * 90,
-        "logical_size_px": list(map(int, metrics.screen_size_px)),
-        "natural_size_px": list(map(int, metrics.natural_screen_size_px)),
-        "source": "adb_surface_orientation_at_capture",
-    }
+    return AdbPhoneSession(serial, adb_executable=str(adb)).capture_surface()
 
 
 def _write_manifest(path: Path, manifest: Mapping[str, object]) -> None:
@@ -124,9 +116,11 @@ def build_calibrated_rig_recording_bundle(
         bit_rate=int(bit_rate),
         max_fps=float(max_fps),
     )
+    surface = _phone_surface(adb, phone_serial)
     android = AndroidRoiFrameSource(
         hub,
         AndroidRoiSpec("android_phone", 0, 0, 0, 0),
+        image_space_context=surface,
     )
     hik = CalibratedHikFrameSource(
         calibration_file,
@@ -134,7 +128,6 @@ def build_calibrated_rig_recording_bundle(
         rectify=True,
         output_quarter_turns_clockwise=0,
     )
-    surface = _phone_surface(adb, phone_serial)
     try:
         orientation_match, orientation_images = orient_hik_source_from_first_adb_frame(
             android,
