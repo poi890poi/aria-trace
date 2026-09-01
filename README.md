@@ -197,6 +197,10 @@ The source session remains explicit immutable provenance. Evidence output,
 game fallback, active rig selection, publication, and activation use the
 effective profile registry automatically. An explicit output remains a
 diagnostic override.
+Color statistics and the HIK gamma/CCM fit use only an inset of the active
+mini-map circle. Saturated source pixels are excluded, and a fitted CCM is
+accepted only when its training and holdout channel-clipping fractions remain
+within the recorded safety limit; otherwise the identity conversion is kept.
 
 Verify selection, then open the dual-stream GUI:
 

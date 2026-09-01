@@ -181,18 +181,24 @@ def _sample_pair(
         cv2.Sobel(hik_gray, cv2.CV_32F, 1, 0, ksize=3),
         cv2.Sobel(hik_gray, cv2.CV_32F, 0, 1, ksize=3),
     )
+    unclipped = (
+        (warped.min(axis=2) > 6)
+        & (warped.max(axis=2) < 252)
+        & (hik.min(axis=2) > 2)
+        & (hik.max(axis=2) < 252)
+    )
     stable = (
         (mask > 0)
         & (android_gradient < 36.0)
         & (hik_gradient < 36.0)
-        & (warped.max(axis=2) < 252)
-        & (hik.max(axis=2) < 252)
-        & (warped.max(axis=2) > 6)
-        & (hik.max(axis=2) > 2)
+        & unclipped
     )
     indices = np.flatnonzero(stable)
     if indices.size < 256:
-        indices = np.flatnonzero(mask > 0)
+        # Relax only the edge-stability test. Saturated pixels never become
+        # fitting data because they cannot distinguish a good transform from
+        # overflow clipped to the same endpoint.
+        indices = np.flatnonzero((mask > 0) & unclipped)
     if indices.size > maximum_pixels:
         positions = np.linspace(0, indices.size - 1, maximum_pixels).astype(int)
         indices = indices[positions]
@@ -211,6 +217,7 @@ def optimize_mvs_bayer_conversion(
     *,
     maximum_pairs: int = 16,
     maximum_pixels_per_pair: int = 2500,
+    maximum_channel_clipping_fraction: float = 0.001,
 ) -> tuple[dict, Mapping[str, np.ndarray]]:
     """Fit MVS gamma+CCM from synchronized ADB/HIK mini-map pixels."""
 
@@ -252,18 +259,52 @@ def optimize_mvs_bayer_conversion(
     target_validation = np.vstack(validation_target)
 
     identity = np.eye(3, dtype=np.float64)
-    baseline = _metrics(
-        source_validation, target_validation, 1.0, identity
-    )
+    baseline = _metrics(source_validation, target_validation, 1.0, identity)
+    baseline_train = _metrics(source_train, target_train, 1.0, identity)
     candidates = []
     for gamma in np.linspace(0.25, 2.50, 91):
         ccm = _fit_matrix(source_train, target_train, float(gamma))
-        metrics = _metrics(
+        validation_metrics = _metrics(
             source_validation, target_validation, float(gamma), ccm
         )
-        candidates.append((metrics["rgb_mae_dn"], float(gamma), ccm, metrics))
-    candidates.sort(key=lambda item: item[0])
-    _, gamma, ccm, selected = candidates[0]
+        training_metrics = _metrics(
+            source_train, target_train, float(gamma), ccm
+        )
+        safe = (
+            training_metrics["ccm_channel_clipping_fraction"]
+            <= float(maximum_channel_clipping_fraction)
+            and validation_metrics["ccm_channel_clipping_fraction"]
+            <= float(maximum_channel_clipping_fraction)
+        )
+        candidates.append(
+            (
+                validation_metrics["rgb_mae_dn"],
+                float(gamma),
+                ccm,
+                validation_metrics,
+                training_metrics,
+                safe,
+            )
+        )
+    safe_candidates = [item for item in candidates if item[5]]
+    safe_candidates.sort(key=lambda item: item[0])
+    if safe_candidates:
+        _, candidate_gamma, candidate_ccm, candidate_validation, candidate_train, _ = (
+            safe_candidates[0]
+        )
+    else:
+        candidate_gamma = 1.0
+        candidate_ccm = identity
+        candidate_validation = baseline
+        candidate_train = baseline_train
+    candidate_improvement = (
+        baseline["rgb_mae_dn"] - candidate_validation["rgb_mae_dn"]
+    )
+    use_candidate = bool(safe_candidates and candidate_improvement > 0.0)
+    gamma = float(candidate_gamma) if use_candidate else 1.0
+    ccm = candidate_ccm if use_candidate else identity
+    selected = candidate_validation if use_candidate else baseline
+    selected_train = candidate_train if use_candidate else baseline_train
     improvement = baseline["rgb_mae_dn"] - selected["rgb_mae_dn"]
     relative = improvement / max(baseline["rgb_mae_dn"], 1.0e-9)
 
@@ -274,15 +315,17 @@ def optimize_mvs_bayer_conversion(
     adjusted = apply_mvs_bayer_model(hik, gamma, ccm)
     x, y, width, height = cv2.boundingRect(mask)
     crop = (slice(y, y + height), slice(x, x + width))
-    target_crop = warped[crop]
-    baseline_crop = hik[crop]
-    adjusted_crop = adjusted[crop]
+    crop_mask = mask[crop]
+    target_crop = cv2.bitwise_and(warped[crop], warped[crop], mask=crop_mask)
+    baseline_crop = cv2.bitwise_and(hik[crop], hik[crop], mask=crop_mask)
+    adjusted_crop = cv2.bitwise_and(adjusted[crop], adjusted[crop], mask=crop_mask)
     before_difference = cv2.absdiff(target_crop, baseline_crop)
     after_difference = cv2.absdiff(target_crop, adjusted_crop)
     evidence = {
         "bayer_color_match_target_adb_warped.png": target_crop,
         "bayer_color_match_hik_identity.png": baseline_crop,
         "bayer_color_match_hik_adjusted.png": adjusted_crop,
+        "bayer_color_match_sampling_mask.png": crop_mask,
         "bayer_color_match_review.png": np.hstack(
             (
                 _labeled_tile(target_crop, "ADB target"),
@@ -295,7 +338,7 @@ def optimize_mvs_bayer_conversion(
     }
     summary = {
         "schema_version": "1.0",
-        "status": "selected" if improvement > 0.0 else "identity_preferred",
+        "status": "selected" if use_candidate else "identity_preferred",
         "backend": "hik_mvs",
         "operation": "MVS Bayer-to-BGR CCM followed by gamma",
         "runtime_application": {
@@ -305,8 +348,8 @@ def optimize_mvs_bayer_conversion(
             "additional_frame_passes": 0,
             "additional_frame_copies": 0,
         },
-        "gamma": gamma if improvement > 0.0 else 1.0,
-        "ccm_rgb_3x3": ccm.tolist() if improvement > 0.0 else identity.tolist(),
+        "gamma": gamma,
+        "ccm_rgb_3x3": ccm.tolist(),
         "ccm_quantization_scale": 1024,
         "fit": {
             "model_order": "clip(CCM * RGB) then scalar gamma",
@@ -314,7 +357,14 @@ def optimize_mvs_bayer_conversion(
             "validation_sample_count": int(source_validation.shape[0]),
             "synchronized_pair_count": len(evidence_candidates),
             "baseline_validation": baseline,
+            "baseline_training": baseline_train,
             "selected_validation": selected,
+            "selected_training": selected_train,
+            "maximum_channel_clipping_fraction": float(
+                maximum_channel_clipping_fraction
+            ),
+            "safe_candidate_count": len(safe_candidates),
+            "rejected_for_clipping_count": len(candidates) - len(safe_candidates),
             "rgb_mae_improvement_dn": float(max(0.0, improvement)),
             "relative_rgb_mae_improvement": float(max(0.0, relative)),
             "representative_pair": {

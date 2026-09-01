@@ -103,7 +103,20 @@ class HikBayerColorMatchTests(unittest.TestCase):
             result["fit"]["selected_validation"]["rgb_mae_dn"],
             result["fit"]["baseline_validation"]["rgb_mae_dn"],
         )
+        self.assertLessEqual(
+            result["fit"]["selected_validation"][
+                "ccm_channel_clipping_fraction"
+            ],
+            result["fit"]["maximum_channel_clipping_fraction"],
+        )
+        self.assertLessEqual(
+            result["fit"]["selected_training"][
+                "ccm_channel_clipping_fraction"
+            ],
+            result["fit"]["maximum_channel_clipping_fraction"],
+        )
         self.assertIn("bayer_color_match_review.png", evidence)
+        self.assertIn("bayer_color_match_sampling_mask.png", evidence)
 
 
 if __name__ == "__main__":

@@ -289,6 +289,7 @@ def calibrate_game_session(
     )
     output.mkdir(parents=True, exist_ok=False)
     capabilities = {}
+    current_phone_game_revision = None
 
     try:
         value = calibrate_game_orientation_session(
@@ -335,6 +336,7 @@ def calibrate_game_session(
             "failed", error="{}: {}".format(type(exc).__name__, exc)
         )
     else:
+        current_phone_game_revision = value["profiles"].get("phone_game")
         capabilities["minimap_boundary"] = _outcome(
             value["status"], calibration=str(output / "minimap" / "calibration.json"),
             profiles=value["profiles"],
@@ -354,6 +356,7 @@ def calibrate_game_session(
                 game_id=selected_game,
                 maximum_pairs=maximum_pairs,
                 activate=activate,
+                phone_game_revision=current_phone_game_revision,
             )
         except (ValueError, FileNotFoundError) as exc:
             capabilities["game_color"] = _outcome(

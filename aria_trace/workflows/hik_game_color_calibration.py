@@ -21,6 +21,13 @@ from aria_trace.adapters.filesystem.profile_registry import (
     context_from_rig_calibration,
 )
 from aria_trace.adapters.filesystem.session import SessionReader
+from aria_trace.adapters.android.spaces import natural_to_logical_matrix
+from aria_trace.domain.spatial import (
+    normalize_legacy_geometry,
+    raster_space,
+    require_spatial_geometry,
+    transform_circle_similarity,
+)
 from aria_trace.services.calibration.rig.hik.color_match import (
     optimize_mvs_bayer_conversion,
     synchronized_frame_pairs,
@@ -35,10 +42,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _adb_color_statistics(frames: np.ndarray) -> Mapping[str, object]:
+def _adb_color_statistics(
+    frames: np.ndarray, sampling_mask: np.ndarray
+) -> Mapping[str, object]:
     """Compact camera-independent appearance reference in decoded BGR space."""
 
-    sampled = frames[:, ::8, ::8, :].reshape(-1, 3).astype(np.float32)
+    stride = 8
+    sampled_frames = frames[:, ::stride, ::stride, :]
+    sampled_mask = sampling_mask[::stride, ::stride] > 0
+    sampled = sampled_frames[:, sampled_mask, :].reshape(-1, 3).astype(np.float32)
+    if sampled.shape[0] < 32:
+        stride = 1
+        sampled = frames[:, sampling_mask > 0, :].reshape(-1, 3).astype(
+            np.float32
+        )
+    if sampled.shape[0] < 32:
+        raise ValueError("Mini-map mask contains insufficient color-reference pixels")
     channels = {}
     for index, name in enumerate(("blue", "green", "red")):
         values = sampled[:, index]
@@ -53,9 +72,100 @@ def _adb_color_statistics(frames: np.ndarray) -> Mapping[str, object]:
     return {
         "color_order": "BGR",
         "source_frame_count": int(frames.shape[0]),
-        "sample_stride_px": 8,
+        "sample_stride_px": stride,
         "sample_count": int(sampled.shape[0]),
+        "sampling_region": "inset_minimap_circle",
         "channels": channels,
+    }
+
+
+def _logical_minimap_sampling_mask(
+    registry: ProfileRegistry,
+    context: ProfileContext,
+    frame_size_px: Sequence[int],
+    *,
+    phone_game_revision: Optional[str] = None,
+    radius_fraction: float = 0.96,
+) -> tuple[np.ndarray, Mapping[str, object]]:
+    """Resolve portable mini-map geometry into this session's ADB raster."""
+
+    if phone_game_revision:
+        profile = registry.resolve_revision(
+            phone_game_revision,
+            context,
+            expected_kind="phone_game",
+        )
+        selection = "explicit_current_game_calibration_revision"
+    else:
+        profile = registry.resolve("phone_game", context)
+        selection = "active_compatible_phone_game_revision"
+    payload = dict(profile.get("payload") or {})
+    boundary_value = payload.get("outer_boundary")
+    if not isinstance(boundary_value, Mapping):
+        raise ValueError("Phone-game profile has no mini-map boundary geometry")
+    logical_size = list(map(int, context.game_display.get("logical_frame_px") or []))
+    natural_size = list(map(int, context.panel_display.get("natural_panel_px") or []))
+    actual_size = list(map(int, frame_size_px))
+    if len(logical_size) != 2 or len(natural_size) != 2:
+        raise ValueError("Profile context lacks logical or natural panel dimensions")
+    if actual_size != logical_size:
+        raise ValueError(
+            "ADB color frames {} do not match game logical raster {}".format(
+                actual_size, logical_size
+            )
+        )
+    natural_space = raster_space(
+        "android_phone_natural_display_pixels", natural_size
+    )
+    logical_space = raster_space("android_logical_display_pixels", logical_size)
+    boundary = dict(boundary_value)
+    if "space" not in boundary:
+        boundary = normalize_legacy_geometry(boundary, "circle", natural_space)
+    else:
+        boundary = require_spatial_geometry(boundary, "circle")
+    source_space = boundary["space"]
+    if source_space["space_id"] == natural_space["space_id"]:
+        if list(map(int, source_space["size_px"])) != natural_size:
+            raise ValueError("Phone-game natural boundary raster is incompatible")
+        logical_boundary = transform_circle_similarity(
+            boundary,
+            natural_to_logical_matrix(
+                natural_size,
+                int(context.game_display.get("rotation_quarter_turns", 0)),
+            ),
+            logical_space,
+        )
+    elif source_space["space_id"] == logical_space["space_id"]:
+        if list(map(int, source_space["size_px"])) != logical_size:
+            raise ValueError("Phone-game logical boundary raster is incompatible")
+        logical_boundary = boundary
+    else:
+        raise ValueError(
+            "Phone-game boundary uses unsupported space {!r}".format(
+                source_space["space_id"]
+            )
+        )
+    radius = float(logical_boundary["radius"]) * float(radius_fraction)
+    if radius <= 1.0:
+        raise ValueError("Phone-game mini-map radius is too small for color fitting")
+    mask = np.zeros((logical_size[1], logical_size[0]), np.uint8)
+    cv2.circle(
+        mask,
+        (
+            int(round(float(logical_boundary["center_x"]))),
+            int(round(float(logical_boundary["center_y"]))),
+        ),
+        int(round(radius)),
+        255,
+        -1,
+        cv2.LINE_AA,
+    )
+    return mask, {
+        "phone_game_revision": profile["revision_id"],
+        "selection": selection,
+        "radius_fraction": float(radius_fraction),
+        "logical_boundary": logical_boundary,
+        "sample_pixel_count": int(np.count_nonzero(mask)),
     }
 
 
@@ -195,6 +305,7 @@ def calibrate_game_color_session(
     game_id: Optional[str] = None,
     maximum_pairs: int = 16,
     activate: bool = True,
+    phone_game_revision: Optional[str] = None,
 ) -> Mapping[str, object]:
     """Fit and publish one immutable rig-game color profile."""
 
@@ -287,10 +398,34 @@ def calibrate_game_color_session(
         dtype=np.int64,
     )
 
+    adb_mask, sampling_geometry = _logical_minimap_sampling_mask(
+        registry,
+        context,
+        [android_frames.shape[2], android_frames.shape[1]],
+        phone_game_revision=phone_game_revision,
+    )
+
     mask_path = session / "cross_source_check" / "valid_mask.png"
-    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) if mask_path.is_file() else None
-    if mask is None or mask.shape != hik_frames.shape[1:3]:
-        mask = np.full(hik_frames.shape[1:3], 255, np.uint8)
+    valid_hik_mask = (
+        cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask_path.is_file()
+        else None
+    )
+    if valid_hik_mask is None or valid_hik_mask.shape != hik_frames.shape[1:3]:
+        valid_hik_mask = np.full(hik_frames.shape[1:3], 255, np.uint8)
+    hik_map_mask = cv2.warpPerspective(
+        adb_mask,
+        np.asarray(matrix, np.float64),
+        (hik_frames.shape[2], hik_frames.shape[1]),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    mask = cv2.bitwise_and(valid_hik_mask, hik_map_mask)
+    if np.count_nonzero(mask) == 0:
+        raise ValueError(
+            "Projected mini-map has no valid HIK pixels for color fitting"
+        )
     conversion, evidence = optimize_mvs_bayer_conversion(
         android_frames,
         selected_android_times,
@@ -302,14 +437,25 @@ def calibrate_game_color_session(
     )
 
     output.mkdir(parents=True, exist_ok=False)
+    evidence = dict(evidence)
+    evidence["adb_minimap_color_sampling_mask.png"] = adb_mask
+    evidence["hik_minimap_color_sampling_mask.png"] = mask
     for filename, image in evidence.items():
         if not cv2.imwrite(str(output / filename), image):
             raise RuntimeError("Cannot write color evidence {}".format(filename))
     adb_reference_path = output / "adb_game_color_reference.png"
+    adb_reference_mask_path = output / "adb_game_color_reference_mask.png"
     reference_index = int(len(android_frames) // 2)
-    if not cv2.imwrite(str(adb_reference_path), android_frames[reference_index]):
+    masked_reference = cv2.bitwise_and(
+        android_frames[reference_index],
+        android_frames[reference_index],
+        mask=adb_mask,
+    )
+    if not cv2.imwrite(str(adb_reference_path), masked_reference):
         raise RuntimeError("Cannot write portable ADB game-color reference")
-    adb_color_reference = _adb_color_statistics(android_frames)
+    if not cv2.imwrite(str(adb_reference_mask_path), adb_mask):
+        raise RuntimeError("Cannot write portable ADB game-color reference mask")
+    adb_color_reference = _adb_color_statistics(android_frames, adb_mask)
     summary = {
         "schema_version": "1.0",
         "status": "calibrated_pending_publication",
@@ -319,6 +465,7 @@ def calibrate_game_color_session(
         "rig_revision": active_rig["revision_id"],
         "hik_bayer_conversion": conversion,
         "adb_game_color_reference": adb_color_reference,
+        "sampling_geometry": sampling_geometry,
         "synchronized_source_frames": {
             "android_phone": [int(row["frame_index"]) for row in selected_android],
             "hik_phone": [int(row["frame_index"]) for row in selected_hik],
@@ -336,13 +483,17 @@ def calibrate_game_color_session(
             "profile_kind": "phone_game_color",
             "coordinate_space": "android_logical_display_pixels",
             "adb_game_color_reference": adb_color_reference,
+            "sampling_geometry": sampling_geometry,
             "capabilities": {
                 "camera_independent": True,
                 "portable": True,
                 "local_hik_fit_required": True,
             },
         },
-        runtime_files={"adb_game_color_reference": adb_reference_path},
+        runtime_files={
+            "adb_game_color_reference": adb_reference_path,
+            "adb_game_color_reference_mask": adb_reference_mask_path,
+        },
         provenance={
             "session": str(session),
             "selected_android_frame_index": int(

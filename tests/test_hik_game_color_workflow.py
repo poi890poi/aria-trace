@@ -14,6 +14,7 @@ from aria_trace.adapters.filesystem.profile_registry import (
 )
 from aria_trace.adapters.filesystem.session import SessionReader, SessionWriter
 from aria_trace.domain.packets import FramePacket
+from aria_trace.domain.spatial import bind_geometry, raster_space
 from aria_trace.workflows.hik_game_color_calibration import (
     _decode_session_records,
     calibrate_game_color_session,
@@ -128,6 +129,40 @@ class HikGameColorWorkflowTests(unittest.TestCase):
             rig.write_text(json.dumps(rig_document), encoding="utf-8")
             registry = ProfileRegistry(root / "profiles")
             rig_profile = publish_rig_calibration(rig, registry=registry)
+            phone_game_context = ProfileContext(
+                game_id="game-1",
+                package="game.package",
+                camera_id="CAM-1",
+                phone_id="PHONE-1",
+                phone_model="phone",
+                panel_display={
+                    "natural_panel_px": [8, 16],
+                    "logical_frame_px": [8, 16],
+                    "refresh_hz": 120,
+                },
+                game_display={
+                    "natural_panel_px": [8, 16],
+                    "logical_frame_px": [16, 8],
+                    "game_viewport_xywh": [0, 0, 16, 8],
+                    "rotation_quarter_turns": 1,
+                    "ui_layout_id": "default",
+                },
+            )
+            phone_game = registry.publish(
+                "phone_game",
+                phone_game_context,
+                {
+                    "profile_kind": "phone_game",
+                    "canonical_phone_crop_xywh": [0, 0, 8, 8],
+                    "outer_boundary": bind_geometry(
+                        {"center_x": 4.0, "center_y": 4.0, "radius": 3.0},
+                        "circle",
+                        raster_space("android_logical_display_pixels", [16, 8]),
+                    ),
+                },
+                review_state="accepted",
+                activate=True,
+            )
 
             session = root / "session"
             session.mkdir()
@@ -175,7 +210,8 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            frames = np.full((4, 8, 8, 3), 100, np.uint8)
+            android_frames = np.full((4, 8, 16, 3), 100, np.uint8)
+            hik_frames = np.full((4, 8, 8, 3), 100, np.uint8)
             conversion = {
                 "status": "selected",
                 "gamma": 0.8,
@@ -187,11 +223,11 @@ class HikGameColorWorkflowTests(unittest.TestCase):
             }
             with patch(
                 "aria_trace.workflows.hik_game_color_calibration._decode_indices",
-                return_value=frames,
+                side_effect=[android_frames, hik_frames],
             ), patch(
                 "aria_trace.workflows.hik_game_color_calibration.optimize_mvs_bayer_conversion",
-                return_value=(conversion, {"review.png": frames[0]}),
-            ):
+                return_value=(conversion, {"review.png": hik_frames[0]}),
+            ) as optimize:
                 result = calibrate_game_color_session(
                     session,
                     root / "output",
@@ -211,12 +247,24 @@ class HikGameColorWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 "phone_game_color", portable_color["identity"]["kind"]
             )
+            self.assertEqual(
+                phone_game["revision_id"],
+                result["sampling_geometry"]["phone_game_revision"],
+            )
+            passed_mask = optimize.call_args[0][5]
+            self.assertGreater(np.count_nonzero(passed_mask), 0)
+            self.assertLess(np.count_nonzero(passed_mask), passed_mask.size)
             self.assertTrue(
                 registry.runtime_file(
                     portable_color, "adb_game_color_reference"
                 ).is_file()
             )
             self.assertTrue((root / "output" / "hikcam_adapter.py").is_file())
+            self.assertTrue(
+                registry.runtime_file(
+                    portable_color, "adb_game_color_reference_mask"
+                ).is_file()
+            )
 
 
 if __name__ == "__main__":
