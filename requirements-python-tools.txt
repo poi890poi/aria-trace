@@ -1,5 +1,6 @@
 # Dependencies for all pure-Python calibration helpers in a user-managed env.
-# HIK MVS, ADB, scrcpy-server, and FFmpeg remain external dependencies.
+# HIK MVS and ADB remain external dependencies. scrcpy-server and FFmpeg are
+# external dependencies only for continuous --android-capture scrcpy.
 numpy>=1.24; python_version >= "3.8"
 opencv-contrib-python>=4.8,<6; python_version >= "3.8"
 PyYAML>=6.0; python_version >= "3.8"

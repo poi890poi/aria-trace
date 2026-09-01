@@ -285,7 +285,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--phone-serial")
     value.add_argument("--adb")
     value.add_argument("--scrcpy-server", type=Path)
-    value.add_argument("--ffmpeg", type=Path)
+    value.add_argument(
+        "--ffmpeg",
+        type=Path,
+        help=(
+            "FFmpeg executable used only by continuous scrcpy capture; "
+            "ADB-screenshot capture does not locate or execute FFmpeg"
+        ),
+    )
     value.add_argument(
         "--android-capture",
         choices=("scrcpy", "adb-screenshot"),
@@ -491,6 +498,8 @@ class _AdbSettledScreenshotSource:
             "trigger": "after_each_zigzag_touch_UP",
             "settle_seconds_after_up": self.settle_seconds,
             "lossless_pngs_retained": True,
+            "preferred_video_encoding": "mjpeg",
+            "external_ffmpeg_required": False,
             "capture_count": int(self.capture_count),
             "adb": str(self.adb.resolve()),
             "serial": self.serial,
@@ -559,8 +568,6 @@ def _record_adb_screenshot_zigzag(
     game_id: Optional[str],
     preparation: dict,
     game_launch: dict,
-    ffmpeg: Optional[Path],
-    video_encoding: str = "h264",
 ) -> tuple[dict, object, Optional[object]]:
     """Record settled swipe endpoints without starting any scrcpy component."""
 
@@ -799,9 +806,12 @@ def _record_adb_screenshot_zigzag(
         "android_capture": {
             "transport": "adb_exec_out_screencap_png",
             "scrcpy_used": False,
+            "external_ffmpeg_used": False,
             "trigger": "after_each_zigzag_touch_UP",
             "settle_seconds_after_up": float(screenshot_settle_seconds),
             "lossless_png_directory": "screenshots/android_phone",
+            "lossless_png_space_metadata": "frames.jsonl#metadata.image_space",
+            "compatibility_video_encoding": "opencv_mjpeg",
         },
         "game_id": game_id,
         "image_sources": ["android_adb_screencap"]
@@ -825,10 +835,14 @@ def _record_adb_screenshot_zigzag(
         pending_path,
         frame_sources,
         [control],
-        video_encoding=video_encoding,
+        # The settled screenshot path has only a handful of lossless source
+        # images. Keep the existing session-video contract with OpenCV MJPEG
+        # for both paired streams; external FFmpeg is reserved for continuous
+        # scrcpy H.264 capture.
+        video_encoding="mjpeg",
         video_fps=max(1.0, min(30.0, float(len(captured_pairs)))),
         video_crf=16,
-        ffmpeg=ffmpeg,
+        ffmpeg=None,
         session_context=context,
     )
     all_times = [packet.host_time_ns for packet in input_packets]
@@ -1047,7 +1061,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 game_id=arguments.game_id,
                 preparation=preparation,
                 game_launch=game_launch,
-                ffmpeg=arguments.ffmpeg,
             )
             counts = manifest.get("frame_counts") or {}
             expected_swipes = len(plan.strokes())

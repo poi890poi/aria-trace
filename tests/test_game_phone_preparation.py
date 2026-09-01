@@ -427,7 +427,11 @@ class GamePhonePreparationTests(unittest.TestCase):
             capture, "AndroidZigzagInputSource", FakeControl
         ), patch.object(
             capture, "_capture_adb_screenshot_packet", side_effect=screenshot
-        ), patch.object(capture, "ScrcpyTouchController") as scrcpy_control:
+        ), patch.object(
+            capture, "ScrcpyTouchController"
+        ) as scrcpy_control, patch(
+            "aria_trace.adapters.filesystem.video.find_ffmpeg"
+        ) as find_ffmpeg:
             pending = Path(directory) / "session.pending"
             manifest, control, hik = capture._record_adb_screenshot_zigzag(
                 pending,
@@ -450,8 +454,6 @@ class GamePhonePreparationTests(unittest.TestCase):
                 game_id="test-game",
                 preparation={},
                 game_launch={"status": "manual_current_game"},
-                ffmpeg=None,
-                video_encoding="mjpeg",
             )
             reader = SessionReader(pending)
             spaces = yaml.safe_load(
@@ -477,6 +479,14 @@ class GamePhonePreparationTests(unittest.TestCase):
             self.assertFalse(
                 reader.manifest["context"]["android_capture"]["scrcpy_used"]
             )
+            self.assertFalse(
+                reader.manifest["context"]["android_capture"][
+                    "external_ffmpeg_used"
+                ]
+            )
+            self.assertEqual(
+                "mjpeg", reader.manifest["video_storage"]["encoding"]
+            )
             self.assertEqual(
                 "compatible_android_phone_session",
                 reader.manifest["context"]["calibration_compatibility"][
@@ -497,7 +507,20 @@ class GamePhonePreparationTests(unittest.TestCase):
                 4,
                 len(list((pending / "screenshots" / "android_phone").glob("*.png"))),
             )
+            for record in reader.frames_by_stream["android_phone"]:
+                self.assertTrue(record["metadata"]["lossless_png"])
+                self.assertEqual(
+                    "android_phone_natural_display_pixels",
+                    record["metadata"]["image_space"]["canonical_space_id"],
+                )
+            self.assertEqual(
+                "frames.jsonl#metadata.image_space",
+                reader.manifest["context"]["android_capture"][
+                    "lossless_png_space_metadata"
+                ],
+            )
             scrcpy_control.assert_not_called()
+            find_ffmpeg.assert_not_called()
 
     def test_settled_adb_screenshots_keep_optional_hik_pairs_for_color(self):
         plan = capture.ZigzagTouchPlan(
@@ -687,13 +710,23 @@ class GamePhonePreparationTests(unittest.TestCase):
                 game_id="test-game",
                 preparation={},
                 game_launch={"status": "manual_current_game"},
-                ffmpeg=None,
-                video_encoding="mjpeg",
             )
             reader = SessionReader(pending)
             self.assertIsNotNone(hik)
             self.assertEqual(4, len(reader.frames_by_stream["android_phone"]))
             self.assertEqual(4, len(reader.frames_by_stream["hik_phone"]))
+            self.assertEqual(".avi", reader.video_path("android_phone").suffix)
+            self.assertEqual(".avi", reader.video_path("hik_phone").suffix)
+            self.assertTrue(reader.video_path("android_phone").is_file())
+            self.assertTrue(reader.video_path("hik_phone").is_file())
+            for stream_id in ("android_phone", "hik_phone"):
+                video = cv2.VideoCapture(str(reader.video_path(stream_id)))
+                try:
+                    ok, decoded = video.read()
+                finally:
+                    video.release()
+                self.assertTrue(ok)
+                self.assertIsNotNone(decoded)
             self.assertEqual(
                 "compatible_synchronized_adb_hik_pairs",
                 manifest["context"]["calibration_compatibility"]["game_color"],

@@ -13,9 +13,10 @@ without a C compiler.
 - HIK MVS installed, including its camera driver, runtime, and Python `MvImport`
   wrapper. The vendor runtime is not redistributed.
 - Android platform-tools (`adb`) available on `PATH`, or supplied with `--adb`.
-- scrcpy 4.1 available on `PATH`, or its server supplied with
-  `--scrcpy-server`.
-- FFmpeg available on `PATH`, or supplied with `--ffmpeg`.
+- For continuous `--android-capture scrcpy` only: scrcpy 4.1 available on
+  `PATH`, or its server supplied with `--scrcpy-server`, and FFmpeg available
+  on `PATH` or supplied with `--ffmpeg`.
+- `--android-capture adb-screenshot` requires neither scrcpy nor FFmpeg.
 - USB debugging authorized on the Android phone.
 - For `import hikcam`, a user-managed Python environment. Run
   `install-camera-adapter.bat` once in that environment.
@@ -23,8 +24,9 @@ without a C compiler.
   `install-python-tools.bat` once in that environment.
 
 Python executables, their Python/native-wheel dependencies, Python source, and
-the small AriaTrace native phone-target APK are bundled. ADB, scrcpy, FFmpeg,
-and HIK MVS remain user-managed environment dependencies. Rig calibration
+the small AriaTrace native phone-target APK are bundled. ADB and HIK MVS remain
+user-managed environment dependencies; scrcpy and FFmpeg are user-managed only
+for continuous scrcpy acquisition. Rig calibration
 installs the target APK only when its package is absent, then launches its
 immersive `SurfaceView` through ADB reverse. The camera adapter does not operate
 the phone during streaming.
@@ -198,7 +200,10 @@ zigzag-acquisition.bat --android-capture adb-screenshot --require-hik
 One lossless ADB screenshot and one rig-normalized HIK frame are retained after
 each settled swipe. Omitting `--require-hik` permits an Android-only mini-map
 session, but such a session cannot fit HIK color because it contains no HIK
-pixels.
+pixels. This mode writes OpenCV MJPEG compatibility videos and never locates or
+executes external FFmpeg. Every retained PNG is referenced from a `frames.jsonl`
+record carrying its `metadata.image_space`; filenames or dimensions never imply
+coordinate space.
 
 The color command's `SESSION` is immutable measurement provenance, and `OUTPUT`
 is its review-evidence destination; neither is device/profile configuration.

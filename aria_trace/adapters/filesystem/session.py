@@ -213,7 +213,20 @@ class SessionWriter:
         self.frame_processors = list(frame_processors)
         self.session_id = str(uuid.uuid4())
         self.session_context = dict(session_context or {})
-        self.video_stream_options = dict(video_stream_options or {})
+        self.video_stream_options = {
+            str(stream_id): dict(options)
+            for stream_id, options in dict(video_stream_options or {}).items()
+        }
+        self.frame_source_descriptions = [
+            source.describe() for source in frame_sources
+        ]
+        for description in self.frame_source_descriptions:
+            stream_id = description.get("stream_id")
+            preferred_encoding = description.get("preferred_video_encoding")
+            if stream_id and preferred_encoding:
+                self.video_stream_options.setdefault(str(stream_id), {}).setdefault(
+                    "encoding", str(preferred_encoding)
+                )
         self.origin_ns = time.perf_counter_ns()
         self.frame_counts = Counter()
         self.input_counts = Counter()
@@ -232,10 +245,11 @@ class SessionWriter:
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "pc_monotonic_origin_ns": self.origin_ns,
             "context": self.session_context,
-            "frame_sources": [source.describe() for source in frame_sources],
+            "frame_sources": self.frame_source_descriptions,
             "input_sources": [source.describe() for source in input_sources],
             "video_storage": {
                 "encoding": video_encoding,
+                "stream_options": self.video_stream_options,
                 "container_fps": video_fps,
                 "crf": video_crf if video_encoding == "h264" else None,
                 "preset": video_preset if video_encoding == "h264" else None,

@@ -67,7 +67,14 @@ def main() -> None:
     parser.add_argument("--camera-width", type=int)
     parser.add_argument("--camera-height", type=int)
     parser.add_argument("--camera-fps", type=float)
-    parser.add_argument("--adb-screenshot", action="store_true")
+    parser.add_argument(
+        "--adb-screenshot",
+        action="store_true",
+        help=(
+            "capture the full Android raster through ADB; this stream uses "
+            "OpenCV MJPEG and does not require external FFmpeg"
+        ),
+    )
     parser.add_argument("--adb", type=Path, default=default_adb())
     parser.add_argument("--serial")
     parser.add_argument("--adb-fps", type=float, default=2.0)
@@ -99,12 +106,19 @@ def main() -> None:
     parser.add_argument("--queue-size", type=int, default=4096)
     parser.add_argument(
         "--video-encoding", choices=("h264", "mjpeg"), default="h264",
-        help="H.264 is compact; MJPEG is a large compatibility fallback",
+        help=(
+            "default encoding for ordinary streams; ADB screenshot sources "
+            "declare MJPEG so they do not require external FFmpeg"
+        ),
     )
     parser.add_argument("--video-fps", type=float, default=30.0, help="Container playback rate")
     parser.add_argument("--video-crf", type=int, default=20, help="H.264 quality (lower is larger)")
     parser.add_argument("--video-preset", default="veryfast", help="libx264 speed preset")
-    parser.add_argument("--ffmpeg", type=Path, help="Path to ffmpeg executable")
+    parser.add_argument(
+        "--ffmpeg",
+        type=Path,
+        help="FFmpeg executable for H.264 streams; unused by ADB screenshots",
+    )
     parser.add_argument(
         "--online-features", choices=("none", "sift"), default="none",
         help="Persist features extracted from raw frames before video encoding",

@@ -115,6 +115,13 @@ python -m aria_tools zigzag-acquisition `
   --require-hik
 ```
 
+This settled-screenshot mode locates neither scrcpy nor external FFmpeg. It
+retains each original ADB PNG and writes the existing session compatibility
+videos with OpenCV MJPEG so current mini-map and color-calibration readers keep
+working. Continuous `--android-capture scrcpy` still requires scrcpy and
+FFmpeg for its H.264 stream. Each PNG path is attached to its `frames.jsonl`
+record, where `metadata.image_space` remains the authoritative spatial contract.
+
 The command prints the resulting `SESSION` directory. It waits for operator
 confirmation before touching the game. `--require-hik` prevents an unnoticed
 ADB-only fallback because color fitting requires both sources.

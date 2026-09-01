@@ -216,7 +216,15 @@ class AdbScreenshotFrameSource(FrameSource):
 
     def describe(self) -> Dict[str, object]:
         result = super().describe()
-        result.update({"adb": str(self.adb.resolve()), "serial": self.serial, "requested_fps": self.fps})
+        result.update(
+            {
+                "adb": str(self.adb.resolve()),
+                "serial": self.serial,
+                "requested_fps": self.fps,
+                "preferred_video_encoding": "mjpeg",
+                "external_ffmpeg_required": False,
+            }
+        )
         if self.image_space_context is not None:
             result["image_space_contract"] = {
                 "canonical_space_id": "android_phone_natural_display_pixels",

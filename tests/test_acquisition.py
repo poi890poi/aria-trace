@@ -21,7 +21,12 @@ from acquisition.annotations import AnnotationStore
 from acquisition.extract_portal_init import extract_initialization
 from acquisition.review import ReviewState, make_handler
 from acquisition.session import SessionReader, SessionWriter
-from acquisition.sources import AdbClockMapper, estimate_clock_offset, parse_getevent_line
+from acquisition.sources import (
+    AdbClockMapper,
+    AdbScreenshotFrameSource,
+    estimate_clock_offset,
+    parse_getevent_line,
+)
 from acquisition.android_capture import (
     AndroidRoiFrameSource,
     parse_android_roi,
@@ -382,6 +387,50 @@ class AcquisitionTests(unittest.TestCase):
         with mock.patch("aria_trace.adapters.filesystem.video.shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "Install it, pass --ffmpeg"):
                 find_ffmpeg()
+
+    def test_source_mjpeg_preference_avoids_external_ffmpeg(self):
+        description = AdbScreenshotFrameSource(Path("adb.exe")).describe()
+        self.assertEqual("mjpeg", description["preferred_video_encoding"])
+        self.assertFalse(description["external_ffmpeg_required"])
+        source = DescribedSource("adb")
+        source.describe = lambda: {
+            "type": "adb_screenshot",
+            "stream_id": "adb",
+            "preferred_video_encoding": "mjpeg",
+            "external_ffmpeg_required": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "aria_trace.adapters.filesystem.video.find_ffmpeg"
+        ) as find:
+            writer = SessionWriter(Path(temporary) / "session", [source], [])
+            now = time.perf_counter_ns()
+            writer.write_frame(
+                FramePacket(
+                    "adb",
+                    np.full((16, 16, 3), 80, np.uint8),
+                    now,
+                    now,
+                )
+            )
+            writer.close()
+            manifest = SessionReader(Path(temporary) / "session").manifest
+        find.assert_not_called()
+        self.assertEqual("mjpeg", manifest["video_streams"]["adb"]["encoding"])
+        self.assertEqual(
+            "mjpeg",
+            manifest["video_storage"]["stream_options"]["adb"]["encoding"],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            explicit = SessionWriter(
+                Path(temporary) / "session",
+                [source],
+                [],
+                video_stream_options={"adb": {"encoding": "h264"}},
+            )
+            self.assertEqual(
+                "h264", explicit.video_stream_options["adb"]["encoding"]
+            )
+            explicit.close()
     def test_portal_confirmation_requires_consistent_consecutive_poses(self):
         rotation = np.eye(3)
         estimates = {

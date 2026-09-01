@@ -174,7 +174,7 @@ python -m acquisition.record `
   --getevent
 ```
 
-Use `--duration SECONDS` or press `Ctrl+C`. `--serial` selects one Android device. Multiple `--video` and `--camera` options create multiple frame streams. `--adb-screenshot` provides a slow development capture source; it is not a replacement for the future continuous internal-video source.
+Use `--duration SECONDS` or press `Ctrl+C`. `--serial` selects one Android device. Multiple `--video` and `--camera` options create multiple frame streams. `--adb-screenshot` provides a slow development capture source; its stream uses OpenCV MJPEG and therefore requires no external FFmpeg. Other streams retain their selected/default encoding. It is not a replacement for the future continuous internal-video source.
 
 H.264 needs FFmpeg on `PATH` or supplied with `--ffmpeg PATH`. `--video-crf` controls quality and size (lower means higher quality and larger files); keep the default 20 until physical-camera feature stability is measured.
 
@@ -298,12 +298,13 @@ This mode sends the same long swipe through Android's ADB input transport,
 waits `--screenshot-settle-seconds` after every touch UP, and captures one
 lossless `adb exec-out screencap -p` PNG. The PNGs are retained under
 `screenshots/android_phone/` and are also encoded as the canonical
-`android_phone` session video with exact per-frame timing metadata. Scrcpy is
-neither located nor started. When HIK is available, one rig-normalized HIK
-frame is retained at each same settled endpoint, so the session contains the
-paired streams required by game color calibration. Without HIK, the session is
-still valid for Android mini-map calibration but explicitly declares that HIK
-color fitting is unavailable.
+`android_phone` session video with exact per-frame timing metadata. The small
+compatibility video uses OpenCV MJPEG: scrcpy and external FFmpeg are neither
+located nor started. When HIK is available, one rig-normalized HIK frame is
+retained at each same settled endpoint using the same MJPEG storage, so the
+session contains the paired streams required by game color calibration.
+Without HIK, the session is still valid for Android mini-map calibration but
+explicitly declares that HIK color fitting is unavailable.
 
 The `android_phone` stream always keeps the complete Android logical display.
 When available, the optional `hik_phone` stream uses the

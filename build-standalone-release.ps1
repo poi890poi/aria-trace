@@ -195,8 +195,8 @@ $Manifest = @(
     "external_environment:",
     "  hik_mvs: required",
     "  adb: required_on_path_or_pass_explicit_path",
-    "  scrcpy_server: required_on_path_or_pass_explicit_path",
-    "  ffmpeg: required_on_path_or_pass_explicit_path",
+    "  scrcpy_server: required_for_android_capture_scrcpy_only",
+    "  ffmpeg: required_for_android_capture_scrcpy_only",
     "bundled_scope: python_runtime_dependencies_source_and_native_phone_target"
 )
 Set-Content -LiteralPath (Join-Path $ReleaseRoot "release-manifest.yaml") -Value $Manifest -Encoding UTF8
