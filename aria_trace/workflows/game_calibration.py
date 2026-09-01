@@ -12,13 +12,14 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
-from aria_trace.adapters.filesystem.profile_registry import ProfileRegistry
+from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
 from aria_trace.adapters.filesystem.session import SessionReader
 from aria_trace.adapters.filesystem.system_configuration import (
     load_system_configuration,
 )
 from aria_trace.domain.spatial import raster_space
 from aria_trace.services.calibration.minimap.calibration import (
+    calibrate_cursor_orbit_frames,
     calibrate_minimap_boundary_frames,
 )
 from aria_trace.services.calibration.minimap.discovery import (
@@ -32,6 +33,10 @@ from aria_trace.workflows.hik_game_color_calibration import (
     decode_session_records,
 )
 from aria_trace.workflows.profile_management import publish_minimap_profiles
+from aria_trace.workflows.game_repeatability import (
+    _logical_profile_crop,
+    _profile_for_current_game,
+)
 
 
 def _safe_label(value: Optional[str]) -> str:
@@ -50,11 +55,13 @@ def _default_output(registry: ProfileRegistry, game_id: Optional[str]) -> Path:
     )
 
 
-def _touch_intervals(reader: SessionReader) -> list[tuple[int, int]]:
+def _touch_intervals(
+    reader: SessionReader, kind: str = "zigzag_touch"
+) -> list[tuple[int, int]]:
     intervals = []
     active_start = None
     for event in reader.inputs:
-        if event.get("kind") != "zigzag_touch":
+        if event.get("kind") != kind:
             continue
         payload = dict(event.get("payload") or {})
         action = str(payload.get("action") or "").upper()
@@ -68,13 +75,15 @@ def _touch_intervals(reader: SessionReader) -> list[tuple[int, int]]:
 
 
 def _select_android_records(
-    reader: SessionReader, maximum_frames: int = 48
+    reader: SessionReader,
+    maximum_frames: int = 48,
+    touch_kind: str = "zigzag_touch",
 ) -> tuple[list[Mapping[str, object]], Mapping[str, object]]:
     stream_id = "android_phone" if reader.frames_by_stream.get("android_phone") else "main"
     records = list(reader.frames_by_stream.get(stream_id) or [])
     if not records:
         raise ValueError("Session has no Android/main image frames")
-    intervals = _touch_intervals(reader)
+    intervals = _touch_intervals(reader, touch_kind)
     candidates = [
         record for record in records
         if any(
@@ -82,7 +91,7 @@ def _select_android_records(
             for start, end in intervals
         )
     ] if intervals else []
-    selection_basis = "zigzag_touch_down_to_up_intervals"
+    selection_basis = "{}_down_to_up_intervals".format(touch_kind)
     if len(candidates) < 4:
         candidates = records
         selection_basis = "all_available_frames_no_usable_touch_intervals"
@@ -259,6 +268,95 @@ def _calibrate_available_minimap_boundary(
     return summary
 
 
+def _is_cursor_orbit_session(reader: SessionReader) -> bool:
+    context = dict(reader.manifest.get("context") or {})
+    if context.get("capture_kind") == "cursor_orbit_game_calibration_source_data":
+        return True
+    return any(event.get("kind") == "cursor_orbit_touch" for event in reader.inputs)
+
+
+def _calibrate_available_cursor_orbit(
+    reader: SessionReader,
+    output: Path,
+    *,
+    registry: ProfileRegistry,
+    game_id: Optional[str],
+    phone_id: Optional[str],
+    camera_id: Optional[str],
+    activate: bool,
+) -> Mapping[str, object]:
+    """Fit cursor geometry against the active, already-verified map boundary."""
+
+    capture_context = dict(reader.manifest.get("context") or {})
+    surface = dict(capture_context.get("phone_surface_orientation") or {})
+    if not surface.get("natural_size_px") or not surface.get("logical_size_px"):
+        raise ValueError("Cursor-orbit session has no Android surface geometry")
+    context = ProfileContext(
+        game_id=game_id,
+        camera_id=camera_id,
+        phone_id=phone_id,
+        panel_display={"natural_panel_px": surface["natural_size_px"]},
+    )
+    profile = _profile_for_current_game(registry, context, revision_id=None)
+    crop, boundary = _logical_profile_crop(profile, surface)
+    records, selection = _select_android_records(
+        reader, maximum_frames=48, touch_kind="cursor_orbit_touch"
+    )
+    frames = decode_session_records(reader, selection["stream_id"], records)
+    x, y, width, height = crop
+    if x < 0 or y < 0 or x + width > frames.shape[2] or y + height > frames.shape[1]:
+        raise ValueError(
+            "Active mini-map crop {} exceeds captured Android raster {}x{}".format(
+                crop, frames.shape[2], frames.shape[1]
+            )
+        )
+    cropped = frames[:, y : y + height, x : x + width, :]
+    result = calibrate_cursor_orbit_frames(
+        cropped,
+        output,
+        outer_boundary=boundary,
+        provenance={
+            "session_path": str(reader.path.resolve()),
+            "session_id": reader.manifest.get("session_id"),
+            "stream_id": selection["stream_id"],
+            "frame_selection": selection,
+            "source_phone_game_revision": profile.get("revision_id"),
+        },
+        frame_space=boundary["space"],
+    )
+    result.update(
+        {
+            "status": "accepted" if activate else "review_required",
+            "crop_xywh": crop,
+            "canonical_phone_crop_xywh": (profile.get("payload") or profile).get(
+                "canonical_phone_crop_xywh"
+            ),
+            "android": {
+                "frame_size_px": [int(frames.shape[2]), int(frames.shape[1])],
+                "outer_boundary": boundary,
+                "rotation_center": result["rotation_center"],
+            },
+            "frame_selection": selection,
+        }
+    )
+    summary_path = output / "calibration.json"
+    summary_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    profiles = publish_minimap_profiles(
+        summary_path,
+        registry=registry,
+        game_id=game_id,
+        phone_id=phone_id,
+        camera_id=camera_id,
+        activate=activate,
+    )
+    result["profiles"] = {
+        name: value["revision_id"] if value is not None else None
+        for name, value in profiles.items()
+    }
+    summary_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
 def _outcome(status: str, **values) -> Mapping[str, object]:
     return {"status": status, **values}
 
@@ -290,6 +388,7 @@ def calibrate_game_session(
     output.mkdir(parents=True, exist_ok=False)
     capabilities = {}
     current_phone_game_revision = None
+    cursor_orbit_session = _is_cursor_orbit_session(reader)
 
     try:
         value = calibrate_game_orientation_session(
@@ -316,30 +415,74 @@ def calibrate_game_session(
             profile_activated=value["profile_activated"],
         )
 
-    try:
-        value = _calibrate_available_minimap_boundary(
-            reader,
-            output / "minimap",
-            registry=registry,
-            game_id=selected_game,
-            phone_id=settings["devices"].get("phone_id"),
-            camera_id=settings["devices"].get("camera_id"),
-            discovery_config=discovery_config,
-            activate=activate,
-        )
-    except (ValueError, FileNotFoundError) as exc:
+    if cursor_orbit_session:
         capabilities["minimap_boundary"] = _outcome(
-            "skipped_missing_or_ineligible_data", reason=str(exc)
-        )
-    except Exception as exc:
-        capabilities["minimap_boundary"] = _outcome(
-            "failed", error="{}: {}".format(type(exc).__name__, exc)
+            "skipped_existing_profile_reused",
+            reason=(
+                "Cursor-orbit acquisition preserves the active verified mini-map "
+                "boundary instead of rediscovering it"
+            ),
         )
     else:
-        current_phone_game_revision = value["profiles"].get("phone_game")
-        capabilities["minimap_boundary"] = _outcome(
-            value["status"], calibration=str(output / "minimap" / "calibration.json"),
-            profiles=value["profiles"],
+        try:
+            value = _calibrate_available_minimap_boundary(
+                reader,
+                output / "minimap",
+                registry=registry,
+                game_id=selected_game,
+                phone_id=settings["devices"].get("phone_id"),
+                camera_id=settings["devices"].get("camera_id"),
+                discovery_config=discovery_config,
+                activate=activate,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            capabilities["minimap_boundary"] = _outcome(
+                "skipped_missing_or_ineligible_data", reason=str(exc)
+            )
+        except Exception as exc:
+            capabilities["minimap_boundary"] = _outcome(
+                "failed", error="{}: {}".format(type(exc).__name__, exc)
+            )
+        else:
+            current_phone_game_revision = value["profiles"].get("phone_game")
+            capabilities["minimap_boundary"] = _outcome(
+                value["status"],
+                calibration=str(output / "minimap" / "calibration.json"),
+                profiles=value["profiles"],
+            )
+
+    if cursor_orbit_session:
+        try:
+            value = _calibrate_available_cursor_orbit(
+                reader,
+                output / "cursor",
+                registry=registry,
+                game_id=selected_game,
+                phone_id=settings["devices"].get("phone_id"),
+                camera_id=settings["devices"].get("camera_id"),
+                activate=activate,
+            )
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            capabilities["cursor_pose"] = _outcome(
+                "skipped_missing_or_ineligible_data", reason=str(exc)
+            )
+        except Exception as exc:
+            capabilities["cursor_pose"] = _outcome(
+                "failed", error="{}: {}".format(type(exc).__name__, exc)
+            )
+        else:
+            current_phone_game_revision = value["profiles"].get("phone_game")
+            capabilities["cursor_pose"] = _outcome(
+                value["status"],
+                calibration=str(output / "cursor" / "calibration.json"),
+                profiles=value["profiles"],
+            )
+    else:
+        capabilities["cursor_pose"] = _outcome(
+            "skipped_missing_or_ineligible_data",
+            reason=(
+                "No cursor-orbit acquisition; movement remains optional"
+            ),
         )
 
     if not (session / "coordinate_spaces.yaml").is_file() or not reader.frames_by_stream.get("hik_phone"):
@@ -372,10 +515,6 @@ def calibrate_game_session(
                 profile_revision=value["profile_revision"],
             )
 
-    capabilities["cursor_pose"] = _outcome(
-        "skipped_missing_or_ineligible_data",
-        reason="No explicitly labeled rotation-only and movement-only segments; movement is optional",
-    )
     successful = [
         name for name, value in capabilities.items()
         if value["status"] in ("accepted", "review_required")

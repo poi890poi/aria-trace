@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from aria_trace.adapters.rig.devices import CameraConfiguration
+from aria_trace.domain.spatial import require_spatial_geometry
 from aria_trace.services.calibration.rig.contracts import FrameSample
 from aria_trace.services.calibration.rig.distortion import (
     distorted_screen_region_roi,
@@ -224,6 +225,23 @@ class ProfiledHikGameCamera:
             phone_size = self.rig.get("normalization", {}).get("phone_size_px")
         if phone_size is not None:
             width, height = map(int, phone_size)
+            rotation_center = self.minimap.get("rotation_center")
+            if isinstance(rotation_center, Mapping):
+                point = require_spatial_geometry(
+                    rotation_center,
+                    "point",
+                    expected_space_id="android_phone_natural_display_pixels",
+                )
+                if point["space"]["size_px"] != [width, height]:
+                    raise ValueError(
+                        "Rotation-center raster {} does not match phone raster {}x{}".format(
+                            point["space"]["size_px"], width, height
+                        )
+                    )
+                crop[0] = int(round(float(point["x"]) - crop[2] / 2.0))
+                crop[1] = int(round(float(point["y"]) - crop[3] / 2.0))
+                crop[0] = min(max(0, crop[0]), width - crop[2])
+                crop[1] = min(max(0, crop[1]), height - crop[3])
             if crop[0] + crop[2] > width or crop[1] + crop[3] > height:
                 raise ValueError(
                     "Canonical mini-map crop {} exceeds phone raster {}x{}".format(

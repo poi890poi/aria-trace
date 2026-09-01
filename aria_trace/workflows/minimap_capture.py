@@ -26,6 +26,10 @@ from aria_trace.adapters.android.capture import (
 from aria_trace.adapters.android.spaces import image_space_from_surface
 from aria_trace.adapters.android.game_launcher import launch_android_game
 from aria_trace.adapters.android.zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
+from aria_trace.adapters.android.cursor_orbit import (
+    AndroidCursorOrbitInputSource,
+    CursorOrbitTouchPlan,
+)
 from aria_trace.services.calibration.rig.dual_source_spaces import (
     write_android_source_space_yaml,
     write_dual_source_space_yaml,
@@ -323,6 +327,15 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--moves", type=int, default=12)
     value.add_argument(
+        "--capture-mode",
+        choices=("zigzag", "cursor-orbit"),
+        default="zigzag",
+        help=(
+            "zigzag isolates the mini-map; cursor-orbit uses balanced short "
+            "movement-joystick pulses to fit the cursor shape and pivot"
+        ),
+    )
+    value.add_argument(
         "--horizontal-swipe-distance-px",
         type=_positive_pixel_distance,
         metavar="PX",
@@ -344,6 +357,25 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--reset-seconds", type=float, default=0.10)
     value.add_argument("--settle-seconds", type=float, default=1.5)
     value.add_argument("--tail-seconds", type=float, default=1.5)
+    value.add_argument(
+        "--cursor-orbit-radius-px",
+        type=_positive_pixel_distance,
+        help="cursor-orbit joystick pulse radius; default is 6%% of display height",
+    )
+    value.add_argument(
+        "--cursor-pulse-seconds",
+        type=float,
+        default=0.12,
+        help="duration of each short cursor-orbit joystick pulse (default: 0.12)",
+    )
+    value.add_argument("--cursor-orbit-directions", type=int, default=12)
+    value.add_argument("--cursor-orbit-repeats", type=int, default=2)
+    value.add_argument(
+        "--joystick-center-x-fraction", type=float, default=0.18
+    )
+    value.add_argument(
+        "--joystick-center-y-fraction", type=float, default=0.78
+    )
     value.add_argument("--yes", action="store_true")
     value.add_argument(
         "--diagnostic-rig-calibration-override",
@@ -410,6 +442,59 @@ def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
     return plan
 
 
+def _build_cursor_orbit_plan(
+    arguments, width: int, height: int
+) -> CursorOrbitTouchPlan:
+    center_x_fraction = float(arguments.joystick_center_x_fraction)
+    center_y_fraction = float(arguments.joystick_center_y_fraction)
+    if not 0.05 <= center_x_fraction <= 0.45:
+        raise ValueError("Joystick center X fraction must be in 0.05..0.45")
+    if not 0.50 <= center_y_fraction <= 0.95:
+        raise ValueError("Joystick center Y fraction must be in 0.50..0.95")
+    center = [
+        int(round(width * center_x_fraction)),
+        int(round(height * center_y_fraction)),
+    ]
+    radius = int(
+        arguments.cursor_orbit_radius_px
+        if arguments.cursor_orbit_radius_px is not None
+        else round(height * 0.06)
+    )
+    if (
+        center[0] - radius < 0
+        or center[0] + radius >= width
+        or center[1] - radius < 0
+        or center[1] + radius >= height
+    ):
+        raise ValueError("Cursor orbit does not fit inside the Android display")
+    plan = CursorOrbitTouchPlan(
+        center_xy=center,
+        radius_px=radius,
+        direction_count=int(arguments.cursor_orbit_directions),
+        repeats=int(arguments.cursor_orbit_repeats),
+        step_seconds=float(arguments.cursor_pulse_seconds),
+        settle_seconds=float(arguments.settle_seconds),
+        reset_seconds=float(arguments.reset_seconds),
+    )
+    plan.sampled_strokes()
+    return plan
+
+
+def _build_control_plan(arguments, width: int, height: int):
+    if arguments.capture_mode == "cursor-orbit":
+        return _build_cursor_orbit_plan(arguments, width, height)
+    return _build_zigzag_plan(arguments, width, height)
+
+
+def _input_source(arguments, adb: Path, serial: str, plan, controller=None):
+    source = (
+        AndroidCursorOrbitInputSource
+        if arguments.capture_mode == "cursor-orbit"
+        else AndroidZigzagInputSource
+    )
+    return source(adb, serial, plan, controller=controller)
+
+
 def _launch_or_defer_game(phone: AdbPhoneSession, arguments) -> dict:
     """Launch an explicitly identified game or preserve the current foreground app."""
 
@@ -465,7 +550,7 @@ def _run_control_only(arguments) -> int:
                 width, height
             )
         )
-    plan = _build_zigzag_plan(arguments, width, height)
+    plan = _build_control_plan(arguments, width, height)
     preparation["game_booster_before_prompt"] = _dismiss_game_booster_lock(
         phone, adb, server, serial, [width, height]
     )
@@ -481,47 +566,61 @@ def _run_control_only(arguments) -> int:
     if not arguments.yes:
         input(
             "Confirm the target game is visible in touchscreen mode, then press Enter "
-            "to run the zigzag: "
+            "to run {}: ".format(arguments.capture_mode)
         )
     preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
         phone, adb, server, serial, [width, height]
     )
-    print(
-        "Running {} long strokes ({} up, {} down)...".format(
-            len(plan.strokes()),
-            sum(stroke["direction"] == "up" for stroke in plan.strokes()),
-            sum(stroke["direction"] == "down" for stroke in plan.strokes()),
+    if arguments.capture_mode == "cursor-orbit":
+        print(
+            "Running {} balanced short joystick pulses...".format(
+                len(plan.strokes())
+            )
         )
-    )
+    else:
+        print(
+            "Running {} long strokes ({} up, {} down)...".format(
+                len(plan.strokes()),
+                sum(stroke["direction"] == "up" for stroke in plan.strokes()),
+                sum(stroke["direction"] == "down" for stroke in plan.strokes()),
+            )
+        )
 
     controller = (
         ScrcpyTouchController(adb, server, serial, [width, height])
         if server is not None
         else None
     )
-    control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
+    control = _input_source(arguments, adb, serial, plan, controller=controller)
     packets = []
     try:
         control.start(packets.append)
         timeout = max(20.0, plan.duration_seconds + 5.0)
         if not control.wait_completed(timeout):
             raise RuntimeError(
-                "Zigzag control did not complete within {:.1f} seconds".format(
+                "{} control did not complete within {:.1f} seconds".format(
+                    arguments.capture_mode,
                     timeout
                 )
             )
     finally:
         control.stop()
     if control.error:
-        raise RuntimeError("Android zigzag control failed: {}".format(control.error))
+        raise RuntimeError(
+            "Android {} control failed: {}".format(
+                arguments.capture_mode, control.error
+            )
+        )
     if not control.completed or control.events_issued != control.expected_event_count:
         raise RuntimeError(
-            "Android zigzag control was incomplete: {}/{} events".format(
+            "Android {} control was incomplete: {}/{} events".format(
+                arguments.capture_mode,
                 control.events_issued, control.expected_event_count
             )
         )
     print(
-        "Zigzag control completed: {}/{} touch events.".format(
+        "{} control completed: {}/{} touch events.".format(
+            arguments.capture_mode,
             control.events_issued, control.expected_event_count
         )
     )
@@ -533,10 +632,17 @@ class _AdbSettledScreenshotSource:
 
     stream_id = "android_phone"
 
-    def __init__(self, adb: Path, serial: str, settle_seconds: float) -> None:
+    def __init__(
+        self,
+        adb: Path,
+        serial: str,
+        settle_seconds: float,
+        capture_mode: str = "zigzag",
+    ) -> None:
         self.adb = Path(adb)
         self.serial = str(serial)
         self.settle_seconds = float(settle_seconds)
+        self.capture_mode = str(capture_mode)
         self.capture_count = 0
 
     def describe(self) -> dict:
@@ -545,7 +651,9 @@ class _AdbSettledScreenshotSource:
             "stream_id": self.stream_id,
             "transport": "adb_exec_out_screencap_png",
             "scrcpy_used": False,
-            "trigger": "after_each_zigzag_touch_UP",
+            "trigger": "after_each_{}_touch_UP".format(
+                self.capture_mode.replace("-", "_")
+            ),
             "settle_seconds_after_up": self.settle_seconds,
             "lossless_pngs_retained": True,
             "preferred_frame_storage": "image_series",
@@ -558,7 +666,10 @@ class _AdbSettledScreenshotSource:
 
 
 def _capture_adb_screenshot_packet(
-    adb: Path, serial: str, stroke_index: int
+    adb: Path,
+    serial: str,
+    stroke_index: int,
+    trigger: str = "settled_after_zigzag_touch_UP",
 ) -> tuple[FramePacket, bytes]:
     """Capture one lossless Android screenshot with bounded host-time metadata."""
 
@@ -588,7 +699,7 @@ def _capture_adb_screenshot_packet(
                 "source": "android_adb_screencap",
                 "coordinate_space": "android_logical_display_pixels",
                 "transport": "adb_exec_out_screencap_png",
-                "trigger": "settled_after_zigzag_touch_UP",
+                "trigger": str(trigger),
                 "stroke_index": int(stroke_index),
                 "request_time_ns": int(request_time_ns),
                 "timestamp_uncertainty_ns": int(
@@ -619,6 +730,7 @@ def _record_adb_screenshot_zigzag(
     game_id: Optional[str],
     preparation: dict,
     game_launch: dict,
+    capture_mode: str = "zigzag",
 ) -> tuple[dict, object, Optional[object]]:
     """Record settled swipe endpoints without starting any scrcpy component."""
 
@@ -665,23 +777,37 @@ def _record_adb_screenshot_zigzag(
                 flush=True,
             )
 
-    control = AndroidZigzagInputSource(adb, serial, plan, controller=None)
+    touch_kind = (
+        "cursor_orbit_touch" if capture_mode == "cursor-orbit" else "zigzag_touch"
+    )
+    control_class = (
+        AndroidCursorOrbitInputSource
+        if capture_mode == "cursor-orbit"
+        else AndroidZigzagInputSource
+    )
+    control = control_class(adb, serial, plan, controller=None)
     screenshot_source = _AdbSettledScreenshotSource(
-        adb, serial, screenshot_settle_seconds
+        adb, serial, screenshot_settle_seconds, capture_mode
     )
 
     def receive_input(packet) -> None:
         nonlocal orientation_match, orientation_images, output_image_turns
         nonlocal aligned_surface
         input_packets.append(packet)
-        if packet.kind != "zigzag_touch" or packet.payload.get("action") != "UP":
+        if packet.kind != touch_kind or packet.payload.get("action") != "UP":
             return
         stroke_index = int(packet.payload.get("point_index", len(captured_pairs)))
         if screenshot_settle_seconds:
             time.sleep(float(screenshot_settle_seconds))
-        adb_packet, _raw_png = _capture_adb_screenshot_packet(
-            adb, serial, stroke_index
-        )
+        trigger = "settled_after_{}_UP".format(touch_kind)
+        if capture_mode == "cursor-orbit":
+            adb_packet, _raw_png = _capture_adb_screenshot_packet(
+                adb, serial, stroke_index, trigger=trigger
+            )
+        else:
+            adb_packet, _raw_png = _capture_adb_screenshot_packet(
+                adb, serial, stroke_index
+            )
         adb_height, adb_width = adb_packet.image.shape[:2]
         adb_packet.metadata["image_space"] = image_space_from_surface(
             surface,
@@ -760,7 +886,7 @@ def _record_adb_screenshot_zigzag(
                 raise RuntimeError(
                     "HIK stream ended after settled swipe {}".format(stroke_index)
                 )
-            hik_packet.metadata["trigger"] = "settled_after_zigzag_touch_UP"
+            hik_packet.metadata["trigger"] = trigger
             hik_packet.metadata["stroke_index"] = stroke_index
             hik_packet.metadata["trigger_input_up_host_time_ns"] = int(
                 packet.host_time_ns
@@ -795,11 +921,13 @@ def _record_adb_screenshot_zigzag(
             hik.stop()
 
     if control.error:
-        raise RuntimeError("Android zigzag control failed: {}".format(control.error))
+        raise RuntimeError(
+            "Android {} control failed: {}".format(capture_mode, control.error)
+        )
     if not control.completed or control.events_issued != control.expected_event_count:
         raise RuntimeError(
-            "Android zigzag control was incomplete: {}/{} events".format(
-                control.events_issued, control.expected_event_count
+            "Android {} control was incomplete: {}/{} events".format(
+                capture_mode, control.events_issued, control.expected_event_count
             )
         )
     if len(captured_pairs) != len(plan.strokes()):
@@ -850,13 +978,17 @@ def _record_adb_screenshot_zigzag(
         }
     )
     context = {
-        "capture_kind": "zigzag_minimap_source_data",
+        "capture_kind": (
+            "cursor_orbit_game_calibration_source_data"
+            if capture_mode == "cursor-orbit"
+            else "zigzag_minimap_source_data"
+        ),
         "capture_schedule": "settled_swipe_endpoint_screenshots",
         "android_capture": {
             "transport": "adb_exec_out_screencap_png",
             "scrcpy_used": False,
             "external_ffmpeg_used": False,
-            "trigger": "after_each_zigzag_touch_UP",
+            "trigger": "after_each_{}_UP".format(touch_kind),
             "settle_seconds_after_up": float(screenshot_settle_seconds),
             "lossless_png_directory": "frames/android_phone",
             "lossless_png_space_metadata": "frames.jsonl#metadata.image_space",
@@ -872,7 +1004,11 @@ def _record_adb_screenshot_zigzag(
         "phone_surface_orientation": aligned_surface,
         "phone_preparation": preparation,
         "game_launch": game_launch,
-        "zigzag_plan": plan.as_dict(),
+        (
+            "cursor_orbit_plan"
+            if capture_mode == "cursor-orbit"
+            else "zigzag_plan"
+        ): plan.as_dict(),
         "calibration_compatibility": {
             "minimap": "compatible_android_phone_session",
             "game_color": (
@@ -1042,10 +1178,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     preparation["game_booster_before_prompt"] = _dismiss_game_booster_lock(
         phone, adb, server, serial, [width, height]
     )
-    plan = _build_zigzag_plan(arguments, width, height)
+    plan = _build_control_plan(arguments, width, height)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    session_path = arguments.output_root / "{}-{}-zigzag".format(
-        _session_game_label(arguments.game_id, arguments.android_package), timestamp
+    session_path = arguments.output_root / "{}-{}-{}".format(
+        _session_game_label(arguments.game_id, arguments.android_package),
+        timestamp,
+        arguments.capture_mode,
     )
     pending_path = session_path.with_name(session_path.name + ".pending")
     if selected_camera is not None:
@@ -1101,6 +1239,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 game_id=arguments.game_id,
                 preparation=preparation,
                 game_launch=game_launch,
+                capture_mode=arguments.capture_mode,
             )
             counts = manifest.get("frame_counts") or {}
             expected_swipes = len(plan.strokes())
@@ -1122,8 +1261,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 shutil.rmtree(str(pending_path))
             raise
         print(
-            "Captured {} settled swipe endpoints with {}: {}".format(
+            "Captured {} settled {} endpoints with {}: {}".format(
                 len(plan.strokes()),
+                arguments.capture_mode,
                 "ADB screencap and HIK"
                 if settled_hik is not None
                 else "ADB screencap only",
@@ -1253,7 +1393,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             )
     controller = ScrcpyTouchController(adb, server, serial, [width, height])
-    control = AndroidZigzagInputSource(adb, serial, plan, controller=controller)
+    control = _input_source(arguments, adb, serial, plan, controller=controller)
     frame_sources = [android] + ([hik] if hik is not None else [])
     image_sources = ["android_scrcpy"] + (
         ["hik_mvs_rig_rectified"] if hik is not None else []
@@ -1298,14 +1438,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         video_crf=16,
         frame_processors=frame_processors,
         session_context={
-            "capture_kind": "zigzag_minimap_source_data",
+            "capture_kind": (
+                "cursor_orbit_game_calibration_source_data"
+                if arguments.capture_mode == "cursor-orbit"
+                else "zigzag_minimap_source_data"
+            ),
             "game_id": arguments.game_id,
             "image_sources": image_sources,
             "hik_capture": hik_context,
             "phone_surface_orientation": aligned_surface,
             "phone_preparation": preparation,
             "game_launch": game_launch,
-            "zigzag_plan": plan.as_dict(),
+            (
+                "cursor_orbit_plan"
+                if arguments.capture_mode == "cursor-orbit"
+                else "zigzag_plan"
+            ): plan.as_dict(),
             "calibration_status": "not_run",
         },
     )
@@ -1316,7 +1464,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         timeout = max(30.0, plan.duration_seconds + 20.0)
         if not control.wait_completed(timeout):
             completion_error.append(
-                "Zigzag control did not complete within {:.1f} seconds".format(timeout)
+                "{} control did not complete within {:.1f} seconds".format(
+                    arguments.capture_mode, timeout
+                )
             )
         elif arguments.tail_seconds > 0:
             time.sleep(float(arguments.tail_seconds))
@@ -1334,11 +1484,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if completion_error:
             raise RuntimeError(completion_error[0])
         if control.error:
-            raise RuntimeError("Android zigzag control failed: {}".format(control.error))
+            raise RuntimeError(
+                "Android {} control failed: {}".format(
+                    arguments.capture_mode, control.error
+                )
+            )
         if not control.completed or control.events_issued != control.expected_event_count:
             raise RuntimeError(
-                "Android zigzag control was incomplete: {}/{} events".format(
-                    control.events_issued, control.expected_event_count
+                "Android {} control was incomplete: {}/{} events".format(
+                    arguments.capture_mode,
+                    control.events_issued,
+                    control.expected_event_count,
                 )
             )
         manifest = json.loads(
@@ -1379,8 +1535,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             shutil.rmtree(str(pending_path))
         raise
     print(
-        "Captured {}-event zigzag with {}: {}".format(
+        "Captured {}-event {} with {}: {}".format(
             control.expected_event_count,
+            arguments.capture_mode,
             "ADB and HIK" if hik is not None else "ADB only",
             session_path.resolve(),
         )

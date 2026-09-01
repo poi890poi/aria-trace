@@ -12,6 +12,7 @@ from acquisition.rig_calibration.hik.game_camera import (
     _source_crop_to_canonical_phone,
 )
 from aria_trace.adapters.hik.driver import RectifiedHikCamera
+from aria_trace.domain.spatial import bind_geometry, raster_space
 
 
 class FakeAdapter:
@@ -135,6 +136,19 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual((20, 30, 3), frame_set.streams["minimap"].shape)
         self.assertEqual(1, adapter.read_count)
         self.assertFalse(frame_set.metadata["rectified_minimap"])
+
+    def test_minimap_crop_centers_on_spatial_rotation_center(self):
+        document = {
+            "canonical_phone_crop_xywh": [10, 20, 30, 20],
+            "rotation_center": bind_geometry(
+                {"x": 60.0, "y": 40.0},
+                "point",
+                raster_space("android_phone_natural_display_pixels", [100, 80]),
+            ),
+        }
+        self.minimap_path.write_text(json.dumps(document), encoding="utf-8")
+        camera = self.camera("minimap", False, FakeAdapter())
+        self.assertEqual([45, 30, 30, 20], camera._screen_crop())
 
     def test_distortion_corrected_minimap_uses_one_cropped_dense_remap(self):
         document = rig_document()

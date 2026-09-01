@@ -159,6 +159,9 @@ class AndroidZigzagInputSource(InputSource):
     """Issue and record the exact ADB touch events used for calibration."""
 
     source_id = "android_zigzag_control"
+    touch_kind = "zigzag_touch"
+    error_kind = "zigzag_control_error"
+    thread_name = "android-minimap-zigzag"
 
     def __init__(
         self,
@@ -237,7 +240,7 @@ class AndroidZigzagInputSource(InputSource):
                 self._motion("DOWN", last[0], last[1])
                 down = True
                 self._record(
-                    "zigzag_touch", "DOWN", last, -1 if index == 0 else index
+                    self.touch_kind, "DOWN", last, -1 if index == 0 else index
                 )
                 move_interval = float(self.plan.step_seconds) / float(
                     len(stroke["move_points_xy"])
@@ -249,12 +252,12 @@ class AndroidZigzagInputSource(InputSource):
                         break
                     last = point
                     self._motion("MOVE", last[0], last[1])
-                    self._record("zigzag_touch", "MOVE", last, index)
+                    self._record(self.touch_kind, "MOVE", last, index)
                 if not stroke_complete:
                     break
                 self._motion("UP", last[0], last[1])
                 down = False
-                self._record("zigzag_touch", "UP", last, index)
+                self._record(self.touch_kind, "UP", last, index)
                 completed_strokes += 1
                 if index + 1 < len(strokes) and self._stop.wait(
                     float(self.plan.reset_seconds)
@@ -266,7 +269,7 @@ class AndroidZigzagInputSource(InputSource):
                 self._emit(
                     InputPacket(
                         self.source_id,
-                        "zigzag_control_error",
+                        self.error_kind,
                         time.perf_counter_ns(),
                         {"error": self._error},
                     )
@@ -275,7 +278,7 @@ class AndroidZigzagInputSource(InputSource):
             if down:
                 try:
                     self._motion("UP", last[0], last[1])
-                    self._record("zigzag_touch", "UP", last, completed_strokes)
+                    self._record(self.touch_kind, "UP", last, completed_strokes)
                 except Exception as exc:
                     if self._error is None:
                         self._error = "{}: {}".format(type(exc).__name__, exc)
@@ -293,7 +296,7 @@ class AndroidZigzagInputSource(InputSource):
         if self.controller is not None:
             self.controller.open()
         self._thread = threading.Thread(
-            target=self._run, name="android-minimap-zigzag", daemon=True
+            target=self._run, name=self.thread_name, daemon=True
         )
         self._thread.start()
 

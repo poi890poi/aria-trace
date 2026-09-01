@@ -132,6 +132,23 @@ The command prints the resulting `SESSION` directory. It waits for operator
 confirmation before touching the game. `--require-hik` prevents an unnoticed
 ADB-only fallback because color fitting requires both sources.
 
+After a mini-map boundary has been calibrated once, capture the cursor's
+rotation center and rigid shape with balanced short movement-joystick pulses:
+
+```powershell
+python -m aria_tools zigzag-acquisition `
+  --capture-mode cursor-orbit `
+  --game-id GAME_ID `
+  --android-capture adb-screenshot
+```
+
+The default orbit is 12 directions repeated twice. Each 0.12-second pulse
+starts at 18% of display width and 78% of display height, travels 6% of display
+height, releases, and is immediately paired with its opposite direction. These
+pairs minimize accumulated character displacement without assuming that any
+game guarantees zero movement. The joystick center, pulse radius, direction
+count, repetitions, and pulse duration are all CLI-configurable.
+
 For the normal task-oriented path, give that immutable session to one command:
 
 ```powershell
@@ -140,8 +157,11 @@ python -m aria_tools game-calibration SESSION --game-id GAME_ID
 
 `game-calibration` inspects the data instead of requiring every calibration.
 It independently attempts game-screen upright orientation, automatic mini-map
-boundary discovery, and HIK game color. Missing HIK frames, missing movement,
-or insufficient visual features are reported as structured skips in
+boundary discovery, cursor pivot/shape fitting, and HIK game color. A
+cursor-orbit session deliberately reuses the active verified mini-map boundary;
+it does not rediscover or replace that boundary from short joystick pulses.
+Missing HIK frames, missing movement, or insufficient visual features are
+reported as structured skips in
 `game_calibration_summary.json`; successful capabilities are still published.
 Movement is not required. Use `--candidate` to write evidence and immutable
 review revisions without activating them.
@@ -429,6 +449,12 @@ camera configuration happen when the adapter opens; there are no registry
 lookups per frame. The adapter locks calibrated exposure, gain, white balance,
 ROI, and selected HIK gamma/color controls for the session. The adapter itself
 does not wake, sleep, launch, unlock, or touch the phone.
+
+When the active game profile contains a spatially validated cursor rotation
+center, the mini-map output keeps its calibrated width and height but is centered
+on that pivot. This keeps the player at the normalized stream center even when
+the fitted circular HUD boundary is slightly off-center. Older profiles without
+a cursor center retain the verified boundary-centered crop.
 
 Run a live GUI stream from the repository root:
 

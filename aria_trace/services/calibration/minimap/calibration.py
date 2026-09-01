@@ -27,6 +27,7 @@ from aria_trace.domain.spatial import (
     bind_geometry,
     raster_space,
     require_same_space,
+    require_spatial_geometry,
     validate_raster_space,
 )
 from aria_trace.services.calibration.minimap.spatial import minimap_crop_space
@@ -1135,6 +1136,267 @@ def calibrate_minimap_boundary_frames(
         "config": boundary_config,
         "evidence": evidence,
     }
+
+
+def _cursor_orbit_aligned_frames(
+    frames: np.ndarray, center: dict
+) -> Tuple[np.ndarray, Sequence[float]]:
+    """Render detected cursor masks in a common screen direction."""
+
+    pivot = np.asarray(
+        [center["metrics"]["x"], center["metrics"]["y"]], dtype=np.float64
+    )
+    hsv_color = np.uint8([[[93, 255, 255]]])
+    bgr_color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)[0, 0]
+    aligned = []
+    angles = []
+    height, width = frames.shape[1:3]
+    for mask, centroid in zip(center["masks"], center["centroids"]):
+        vector = np.asarray(centroid, dtype=np.float64) - pivot
+        angle = math.degrees(math.atan2(vector[1], vector[0]))
+        matrix = cv2.getRotationMatrix2D(tuple(pivot), angle, 1.0)
+        rotated = cv2.warpAffine(
+            mask.astype(np.uint8),
+            matrix,
+            (width, height),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        image[rotated > 0] = bgr_color
+        aligned.append(image)
+        angles.append(float(angle))
+    if not aligned:
+        raise RuntimeError("No cursor masks were available for orbit alignment")
+    return np.stack(aligned), angles
+
+
+def _write_cursor_orbit_evidence(
+    output: Path,
+    frames: np.ndarray,
+    boundary: dict,
+    center: dict,
+    shape: dict,
+    alignment_angles: Sequence[float],
+) -> Sequence[dict]:
+    output.mkdir(parents=True, exist_ok=True)
+    files = []
+
+    def save(name, image, title, category):
+        path = output / name
+        if not cv2.imwrite(str(path), image):
+            raise RuntimeError("Could not write calibration evidence: {}".format(path))
+        files.append({"name": name, "title": title, "category": category})
+
+    metrics = center["metrics"]
+    occupancy = center["masks"].mean(axis=0)
+    save(
+        "cursor_center_heatmap.png",
+        _color_heatmap(occupancy * (1.0 - occupancy)),
+        "Cursor orbit temporal heatmap",
+        "center",
+    )
+    orbit = frames.mean(axis=0).astype(np.uint8)
+    for point in center["centroids"]:
+        cv2.circle(orbit, tuple(np.round(point).astype(int)), 2, (0, 255, 255), -1)
+    cv2.circle(
+        orbit,
+        (round(metrics["x"]), round(metrics["y"])),
+        max(1, round(metrics["centroid_orbit_radius_px"])),
+        (0, 255, 0),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.drawMarker(
+        orbit,
+        (round(metrics["x"]), round(metrics["y"])),
+        (0, 0, 255),
+        cv2.MARKER_CROSS,
+        12,
+        1,
+    )
+    save(
+        "cursor_center_orbit.png",
+        orbit,
+        "Cursor centroids and fitted rotation center",
+        "center",
+    )
+
+    probability = cv2.resize(
+        _color_heatmap(shape["probability"]),
+        (410, 410),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    binary = cv2.resize(
+        (shape["binary"] * 255).astype(np.uint8),
+        (410, 410),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    edges = cv2.resize(
+        cv2.Canny((shape["binary"] * 255).astype(np.uint8), 50, 150),
+        (410, 410),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    save("cursor_shape_probability.png", probability, "Aligned cursor probability", "cursor_shape")
+    save("cursor_shape_binary.png", binary, "Aligned cursor binary shape", "cursor_shape")
+    save("cursor_shape_edge.png", edges, "Aligned cursor shape edge", "cursor_shape")
+
+    overlay = np.zeros((410, 410, 3), np.uint8)
+    overlay[binary > 0] = (235, 235, 235)
+    overlay[edges > 0] = (0, 255, 0)
+    cv2.drawMarker(overlay, (205, 205), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
+    save("cursor_shape_overlay.png", overlay, "Aligned cursor contour and pivot", "cursor_shape")
+
+    symmetric = shape["symmetric_model"]
+    symmetric_view = cv2.resize(
+        _color_heatmap(symmetric["symmetric_probability"]),
+        (410, 410),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    polygon = np.round(symmetric["polygon_xy"] * 10).astype(np.int32)
+    cv2.polylines(symmetric_view, [polygon], True, (0, 255, 0), 2, cv2.LINE_AA)
+    save(
+        "cursor_shape_symmetric_polygon.png",
+        symmetric_view,
+        "Symmetry-constrained cursor polygon",
+        "cursor_shape",
+    )
+    template_polar = cv2.resize(
+        _color_heatmap(shape["template_polar"]),
+        (500, 720),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    correlation = cv2.resize(
+        _color_heatmap(shape["correlations"]),
+        (720, max(360, 2 * len(shape["correlations"]))),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    save("cursor_shape_polar_template.png", template_polar, "Cursor polar template", "polar")
+    save("cursor_shape_polar_correlation.png", correlation, "Cursor polar correlation", "polar")
+
+    angle_plot = np.full((240, 720, 3), 18, np.uint8)
+    if alignment_angles:
+        points = []
+        for index, angle in enumerate(alignment_angles):
+            x = int(round(index * 719 / max(1, len(alignment_angles) - 1)))
+            y = int(round(120 + ((angle + 180.0) % 360.0 - 180.0) * 0.55))
+            points.append([x, int(np.clip(y, 5, 234))])
+        cv2.polylines(angle_plot, [np.asarray(points, np.int32)], False, (0, 220, 255), 2)
+    save("cursor_orbit_alignment.png", angle_plot, "Per-frame cursor alignment angle", "quality")
+
+    model_mask = np.zeros(frames.shape[1:3], dtype=np.uint8)
+    cv2.circle(
+        model_mask,
+        (round(boundary["center_x"]), round(boundary["center_y"])),
+        round(boundary["radius"]),
+        255,
+        -1,
+    )
+    np.savez_compressed(
+        output / "model.npz",
+        boundary=np.asarray(
+            [boundary["center_x"], boundary["center_y"], boundary["radius"]]
+        ),
+        rotation_center=np.asarray([metrics["x"], metrics["y"]]),
+        minimap_mask=model_mask,
+        cursor_probability=shape["probability"],
+        cursor_binary=shape["binary"],
+        cursor_symmetric_probability=symmetric["symmetric_probability"],
+        cursor_symmetric_binary=symmetric["symmetric_binary"],
+        cursor_polygon_relative_xy=symmetric["polygon_relative_xy"],
+        cursor_symmetry_axis_deg=np.asarray([symmetric["axis_angle_deg"]]),
+        geometry_spatial_schema_version=np.asarray([SPATIAL_SCHEMA_VERSION]),
+        boundary_space_id=np.asarray(str(boundary["space"]["space_id"])),
+        rotation_center_space_id=np.asarray(str(metrics["space"]["space_id"])),
+        geometry_space_size_px=np.asarray(boundary["space"]["size_px"], dtype=np.int32),
+    )
+    return files
+
+
+def calibrate_cursor_orbit_frames(
+    frames: np.ndarray,
+    output_path: Path,
+    *,
+    outer_boundary: dict,
+    config: Optional[dict] = None,
+    provenance: Optional[dict] = None,
+    progress=None,
+    frame_space: Optional[dict] = None,
+) -> dict:
+    """Fit cursor pivot and shape while preserving an existing map boundary."""
+
+    if frames.ndim != 4:
+        raise ValueError("Cursor-orbit frames must be N x H x W x C arrays")
+    if len(frames) < 4:
+        raise ValueError("Cursor-orbit calibration requires at least four frames")
+    merged = _merged_config(config)
+    space = _prepared_frame_space(frames, frame_space, "cursor_orbit_crop_pixels")
+    boundary = require_spatial_geometry(outer_boundary, "circle")
+    if boundary["space"] != space:
+        raise ValueError("Cursor-orbit frames and mini-map boundary must share one space")
+    if progress:
+        progress("Fitting cursor rotation center from balanced joystick pulses")
+    center = _rotation_center(frames, boundary, merged["cursor"])
+    center["metrics"] = bind_geometry(center["metrics"], "point", space)
+    require_same_space(boundary, center["metrics"])
+    aligned_frames, alignment_angles = _cursor_orbit_aligned_frames(frames, center)
+    if progress:
+        progress("Fitting cursor shape after direction normalization")
+    shape = _cursor_shape(aligned_frames, center["metrics"], merged["cursor"])
+    shape["metrics"]["source"] = "cursor_orbit_masks_aligned_to_canonical_direction"
+    shape["metrics"]["alignment_angles_screen_deg"] = alignment_angles
+    output_path = Path(output_path)
+    evidence = _write_cursor_orbit_evidence(
+        output_path, frames, boundary, center, shape, alignment_angles
+    )
+    pivot = center["metrics"]
+    offset_x = pivot["x"] - boundary["center_x"]
+    offset_y = pivot["y"] - boundary["center_y"]
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "review_required",
+        "calibration_kind": "cursor_orbit",
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "provenance": provenance or {},
+        "config": merged,
+        "outer_boundary": boundary,
+        "rotation_center": pivot,
+        "center_offset": bind_geometry(
+            {
+                "dx": float(offset_x),
+                "dy": float(offset_y),
+                "magnitude_px": float(math.hypot(offset_x, offset_y)),
+            },
+            "vector",
+            space,
+        ),
+        "geometry_space": space,
+        "model_geometry": {
+            "minimap_mask": bind_geometry({"array_name": "minimap_mask"}, "mask", space),
+            "cursor_polygon": bind_geometry(
+                {
+                    "points_xy": (
+                        np.asarray(shape["symmetric_model"]["polygon_relative_xy"])
+                        + np.asarray([pivot["x"], pivot["y"]])
+                    ).tolist(),
+                    "model_array_name": "cursor_polygon_relative_xy",
+                    "model_coordinate_convention": "offset_xy_from_rotation_center",
+                },
+                "polygon",
+                space,
+            ),
+        },
+        "cursor_shape": shape["metrics"],
+        "overall_confidence": float(
+            math.sqrt(max(0.0, pivot["confidence"] * shape["metrics"]["confidence"]))
+        ),
+        "confidence_scale": "0..1 experimental; human evidence review is authoritative",
+        "model_file": "model.npz",
+        "evidence": evidence,
+    }
+    _atomic_json(output_path / "calibration.json", result)
+    return result
 
 
 def calibrate_minimap_frames(
