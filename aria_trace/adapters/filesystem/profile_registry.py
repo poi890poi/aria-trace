@@ -922,6 +922,17 @@ class ProfileRegistry:
                 )
                 if orientation_rig_id == str(rig["revision_id"]):
                     rig_game_orientation = candidate
+                else:
+                    raise ProfileResolutionError(
+                        "Active game-orientation profile {} is stale: it depends "
+                        "on superseded rig {}, while the current active rig is {}. "
+                        "Re-publish the current rig calibration to recompose game "
+                        "orientation before opening the adapter.".format(
+                            candidate["revision_id"],
+                            orientation_rig_id or "<missing>",
+                            rig["revision_id"],
+                        )
+                    )
 
         if request.color_policy in ("auto", "game_matched") and context.game_id:
             try:

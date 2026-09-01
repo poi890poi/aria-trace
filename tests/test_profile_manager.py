@@ -248,6 +248,17 @@ class ProfileManagerTests(unittest.TestCase):
                 review_state="accepted",
                 activate=True,
             )
+            old_orientation = registry.publish(
+                "rig_game_orientation",
+                phone_context,
+                {
+                    "profile_kind": "rig_game_orientation",
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 3,
+                },
+                dependencies={"rig": first_rig["revision_id"]},
+                review_state="accepted",
+                activate=True,
+            )
 
             second_rig = publish_rig_calibration(
                 write_rig(root / "rig-2", camera_x_offset=3.0),
@@ -273,6 +284,33 @@ class ProfileManagerTests(unittest.TestCase):
                 ProfileContext(game_id="game-1", camera_id="CAM-1"),
             )
             self.assertEqual(recomposed["revision_id"], active["revision_id"])
+            self.assertEqual(
+                1, len(second_rig["recomposed_rig_game_orientation_profiles"])
+            )
+            recomposed_orientation = second_rig[
+                "recomposed_rig_game_orientation_profiles"
+            ][0]
+            self.assertNotEqual(
+                old_orientation["revision_id"], recomposed_orientation["revision_id"]
+            )
+            self.assertEqual(
+                second_rig["revision_id"],
+                recomposed_orientation["dependencies"]["rig"],
+            )
+            resolved = registry.resolve_adapter(
+                ProfileContext(
+                    game_id="game-1",
+                    camera_id="CAM-1",
+                    game_display=phone_context.game_display,
+                ),
+                AdapterRequest(mode="minimap", color_policy="rig_locked"),
+            )
+            self.assertEqual(
+                3,
+                resolved["adapter_plan"][
+                    "game_upright_quarter_turns_clockwise"
+                ],
+            )
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):
         with tempfile.TemporaryDirectory() as directory:

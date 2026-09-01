@@ -431,8 +431,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         )
         print(
-            "Recomposed {} active rig-game profile(s) for this panel.".format(
-                len(profile.get("recomposed_rig_game_profiles") or [])
+            "Recomposed {} rig-game and {} game-orientation profile(s) "
+            "for this panel.".format(
+                len(profile.get("recomposed_rig_game_profiles") or []),
+                len(
+                    profile.get("recomposed_rig_game_orientation_profiles")
+                    or []
+                ),
             )
         )
         _write_standalone_adapter(

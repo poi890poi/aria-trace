@@ -336,9 +336,15 @@ This is the normal recovery path after the phone or camera is repositioned:
 the saved phone/game boundary and rotation center are reused in canonical panel
 space, while the new rig supplies all camera geometry. No game images are
 replayed and no game-specific optical transform is fitted during recomposition.
+The newest accepted game-upright quarter-turn for each matching game/display
+variant is transferred to the new rig at the same time. This is valid because
+every accepted rig maps ChArUco app-up into the same canonical display space;
+photometric game-color profiles remain rig-specific and are not transferred.
 Minimap and dual adapter modes also verify that the selected `rig_game` names
 the current active rig exactly. A stale composition is rejected with a clear
 recomposition instruction instead of silently opening its superseded rig.
+An active orientation profile pinned to a superseded rig is likewise rejected
+instead of silently falling back to zero turns.
 
 ### 4. New rig for a calibrated platform/game
 

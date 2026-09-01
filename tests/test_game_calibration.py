@@ -10,6 +10,7 @@ from aria_trace.adapters.filesystem.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
+    ProfileResolutionError,
 )
 from aria_trace.services.calibration.minimap.discovery import (
     discover_android_minimap_crop,
@@ -75,6 +76,50 @@ class GameCalibrationTests(unittest.TestCase):
                     "game_upright_quarter_turns_clockwise"
                 ],
             )
+
+    def test_stale_orientation_profile_is_not_silently_dropped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calibration = root / "rig.json"
+            calibration.write_text(json.dumps({"camera": {}}), encoding="utf-8")
+            context = ProfileContext(
+                game_id="game",
+                camera_id="CAM",
+                panel_display={"natural_panel_px": [100, 200]},
+                game_display={"logical_frame_px": [200, 100]},
+            )
+            registry = ProfileRegistry(root / "profiles")
+            first_rig = registry.publish(
+                "rig",
+                context,
+                {"generation": 1},
+                runtime_files={"hik_camera_calibration": calibration},
+                review_state="accepted",
+                activate=True,
+            )
+            registry.publish(
+                "rig_game_orientation",
+                context,
+                {
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 3
+                },
+                dependencies={"rig": first_rig["revision_id"]},
+                review_state="accepted",
+                activate=True,
+            )
+            registry.publish(
+                "rig",
+                context,
+                {"generation": 2},
+                runtime_files={"hik_camera_calibration": calibration},
+                review_state="accepted",
+                activate=True,
+            )
+
+            with self.assertRaisesRegex(
+                ProfileResolutionError, "orientation.*stale.*superseded"
+            ):
+                registry.resolve_adapter(context, AdapterRequest(mode="full"))
 
 
 if __name__ == "__main__":

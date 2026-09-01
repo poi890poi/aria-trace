@@ -104,6 +104,15 @@ def publish_rig_calibration(
         if activate
         else []
     )
+    profile["recomposed_rig_game_orientation_profiles"] = (
+        recompose_active_rig_game_orientation_profiles(
+            profile,
+            registry=store,
+            activate=True,
+        )
+        if activate
+        else []
+    )
     return profile
 
 
@@ -206,6 +215,60 @@ def recompose_active_rig_game_profiles(
                     "phone metadata do not change portable game geometry"
                 ),
                 "source_phone_game_provenance": phone_profile.get("provenance"),
+            },
+            review_state="accepted",
+            activate=activate,
+        )
+        recomposed.append(result)
+    return recomposed
+
+
+def recompose_active_rig_game_orientation_profiles(
+    rig_profile: Mapping[str, Any],
+    *,
+    registry: ProfileRegistry,
+    activate: bool = True,
+) -> list[Dict[str, Any]]:
+    """Transfer canonical game-up quarter-turns to one new rig revision."""
+
+    rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+    recomposed = []
+    composed_variants = set()
+    for item in registry.list_revisions(
+        kind="rig_game_orientation", active_only=True
+    ):
+        source = registry.revision(str(item["revision_id"]))
+        source_context = ProfileContext.from_dict(source.get("context") or {})
+        if source_context.platform != rig_context.platform:
+            continue
+        if not _portable_panel_geometry_matches(rig_context, source_context):
+            continue
+        target_variant = (
+            source_context.platform,
+            source_context.game_id,
+            source_context.game_display_signature,
+        )
+        if target_variant in composed_variants:
+            continue
+        composed_variants.add(target_variant)
+        context = _rig_phone_game_context(rig_context, source_context)
+        result = registry.publish(
+            "rig_game_orientation",
+            context,
+            dict(source.get("payload") or {}),
+            dependencies={"rig": str(rig_profile["revision_id"])},
+            provenance={
+                "composition": "canonical_game_orientation_plus_new_rig",
+                "source_orientation_revision": source["revision_id"],
+                "source_rig_revision": (source.get("dependencies") or {}).get(
+                    "rig"
+                ),
+                "target_rig_revision": rig_profile["revision_id"],
+                "transfer_basis": (
+                    "accepted rigs normalize ChArUco app-up into the same "
+                    "canonical display space; game/display quarter-turn is unchanged"
+                ),
+                "source_orientation_provenance": source.get("provenance"),
             },
             review_state="accepted",
             activate=activate,
@@ -700,8 +763,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Rig profile: {} ({})".format(result["revision_id"], result["publication"]))
         if not arguments.candidate:
             print(
-                "Recomposed {} active rig-game profile(s) for this panel.".format(
-                    len(result.get("recomposed_rig_game_profiles") or [])
+                "Recomposed {} rig-game and {} game-orientation profile(s) "
+                "for this panel.".format(
+                    len(result.get("recomposed_rig_game_profiles") or []),
+                    len(
+                        result.get(
+                            "recomposed_rig_game_orientation_profiles"
+                        )
+                        or []
+                    ),
                 )
             )
         return 0
