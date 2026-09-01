@@ -203,6 +203,13 @@ class AdbPhoneSession:
     def shell(self, *args: str) -> str:
         return self.run("shell", *args)
 
+    def _package_is_installed(self, package_name: str) -> bool:
+        """Query package presence without making absence an ADB command error."""
+
+        expected = "package:{}".format(str(package_name))
+        listed = self.shell("pm", "list", "packages", str(package_name))
+        return any(line.strip() == expected for line in listed.splitlines())
+
     def display_state(self) -> str:
         """Return Android's best-effort default-display power report.
 
@@ -482,7 +489,7 @@ class AdbPhoneSession:
             port = int(local_target_port)
             self.run("reverse", "tcp:{}".format(port), "tcp:{}".format(port))
             self._reverse_port = port
-            installed = self.shell("pm", "path", str(package_name)).strip()
+            installed = self._package_is_installed(package_name)
             if not installed:
                 if apk_path is None or not Path(apk_path).is_file():
                     raise RuntimeError(
@@ -491,7 +498,7 @@ class AdbPhoneSession:
                         "set ARIA_PHONE_TARGET_APK, or pass --phone-target-apk."
                     )
                 self.run("install", "-r", str(Path(apk_path).resolve()))
-                installed = self.shell("pm", "path", str(package_name)).strip()
+                installed = self._package_is_installed(package_name)
                 if not installed:
                     raise RuntimeError("ADB installation of the native phone target failed")
             self.viewer_activity = str(component_name)

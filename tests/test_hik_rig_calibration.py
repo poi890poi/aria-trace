@@ -1238,9 +1238,9 @@ class HikPhoneTests(unittest.TestCase):
         class NativeRunner(FakeAdbRunner):
             def __call__(self, command, timeout):
                 args = list(command[3:])
-                if args[:3] == ["shell", "pm", "path"]:
+                if args[:4] == ["shell", "pm", "list", "packages"]:
                     self.commands.append(args)
-                    return "package:/data/app/io.ariatrace.phonetarget/base.apk"
+                    return "package:io.ariatrace.phonetarget"
                 return super().__call__(command, timeout)
 
         runner = NativeRunner()
@@ -1266,6 +1266,55 @@ class HikPhoneTests(unittest.TestCase):
             "io.ariatrace.phonetarget/io.ariatrace.phonetarget.PhoneTargetActivity",
         )
         phone.cleanup(turn_display_off=True)
+
+    def test_native_target_absence_triggers_apk_install_before_launch(self):
+        class NativeInstallRunner(FakeAdbRunner):
+            def __init__(self):
+                super().__init__()
+                self.installed = False
+
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:3] == ["shell", "pm", "path"]:
+                    raise AssertionError("package absence must not be probed with pm path")
+                if args[:4] == ["shell", "pm", "list", "packages"]:
+                    self.commands.append(args)
+                    return (
+                        "package:io.ariatrace.phonetarget"
+                        if self.installed
+                        else ""
+                    )
+                if args[:2] == ["install", "-r"]:
+                    self.commands.append(args)
+                    self.installed = True
+                    return "Success"
+                return super().__call__(command, timeout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "aria-phone-target.apk"
+            apk.write_bytes(b"apk")
+            runner = NativeInstallRunner()
+            phone = AdbPhoneSession(
+                "SERIAL-1",
+                adb_executable="adb-test",
+                runner=runner,
+                sleeper=lambda _seconds: None,
+            )
+            phone.wake_and_hold_native_target(
+                8765, [1080, 2400], apk_path=apk
+            )
+
+        installs = [
+            command
+            for command in runner.commands
+            if command[:2] == ["install", "-r"]
+        ]
+        launches = [
+            command for command in runner.commands
+            if command[:3] == ["shell", "am", "start"]
+        ]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(len(launches), 1)
 
     def test_subprocess_runner_decodes_adb_output_as_utf8_without_locale_dependency(self):
         completed = mock.Mock(returncode=0, stdout="display � text", stderr="")
