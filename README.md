@@ -121,15 +121,37 @@ Override either distance independently with
 `--horizontal-swipe-distance-px PX` or `--vertical-swipe-distance-px PX`.
 
 This settled-screenshot mode locates neither scrcpy nor external FFmpeg. It
-retains each original ADB PNG and writes the existing session compatibility
-videos with OpenCV MJPEG so current mini-map and color-calibration readers keep
-working. Continuous `--android-capture scrcpy` still requires scrcpy and
-FFmpeg for its H.264 stream. Each PNG path is attached to its `frames.jsonl`
-record, where `metadata.image_space` remains the authoritative spatial contract.
+stores the ADB stream only as lossless PNG images; it never creates an ADB
+video. An optional synchronized HIK stream remains an MJPEG video because it
+does not load the phone. Continuous `--android-capture scrcpy` still requires
+scrcpy and FFmpeg for its H.264 stream. Each PNG path is attached to its
+`frames.jsonl` record, where `metadata.image_space` remains the authoritative
+spatial contract.
 
 The command prints the resulting `SESSION` directory. It waits for operator
 confirmation before touching the game. `--require-hik` prevents an unnoticed
 ADB-only fallback because color fitting requires both sources.
+
+For the normal task-oriented path, give that immutable session to one command:
+
+```powershell
+python -m aria_tools game-calibration SESSION --game-id GAME_ID
+```
+
+`game-calibration` inspects the data instead of requiring every calibration.
+It independently attempts game-screen upright orientation, automatic mini-map
+boundary discovery, and HIK game color. Missing HIK frames, missing movement,
+or insufficient visual features are reported as structured skips in
+`game_calibration_summary.json`; successful capabilities are still published.
+Movement is not required. Use `--candidate` to write evidence and immutable
+review revisions without activating them.
+
+Screen orientation is a rig-game capability distinct from Android settings and
+from game-world north. It aggregates up to 12 synchronized ADB/HIK pairs,
+rejects sparse/full threshold masks and low-edge images, and stores lossless
+source stills plus candidate evidence. Runtime uses only a discrete quarter-turn
+(no interpolation), and every rotated frame retains its parent image-space
+metadata.
 
 Publish the reviewed mini-map localization result and compose it with the
 active local rig:
@@ -140,19 +162,24 @@ python -m aria_tools profiles publish-minimap `
   --activate
 ```
 
-`publish-minimap` expects `localization_summary.json` from the session-aware
-zigzag localization producer. The lower-level command below is a different
-contract: it calibrates boundary plus cursor from a standard acquisition
-session containing a `main` video and human-reviewed rotation/movement time
-intervals. It does not accept the settled zigzag session and its
-`calibration.json` is not a `localization_summary.json`.
+`publish-minimap` imports an already-produced localization or calibration
+result. To calibrate a standard acquisition session directly, use the command
+below. It runs the verified boundary-plus-cursor backend from human-reviewed
+rotation/movement intervals and accepts either a traceable PNG image series or
+a video stream.
 
 ```powershell
 python -m aria_tools minimap-calibration `
-  STANDARD_SESSION MINIMAP_EVIDENCE_OUTPUT `
+  STANDARD_SESSION `
   --rotation ROTATION_START ROTATION_END `
   --movement MOVEMENT_START MOVEMENT_END
 ```
+
+The evidence directory is selected automatically below the effective
+`ARIA_PROFILE_ROOT`, and successful results publish and activate the matching
+`phone_game` plus optional `rig_game` revisions. Add an explicit output path
+only for diagnostics, or `--candidate` to retain review evidence without
+activation.
 
 Fit game contrast/color from the synchronized zigzag session. This publishes
 a portable ADB-side `phone_game_color` reference and a local, rig-specific
@@ -160,9 +187,14 @@ a portable ADB-side `phone_game_color` reference and a local, rig-specific
 
 ```powershell
 python -m aria_tools game-color-calibration `
-  SESSION GAME_COLOR_EVIDENCE_OUTPUT `
+  SESSION `
   --game-id GAME_ID
 ```
+
+The source session remains explicit immutable provenance. Evidence output,
+game fallback, active rig selection, publication, and activation use the
+effective profile registry automatically. An explicit output remains a
+diagnostic override.
 
 Verify selection, then open the dual-stream GUI:
 

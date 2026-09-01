@@ -24,13 +24,14 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 from .commented_yaml import write_commented_yaml
 
 
-SCHEMA_VERSION = "2.1"
+SCHEMA_VERSION = "2.2"
 PROFILE_KINDS = (
     "rig",
     "phone_game",
     "phone_game_color",
     "rig_game",
     "rig_game_color",
+    "rig_game_orientation",
 )
 REVISION_STATES = ("review_required", "accepted")
 ADAPTER_MODES = ("full", "minimap", "dual")
@@ -389,10 +390,13 @@ def _profile_compatibility(
         )
 
     compare("platform", requested.platform, stored.platform)
-    if kind in ("rig", "rig_game", "rig_game_color"):
+    if kind in ("rig", "rig_game", "rig_game_color", "rig_game_orientation"):
         compare("camera_id", requested.camera_id, stored.camera_id)
         compare("panel_display", requested.panel_display, stored.panel_display)
-    if kind in ("phone_game", "phone_game_color", "rig_game", "rig_game_color"):
+    if kind in (
+        "phone_game", "phone_game_color", "rig_game", "rig_game_color",
+        "rig_game_orientation",
+    ):
         compare("game_id", requested.game_id, stored.game_id)
         compare("game_package", requested.package, stored.package)
         compare("game_version", requested.game_version, stored.game_version)
@@ -718,7 +722,9 @@ class ProfileRegistry:
     ) -> Sequence[sqlite3.Row]:
         clauses = ["r.kind=?"]
         values = [kind]
-        if kind in ("rig", "rig_game", "rig_game_color") and context.camera_id:
+        if kind in (
+            "rig", "rig_game", "rig_game_color", "rig_game_orientation"
+        ) and context.camera_id:
             clauses.append("r.camera_id=?")
             values.append(context.camera_id)
         if kind != "rig" and context.game_id:
@@ -864,7 +870,7 @@ class ProfileRegistry:
     def resolve_adapter(
         self, context: ProfileContext, request: AdapterRequest
     ) -> Dict[str, Any]:
-        rig_game = phone_game = rig_game_color = None
+        rig_game = phone_game = rig_game_color = rig_game_orientation = None
         if request.requires_minimap_profile:
             if not context.game_id:
                 raise ProfileResolutionError(
@@ -887,6 +893,22 @@ class ProfileRegistry:
                 )
         else:
             rig = self.resolve("rig", context)
+
+        # Screen-upright orientation is independent of mini-map and color.
+        # It is therefore optional for every game-scoped adapter mode and is
+        # accepted only when it depends on the exact resolved rig revision.
+        if context.game_id:
+            try:
+                candidate = self.resolve("rig_game_orientation", context)
+            except ProfileResolutionError as exc:
+                if not str(exc).startswith("No active rig_game_orientation profile"):
+                    raise
+            else:
+                orientation_rig_id = str(
+                    (candidate.get("dependencies") or {}).get("rig") or ""
+                )
+                if orientation_rig_id == str(rig["revision_id"]):
+                    rig_game_orientation = candidate
 
         if request.color_policy in ("auto", "game_matched") and context.game_id:
             try:
@@ -955,12 +977,23 @@ class ProfileRegistry:
                 "rig_game_color": (
                     rig_game_color["revision_id"] if rig_game_color else None
                 ),
+                "rig_game_orientation": (
+                    rig_game_orientation["revision_id"]
+                    if rig_game_orientation else None
+                ),
             },
             "paths": {
                 "rig_calibration": str(calibration_path.resolve()),
                 "rig_game_profile": str(rig_game_path.resolve()) if rig_game_path else None,
                 "game_color_profile": (
                     str(game_color_path.resolve()) if game_color_path else None
+                ),
+                "game_orientation_profile": (
+                    str(
+                        (Path(rig_game_orientation["revision_directory"]) / "profile.json")
+                        .resolve()
+                    )
+                    if rig_game_orientation else None
                 ),
             },
             "adapter_plan": {
@@ -980,6 +1013,7 @@ class ProfileRegistry:
             "phone_game": phone_game,
             "rig_game": rig_game,
             "rig_game_color": rig_game_color,
+            "rig_game_orientation": rig_game_orientation,
         }
         profile_compatibility = {}
         compatibility_warnings = []

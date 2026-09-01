@@ -548,7 +548,8 @@ class _AdbSettledScreenshotSource:
             "trigger": "after_each_zigzag_touch_UP",
             "settle_seconds_after_up": self.settle_seconds,
             "lossless_pngs_retained": True,
-            "preferred_video_encoding": "mjpeg",
+            "preferred_frame_storage": "image_series",
+            "preferred_image_format": "png",
             "external_ffmpeg_required": False,
             "capture_count": int(self.capture_count),
             "adb": str(self.adb.resolve()),
@@ -625,7 +626,6 @@ def _record_adb_screenshot_zigzag(
         raise ValueError("Screenshot settle duration cannot be negative")
     input_packets = []
     captured_pairs = []
-    raw_pngs = []
     orientation_match = None
     orientation_images = None
     output_image_turns = None
@@ -679,7 +679,7 @@ def _record_adb_screenshot_zigzag(
         stroke_index = int(packet.payload.get("point_index", len(captured_pairs)))
         if screenshot_settle_seconds:
             time.sleep(float(screenshot_settle_seconds))
-        adb_packet, raw_png = _capture_adb_screenshot_packet(
+        adb_packet, _raw_png = _capture_adb_screenshot_packet(
             adb, serial, stroke_index
         )
         adb_height, adb_width = adb_packet.image.shape[:2]
@@ -774,7 +774,6 @@ def _record_adb_screenshot_zigzag(
             else None
         )
         captured_pairs.append((adb_packet, hik_packet))
-        raw_pngs.append(raw_png)
         screenshot_source.capture_count += 1
 
     try:
@@ -859,9 +858,12 @@ def _record_adb_screenshot_zigzag(
             "external_ffmpeg_used": False,
             "trigger": "after_each_zigzag_touch_UP",
             "settle_seconds_after_up": float(screenshot_settle_seconds),
-            "lossless_png_directory": "screenshots/android_phone",
+            "lossless_png_directory": "frames/android_phone",
             "lossless_png_space_metadata": "frames.jsonl#metadata.image_space",
-            "compatibility_video_encoding": "opencv_mjpeg",
+            "adb_frame_storage": "lossless_png_image_series",
+            "hik_frame_storage": (
+                "opencv_mjpeg_video" if hik is not None else "not_present"
+            ),
         },
         "game_id": game_id,
         "image_sources": ["android_adb_screencap"]
@@ -885,10 +887,8 @@ def _record_adb_screenshot_zigzag(
         pending_path,
         frame_sources,
         [control],
-        # The settled screenshot path has only a handful of lossless source
-        # images. Keep the existing session-video contract with OpenCV MJPEG
-        # for both paired streams; external FFmpeg is reserved for continuous
-        # scrcpy H.264 capture.
+        # Only the optional HIK stream is encoded as MJPEG. The ADB source
+        # declares image-series storage and therefore never creates a video.
         video_encoding="mjpeg",
         video_fps=max(1.0, min(30.0, float(len(captured_pairs)))),
         video_crf=16,
@@ -906,16 +906,6 @@ def _record_adb_screenshot_zigzag(
         writer.rebase_origin(min(all_times))
         if frame_processors:
             writer.attach_frame_processors(frame_processors)
-        screenshot_directory = pending_path / "screenshots" / "android_phone"
-        screenshot_directory.mkdir(parents=True, exist_ok=True)
-        for index, (packet, raw_png) in enumerate(zip(
-            (pair[0] for pair in captured_pairs), raw_pngs
-        )):
-            relative = Path("screenshots") / "android_phone" / (
-                "swipe-{:03d}.png".format(index)
-            )
-            (pending_path / relative).write_bytes(raw_png)
-            packet.metadata["lossless_png"] = relative.as_posix()
         for packet in input_packets:
             writer.write_input(packet)
         for adb_packet, hik_packet in captured_pairs:

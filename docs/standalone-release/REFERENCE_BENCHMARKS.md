@@ -44,7 +44,9 @@ without another Python image pass.
 - Rig calibration wall time and reprojection distribution.
 - Sustained adapter frame interval for each `full`, `minimap`, and `dual` mode.
 - Rectification on/off read time at the actual saved ROI dimensions.
-- Zigzag capture frame counts, drop counts, ADB clock fit, and video duration.
+- Zigzag capture frame counts, drop counts, ADB clock fit, and stream duration.
+  ADB screenshot capture is a lossless PNG series; an optional HIK stream may
+  remain MJPEG video because it does not load the phone.
 - Mini-map calibration wall time and evidence quality on a representative
   session.
 

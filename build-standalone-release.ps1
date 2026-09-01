@@ -67,6 +67,7 @@ $Applications = @(
     [ordered]@{ Name = "aria-rig-calibration"; Entry = "packaging\windows\entrypoints\rig_calibration.py" },
     [ordered]@{ Name = "aria-zigzag-acquisition"; Entry = "packaging\windows\entrypoints\zigzag_acquisition.py" },
     [ordered]@{ Name = "aria-minimap-calibration"; Entry = "packaging\windows\entrypoints\minimap_calibration.py" },
+    [ordered]@{ Name = "aria-game-calibration"; Entry = "packaging\windows\entrypoints\game_calibration.py" },
     [ordered]@{ Name = "aria-game-color-calibration"; Entry = "packaging\windows\entrypoints\game_color_calibration.py" }
 )
 if ($SkipApplicationBuild) {
@@ -188,6 +189,7 @@ $Manifest = @(
     "  - apps/aria-rig-calibration/aria-rig-calibration.exe",
     "  - apps/aria-zigzag-acquisition/aria-zigzag-acquisition.exe",
     "  - apps/aria-minimap-calibration/aria-minimap-calibration.exe",
+    "  - apps/aria-game-calibration/aria-game-calibration.exe",
     "  - apps/aria-game-color-calibration/aria-game-color-calibration.exe",
     "camera_adapter_import: python/hikcam.py",
     "native_phone_target: phone-target/aria-phone-target.apk",

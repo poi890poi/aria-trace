@@ -38,8 +38,8 @@ Run these from the extracted release directory:
 ```bat
 rig-calibration.bat
 zigzag-acquisition.bat
-minimap-calibration.bat SESSION OUTPUT --rotation START END --movement START END
-game-color-calibration.bat SESSION OUTPUT
+minimap-calibration.bat SESSION --rotation START END --movement START END
+game-color-calibration.bat SESSION
 camera-adapter-demo.bat --game-id genshin-impact --mode dual
 ```
 
@@ -75,8 +75,8 @@ install-python-tools.bat
 python-tools.bat rig-calibration
 python-tools.bat setup show
 python-tools.bat zigzag-acquisition
-python-tools.bat minimap-calibration SESSION OUTPUT --rotation START END --movement START END
-python-tools.bat game-color-calibration SESSION OUTPUT
+python-tools.bat minimap-calibration SESSION --rotation START END --movement START END
+python-tools.bat game-color-calibration SESSION
 python-tools.bat camera-adapter-demo --game-id genshin-impact --mode dual --gui
 ```
 
@@ -188,8 +188,22 @@ active rig revision, fits MVS gamma and CCM on held-out frame pairs, publishes
 an independent `rig_game_color` profile, and writes review images:
 
 ```bat
-game-color-calibration.bat sessions\calibration\SESSION artifacts\game-color-SESSION
+game-color-calibration.bat sessions\calibration\SESSION
 ```
+
+The preferred game-level command automatically runs every capability supported
+by the session and skips unavailable ones without inventing results:
+
+```bat
+game-calibration.bat sessions\calibration\SESSION --game-id GAME_ID
+```
+
+Its JSON summary distinguishes `accepted`, `review_required`,
+`skipped_missing_or_ineligible_data`, and `failed`. Screen-upright orientation
+is calibrated from multiple synchronized ADB/HIK still pairs and published as
+an independent `rig_game_orientation` revision. The adapter resolves it once
+at construction and performs a zero-interpolation quarter-turn while preserving
+the complete image-space parent transform. This is not game-world north.
 
 To collect the session without running scrcpy, use:
 
@@ -205,17 +219,22 @@ override them independently.
 One lossless ADB screenshot and one rig-normalized HIK frame are retained after
 each settled swipe. Omitting `--require-hik` permits an Android-only mini-map
 session, but such a session cannot fit HIK color because it contains no HIK
-pixels. This mode writes OpenCV MJPEG compatibility videos and never locates or
+pixels. The ADB stream is only a lossless PNG image series and never creates a
+video. The optional HIK stream remains MJPEG. This mode never locates or
 executes external FFmpeg. Every retained PNG is referenced from a `frames.jsonl`
 record carrying its `metadata.image_space`; filenames or dimensions never imply
 coordinate space.
 
-The color command's `SESSION` is immutable measurement provenance, and `OUTPUT`
-is its review-evidence destination; neither is device/profile configuration.
-Automatic configuration still selects the game context, active rig revision,
-and publication root. Requiring the source session prevents a silently chosen
-recording from changing calibration results, while requiring a new output path
-prevents evidence from being overwritten.
+The color command's `SESSION` is immutable measurement provenance. Automatic
+configuration selects the game context, active rig revision, evidence directory,
+and publication root. An explicit output path is diagnostic-only. Requiring the
+source session prevents a silently chosen recording from changing calibration
+results.
+
+Mini-map calibration follows the same registry policy: its evidence defaults
+below the effective profile root, the portable `phone_game` revision is
+published there, and an available active local rig is composed into `rig_game`.
+Use `--candidate` when the evidence should be retained without activation.
 
 Every successful active rig or game-color calibration also writes
 `hikcam_adapter.py`. This generated module embeds the exact rig JSON, dense
@@ -231,9 +250,9 @@ python-tools.bat profiles export-adapter my_hikcam.py --game-id genshin-impact -
 
 ## Outputs and profiles
 
-Rig calibration and its generated adapter write below the effective profile
-root; analysis and synchronized capture tools continue to write below
-`artifacts/` and `sessions/` unless overridden. Production camera opening
+Rig, mini-map, and game-color calibration evidence and profiles write below the
+effective profile root; synchronized capture sessions continue to write below
+`sessions/` unless overridden. Production camera opening
 resolves active profiles by camera, phone, game, display context, and adapter
 mode. Explicit calibration paths are diagnostic overrides only.
 

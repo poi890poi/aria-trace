@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
@@ -99,6 +101,44 @@ def _decode_indices(
     return np.stack([decoded[int(record["frame_index"])] for record in records])
 
 
+def _decode_session_records(
+    reader: SessionReader,
+    stream_id: str,
+    records: Sequence[Mapping[str, object]],
+    *,
+    content_size_px: Optional[Sequence[int]] = None,
+) -> np.ndarray:
+    """Decode one traceable stream from either images or its video container."""
+
+    storage_kinds = {
+        str((record.get("storage") or {}).get("kind") or "video")
+        for record in records
+    }
+    if storage_kinds == {"image_series"}:
+        frames = reader.read_image_frames(records)
+        if content_size_px is not None:
+            width, height = map(int, content_size_px)
+            if width > frames.shape[2] or height > frames.shape[1]:
+                raise ValueError(
+                    "Declared content {}x{} exceeds decoded {}x{}".format(
+                        width, height, frames.shape[2], frames.shape[1]
+                    )
+                )
+            frames = frames[:, :height, :width]
+        return frames
+    if storage_kinds != {"video"}:
+        raise ValueError(
+            "Stream {} mixes incompatible frame storage: {}".format(
+                stream_id, sorted(storage_kinds)
+            )
+        )
+    return _decode_indices(
+        reader.video_path(stream_id),
+        records,
+        content_size_px=content_size_px,
+    )
+
+
 def _session_game_context(
     reader: SessionReader,
     rig_document: Mapping[str, object],
@@ -137,6 +177,14 @@ def _session_game_context(
             "ui_layout_id": str(capture.get("ui_layout_id") or "default"),
         },
     )
+
+
+# Shared, public session contracts used by the task-level game calibration
+# orchestrator. Private aliases above remain for compatibility with existing
+# callers and tests.
+decode_session_records = _decode_session_records
+session_game_context = _session_game_context
+sha256_file = _sha256
 
 
 def calibrate_game_color_session(
@@ -221,11 +269,12 @@ def calibrate_game_color_session(
         raise ValueError("Fewer than four synchronized ADB/HIK frame pairs")
     selected_android = [android_records[a] for a, _h, _delta in selected]
     selected_hik = [hik_records[h] for _a, h, _delta in selected]
-    android_frames = _decode_indices(
-        reader.video_path("android_phone"), selected_android
+    android_frames = _decode_session_records(
+        reader, "android_phone", selected_android
     )
-    hik_frames = _decode_indices(
-        reader.video_path("hik_phone"),
+    hik_frames = _decode_session_records(
+        reader,
+        "hik_phone",
         selected_hik,
         content_size_px=content_size,
     )
@@ -355,7 +404,12 @@ def parser() -> argparse.ArgumentParser:
         )
     )
     value.add_argument("session", type=Path)
-    value.add_argument("output", type=Path)
+    value.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help="diagnostic evidence override; default is under ARIA_PROFILE_ROOT",
+    )
     value.add_argument("--profile-root", type=Path)
     value.add_argument("--game-id")
     value.add_argument("--maximum-pairs", type=int, default=16)
@@ -369,14 +423,26 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
-    if arguments.game_id is None:
-        from aria_trace.adapters.filesystem.system_configuration import (
-            load_system_configuration,
-        )
+    from aria_trace.adapters.filesystem.system_configuration import (
+        load_system_configuration,
+    )
 
-        arguments.game_id = load_system_configuration(arguments.profile_root)[
-            "game"
-        ].get("game_id")
+    configuration = load_system_configuration(arguments.profile_root)
+    if arguments.game_id is None:
+        arguments.game_id = configuration["game"].get("game_id")
+    if arguments.output is None:
+        registry = ProfileRegistry(arguments.profile_root)
+        game_label = re.sub(
+            r"[^A-Za-z0-9_.-]+", "-", str(arguments.game_id or "game")
+        ).strip("-.") or "game"
+        arguments.output = (
+            registry.root
+            / "calibrations"
+            / "game-color"
+            / "{}-{}".format(
+                game_label, datetime.now().strftime("%Y%m%d-%H%M%S")
+            )
+        )
     result = calibrate_game_color_session(
         arguments.session,
         arguments.output,

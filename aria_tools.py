@@ -27,11 +27,15 @@ def zigzag_acquisition(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def minimap_calibration(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("acquisition.minimap_calibration", argv)
+    return _invoke("aria_trace.workflows.minimap_profile_calibration", argv)
 
 
 def game_color_calibration(argv: Optional[Sequence[str]] = None) -> int:
     return _invoke("aria_trace.workflows.hik_game_color_calibration", argv)
+
+
+def game_calibration(argv: Optional[Sequence[str]] = None) -> int:
+    return _invoke("aria_trace.workflows.game_calibration", argv)
 
 
 def game_repeatability(argv: Optional[Sequence[str]] = None) -> int:
@@ -59,6 +63,7 @@ COMMANDS = {
     "zigzag-acquisition": zigzag_acquisition,
     "minimap-calibration": minimap_calibration,
     "game-color-calibration": game_color_calibration,
+    "game-calibration": game_calibration,
     "game-repeatability": game_repeatability,
     "rig-evidence-review": rig_evidence_review,
     "profiles": profile_management,
@@ -87,6 +92,7 @@ __all__ = [
     "main",
     "minimap_calibration",
     "game_color_calibration",
+    "game_calibration",
     "game_repeatability",
     "rig_evidence_review",
     "profile_management",

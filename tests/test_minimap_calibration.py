@@ -11,10 +11,11 @@ from acquisition.minimap_calibration import (
     _validate_segments,
     calibrate_minimap_boundary_frames,
     calibrate_minimap_frames,
+    calibrate_session,
     calibrate_segment_sessions,
 )
 from acquisition.models import FramePacket
-from acquisition.session import SessionWriter
+from acquisition.session import SessionReader, SessionWriter
 
 
 def synthetic_frames(frame_count=96):
@@ -48,6 +49,75 @@ def synthetic_frames(frame_count=96):
 
 
 class MinimapCalibrationTests(unittest.TestCase):
+    def test_session_calibration_reads_space_aware_image_series_without_video(self):
+        class Source:
+            stream_id = "android_phone"
+
+            def describe(self):
+                return {
+                    "type": "fixture_adb_screenshot",
+                    "stream_id": self.stream_id,
+                    "serial": "PHONE-1",
+                    "preferred_frame_storage": "image_series",
+                    "preferred_image_format": "png",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session"
+            writer = SessionWriter(session, [Source()], [])
+            origin = writer.origin_ns
+            seconds_values = [0.10 + 0.02 * index for index in range(12)] + [
+                1.10 + 0.02 * index for index in range(12)
+            ]
+            for index, seconds in enumerate(seconds_values):
+                writer.write_frame(
+                    FramePacket(
+                        "android_phone",
+                        np.full((180, 220, 3), 30 + index, np.uint8),
+                        origin + int(seconds * 1.0e9),
+                        origin + int(seconds * 1.0e9),
+                        metadata={
+                            "image_space": {
+                                "space_id": "android_game_capture_pixels",
+                                "stored_size_px": [220, 180],
+                                "source_logical_space_id": (
+                                    "android_logical_display_pixels"
+                                ),
+                            }
+                        },
+                    )
+                )
+            writer.close()
+            reader = SessionReader(session)
+            self.assertFalse(reader.video_path("android_phone").is_file())
+            self.assertEqual(
+                24,
+                reader.manifest["image_streams"]["android_phone"]["frame_count"],
+            )
+
+            with patch(
+                "aria_trace.services.calibration.minimap.calibration.calibrate_minimap_frames",
+                side_effect=lambda rotation, movement, _output, **kwargs: {
+                    "rotation_shape": list(rotation.shape),
+                    "movement_shape": list(movement.shape),
+                    "provenance": kwargs["provenance"],
+                    "frame_space": kwargs["frame_space"],
+                },
+            ):
+                result = calibrate_session(
+                    session,
+                    root / "output",
+                    {"rotation_only": [0.0, 0.5], "movement_only": [1.0, 1.5]},
+                )
+            self.assertEqual([12, 180, 220, 3], result["rotation_shape"])
+            self.assertEqual([12, 180, 220, 3], result["movement_shape"])
+            self.assertEqual("image_series", result["provenance"]["frame_storage"])
+            self.assertEqual(
+                "android_game_capture_pixels",
+                result["frame_space"]["parent_space_id"],
+            )
+
     def test_boundary_only_entry_point_uses_verified_evidence_contract(self):
         rotation, _, boundary_center, _, radius = synthetic_frames()
         with tempfile.TemporaryDirectory() as temporary:

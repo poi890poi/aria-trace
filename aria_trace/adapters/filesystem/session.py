@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+import cv2
 import numpy as np
 
 from aria_trace.domain.session import SESSION_SCHEMA_VERSION as SCHEMA_VERSION
@@ -213,9 +214,26 @@ class SessionWriter:
         self.frame_processors = list(frame_processors)
         self.session_id = str(uuid.uuid4())
         self.session_context = dict(session_context or {})
-        self.video_stream_options = {
+        supplied_stream_options = {
             str(stream_id): dict(options)
             for stream_id, options in dict(video_stream_options or {}).items()
+        }
+        self.video_stream_options = {
+            stream_id: {
+                name: value
+                for name, value in options.items()
+                if name not in ("storage", "image_format")
+            }
+            for stream_id, options in supplied_stream_options.items()
+        }
+        self.frame_stream_options = {
+            stream_id: {
+                name: value
+                for name, value in options.items()
+                if name in ("storage", "image_format")
+            }
+            for stream_id, options in supplied_stream_options.items()
+            if any(name in options for name in ("storage", "image_format"))
         }
         self.frame_source_descriptions = [
             source.describe() for source in frame_sources
@@ -223,9 +241,19 @@ class SessionWriter:
         for description in self.frame_source_descriptions:
             stream_id = description.get("stream_id")
             preferred_encoding = description.get("preferred_video_encoding")
+            preferred_storage = description.get("preferred_frame_storage")
+            preferred_image_format = description.get("preferred_image_format")
             if stream_id and preferred_encoding:
                 self.video_stream_options.setdefault(str(stream_id), {}).setdefault(
                     "encoding", str(preferred_encoding)
+                )
+            if stream_id and preferred_storage:
+                self.frame_stream_options.setdefault(str(stream_id), {}).setdefault(
+                    "storage", str(preferred_storage)
+                )
+            if stream_id and preferred_image_format:
+                self.frame_stream_options.setdefault(str(stream_id), {}).setdefault(
+                    "image_format", str(preferred_image_format)
                 )
         self.origin_ns = time.perf_counter_ns()
         self.frame_counts = Counter()
@@ -234,6 +262,7 @@ class SessionWriter:
         self.input_drop_counts = Counter()
         self._video_sinks = {}
         self._video_shapes = {}
+        self._image_streams = {}
         self._frames_file = (self.path / "frames.jsonl").open("w", encoding="utf-8", buffering=1)
         self._inputs_file = (self.path / "inputs.jsonl").open("w", encoding="utf-8", buffering=1)
         (self.path / "annotations.jsonl").open("a", encoding="utf-8").close()
@@ -253,6 +282,11 @@ class SessionWriter:
                 "container_fps": video_fps,
                 "crf": video_crf if video_encoding == "h264" else None,
                 "preset": video_preset if video_encoding == "h264" else None,
+                "timing_authority": "frames.jsonl",
+            },
+            "frame_storage": {
+                "default": "video",
+                "stream_options": self.frame_stream_options,
                 "timing_authority": "frames.jsonl",
             },
             "online_frame_artifacts": [processor.describe() for processor in self.frame_processors],
@@ -326,7 +360,6 @@ class SessionWriter:
         return sink
 
     def write_frame(self, packet: FramePacket) -> None:
-        sink = self._video_sink(packet)
         video_index = self.frame_counts[packet.stream_id]
         for processor in self.frame_processors:
             processor.process(
@@ -334,7 +367,44 @@ class SessionWriter:
                 int(video_index),
                 packet.host_capture_time_ns - self.origin_ns,
             )
-        sink.write(packet.image)
+        stream_options = self.frame_stream_options.get(packet.stream_id, {})
+        storage_kind = str(stream_options.get("storage") or "video")
+        storage = {"kind": storage_kind}
+        if storage_kind == "image_series":
+            image_format = str(stream_options.get("image_format") or "png").lower()
+            if image_format != "png":
+                raise ValueError("Image-series storage currently supports PNG only")
+            relative = (
+                Path("frames")
+                / _safe_id(packet.stream_id)
+                / "frame-{:06d}.png".format(video_index)
+            )
+            target = self.path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(target), packet.image):
+                raise RuntimeError("Could not write session image {}".format(target))
+            storage.update(
+                {
+                    "format": "png",
+                    "path": relative.as_posix(),
+                    "lossless": True,
+                }
+            )
+            self._image_streams[packet.stream_id] = {
+                "directory": str(relative.parent.as_posix()),
+                "format": "png",
+                "lossless": True,
+            }
+        elif storage_kind == "video":
+            sink = self._video_sink(packet)
+            sink.write(packet.image)
+            storage.update({"path": sink.path.name})
+        else:
+            raise ValueError(
+                "Unsupported frame storage {!r} for stream {}".format(
+                    storage_kind, packet.stream_id
+                )
+            )
         height, width = packet.image.shape[:2]
         record = {
             "stream_id": packet.stream_id,
@@ -347,7 +417,10 @@ class SessionWriter:
             "height": height,
             "dropped_before": packet.dropped_before,
             "metadata": packet.metadata,
+            "storage": storage,
         }
+        if storage_kind == "image_series":
+            record["image_file"] = storage["path"]
         self._frames_file.write(json.dumps(record, separators=(",", ":")) + "\n")
         self.frame_counts[packet.stream_id] += 1
         self.drop_counts[packet.stream_id] += packet.dropped_before
@@ -408,6 +481,13 @@ class SessionWriter:
                     stream_id: sink.describe()
                     for stream_id, sink in self._video_sinks.items()
                 },
+                "image_streams": {
+                    stream_id: {
+                        **description,
+                        "frame_count": int(self.frame_counts[stream_id]),
+                    }
+                    for stream_id, description in self._image_streams.items()
+                },
                 "online_frame_artifacts": [
                     processor.describe() for processor in self.frame_processors
                 ],
@@ -458,6 +538,35 @@ class SessionReader:
         if not filename:
             filename = "video_{}.avi".format(_safe_id(stream_id))
         return self.path / filename
+
+    def image_path(self, record: dict) -> Path:
+        relative = record.get("image_file") or (record.get("storage") or {}).get(
+            "path"
+        )
+        if not relative or (record.get("storage") or {}).get("kind") != "image_series":
+            raise ValueError("Frame record is not stored as an image series")
+        path = self.path / str(relative)
+        if not path.is_file():
+            raise FileNotFoundError("Session frame image is missing: {}".format(path))
+        return path
+
+    def read_image_frames(self, records: Iterable[dict]) -> np.ndarray:
+        images = []
+        for record in records:
+            image = cv2.imread(str(self.image_path(record)), cv2.IMREAD_COLOR)
+            if image is None:
+                raise RuntimeError(
+                    "Could not decode session frame image: {}".format(
+                        self.image_path(record)
+                    )
+                )
+            images.append(image)
+        if not images:
+            raise ValueError("No image-series frame records were selected")
+        shape = images[0].shape
+        if any(image.shape != shape for image in images[1:]):
+            raise ValueError("Image-series frame dimensions are inconsistent")
+        return np.stack(images)
 
     def nearby_inputs(self, session_time_ns: int, radius_ns: int = 100_000_000) -> List[dict]:
         lower = session_time_ns - radius_ns

@@ -42,14 +42,32 @@ def cross_source_alignment_evidence(
         if not np.isfinite(correlation):
             correlation = 0.0
 
-    adb_threshold = float(np.percentile(adb_values, 50))
-    hik_threshold = float(np.percentile(hik_values, 50))
-    adb_binary = adb_blur >= adb_threshold
-    hik_binary = hik_blur >= hik_threshold
-    binary_agreement = float(np.mean(adb_binary[selected] == hik_binary[selected]))
+    # Cross-source game evidence can differ substantially in exposure, gamma,
+    # and white balance.  Percentile masks compare geometry instead of DN, and
+    # several occupancies prevent one sparse/full threshold from dominating.
+    threshold_agreements = []
+    threshold_occupancies = []
+    for percentile in (30, 50, 70):
+        adb_threshold = float(np.percentile(adb_values, percentile))
+        hik_threshold = float(np.percentile(hik_values, percentile))
+        adb_binary = adb_blur >= adb_threshold
+        hik_binary = hik_blur >= hik_threshold
+        adb_occupancy = float(np.mean(adb_binary[selected]))
+        hik_occupancy = float(np.mean(hik_binary[selected]))
+        threshold_occupancies.append([adb_occupancy, hik_occupancy])
+        threshold_agreements.append(
+            float(np.mean(adb_binary[selected] == hik_binary[selected]))
+        )
+    binary_agreement = float(np.median(threshold_agreements))
 
-    adb_edges = cv2.Canny(adb_blur, 40, 120) > 0
-    hik_edges = cv2.Canny(hik_blur, 40, 120) > 0
+    def adaptive_edges(image, values):
+        median = float(np.median(values))
+        lower = int(max(8, min(180, round(0.55 * median))))
+        upper = int(max(lower + 8, min(245, round(1.45 * median))))
+        return cv2.Canny(image, lower, upper) > 0
+
+    adb_edges = adaptive_edges(adb_blur, adb_values)
+    hik_edges = adaptive_edges(hik_blur, hik_values)
     kernel = np.ones((3, 3), np.uint8)
     adb_dilated = cv2.dilate(adb_edges.astype(np.uint8), kernel) > 0
     hik_dilated = cv2.dilate(hik_edges.astype(np.uint8), kernel) > 0
@@ -66,11 +84,29 @@ def cross_source_alignment_evidence(
         else 0.0
     )
     edge_overlap = 0.5 * (adb_supported + hik_supported)
+    adb_edge_density = float(adb_edge_count) / float(np.count_nonzero(selected))
+    hik_edge_density = float(hik_edge_count) / float(np.count_nonzero(selected))
+    occupancy_valid = all(
+        0.015 <= item <= 0.985
+        for pair in threshold_occupancies
+        for item in pair
+    )
+    edge_density_valid = (
+        0.001 <= adb_edge_density <= 0.35
+        and 0.001 <= hik_edge_density <= 0.35
+    )
+    information_quality = float(
+        np.clip(
+            min(adb_edge_density, hik_edge_density) / 0.015,
+            0.0,
+            1.0,
+        )
+    ) if occupancy_valid and edge_density_valid else 0.0
     confidence = float(
         np.clip(
-            0.50 * max(0.0, correlation)
+            (0.45 * max(0.0, correlation)
             + 0.25 * binary_agreement
-            + 0.25 * edge_overlap,
+            + 0.30 * edge_overlap),
             0.0,
             1.0,
         )
@@ -92,10 +128,16 @@ def cross_source_alignment_evidence(
         "confidence": confidence,
         "grayscale_correlation": correlation,
         "binary_agreement": binary_agreement,
+        "threshold_agreements": threshold_agreements,
+        "threshold_occupancies": threshold_occupancies,
         "edge_overlap": edge_overlap,
         "adb_edge_supported_fraction": adb_supported,
         "hik_edge_supported_fraction": hik_supported,
         "valid_pixel_fraction": float(np.mean(selected)),
+        "adb_edge_density": adb_edge_density,
+        "hik_edge_density": hik_edge_density,
+        "information_quality": information_quality,
+        "information_eligible": bool(information_quality > 0.0),
     }
     images = {
         "adb_visible_crop.png": adb_crop,

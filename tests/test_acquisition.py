@@ -388,15 +388,17 @@ class AcquisitionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Install it, pass --ffmpeg"):
                 find_ffmpeg()
 
-    def test_source_mjpeg_preference_avoids_external_ffmpeg(self):
+    def test_adb_screenshot_source_prefers_lossless_image_series(self):
         description = AdbScreenshotFrameSource(Path("adb.exe")).describe()
-        self.assertEqual("mjpeg", description["preferred_video_encoding"])
+        self.assertEqual("image_series", description["preferred_frame_storage"])
+        self.assertEqual("png", description["preferred_image_format"])
         self.assertFalse(description["external_ffmpeg_required"])
         source = DescribedSource("adb")
         source.describe = lambda: {
             "type": "adb_screenshot",
             "stream_id": "adb",
-            "preferred_video_encoding": "mjpeg",
+            "preferred_frame_storage": "image_series",
+            "preferred_image_format": "png",
             "external_ffmpeg_required": False,
         }
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
@@ -413,13 +415,19 @@ class AcquisitionTests(unittest.TestCase):
                 )
             )
             writer.close()
-            manifest = SessionReader(Path(temporary) / "session").manifest
+            reader = SessionReader(Path(temporary) / "session")
+            manifest = reader.manifest
+            records = reader.frames_by_stream["adb"]
+            decoded = reader.read_image_frames(records)
         find.assert_not_called()
-        self.assertEqual("mjpeg", manifest["video_streams"]["adb"]["encoding"])
+        self.assertNotIn("adb", manifest["videos"])
+        self.assertNotIn("adb", manifest["video_streams"])
+        self.assertEqual("png", manifest["image_streams"]["adb"]["format"])
         self.assertEqual(
-            "mjpeg",
-            manifest["video_storage"]["stream_options"]["adb"]["encoding"],
+            "image_series",
+            manifest["frame_storage"]["stream_options"]["adb"]["storage"],
         )
+        self.assertEqual((1, 16, 16, 3), decoded.shape)
         with tempfile.TemporaryDirectory() as temporary:
             explicit = SessionWriter(
                 Path(temporary) / "session",

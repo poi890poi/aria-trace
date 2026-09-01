@@ -15,6 +15,7 @@ from aria_trace.adapters.filesystem.profile_registry import (
     PROFILE_KINDS,
     ProfileContext,
     ProfileRegistry,
+    ProfileResolutionError,
     context_from_rig_calibration,
 )
 from aria_trace.adapters.hik.game_camera import _source_crop_to_canonical_phone
@@ -106,17 +107,26 @@ def _session_context(summary: Mapping[str, Any]) -> tuple[Path, Dict[str, Any], 
     return session_path, manifest, context
 
 
-def _phone_id_from_manifest(manifest: Mapping[str, Any]) -> str:
+def _phone_id_from_manifest(
+    manifest: Mapping[str, Any], fallback: Optional[str] = None
+) -> str:
     for source in manifest.get("frame_sources") or []:
         shared = source.get("shared_capture") or {}
         if source.get("stream_id") == "android_phone" and shared.get("serial"):
             return str(shared["serial"])
+        if source.get("stream_id") == "android_phone" and source.get("serial"):
+            return str(source["serial"])
+    if fallback:
+        return str(fallback)
     raise ValueError("Session does not identify its Android phone")
 
 
 def _logical_minimap_crop(summary: Mapping[str, Any]) -> list[int]:
     if summary.get("crop_xywh") is not None:
         return [int(value) for value in summary["crop_xywh"]]
+    calibration_config = summary.get("config") or {}
+    if calibration_config.get("crop_xywh") is not None:
+        return [int(value) for value in calibration_config["crop_xywh"]]
     android = summary["android"]
     width, height = map(int, android["frame_size_px"])
     logical_space = raster_space(
@@ -221,12 +231,17 @@ def _geometry_to_canonical_phone(
 
 
 def _profile_context_from_localization(
-    summary: Mapping[str, Any], manifest: Mapping[str, Any], rig_context: Optional[ProfileContext]
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    rig_context: Optional[ProfileContext],
+    *,
+    game_id: Optional[str] = None,
+    phone_id: Optional[str] = None,
 ) -> ProfileContext:
     capture_context = manifest.get("context") or {}
     surface = capture_context.get("phone_surface_orientation") or {}
     launch = capture_context.get("game_launch") or {}
-    phone_id = _phone_id_from_manifest(manifest)
+    selected_phone_id = _phone_id_from_manifest(manifest, phone_id)
     android_result = summary.get("android") or {}
     logical = (
         surface.get("logical_size_px")
@@ -244,12 +259,17 @@ def _profile_context_from_localization(
         "logical_frame_px": natural,
     }
     return ProfileContext(
-        game_id=str(capture_context.get("game_id") or launch.get("game_id") or ""),
+        game_id=str(
+            game_id
+            or capture_context.get("game_id")
+            or launch.get("game_id")
+            or ""
+        ),
         platform="android",
         package=launch.get("package"),
         camera_adapter=(rig_context.camera_adapter if rig_context else "hik_mvs"),
         camera_id=(rig_context.camera_id if rig_context else None),
-        phone_id=phone_id,
+        phone_id=selected_phone_id,
         phone_model=(rig_context.phone_model if rig_context else None),
         panel_display=panel,
         game_display={
@@ -270,11 +290,19 @@ def publish_minimap_profiles(
     registry: Optional[ProfileRegistry] = None,
     profile_root: Optional[Path] = None,
     rig_calibration: Optional[Path] = None,
+    game_id: Optional[str] = None,
+    phone_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
     activate: bool = False,
 ) -> Dict[str, Any]:
     summary_path = Path(localization_summary)
     if summary_path.is_dir():
-        summary_path = summary_path / "localization_summary.json"
+        localization_file = summary_path / "localization_summary.json"
+        summary_path = (
+            localization_file
+            if localization_file.is_file()
+            else summary_path / "calibration.json"
+        )
     summary_path = summary_path.resolve()
     summary = _load_json(summary_path)
     if summary.get("status") not in ("review_required", "accepted", "complete"):
@@ -292,7 +320,23 @@ def publish_minimap_profiles(
         rig_profile = publish_rig_calibration(
             rig_file, registry=store, activate=True
         )
-    context = _profile_context_from_localization(summary, manifest, rig_context)
+    if rig_profile is None:
+        try:
+            rig_profile = store.resolve(
+                "rig",
+                ProfileContext(camera_id=camera_id, phone_id=phone_id),
+            )
+        except ProfileResolutionError:
+            pass
+        else:
+            rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+    context = _profile_context_from_localization(
+        summary,
+        manifest,
+        rig_context,
+        game_id=game_id,
+        phone_id=phone_id,
+    )
     logical_crop = _logical_minimap_crop(summary)
     surface = capture_context.get("phone_surface_orientation") or {}
     canonical_crop = summary.get("canonical_phone_crop_xywh")
@@ -351,6 +395,11 @@ def publish_minimap_profiles(
     evidence = summary.get("evidence") or android_result.get(
         "verified_backend_evidence"
     ) or []
+    evidence_files = [
+        str(value.get("name")) if isinstance(value, Mapping) else str(value)
+        for value in evidence
+        if not isinstance(value, Mapping) or value.get("name")
+    ]
     phone_payload = {
         "profile_kind": "phone_game",
         "coordinate_space": "phone_natural_display_pixels",
@@ -374,7 +423,13 @@ def publish_minimap_profiles(
             phone_payload["shift_estimation_mask_runtime_file"] = (
                 "shift_estimation_mask"
             )
-    for index, evidence_value in enumerate(evidence):
+    model_file = summary.get("model_file")
+    if model_file:
+        model_path = summary_path.parent / str(model_file)
+        if model_path.is_file():
+            portable_files["minimap_model"] = model_path
+            phone_payload["minimap_model_runtime_file"] = "minimap_model"
+    for index, evidence_value in enumerate(evidence_files):
         evidence_path = Path(str(evidence_value))
         if not evidence_path.is_absolute():
             evidence_path = summary_path.parent / evidence_path
@@ -388,7 +443,7 @@ def publish_minimap_profiles(
         provenance={
             "localization_summary": str(summary_path),
             "session_path": str(session_path),
-            "evidence": evidence,
+            "evidence": evidence_files,
         },
         review_state="accepted" if activate else "review_required",
         activate=activate,
@@ -537,10 +592,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Rig profile: {} ({})".format(result["revision_id"], result["publication"]))
         return 0
     if arguments.command == "publish-minimap":
+        from aria_trace.adapters.filesystem.system_configuration import (
+            load_system_configuration,
+        )
+
+        settings = load_system_configuration(arguments.profile_root)
         result = publish_minimap_profiles(
             arguments.localization,
             registry=registry,
             rig_calibration=arguments.rig_calibration,
+            game_id=settings["game"].get("game_id"),
+            phone_id=settings["devices"].get("phone_id"),
+            camera_id=settings["devices"].get("camera_id"),
             activate=arguments.activate,
         )
         print("Phone-game profile: {}".format(result["phone_game"]["revision_id"]))

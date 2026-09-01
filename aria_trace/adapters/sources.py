@@ -221,7 +221,8 @@ class AdbScreenshotFrameSource(FrameSource):
                 "adb": str(self.adb.resolve()),
                 "serial": self.serial,
                 "requested_fps": self.fps,
-                "preferred_video_encoding": "mjpeg",
+                "preferred_frame_storage": "image_series",
+                "preferred_image_format": "png",
                 "external_ffmpeg_required": False,
             }
         )

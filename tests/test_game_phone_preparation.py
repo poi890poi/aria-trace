@@ -516,8 +516,10 @@ class GamePhonePreparationTests(unittest.TestCase):
                     "external_ffmpeg_used"
                 ]
             )
+            self.assertNotIn("android_phone", reader.manifest["videos"])
             self.assertEqual(
-                "mjpeg", reader.manifest["video_storage"]["encoding"]
+                "png",
+                reader.manifest["image_streams"]["android_phone"]["format"],
             )
             self.assertEqual(
                 "compatible_android_phone_session",
@@ -537,10 +539,11 @@ class GamePhonePreparationTests(unittest.TestCase):
             )
             self.assertEqual(
                 4,
-                len(list((pending / "screenshots" / "android_phone").glob("*.png"))),
+                len(list((pending / "frames" / "android_phone").glob("*.png"))),
             )
             for record in reader.frames_by_stream["android_phone"]:
-                self.assertTrue(record["metadata"]["lossless_png"])
+                self.assertEqual("image_series", record["storage"]["kind"])
+                self.assertTrue((pending / record["image_file"]).is_file())
                 self.assertEqual(
                     "android_phone_natural_display_pixels",
                     record["metadata"]["image_space"]["canonical_space_id"],
@@ -747,18 +750,20 @@ class GamePhonePreparationTests(unittest.TestCase):
             self.assertIsNotNone(hik)
             self.assertEqual(4, len(reader.frames_by_stream["android_phone"]))
             self.assertEqual(4, len(reader.frames_by_stream["hik_phone"]))
-            self.assertEqual(".avi", reader.video_path("android_phone").suffix)
+            self.assertNotIn("android_phone", reader.manifest["videos"])
             self.assertEqual(".avi", reader.video_path("hik_phone").suffix)
-            self.assertTrue(reader.video_path("android_phone").is_file())
             self.assertTrue(reader.video_path("hik_phone").is_file())
-            for stream_id in ("android_phone", "hik_phone"):
-                video = cv2.VideoCapture(str(reader.video_path(stream_id)))
-                try:
-                    ok, decoded = video.read()
-                finally:
-                    video.release()
-                self.assertTrue(ok)
-                self.assertIsNotNone(decoded)
+            adb_images = reader.read_image_frames(
+                reader.frames_by_stream["android_phone"]
+            )
+            self.assertEqual((4, 24, 32, 3), adb_images.shape)
+            video = cv2.VideoCapture(str(reader.video_path("hik_phone")))
+            try:
+                ok, decoded = video.read()
+            finally:
+                video.release()
+            self.assertTrue(ok)
+            self.assertIsNotNone(decoded)
             self.assertEqual(
                 "compatible_synchronized_adb_hik_pairs",
                 manifest["context"]["calibration_compatibility"]["game_color"],

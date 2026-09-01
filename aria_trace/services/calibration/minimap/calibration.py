@@ -29,6 +29,7 @@ from aria_trace.domain.spatial import (
     require_same_space,
     validate_raster_space,
 )
+from aria_trace.services.calibration.minimap.spatial import minimap_crop_space
 
 
 SCHEMA_VERSION = "2.0"
@@ -148,6 +149,105 @@ def _read_video_segment(
     if len(frames) < 12:
         raise ValueError("Calibration segment contains fewer than 12 decoded frames")
     return np.stack(frames), fps
+
+
+def _read_session_segment(
+    reader: SessionReader,
+    stream_id: str,
+    interval: Sequence[float],
+    crop_xywh: Sequence[int],
+) -> Tuple[np.ndarray, float]:
+    """Read a timed segment from either a traceable image series or video."""
+
+    records = list(reader.frames_by_stream.get(stream_id, []))
+    storage_kinds = {
+        str((record.get("storage") or {}).get("kind") or "video")
+        for record in records
+    }
+    if storage_kinds != {"image_series"}:
+        if storage_kinds not in ({"video"}, set()):
+            raise ValueError(
+                "Stream {} mixes incompatible frame storage: {}".format(
+                    stream_id, sorted(storage_kinds)
+                )
+            )
+        return _read_video_segment(
+            reader.video_path(stream_id),
+            interval,
+            crop_xywh,
+            frame_records=records,
+        )
+
+    start_ns = int(float(interval[0]) * 1.0e9)
+    end_ns = int(float(interval[1]) * 1.0e9)
+    selected = [
+        record
+        for record in records
+        if start_ns <= int(record["session_time_ns"]) <= end_ns
+    ]
+    if not selected:
+        raise ValueError(
+            "No {} image-series frames fall inside {:.3f}..{:.3f} seconds".format(
+                stream_id, float(interval[0]), float(interval[1])
+            )
+        )
+    if len(selected) < 12:
+        raise ValueError("Calibration segment contains fewer than 12 image frames")
+    frames = reader.read_image_frames(selected)
+    x, y, width, height = map(int, crop_xywh)
+    if min(x, y) < 0 or min(width, height) <= 0:
+        raise ValueError("Invalid mini-map crop")
+    if x + width > frames.shape[2] or y + height > frames.shape[1]:
+        raise ValueError(
+            "Mini-map crop {} exceeds image-series frame {}x{}".format(
+                list(map(int, crop_xywh)), frames.shape[2], frames.shape[1]
+            )
+        )
+    frames = frames[:, y : y + height, x : x + width]
+    times = np.asarray(
+        [int(record["session_time_ns"]) for record in selected], dtype=np.int64
+    )
+    if len(times) > 1:
+        median_delta = float(np.median(np.diff(times)))
+        fps = 1.0e9 / median_delta if median_delta > 0 else 1.0
+    else:
+        fps = 1.0
+    return frames, float(fps)
+
+
+def _frame_record_raster_space(records: Sequence[dict]) -> Optional[dict]:
+    """Preserve a producer-declared raster identity for derived geometry."""
+
+    declared = [
+        (record.get("metadata") or {}).get("image_space") for record in records
+    ]
+    present = [value for value in declared if value]
+    if not present:
+        return None
+    if len(present) != len(records):
+        raise ValueError("Session stream mixes frames with and without image-space metadata")
+    first = present[0]
+    if any(value != first for value in present[1:]):
+        raise ValueError("Session stream changes image space between calibration frames")
+    size = [int(value) for value in first.get("stored_size_px") or []]
+    if len(size) != 2:
+        raise ValueError("Session image-space metadata has no stored_size_px")
+    for record in records:
+        if [int(record["width"]), int(record["height"])] != size:
+            raise ValueError("Session frame dimensions disagree with image-space metadata")
+    space_id = str(first.get("space_id") or "")
+    if not space_id:
+        raise ValueError("Session image-space metadata has no space_id")
+    canonical_id = first.get("canonical_space_id")
+    local_to_canonical = first.get("local_to_canonical_3x3")
+    if canonical_id and local_to_canonical and str(canonical_id) != space_id:
+        return raster_space(
+            space_id,
+            size,
+            parent_space_id=str(canonical_id),
+            local_to_parent_3x3=local_to_canonical,
+        )
+    return raster_space(space_id, size)
 
 def _row_robust_z(values: np.ndarray) -> np.ndarray:
     median = np.median(values, axis=1, keepdims=True)
@@ -1244,29 +1344,42 @@ def calibrate_session(
     segments = _validate_segments(segments)
     config = _merged_config(config)
     reader = SessionReader(session_path)
-    video_path = reader.video_path("main")
-    frame_records = reader.frames_by_stream.get("main", [])
+    stream_id = (
+        "main" if reader.frames_by_stream.get("main") else "android_phone"
+    )
+    frame_records = reader.frames_by_stream.get(stream_id, [])
+    if not frame_records:
+        raise ValueError("Calibration session has no main or android_phone frames")
     if progress:
         progress("Decoding the rotation-only calibration frames")
-    rotation_frames, fps = _read_video_segment(
-        video_path,
+    rotation_frames, fps = _read_session_segment(
+        reader,
+        stream_id,
         segments["rotation_only"],
         config["crop_xywh"],
-        frame_records=frame_records,
     )
     if progress:
         progress("Decoding the movement-only calibration frames")
-    movement_frames, _ = _read_video_segment(
-        video_path,
+    movement_frames, _ = _read_session_segment(
+        reader,
+        stream_id,
         segments["movement_only"],
         config["crop_xywh"],
-        frame_records=frame_records,
+    )
+    source_space = _frame_record_raster_space(frame_records)
+    crop_space = minimap_crop_space(
+        config["crop_xywh"][2:],
+        parent_space_id=(source_space["space_id"] if source_space else None),
+        crop_xywh=(config["crop_xywh"] if source_space else None),
     )
     provenance = {
         "session_path": str(session_path),
         "session_id": reader.manifest.get("session_id"),
-        "video_path": str(video_path),
-        "stream_id": "main",
+        "frame_storage": (
+            (frame_records[0].get("storage") or {}).get("kind") or "video"
+        ),
+        "stream_id": stream_id,
+        "source_image_space": source_space,
         "segments": segments,
         "segment_label_source": "human_reviewed",
         "rotation_frame_count": int(len(rotation_frames)),
@@ -1281,6 +1394,7 @@ def calibrate_session(
         config=config,
         provenance=provenance,
         progress=progress,
+        frame_space=crop_space,
     )
 
 

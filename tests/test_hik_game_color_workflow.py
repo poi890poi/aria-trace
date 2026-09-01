@@ -12,13 +12,84 @@ from aria_trace.adapters.filesystem.profile_registry import (
     ProfileRegistry,
     context_from_rig_calibration,
 )
+from aria_trace.adapters.filesystem.session import SessionReader, SessionWriter
+from aria_trace.domain.packets import FramePacket
 from aria_trace.workflows.hik_game_color_calibration import (
+    _decode_session_records,
     calibrate_game_color_session,
+    main,
 )
 from aria_trace.workflows.profile_management import publish_rig_calibration
 
 
 class HikGameColorWorkflowTests(unittest.TestCase):
+    def test_color_decoder_reads_adb_image_series_without_video(self):
+        class Source:
+            stream_id = "android_phone"
+
+            def describe(self):
+                return {
+                    "stream_id": self.stream_id,
+                    "preferred_frame_storage": "image_series",
+                    "preferred_image_format": "png",
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / "session"
+            writer = SessionWriter(session, [Source()], [])
+            for index in range(3):
+                writer.write_frame(
+                    FramePacket(
+                        "android_phone",
+                        np.full((8, 16, 3), 40 + index, np.uint8),
+                        writer.origin_ns + index,
+                        writer.origin_ns + index,
+                    )
+                )
+            writer.close()
+            reader = SessionReader(session)
+            records = reader.frames_by_stream["android_phone"]
+            decoded = _decode_session_records(reader, "android_phone", records)
+            self.assertEqual((3, 8, 16, 3), decoded.shape)
+            self.assertFalse(reader.video_path("android_phone").exists())
+
+    def test_cli_derives_evidence_output_from_profile_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profiles = root / "profiles"
+            result = {
+                "profile_revision": "color-1",
+                "hik_bayer_conversion": {
+                    "fit": {
+                        "baseline_validation": {"rgb_mae_dn": 10.0},
+                        "selected_validation": {"rgb_mae_dn": 4.0},
+                    }
+                },
+            }
+            with patch(
+                "aria_trace.workflows.hik_game_color_calibration.calibrate_game_color_session",
+                return_value=result,
+            ) as calibrate:
+                self.assertEqual(
+                    0,
+                    main(
+                        [
+                            str(root / "session"),
+                            "--profile-root",
+                            str(profiles),
+                            "--game-id",
+                            "game-1",
+                        ]
+                    ),
+                )
+            positional, keyword = calibrate.call_args
+            output = Path(positional[1])
+            self.assertEqual(
+                profiles / "calibrations" / "game-color", output.parent
+            )
+            self.assertTrue(output.name.startswith("game-1-"))
+            self.assertTrue(keyword["activate"])
+
     def test_session_color_calibration_publishes_exact_rig_dependency(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

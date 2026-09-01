@@ -15,8 +15,10 @@ flowchart LR
     Phone -->|scrcpy frames| Zigzag[aria-zigzag-acquisition.exe]
     RigProfile -->|optional normalized HIK source| Zigzag
     Hik -->|optional current-session frames| Zigzag
-    Zigzag -->|session videos + timestamps + YAML spaces| Session[(capture session)]
+    Zigzag -->|ADB PNG series + optional HIK video + timestamps + YAML spaces| Session[(capture session)]
 
+    Session --> GameExe[aria-game-calibration.exe]
+    GameExe -->|screen upright| OrientationProfile[(rig-game orientation)]
     Session --> MiniExe[aria-minimap-calibration.exe]
     MiniExe -->|calibration + review evidence| MiniResult[(mini-map result)]
     Session --> ColorExe[aria-game-color-calibration.exe]
@@ -25,6 +27,7 @@ flowchart LR
     RigProfile --> Registry[profile registry]
     MiniResult --> Registry
     ColorProfile --> Registry
+    OrientationProfile --> Registry
     Registry --> Adapter[import hikcam]
     Registry -->|one-time resolved export| Embedded[generated hikcam_adapter.py]
     Adapter --> Full[rig-normalized phone]

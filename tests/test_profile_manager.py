@@ -10,6 +10,7 @@ from acquisition.profile_manager import (
     publish_rig_calibration,
 )
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
+from aria_trace.services.calibration.minimap.spatial import minimap_crop_space
 
 
 def write_rig(root: Path) -> Path:
@@ -56,6 +57,96 @@ def write_rig(root: Path) -> Path:
 
 
 class ProfileManagerTests(unittest.TestCase):
+    def test_verified_calibration_document_publishes_through_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProfileRegistry(root / "profiles")
+            rig_profile = publish_rig_calibration(
+                write_rig(root / "rig"), registry=registry
+            )
+            session = root / "session"
+            session.mkdir()
+            manifest = {
+                "session_id": "image-series-session",
+                "frame_sources": [
+                    {
+                        "stream_id": "android_phone",
+                        "serial": "PHONE-1",
+                        "preferred_frame_storage": "image_series",
+                    }
+                ],
+                "context": {
+                    "game_id": "game-1",
+                    "phone_surface_orientation": {
+                        "quarter_turns_clockwise_from_natural": 1,
+                        "logical_size_px": [200, 100],
+                        "natural_size_px": [100, 200],
+                    },
+                },
+            }
+            (session / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            output = root / "calibration"
+            output.mkdir()
+            (output / "model.npz").write_bytes(b"model")
+            (output / "boundary.png").write_bytes(b"evidence")
+            space = minimap_crop_space(
+                [40, 40],
+                parent_space_id="android_logical_display_pixels",
+                crop_xywh=[10, 5, 40, 40],
+            )
+            calibration = {
+                "schema_version": "2.0",
+                "status": "review_required",
+                "provenance": {"session_path": str(session)},
+                "config": {"crop_xywh": [10, 5, 40, 40]},
+                "outer_boundary": {
+                    "spatial_schema_version": 1,
+                    "geometry_type": "circle",
+                    "space": space,
+                    "center_x": 20.0,
+                    "center_y": 20.0,
+                    "radius": 18.0,
+                },
+                "rotation_center": {
+                    "spatial_schema_version": 1,
+                    "geometry_type": "point",
+                    "space": space,
+                    "x": 20.0,
+                    "y": 20.0,
+                },
+                "model_file": "model.npz",
+                "evidence": [{"name": "boundary.png"}],
+            }
+            calibration_path = output / "calibration.json"
+            calibration_path.write_text(json.dumps(calibration), encoding="utf-8")
+            published = publish_minimap_profiles(
+                calibration_path,
+                registry=registry,
+                camera_id="CAM-1",
+                activate=True,
+            )
+            phone = published["phone_game"]
+            self.assertEqual("accepted", phone["review_state"])
+            self.assertEqual(
+                "minimap_model.npz",
+                phone["runtime_files"]["minimap_model"]["path"].split("/")[-1],
+            )
+            resolved = registry.resolve(
+                "phone_game",
+                ProfileContext.from_dict(phone["context"]),
+            )
+            self.assertEqual(phone["revision_id"], resolved["revision_id"])
+            self.assertEqual(
+                rig_profile["revision_id"],
+                published["rig_game"]["dependencies"]["rig"],
+            )
+            self.assertEqual(
+                phone["revision_id"],
+                published["rig_game"]["dependencies"]["phone_game"],
+            )
+
     def test_rig_publication_copies_runtime_files_and_activates(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
