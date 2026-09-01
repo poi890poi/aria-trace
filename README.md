@@ -303,6 +303,13 @@ python -m aria_tools profiles export-portable PHONE_GAME_COLOR_REVISION game-col
 Do not export `rig_game` or `rig_game_color` as portable data: they contain
 local rig composition or HIK-specific photometric controls.
 
+Publishing a new accepted rig calibration automatically recomposes every
+compatible active `phone_game` revision into a new active `rig_game` revision.
+This is the normal recovery path after the phone or camera is repositioned:
+the saved phone/game boundary and rotation center are reused in canonical panel
+space, while the new rig supplies all camera geometry. No game images are
+replayed and no game-specific optical transform is fitted during recomposition.
+
 ### 4. New rig for a calibrated platform/game
 
 Configure and calibrate the new camera/phone rig first:

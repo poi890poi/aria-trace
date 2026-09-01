@@ -86,7 +86,7 @@ def publish_rig_calibration(
             "locked_imaging": True,
         },
     }
-    return store.publish(
+    profile = store.publish(
         "rig",
         context,
         payload,
@@ -95,6 +95,97 @@ def publish_rig_calibration(
         review_state="accepted" if activate else "review_required",
         activate=activate,
     )
+    profile["recomposed_rig_game_profiles"] = (
+        recompose_active_rig_game_profiles(
+            profile,
+            registry=store,
+            activate=True,
+        )
+        if activate
+        else []
+    )
+    return profile
+
+
+def _rig_game_payload_from_phone_game(
+    phone_profile: Mapping[str, Any],
+) -> Dict[str, Any]:
+    phone_payload = dict(phone_profile.get("payload") or {})
+    return {
+        "profile_kind": "rig_game",
+        "canonical_phone_crop_xywh": phone_payload.get(
+            "canonical_phone_crop_xywh"
+        ),
+        "outer_boundary": phone_payload.get("outer_boundary"),
+        "rotation_center": phone_payload.get("rotation_center"),
+        "composition_rule": (
+            "Apply the exact rig revision, then use portable phone-game "
+            "geometry in canonical phone-panel coordinates. No game images "
+            "or optical geometry are fitted while composing this profile."
+        ),
+        "capabilities": {
+            "modes": ["minimap", "dual"],
+            "recomposable_after_rig_displacement": True,
+        },
+    }
+
+
+def _rig_phone_game_context(
+    rig_context: ProfileContext,
+    phone_context: ProfileContext,
+) -> ProfileContext:
+    return ProfileContext(
+        platform=phone_context.platform,
+        camera_id=rig_context.camera_id,
+        phone_id=rig_context.phone_id,
+        phone_model=rig_context.phone_model,
+        panel_display=dict(rig_context.panel_display),
+        game_id=phone_context.game_id,
+        package=phone_context.package,
+        game_version=phone_context.game_version,
+        game_display=dict(phone_context.game_display),
+    )
+
+
+def recompose_active_rig_game_profiles(
+    rig_profile: Mapping[str, Any],
+    *,
+    registry: ProfileRegistry,
+    activate: bool = True,
+) -> list[Dict[str, Any]]:
+    """Compose active portable phone-game geometry with one exact rig revision."""
+
+    rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+    recomposed = []
+    for item in registry.list_revisions(kind="phone_game", active_only=True):
+        phone_profile = registry.revision(str(item["revision_id"]))
+        phone_context = ProfileContext.from_dict(
+            phone_profile.get("context") or {}
+        )
+        if phone_context.platform != rig_context.platform:
+            continue
+        if phone_context.panel_signature != rig_context.panel_signature:
+            continue
+        context = _rig_phone_game_context(rig_context, phone_context)
+        result = registry.publish(
+            "rig_game",
+            context,
+            _rig_game_payload_from_phone_game(phone_profile),
+            dependencies={
+                "rig": str(rig_profile["revision_id"]),
+                "phone_game": str(phone_profile["revision_id"]),
+            },
+            provenance={
+                "composition": "active_phone_game_plus_new_rig",
+                "source_phone_game_revision": phone_profile["revision_id"],
+                "source_rig_revision": rig_profile["revision_id"],
+                "source_phone_game_provenance": phone_profile.get("provenance"),
+            },
+            review_state="accepted",
+            activate=activate,
+        )
+        recomposed.append(result)
+    return recomposed
 
 
 def _session_context(summary: Mapping[str, Any]) -> tuple[Path, Dict[str, Any], Dict[str, Any]]:
@@ -455,19 +546,10 @@ def publish_minimap_profiles(
         "rig_game_color": None,
     }
     if rig_profile is not None:
-        rig_game_payload = {
-            "profile_kind": "rig_game",
-            "canonical_phone_crop_xywh": canonical_crop,
-            "composition_rule": (
-                "Apply the exact rig revision, then use the exact phone-game "
-                "crop. No optical geometry is fitted in this profile."
-            ),
-            "session_hik_observation": summary.get("rig_observation")
-            or summary.get("hik_session_observation"),
-            "capabilities": {
-                "modes": ["minimap", "dual"],
-            },
-        }
+        rig_game_payload = _rig_game_payload_from_phone_game(phone_profile)
+        rig_game_payload["session_hik_observation"] = summary.get(
+            "rig_observation"
+        ) or summary.get("hik_session_observation")
         result["rig_game"] = store.publish(
             "rig_game",
             context,

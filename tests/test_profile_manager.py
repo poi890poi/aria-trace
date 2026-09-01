@@ -13,7 +13,7 @@ from acquisition.profile_registry import AdapterRequest, ProfileContext, Profile
 from aria_trace.services.calibration.minimap.spatial import minimap_crop_space
 
 
-def write_rig(root: Path) -> Path:
+def write_rig(root: Path, *, camera_x_offset: float = 0.0) -> Path:
     root.mkdir()
     calibration = root / "hik_camera_calibration.json"
     calibration.write_text(
@@ -39,8 +39,14 @@ def write_rig(root: Path) -> Path:
                     "white_balance": {"ratio_red": 1, "ratio_green": 1, "ratio_blue": 1},
                 },
                 "geometry": {
-                    "screen_to_full_sensor_camera_3x3": np.eye(3).tolist(),
-                    "full_sensor_camera_to_screen_3x3": np.eye(3).tolist(),
+                    "screen_to_full_sensor_camera_3x3": np.asarray(
+                        [[1, 0, camera_x_offset], [0, 1, 0], [0, 0, 1]],
+                        dtype=float,
+                    ).tolist(),
+                    "full_sensor_camera_to_screen_3x3": np.asarray(
+                        [[1, 0, -camera_x_offset], [0, 1, 0], [0, 0, 1]],
+                        dtype=float,
+                    ).tolist(),
                 },
                 "normalization": {
                     "output_size_px": [100, 80],
@@ -178,6 +184,74 @@ class ProfileManagerTests(unittest.TestCase):
                 registry.runtime_file(resolved, "hik_camera_calibration").parent
                 / calibration["normalization"]["valid_mask_file"],
             )
+
+    def test_new_rig_recomposes_active_phone_game_without_game_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProfileRegistry(root / "profiles")
+            first_rig = publish_rig_calibration(
+                write_rig(root / "rig-1"), registry=registry
+            )
+            phone_context = ProfileContext(
+                game_id="game-1",
+                camera_id="CAM-1",
+                phone_id="PHONE-1",
+                panel_display={
+                    "natural_panel_px": [100, 200],
+                    "logical_frame_px": [100, 200],
+                    "refresh_hz": 120,
+                    "density_dpi": 400,
+                },
+                game_display={
+                    "logical_frame_px": [100, 200],
+                    "rotation_quarter_turns": 0,
+                },
+            )
+            phone_game = registry.publish(
+                "phone_game",
+                phone_context,
+                {
+                    "profile_kind": "phone_game",
+                    "canonical_phone_crop_xywh": [5, 6, 40, 42],
+                    "outer_boundary": {"center_x": 25, "center_y": 27, "radius": 18},
+                    "rotation_center": {"x": 24, "y": 26},
+                },
+                review_state="accepted",
+                activate=True,
+            )
+            old_composition = registry.publish(
+                "rig_game",
+                phone_context,
+                {"profile_kind": "rig_game", "canonical_phone_crop_xywh": [5, 6, 40, 42]},
+                dependencies={
+                    "rig": first_rig["revision_id"],
+                    "phone_game": phone_game["revision_id"],
+                },
+                review_state="accepted",
+                activate=True,
+            )
+
+            second_rig = publish_rig_calibration(
+                write_rig(root / "rig-2", camera_x_offset=3.0),
+                registry=registry,
+            )
+
+            self.assertNotEqual(first_rig["revision_id"], second_rig["revision_id"])
+            self.assertEqual(1, len(second_rig["recomposed_rig_game_profiles"]))
+            recomposed = second_rig["recomposed_rig_game_profiles"][0]
+            self.assertNotEqual(old_composition["revision_id"], recomposed["revision_id"])
+            self.assertEqual(
+                second_rig["revision_id"], recomposed["dependencies"]["rig"]
+            )
+            self.assertEqual(
+                phone_game["revision_id"], recomposed["dependencies"]["phone_game"]
+            )
+            self.assertEqual(
+                phone_game["payload"]["rotation_center"],
+                recomposed["payload"]["rotation_center"],
+            )
+            active = registry.resolve("rig_game", phone_context)
+            self.assertEqual(recomposed["revision_id"], active["revision_id"])
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):
         with tempfile.TemporaryDirectory() as directory:
