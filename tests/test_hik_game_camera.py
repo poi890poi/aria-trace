@@ -176,6 +176,60 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(remap.call_count, 1)
         self.assertTrue(frame_set.metadata["rectified_minimap"])
 
+    def test_rectified_full_rotation_is_precomposed_into_dense_remap(self):
+        document = rig_document()
+        document["normalization"].update(
+            {
+                "dense_map_file": "rectification_maps.npz",
+                "lens_correction_in_dense_map": True,
+            }
+        )
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        xx, yy = np.meshgrid(np.arange(100), np.arange(80))
+        np.savez_compressed(
+            str(self.rig_path.parent / "rectification_maps.npz"),
+            map_x=xx.astype(np.float32),
+            map_y=yy.astype(np.float32),
+        )
+        camera = RectifiedHikCamera(
+            self.rig_path,
+            adapter=FakeAdapter(),
+            rectify=True,
+            output_quarter_turns_clockwise=1,
+        ).open()
+        real_remap = __import__("cv2").remap
+        with mock.patch(
+            "aria_trace.adapters.hik.driver.cv2.remap", wraps=real_remap
+        ) as remap, mock.patch(
+            "aria_trace.adapters.hik.driver.rotate_quarter_turns_clockwise",
+            side_effect=AssertionError("streaming must not rotate after remap"),
+        ):
+            sample = camera.read_sample()
+        self.assertEqual(1, remap.call_count)
+        self.assertEqual((100, 80, 3), sample.image.shape)
+        self.assertEqual(0, int(sample.image[0, 0, 0]))
+        self.assertEqual(79, int(sample.image[0, 0, 1]))
+        self.assertEqual(
+            "precomposed_rectification_lookup",
+            sample.metadata["image_space"]["game_upright_runtime_operation"],
+        )
+
+    def test_unrectified_full_rotation_is_discrete_runtime_operation(self):
+        camera = RectifiedHikCamera(
+            self.rig_path,
+            adapter=FakeAdapter(),
+            rectify=False,
+            output_quarter_turns_clockwise=1,
+        ).open()
+        sample = camera.read_sample()
+        self.assertEqual((100, 80, 3), sample.image.shape)
+        self.assertEqual(0, int(sample.image[0, 0, 0]))
+        self.assertEqual(79, int(sample.image[0, 0, 1]))
+        self.assertEqual(
+            "discrete_quarter_turn_no_interpolation",
+            sample.metadata["image_space"]["game_upright_runtime_operation"],
+        )
+
     def test_dual_mode_derives_both_streams_from_one_acquisition(self):
         adapter = FakeAdapter()
         camera = self.camera("dual", True, adapter).open()
@@ -197,6 +251,36 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(
             "hik_phone_game_normalized_minimap_pixels",
             frame_set.stream_metadata["minimap"]["image_space"]["space_id"],
+        )
+
+    def test_dual_rectified_rotation_is_composed_before_stream_crop(self):
+        adapter = FakeAdapter()
+        camera = ProfiledHikGameCamera(
+            self.rig_path,
+            self.minimap_path,
+            mode="dual",
+            rectify_minimap=True,
+            minimap_margin_px=0,
+            output_quarter_turns_clockwise=1,
+            adapter=adapter,
+        ).open()
+        real_warp = __import__("cv2").warpPerspective
+        with mock.patch(
+            "aria_trace.adapters.hik.game_camera.cv2.warpPerspective",
+            wraps=real_warp,
+        ) as warp, mock.patch(
+            "aria_trace.adapters.hik.game_camera.rotate_quarter_turns_clockwise",
+            side_effect=AssertionError("rectified streaming must not rotate"),
+        ):
+            frame_set = camera.read_streams()
+        self.assertEqual(1, warp.call_count)
+        self.assertEqual((100, 80, 3), frame_set.streams["full"].shape)
+        self.assertEqual((30, 20, 3), frame_set.streams["minimap"].shape)
+        self.assertEqual(10, int(frame_set.streams["minimap"][0, 0, 0]))
+        self.assertEqual(39, int(frame_set.streams["minimap"][0, 0, 1]))
+        self.assertEqual(
+            "precomposed_rectification_lookup",
+            frame_set.metadata["game_upright_runtime_operation"],
         )
 
     def test_dual_mode_can_disable_all_geometric_rectification(self):

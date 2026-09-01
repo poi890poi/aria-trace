@@ -202,7 +202,9 @@ Its JSON summary distinguishes `accepted`, `review_required`,
 `skipped_missing_or_ineligible_data`, and `failed`. Screen-upright orientation
 is calibrated from multiple synchronized ADB/HIK still pairs and published as
 an independent `rig_game_orientation` revision. The adapter resolves it once
-at construction and performs a zero-interpolation quarter-turn while preserving
+at construction. Rectified modes precompose the quarter-turn into the existing
+lookup map and retain one remap per frame; an unrectified mode performs the
+zero-interpolation quarter-turn while preserving
 the complete image-space parent transform. This is not game-world north.
 
 To collect the session without running scrcpy, use:

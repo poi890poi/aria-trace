@@ -25,6 +25,55 @@ from aria_trace.services.calibration.rig.hik.algorithms import (
 from aria_trace.services.calibration.rig.hik.spaces import RigCalibratedSpaceConverter
 
 
+def quarter_turn_output_geometry(
+    size_px: Sequence[int], quarter_turns_clockwise: int
+) -> tuple[np.ndarray, tuple[int, int]]:
+    """Return base-output -> upright-output transform and upright size."""
+
+    width, height = map(int, size_px)
+    turns = int(quarter_turns_clockwise) % 4
+    matrices = (
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        [[0.0, -1.0, height - 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        [[-1.0, 0.0, width - 1.0], [0.0, -1.0, height - 1.0], [0.0, 0.0, 1.0]],
+        [[0.0, 1.0, 0.0], [-1.0, 0.0, width - 1.0], [0.0, 0.0, 1.0]],
+    )
+    output_size = (height, width) if turns % 2 else (width, height)
+    return np.asarray(matrices[turns], dtype=np.float64), output_size
+
+
+def rotate_quarter_turns_clockwise(
+    value: np.ndarray, quarter_turns_clockwise: int
+) -> np.ndarray:
+    """Rotate an image or lookup-map plane without interpolation."""
+
+    turns = int(quarter_turns_clockwise) % 4
+    if turns == 0:
+        return value
+    if turns == 1:
+        return cv2.rotate(value, cv2.ROTATE_90_CLOCKWISE)
+    if turns == 2:
+        return cv2.rotate(value, cv2.ROTATE_180)
+    return cv2.rotate(value, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+
+def rotate_xywh_in_parent(
+    xywh: Sequence[int], parent_size_px: Sequence[int], quarter_turns_clockwise: int
+) -> list[int]:
+    """Rotate an axis-aligned integer pixel rectangle within its parent."""
+
+    x, y, width, height = map(int, xywh)
+    parent_width, parent_height = map(int, parent_size_px)
+    turns = int(quarter_turns_clockwise) % 4
+    if turns == 0:
+        return [x, y, width, height]
+    if turns == 1:
+        return [parent_height - y - height, x, height, width]
+    if turns == 2:
+        return [parent_width - x - width, parent_height - y - height, width, height]
+    return [y, parent_width - x - width, height, width]
+
+
 def _decode_c_string(value: Any) -> str:
     try:
         raw = bytes(value)
@@ -1113,6 +1162,7 @@ class RectifiedHikCamera:
         adapter: Optional[HikMvsCameraAdapter] = None,
         rectify: bool = True,
         bayer_conversion: Optional[Mapping[str, Any]] = None,
+        output_quarter_turns_clockwise: int = 0,
     ) -> None:
         self.path = Path(calibration_file)
         self.config = json.loads(self.path.read_text(encoding="utf-8"))
@@ -1121,12 +1171,14 @@ class RectifiedHikCamera:
         )
         self._opened = False
         self._rectify_enabled = bool(rectify)
+        self._output_quarter_turns = int(output_quarter_turns_clockwise) % 4
         self._matrix = None
         self._output_size = None
         self._map_x = None
         self._map_y = None
         self._dense_path = None
         self._effective_roi = None
+        self._upright_to_base_output = np.eye(3, dtype=np.float64)
         self._bayer_conversion = dict(bayer_conversion or {})
         self._last_frame_metadata: dict[str, Any] = {}
 
@@ -1227,11 +1279,33 @@ class RectifiedHikCamera:
                     "Distortion-corrected HIK calibration requires its precomputed dense remap"
                 )
             self._load_rectification_maps()
+            rotation, upright_size = quarter_turn_output_geometry(
+                calibrated_output_size, self._output_quarter_turns
+            )
+            self._upright_to_base_output = np.linalg.inv(rotation)
+            if self._map_x is not None and self._output_quarter_turns:
+                self._map_x = rotate_quarter_turns_clockwise(
+                    self._map_x, self._output_quarter_turns
+                )
+                self._map_y = rotate_quarter_turns_clockwise(
+                    self._map_y, self._output_quarter_turns
+                )
+            elif self._matrix is not None:
+                self._matrix = rotation.dot(self._matrix)
         self._output_size = (
-            calibrated_output_size
+            upright_size
             if self._rectify_enabled
-            else (int(effective_roi[2]), int(effective_roi[3]))
+            else quarter_turn_output_geometry(
+                (int(effective_roi[2]), int(effective_roi[3])),
+                self._output_quarter_turns,
+            )[1]
         )
+        if not self._rectify_enabled:
+            rotation, _size = quarter_turn_output_geometry(
+                (int(effective_roi[2]), int(effective_roi[3])),
+                self._output_quarter_turns,
+            )
+            self._upright_to_base_output = np.linalg.inv(rotation)
         self._opened = True
         return self
 
@@ -1249,7 +1323,9 @@ class RectifiedHikCamera:
                 "Adapter/ADB conversion requires the rig-rectified output space"
             )
         return RigCalibratedSpaceConverter(
-            self.config, adb_surface_quarter_turns_clockwise_from_natural
+            self.config,
+            adb_surface_quarter_turns_clockwise_from_natural,
+            self._output_quarter_turns,
         )
 
     def camera_adapter_to_adb_points(
@@ -1295,7 +1371,11 @@ class RectifiedHikCamera:
             )
             image_space = {
                 "schema_version": "1.0",
-                "space_id": "hik_rig_rectified_visible_phone_pixels",
+                "space_id": (
+                    "hik_game_upright_rectified_visible_phone_pixels"
+                    if self._output_quarter_turns
+                    else "hik_rig_rectified_visible_phone_pixels"
+                ),
                 "stored_size_px": [int(width), int(height)],
                 "parent_space_id": "hik_full_sensor_camera_pixels",
                 "source_roi_in_parent_xywh": list(self._effective_roi),
@@ -1307,22 +1387,49 @@ class RectifiedHikCamera:
                 ),
                 "lens_distortion_corrected": distortion_corrected,
                 "runtime_resampling_passes": 1,
-                "orientation": "phone_app_up",
+                "orientation": (
+                    "game_surface_up" if self._output_quarter_turns else "phone_app_up"
+                ),
+                "game_upright_quarter_turns_clockwise": self._output_quarter_turns,
+                "game_upright_runtime_operation": (
+                    "precomposed_rectification_lookup"
+                    if self._output_quarter_turns else "none"
+                ),
+                "local_to_phone_app_up_output_3x3": (
+                    self._upright_to_base_output.tolist()
+                ),
                 "color_order": "BGR",
             }
         else:
             image_space = {
                 "schema_version": "1.0",
-                "space_id": "hik_camera_adapter_roi_image_pixels",
+                "space_id": (
+                    "hik_game_upright_camera_adapter_roi_pixels"
+                    if self._output_quarter_turns
+                    else "hik_camera_adapter_roi_image_pixels"
+                ),
                 "stored_size_px": [int(width), int(height)],
                 "parent_space_id": "hik_full_sensor_camera_pixels",
                 "roi_in_parent_xywh": list(self._effective_roi),
-                "local_to_parent_3x3": [
-                    [1.0, 0.0, float(self._effective_roi[0])],
-                    [0.0, 1.0, float(self._effective_roi[1])],
-                    [0.0, 0.0, 1.0],
-                ],
-                "orientation": "hik_camera_native",
+                "local_to_parent_3x3": (
+                    np.asarray(
+                        [
+                            [1.0, 0.0, float(self._effective_roi[0])],
+                            [0.0, 1.0, float(self._effective_roi[1])],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        dtype=np.float64,
+                    ).dot(self._upright_to_base_output).tolist()
+                ),
+                "orientation": (
+                    "game_surface_up"
+                    if self._output_quarter_turns else "hik_camera_native"
+                ),
+                "game_upright_quarter_turns_clockwise": self._output_quarter_turns,
+                "game_upright_runtime_operation": (
+                    "discrete_quarter_turn_no_interpolation"
+                    if self._output_quarter_turns else "none"
+                ),
                 "color_order": "BGR",
             }
         metadata = {
@@ -1355,7 +1462,9 @@ class RectifiedHikCamera:
 
     def _rectify(self, image: np.ndarray) -> np.ndarray:
         if not self._rectify_enabled:
-            return image
+            return rotate_quarter_turns_clockwise(
+                image, self._output_quarter_turns
+            )
         return self.rectify_for_evidence(image)
 
     def rectify_for_evidence(self, image: np.ndarray) -> np.ndarray:

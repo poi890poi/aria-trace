@@ -145,6 +145,9 @@ def _registry_configuration(
         color_order=resolved["adapter_plan"]["color_order"],
         color_policy=resolved["adapter_plan"]["color_policy"],
         minimap_margin_px=resolved["adapter_plan"]["minimap_margin_px"],
+        game_upright_quarter_turns_clockwise=resolved["adapter_plan"].get(
+            "game_upright_quarter_turns_clockwise", 0
+        ),
     )
     if resolved["paths"]["rig_game_profile"]:
         effective["minimap_calibration"] = resolved["paths"]["rig_game_profile"]
@@ -229,6 +232,9 @@ class HikCamera:
         self._last_frame_metadata_by_stream: Dict[str, Dict[str, Any]] = {}
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
         self._rectify_enabled = bool(self.config.get("rectify", True))
+        self._game_upright_turns = int(
+            self.config.get("game_upright_quarter_turns_clockwise", 0)
+        ) % 4
         if self._color_order not in ("RGB", "BGR"):
             raise ValueError("config['color_order'] must be RGB or BGR")
         imaging = self.calibration["imaging"]
@@ -248,6 +254,8 @@ class HikCamera:
             _, _, output_width, output_height = map(
                 int, camera["hardware_roi_xywh"]
             )
+        if self._game_upright_turns % 2:
+            output_width, output_height = output_height, output_width
         self.shape = (output_height, output_width, 3)
         self.bit = 24
         self.pixel_format = "RGB8Packed" if self._color_order == "RGB" else "BGR8Packed"
@@ -268,7 +276,9 @@ class HikCamera:
                 "Adapter/ADB conversion requires config['rectify'] to be true"
             )
         return RigCalibratedSpaceConverter(
-            self.calibration, adb_surface_quarter_turns_clockwise_from_natural
+            self.calibration,
+            adb_surface_quarter_turns_clockwise_from_natural,
+            self._game_upright_turns,
         )
 
     def camera_adapter_to_adb_points(
@@ -301,7 +311,9 @@ class HikCamera:
         """Return whether this facade has a complete saved rig calibration."""
 
         return RectifiedHikCamera(
-            self.calibration_path, rectify=self._rectify_enabled
+            self.calibration_path,
+            rectify=self._rectify_enabled,
+            output_quarter_turns_clockwise=self._game_upright_turns,
         ).is_calibrated()
 
     @classmethod
@@ -349,13 +361,17 @@ class HikCamera:
                 "rectify_minimap": bool(self.config.get("rectify", True)),
                 "minimap_margin_px": int(self.config.get("minimap_margin_px", 6)),
                 "apply_game_color": use_game_color,
+                "output_quarter_turns_clockwise": self._game_upright_turns,
             }
             if game_color:
                 options["bayer_conversion"] = game_color
             return ProfiledHikGameCamera(
                 self.calibration_path, minimap_calibration, **options
             )
-        options = {"rectify": self._rectify_enabled}
+        options = {
+            "rectify": self._rectify_enabled,
+            "output_quarter_turns_clockwise": self._game_upright_turns,
+        }
         if game_color and use_game_color:
             options["bayer_conversion"] = game_color
         return RectifiedHikCamera(self.calibration_path, **options)

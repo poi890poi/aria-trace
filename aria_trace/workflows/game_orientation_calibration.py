@@ -246,7 +246,10 @@ def calibrate_game_orientation_session(
         "rig_revision": active_rig["revision_id"],
         "profile_context": context.as_dict(),
         "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": selected_turns,
-        "runtime_operation": "discrete_quarter_turn_no_interpolation",
+        "runtime_operation": (
+            "precompose_into_rectification_lookup; "
+            "discrete_quarter_turn_only_when_rectification_is_disabled"
+        ),
         "aggregated_candidates": aggregated,
         "median_confidence": float(selected["median_confidence"]),
         "confidence_margin": margin,
@@ -267,7 +270,10 @@ def calibrate_game_orientation_session(
         {
             "profile_kind": "rig_game_orientation",
             "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": selected_turns,
-            "runtime_operation": "discrete_quarter_turn_no_interpolation",
+            "runtime_operation": (
+                "precompose_into_rectification_lookup; "
+                "discrete_quarter_turn_only_when_rectification_is_disabled"
+            ),
             "capabilities": {
                 "game_screen_upright": True,
                 "game_world_north": False,

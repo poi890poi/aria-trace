@@ -149,8 +149,10 @@ review revisions without activating them.
 Screen orientation is a rig-game capability distinct from Android settings and
 from game-world north. It aggregates up to 12 synchronized ADB/HIK pairs,
 rejects sparse/full threshold masks and low-edge images, and stores lossless
-source stills plus candidate evidence. Runtime uses only a discrete quarter-turn
-(no interpolation), and every rotated frame retains its parent image-space
+source stills plus candidate evidence. Rectified runtime precomposes that
+quarter-turn into the existing lookup map, so each frame still uses one remap;
+only an explicitly unrectified stream uses a discrete no-interpolation rotation,
+and every rotated frame retains its parent image-space
 metadata.
 
 Publish the reviewed mini-map localization result and compose it with the

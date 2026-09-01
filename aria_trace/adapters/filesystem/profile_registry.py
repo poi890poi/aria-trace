@@ -1004,6 +1004,12 @@ class ProfileRegistry:
                 "color_policy": effective_color_policy,
                 "roi_policy": request.roi_policy,
                 "minimap_margin_px": int(request.minimap_margin_px),
+                "game_upright_quarter_turns_clockwise": int(
+                    ((rig_game_orientation.get("payload") or {}).get(
+                        "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
+                        0,
+                    ))
+                ) % 4 if rig_game_orientation else 0,
                 "registry_reads_per_frame": 0,
                 "phone_operations": "none",
             },

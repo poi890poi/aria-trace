@@ -113,9 +113,10 @@ class HikAutoProfileTests(unittest.TestCase):
             camera.config["minimap_calibration"],
             mode="dual",
             rectify_minimap=True,
-            minimap_margin_px=12,
-            apply_game_color=False,
-        )
+                minimap_margin_px=12,
+                apply_game_color=False,
+                output_quarter_turns_clockwise=0,
+            )
 
     def test_facade_rejects_transform_policy_it_cannot_enforce(self):
         with self.assertRaisesRegex(ValueError, "not implemented"):

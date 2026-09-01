@@ -21,7 +21,12 @@ from aria_trace.services.calibration.rig.hik.algorithms import (
     camera_roi_for_screen_region,
     compose_hardware_roi_homography,
 )
-from .driver import HikMvsCameraAdapter
+from .driver import (
+    HikMvsCameraAdapter,
+    quarter_turn_output_geometry,
+    rotate_quarter_turns_clockwise,
+    rotate_xywh_in_parent,
+)
 
 
 PathLike = Union[str, Path]
@@ -166,6 +171,7 @@ class ProfiledHikGameCamera:
         minimap_margin_px: int = 6,
         apply_game_color: bool = True,
         bayer_conversion: Optional[Mapping[str, object]] = None,
+        output_quarter_turns_clockwise: int = 0,
     ) -> None:
         if mode not in self.MODES:
             raise ValueError("HIK game stream mode must be minimap, full, or dual")
@@ -187,6 +193,9 @@ class ProfiledHikGameCamera:
         self.minimap_margin_px = int(minimap_margin_px)
         self.apply_game_color = bool(apply_game_color)
         self.bayer_conversion = dict(bayer_conversion or {})
+        self.output_quarter_turns_clockwise = (
+            int(output_quarter_turns_clockwise) % 4
+        )
         self.adapter = adapter or HikMvsCameraAdapter(
             sdk_python_path=self.rig.get("mvs_python_path")
         )
@@ -202,6 +211,8 @@ class ProfiledHikGameCamera:
         self._minimap_map_x: Optional[np.ndarray] = None
         self._minimap_map_y: Optional[np.ndarray] = None
         self._minimap_in_full_xywh: Optional[list[int]] = None
+        self._upright_to_base_full = np.eye(3, dtype=np.float64)
+        self._upright_to_base_minimap = np.eye(3, dtype=np.float64)
         self._last_stream_metadata: Dict[str, Mapping[str, object]] = {}
 
     def _screen_crop(self) -> list[int]:
@@ -377,6 +388,58 @@ class ProfiledHikGameCamera:
                     mini_y : mini_y + mini_height,
                     mini_x : mini_x + mini_width,
                 ]
+            if self.rectify_minimap and self.output_quarter_turns_clockwise:
+                turns = self.output_quarter_turns_clockwise
+                base_full_size = self._full_size
+                full_rotation, self._full_size = quarter_turn_output_geometry(
+                    base_full_size, turns
+                )
+                self._upright_to_base_full = np.linalg.inv(full_rotation)
+                self._minimap_in_full_xywh = rotate_xywh_in_parent(
+                    self._minimap_in_full_xywh, base_full_size, turns
+                )
+                if self._full_map_x is not None:
+                    self._full_map_x = rotate_quarter_turns_clockwise(
+                        self._full_map_x, turns
+                    )
+                    self._full_map_y = rotate_quarter_turns_clockwise(
+                        self._full_map_y, turns
+                    )
+                elif self._full_matrix is not None:
+                    self._full_matrix = full_rotation.dot(self._full_matrix)
+
+                minimap_rotation, self._minimap_size = quarter_turn_output_geometry(
+                    self._minimap_size, turns
+                )
+                self._upright_to_base_minimap = np.linalg.inv(minimap_rotation)
+                if self._minimap_map_x is not None:
+                    self._minimap_map_x = rotate_quarter_turns_clockwise(
+                        self._minimap_map_x, turns
+                    )
+                    self._minimap_map_y = rotate_quarter_turns_clockwise(
+                        self._minimap_map_y, turns
+                    )
+                elif self._minimap_matrix is not None:
+                    self._minimap_matrix = minimap_rotation.dot(
+                        self._minimap_matrix
+                    )
+            elif self.output_quarter_turns_clockwise:
+                turns = self.output_quarter_turns_clockwise
+                self._upright_to_base_full = np.linalg.inv(
+                    quarter_turn_output_geometry(
+                        (int(self._effective_roi[2]), int(self._effective_roi[3])),
+                        turns,
+                    )[0]
+                )
+                self._upright_to_base_minimap = np.linalg.inv(
+                    quarter_turn_output_geometry(
+                        (
+                            int(self._minimap_sensor_roi[2]),
+                            int(self._minimap_sensor_roi[3]),
+                        ),
+                        turns,
+                    )[0]
+                )
             self._opened = True
         except Exception:
             self.adapter.close()
@@ -464,6 +527,13 @@ class ProfiledHikGameCamera:
                     else self._minimap_from_acquisition(sample.image)
                 ),
             }
+        if not self.rectify_minimap and self.output_quarter_turns_clockwise:
+            streams = {
+                name: rotate_quarter_turns_clockwise(
+                    image, self.output_quarter_turns_clockwise
+                )
+                for name, image in streams.items()
+            }
         frame_number = sample.metadata.get("frame_number")
         common = {
             **dict(sample.metadata),
@@ -477,8 +547,22 @@ class ProfiledHikGameCamera:
             "full_output_normalized_by_base_rig": bool(
                 self.rectify_minimap and self.mode != "minimap"
             ),
-            "minimap_crop_in_full_output_xywh": list(self._minimap_in_full_xywh),
+            "minimap_crop_in_full_output_xywh": (
+                list(self._minimap_in_full_xywh)
+                if self.rectify_minimap else None
+            ),
             "one_acquisition_for_all_streams": True,
+            "game_upright_quarter_turns_clockwise": (
+                self.output_quarter_turns_clockwise
+            ),
+            "game_upright_runtime_operation": (
+                "precomposed_rectification_lookup"
+                if self.rectify_minimap and self.output_quarter_turns_clockwise
+                else (
+                    "discrete_quarter_turn_no_interpolation"
+                    if self.output_quarter_turns_clockwise else "none"
+                )
+            ),
         }
         stream_metadata: Dict[str, Mapping[str, object]] = {}
         distortion_corrected = bool(
@@ -491,7 +575,11 @@ class ProfiledHikGameCamera:
             if name == "full" and self.rectify_minimap:
                 image_space = {
                     "schema_version": "1.0",
-                    "space_id": "hik_rig_rectified_visible_phone_pixels",
+                    "space_id": (
+                        "hik_game_upright_rectified_visible_phone_pixels"
+                        if self.output_quarter_turns_clockwise
+                        else "hik_rig_rectified_visible_phone_pixels"
+                    ),
                     "stored_size_px": [int(width), int(height)],
                     "parent_space_id": "hik_full_sensor_camera_pixels",
                     "source_roi_in_parent_xywh": list(self._effective_roi),
@@ -503,7 +591,13 @@ class ProfiledHikGameCamera:
                     ),
                     "lens_distortion_corrected": distortion_corrected,
                     "runtime_resampling_passes": 1,
-                    "orientation": "phone_app_up",
+                    "orientation": (
+                        "game_surface_up"
+                        if self.output_quarter_turns_clockwise else "phone_app_up"
+                    ),
+                    "local_to_phone_app_up_output_3x3": (
+                        self._upright_to_base_full.tolist()
+                    ),
                     "color_order": "BGR",
                 }
             elif name == "minimap" and self.rectify_minimap:
@@ -521,7 +615,20 @@ class ProfiledHikGameCamera:
                     ),
                     "lens_distortion_corrected": distortion_corrected,
                     "runtime_resampling_passes": 1,
-                    "orientation": "phone_app_up",
+                    "orientation": (
+                        "game_surface_up"
+                        if self.output_quarter_turns_clockwise else "phone_app_up"
+                    ),
+                    "local_to_parent_3x3": (
+                        np.asarray(
+                            [
+                                [1.0, 0.0, float(self._screen_crop()[0])],
+                                [0.0, 1.0, float(self._screen_crop()[1])],
+                                [0.0, 0.0, 1.0],
+                            ],
+                            dtype=np.float64,
+                        ).dot(self._upright_to_base_minimap).tolist()
+                    ),
                     "color_order": "BGR",
                 }
             else:
@@ -532,16 +639,32 @@ class ProfiledHikGameCamera:
                 )
                 image_space = {
                     "schema_version": "1.0",
-                    "space_id": "hik_camera_adapter_roi_image_pixels",
+                    "space_id": (
+                        "hik_game_upright_camera_adapter_roi_pixels"
+                        if self.output_quarter_turns_clockwise
+                        else "hik_camera_adapter_roi_image_pixels"
+                    ),
                     "stored_size_px": [int(width), int(height)],
                     "parent_space_id": "hik_full_sensor_camera_pixels",
                     "roi_in_parent_xywh": roi,
-                    "local_to_parent_3x3": [
-                        [1.0, 0.0, float(roi[0])],
-                        [0.0, 1.0, float(roi[1])],
-                        [0.0, 0.0, 1.0],
-                    ],
-                    "orientation": "hik_camera_native",
+                    "local_to_parent_3x3": (
+                        np.asarray(
+                            [
+                                [1.0, 0.0, float(roi[0])],
+                                [0.0, 1.0, float(roi[1])],
+                                [0.0, 0.0, 1.0],
+                            ],
+                            dtype=np.float64,
+                        ).dot(
+                            self._upright_to_base_full
+                            if name == "full"
+                            else self._upright_to_base_minimap
+                        ).tolist()
+                    ),
+                    "orientation": (
+                        "game_surface_up"
+                        if self.output_quarter_turns_clockwise else "hik_camera_native"
+                    ),
                     "color_order": "BGR",
                 }
             stream_metadata[name] = {

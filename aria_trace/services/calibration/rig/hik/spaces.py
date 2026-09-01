@@ -41,11 +41,23 @@ class RigCalibratedSpaceConverter:
         self,
         calibration: CalibrationSource,
         adb_surface_quarter_turns_clockwise_from_natural: int = 0,
+        adapter_output_quarter_turns_clockwise_from_calibration_display: int = 0,
     ) -> None:
         self.calibration, self.calibration_reference = _load_calibration(calibration)
         normalization = self.calibration["normalization"]
         phone = self.calibration["phone"]
-        self.adapter_size_px = tuple(map(int, normalization["output_size_px"]))
+        self.base_adapter_size_px = tuple(
+            map(int, normalization["output_size_px"])
+        )
+        self.adapter_output_quarter_turns_clockwise_from_calibration_display = (
+            int(adapter_output_quarter_turns_clockwise_from_calibration_display) % 4
+        )
+        base_width, base_height = self.base_adapter_size_px
+        self.adapter_size_px = (
+            (base_height, base_width)
+            if self.adapter_output_quarter_turns_clockwise_from_calibration_display % 2
+            else (base_width, base_height)
+        )
         self.phone_natural_size_px = tuple(
             map(int, phone["natural_screen_size_px"])
         )
@@ -95,8 +107,9 @@ class RigCalibratedSpaceConverter:
         self.output_image_quarter_turns_clockwise_from_calibration_display = (
             self.adb_surface_quarter_turns_clockwise_from_natural
             - self.calibration_display_quarter_turns_clockwise_from_natural
+            - self.adapter_output_quarter_turns_clockwise_from_calibration_display
         ) % 4
-        self.adapter_to_calibration_display_3x3 = np.asarray(
+        base_adapter_to_calibration_display = np.asarray(
             [
                 [
                     self.phone_units_per_adapter_pixel_xy[0],
@@ -111,6 +124,15 @@ class RigCalibratedSpaceConverter:
                 [0.0, 0.0, 1.0],
             ],
             dtype=np.float64,
+        )
+        public_to_base = np.linalg.inv(
+            self._natural_to_logical_matrix(
+                self.base_adapter_size_px,
+                self.adapter_output_quarter_turns_clockwise_from_calibration_display,
+            )
+        )
+        self.adapter_to_calibration_display_3x3 = (
+            base_adapter_to_calibration_display @ public_to_base
         )
         self.phone_natural_to_calibration_display_3x3 = (
             self._natural_to_logical_matrix(
@@ -220,7 +242,14 @@ class RigCalibratedSpaceConverter:
                 "camera_adapter": {
                     "id": "hik_rig_rectified_visible_phone_pixels",
                     "size_px": list(self.adapter_size_px),
-                    "image_orientation": "rig_calibration_display_app_up_app_right",
+                    "image_orientation": (
+                        "game_surface_up"
+                        if self.adapter_output_quarter_turns_clockwise_from_calibration_display
+                        else "rig_calibration_display_app_up_app_right"
+                    ),
+                    "quarter_turns_clockwise_from_calibration_display": (
+                        self.adapter_output_quarter_turns_clockwise_from_calibration_display
+                    ),
                 },
                 "calibration_display": {
                     "id": "android_calibration_logical_display_pixels",

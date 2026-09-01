@@ -69,6 +69,12 @@ class GameCalibrationTests(unittest.TestCase):
                 orientation["revision_id"],
                 resolved["profiles"]["rig_game_orientation"],
             )
+            self.assertEqual(
+                3,
+                resolved["adapter_plan"][
+                    "game_upright_quarter_turns_clockwise"
+                ],
+            )
 
 
 if __name__ == "__main__":

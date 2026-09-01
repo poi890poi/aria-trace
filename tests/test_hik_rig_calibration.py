@@ -2167,7 +2167,11 @@ class HikCompatibleFacadeTests(unittest.TestCase):
                 )
                 self.assertEqual(camera.get_shape(), (8, 8, 3))
                 camera.open()
-            factory.assert_called_once_with(path.resolve(), rectify=False)
+            factory.assert_called_once_with(
+                path.resolve(),
+                rectify=False,
+                output_quarter_turns_clockwise=0,
+            )
             camera.close()
 
     def test_legacy_implicit_path_selection_is_rejected(self):

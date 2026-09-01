@@ -173,6 +173,25 @@ class HikSpaceConversionTests(unittest.TestCase):
         mapped = converter.camera_adapter_to_adb_points([[0, 0], [29, 39]])
         np.testing.assert_allclose(mapped, [[189, 79], [160, 40]])
 
+    def test_precomposed_game_upright_output_points_map_back_to_adb(self):
+        converter = RigCalibratedSpaceConverter(
+            calibration_document(),
+            2,
+            adapter_output_quarter_turns_clockwise_from_calibration_display=1,
+        )
+        self.assertEqual((40, 30), converter.adapter_size_px)
+        mapped = converter.camera_adapter_to_adb_points([[0, 0], [39, 29]])
+        np.testing.assert_allclose(mapped, [[40, 10], [79, 39]])
+        np.testing.assert_allclose(
+            converter.adb_to_camera_adapter_points(mapped),
+            [[0, 0], [39, 29]],
+            atol=1.0e-9,
+        )
+        self.assertEqual(
+            0,
+            converter.output_image_quarter_turns_clockwise_from_calibration_display,
+        )
+
     def test_session_yaml_is_commented_and_describes_saved_video_spaces(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
