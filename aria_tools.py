@@ -38,6 +38,10 @@ def game_repeatability(argv: Optional[Sequence[str]] = None) -> int:
     return _invoke("aria_trace.workflows.game_repeatability", argv)
 
 
+def rig_evidence_review(argv: Optional[Sequence[str]] = None) -> int:
+    return _invoke("aria_trace.workflows.rig_evidence_review", argv)
+
+
 def profile_management(argv: Optional[Sequence[str]] = None) -> int:
     return _invoke("aria_trace.workflows.profile_management", argv)
 
@@ -56,6 +60,7 @@ COMMANDS = {
     "minimap-calibration": minimap_calibration,
     "game-color-calibration": game_color_calibration,
     "game-repeatability": game_repeatability,
+    "rig-evidence-review": rig_evidence_review,
     "profiles": profile_management,
     "setup": system_setup,
     "camera-adapter-demo": camera_adapter_demo,
@@ -83,6 +88,7 @@ __all__ = [
     "minimap_calibration",
     "game_color_calibration",
     "game_repeatability",
+    "rig_evidence_review",
     "profile_management",
     "rig_calibration",
     "system_setup",

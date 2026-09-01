@@ -215,6 +215,13 @@ class ExpandedRigReview:
     geometry: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class StandardizedRigComparison:
+    image: np.ndarray
+    image_space: Mapping[str, Any]
+    geometry: Mapping[str, Any]
+
+
 def expanded_rig_camera_review(
     sample: FrameSample,
     *,
@@ -432,6 +439,282 @@ def expanded_rig_camera_review(
         "review_geometry": copy.deepcopy(geometry),
     }
     return ExpandedRigReview(canvas, review_space, geometry)
+
+
+def expanded_rig_camera_review_from_calibration(
+    sample: FrameSample,
+    config: Mapping[str, Any],
+    *,
+    title: str,
+    overlay: Optional[np.ndarray] = None,
+) -> ExpandedRigReview:
+    """Render a full-camera sample using only saved rig-space conversions."""
+
+    camera = dict(config["camera"])
+    full_mode = dict(camera["full_sensor_mode"])
+    full_size = [int(full_mode["width_px"]), int(full_mode["height_px"])]
+    phone_size = list(
+        map(
+            int,
+            (config.get("phone") or {}).get("screen_size_px")
+            or (config.get("phone") or {})["natural_screen_size_px"],
+        )
+    )
+    conversions = dict(
+        ((config.get("coordinate_spaces") or {}).get("conversions") or {})
+    )
+    phone_to_full = conversions.get("phone_display_to_full_sensor_image_3x3")
+    if phone_to_full is None:
+        full_to_output = (config.get("normalization") or {}).get(
+            "full_sensor_camera_to_output_3x3"
+        )
+        if full_to_output is None:
+            raise ValueError("Rig calibration has no phone-to-full-camera mapping")
+        phone_to_full = np.linalg.inv(
+            _matrix_3x3(full_to_output, "full_sensor_camera_to_output_3x3")
+        ).tolist()
+    phone_to_full_matrix = _matrix_3x3(
+        phone_to_full, "phone_display_to_full_sensor_image_3x3"
+    )
+    phone_corners = _transform_points(
+        np.asarray(
+            [
+                [0, 0],
+                [phone_size[0] - 1, 0],
+                [phone_size[0] - 1, phone_size[1] - 1],
+                [0, phone_size[1] - 1],
+            ],
+            dtype=np.float64,
+        ),
+        phone_to_full_matrix,
+    )
+    lens_model = dict(((config.get("optics") or {}).get("lens_model") or {}))
+    if lens_model.get("source") == "measured":
+        from aria_trace.services.calibration.rig.hik.algorithms import (
+            distort_pixel_points,
+        )
+
+        phone_corners = distort_pixel_points(phone_corners, lens_model)
+        homography_for_review = None
+    else:
+        homography_for_review = phone_to_full_matrix.tolist()
+    return expanded_rig_camera_review(
+        sample,
+        full_sensor_size_px=full_size,
+        phone_display_size_px=phone_size,
+        phone_display_to_full_sensor_3x3=homography_for_review,
+        phone_display_quadrilateral_full_sensor_xy=phone_corners,
+        title=title,
+        overlay=overlay,
+    )
+
+
+def _comparison_panel(
+    image: np.ndarray,
+    *,
+    panel_width: int,
+    panel_height: int,
+    top: int,
+    left: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Fit one raster without distortion and return image-to-canvas geometry."""
+
+    source_width, source_height = _size_wh(image)
+    scale = min(
+        float(panel_width) / float(source_width),
+        float(panel_height) / float(source_height),
+    )
+    width = max(1, int(round(source_width * scale)))
+    height = max(1, int(round(source_height * scale)))
+    x = int(left + (panel_width - width) // 2)
+    y = int(top + (panel_height - height) // 2)
+    resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+    matrix = np.asarray(
+        [[scale, 0.0, float(x)], [0.0, scale, float(y)], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    return resized, matrix
+
+
+def standardized_rig_comparison(
+    adb_image: np.ndarray,
+    adb_image_space: Mapping[str, Any],
+    full_camera_review: ExpandedRigReview,
+    rectified_image: np.ndarray,
+    rectified_image_space: Mapping[str, Any],
+    *,
+    title: str = "ADB / FULL CAMERA / RIG-RECTIFIED COMPARISON",
+) -> StandardizedRigComparison:
+    """Compose the standard three-space human-review evidence canvas."""
+
+    adb_size = _size_wh(adb_image)
+    rectified_size = _size_wh(rectified_image)
+    if list(map(int, adb_image_space.get("stored_size_px") or [])) != adb_size:
+        raise ValueError("ADB evidence image-space size does not match its raster")
+    if list(map(int, rectified_image_space.get("stored_size_px") or [])) != rectified_size:
+        raise ValueError("Rectified evidence image-space size does not match its raster")
+    if not str(adb_image_space.get("space_id") or ""):
+        raise ValueError("ADB evidence requires a producer space_id")
+    if not str(rectified_image_space.get("space_id") or ""):
+        raise ValueError("Rectified evidence requires a producer space_id")
+
+    panel_width = 900
+    panel_height = 900
+    gap = 20
+    global_header = 70
+    panel_header = 74
+    canvas_width = panel_width * 3 + gap * 4
+    canvas_height = global_header + panel_header + panel_height + gap * 2
+    canvas = _checkerboard(canvas_height, canvas_width)
+    cv2.rectangle(canvas, (0, 0), (canvas_width - 1, global_header - 1), (24, 24, 24), -1)
+    cv2.putText(
+        canvas,
+        str(title),
+        (18, 31),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.78,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "green = phone display/view; yellow = complete camera sensor; magenta = synthetic",
+        (18, 56),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (225, 225, 225),
+        1,
+        cv2.LINE_AA,
+    )
+
+    inputs = (
+        ("ADB VIEW", adb_image, dict(adb_image_space)),
+        (
+            "FULL CAMERA + PROJECTED PHONE",
+            full_camera_review.image,
+            dict(full_camera_review.image_space),
+        ),
+        ("RIG-RECTIFIED VIEW", rectified_image, dict(rectified_image_space)),
+    )
+    panels = []
+    for index, (label, image, space) in enumerate(inputs):
+        left = gap + index * (panel_width + gap)
+        header_top = global_header
+        content_top = global_header + panel_header
+        cv2.rectangle(
+            canvas,
+            (left, header_top),
+            (left + panel_width - 1, content_top - 1),
+            (30, 30, 30),
+            -1,
+        )
+        cv2.putText(
+            canvas,
+            label,
+            (left + 12, header_top + 27),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.61,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            str(space["space_id"])[:76],
+            (left + 12, header_top + 54),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.41,
+            (210, 210, 210),
+            1,
+            cv2.LINE_AA,
+        )
+        resized, image_to_canvas = _comparison_panel(
+            image,
+            panel_width=panel_width,
+            panel_height=panel_height,
+            top=content_top,
+            left=left,
+        )
+        x = int(round(image_to_canvas[0, 2]))
+        y = int(round(image_to_canvas[1, 2]))
+        height, width = resized.shape[:2]
+        canvas[y : y + height, x : x + width] = resized
+        image_quad = _transform_points(
+            np.asarray(
+                [[0, 0], [image.shape[1] - 1, 0], [image.shape[1] - 1, image.shape[0] - 1], [0, image.shape[0] - 1]],
+                dtype=np.float64,
+            ),
+            image_to_canvas,
+        )
+        full_sensor_quad = None
+        phone_quad = image_quad
+        if index == 1:
+            review_geometry = dict(full_camera_review.geometry)
+            full_sensor_quad = _transform_points(
+                np.asarray(
+                    review_geometry["full_sensor_quadrilateral_review_xy"],
+                    dtype=np.float64,
+                ),
+                image_to_canvas,
+            )
+            value = review_geometry.get("phone_display_quadrilateral_review_xy")
+            phone_quad = (
+                _transform_points(np.asarray(value, dtype=np.float64), image_to_canvas)
+                if value is not None
+                else None
+            )
+            cv2.polylines(
+                canvas,
+                [_polyline_points(full_sensor_quad)],
+                True,
+                FULL_SENSOR_OUTLINE_BGR,
+                3,
+                cv2.LINE_AA,
+            )
+        if phone_quad is not None:
+            cv2.polylines(
+                canvas,
+                [_polyline_points(phone_quad)],
+                True,
+                PHONE_DISPLAY_OUTLINE_BGR,
+                3,
+                cv2.LINE_AA,
+            )
+        panels.append(
+            {
+                "role": ("adb_view", "full_camera_view", "rectified_view")[index],
+                "source_space_id": str(space["space_id"]),
+                "source_size_px": _size_wh(image),
+                "source_to_comparison_3x3": image_to_canvas.tolist(),
+                "source_quadrilateral_comparison_xy": image_quad.tolist(),
+                "full_camera_sensor_quadrilateral_comparison_xy": (
+                    full_sensor_quad.tolist() if full_sensor_quad is not None else None
+                ),
+                "phone_display_quadrilateral_comparison_xy": (
+                    phone_quad.tolist() if phone_quad is not None else None
+                ),
+            }
+        )
+
+    geometry = {
+        "panels": panels,
+        "synthetic_background_bgr": list(SYNTHETIC_BACKGROUND_BGR),
+        "synthetic_background_pattern": "magenta_checkerboard",
+        "labels": {
+            "phone_display_or_view": list(PHONE_DISPLAY_OUTLINE_BGR),
+            "complete_camera_sensor": list(FULL_SENSOR_OUTLINE_BGR),
+        },
+    }
+    image_space = {
+        "schema_version": "1.0",
+        "space_id": "rig_standardized_three_space_comparison_pixels",
+        "stored_size_px": [canvas_width, canvas_height],
+        "orientation": "diagnostic_canvas_top_left_x_right_y_down",
+        "color_order": "BGR",
+        "comparison_geometry": copy.deepcopy(geometry),
+    }
+    return StandardizedRigComparison(canvas, image_space, geometry)
 
 
 def expanded_review_media_record(

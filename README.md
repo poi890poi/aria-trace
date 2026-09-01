@@ -188,6 +188,23 @@ This mode compares fixed-threshold app features and requires the prior result's
 captured image-space metadata. It is not a substitute for a production
 mini-map profile.
 
+For a review-only rig test, capture the standardized three-space evidence
+without running any geometry gate:
+
+```powershell
+.\rig-evidence-review.bat
+# Or:
+python -m aria_tools rig-evidence-review
+```
+
+The script does not launch an app, send input, change display power, or run
+calibration. It saves the native ADB view, complete camera sensor view,
+rig-rectified view, an expanded full-camera canvas, and one labeled comparison.
+Green outlines identify the phone display/view, yellow identifies the complete
+camera sensor, and magenta checkerboard is synthetic space outside captured
+pixels. Every source and derived canvas is accompanied by its explicit space
+metadata in `result.json`.
+
 ### 3. New game or new panel platform
 
 For a new game on the same panel, update the game default and keep the existing

@@ -14,6 +14,7 @@ from acquisition.rig_calibration.contracts import FrameSample
 from aria_trace.evidence.rig_spatial import (
     SYNTHETIC_BACKGROUND_BGR,
     expanded_rig_camera_review,
+    standardized_rig_comparison,
     validate_rig_image_space,
 )
 
@@ -77,6 +78,50 @@ class MediaTraceTests(unittest.TestCase):
         )
         self.assertGreater(int(np.count_nonzero(synthetic)), 0)
         self.assertGreater(review.image.shape[1], 80)
+
+    def test_standard_comparison_contains_three_labeled_spatial_panels(self):
+        camera = np.full((60, 80, 3), 35, np.uint8)
+        sample = self._roi_sample(camera, [0, 0, 80, 60], [80, 60])
+        full_review = expanded_rig_camera_review(
+            sample,
+            full_sensor_size_px=[80, 60],
+            phone_display_size_px=[100, 160],
+            phone_display_to_full_sensor_3x3=None,
+            phone_display_quadrilateral_full_sensor_xy=(
+                [[8, 4], [70, 6], [73, 55], [6, 53]]
+            ),
+            title="full",
+        )
+        adb = np.full((160, 100, 3), 70, np.uint8)
+        rectified = np.full((150, 96, 3), 90, np.uint8)
+        comparison = standardized_rig_comparison(
+            adb,
+            {
+                "space_id": "android_phone_natural_display_pixels",
+                "stored_size_px": [100, 160],
+            },
+            full_review,
+            rectified,
+            {
+                "space_id": "hik_session_aligned_visible_phone_pixels",
+                "stored_size_px": [96, 150],
+            },
+        )
+        panels = comparison.geometry["panels"]
+        self.assertEqual(
+            ["adb_view", "full_camera_view", "rectified_view"],
+            [panel["role"] for panel in panels],
+        )
+        self.assertTrue(
+            all(panel["phone_display_quadrilateral_comparison_xy"] for panel in panels)
+        )
+        self.assertIsNotNone(
+            panels[1]["full_camera_sensor_quadrilateral_comparison_xy"]
+        )
+        self.assertEqual(
+            [comparison.image.shape[1], comparison.image.shape[0]],
+            comparison.image_space["stored_size_px"],
+        )
 
     def test_registry_requires_every_media_file(self):
         with tempfile.TemporaryDirectory() as directory:

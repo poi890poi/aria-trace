@@ -26,8 +26,7 @@ from aria_trace.adapters.filesystem.profile_registry import (
 from aria_trace.adapters.filesystem.system_configuration import (
     load_system_configuration,
 )
-from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
-from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
 from aria_trace.adapters.rig.devices import create_camera_adapter
 from aria_trace.adapters.sources import AdbScreenshotFrameSource
 from aria_trace.services.calibration.game_repeatability import (
@@ -35,11 +34,13 @@ from aria_trace.services.calibration.game_repeatability import (
     evaluate_minimap_static_geometry,
 )
 from aria_trace.services.calibration.rig.cross_source import (
-    match_game_camera_orientation,
     natural_crop_to_logical,
 )
 from aria_trace.workflows.rig_reuse_precheck import (
     discover_active_profile_calibration,
+)
+from aria_trace.workflows.rig_evidence_review import (
+    capture_standardized_rig_evidence,
 )
 
 
@@ -329,6 +330,11 @@ def run_game_repeatability_check(
         "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": None,
     }
     hik_packet = None
+    full_camera_sample = None
+    full_camera_review_space = None
+    standardized_comparison_space = None
+    camera_evidence_timing = None
+    standardized_evidence_spaces = None
     calibration_file = None
     if not adb_only:
         calibration_file = (
@@ -345,41 +351,21 @@ def run_game_repeatability_check(
             if camera_adapter
             else HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
         )
-        reader = RectifiedHikCamera(calibration_file, adapter=adapter, rectify=True)
-        hik = CalibratedHikFrameSource(
+        captured = capture_standardized_rig_evidence(
+            adb_packet,
+            surface,
             calibration_file,
-            "hik_phone",
-            rectify=True,
-            output_quarter_turns_clockwise=0,
-            reader=reader,
+            adapter,
+            output,
         )
-        try:
-            hik.start()
-            initial = hik.read()
-            if initial is None:
-                raise RuntimeError("HIK returned no orientation evidence frame")
-            calibration_display = hik.alignment_evidence_image(initial)
-            camera_orientation, orientation_images = match_game_camera_orientation(
-                adb_image,
-                calibration_display,
-                calibration_file,
-                android_reported_quarter_turns=int(
-                    surface["quarter_turns_clockwise_from_natural"]
-                ),
-            )
-            apply_orientation_result(hik, camera_orientation)
-            hik_packet = hik.read()
-            if hik_packet is None:
-                raise RuntimeError("HIK returned no oriented verification frame")
-            evidence["hik_oriented"] = _save_image(
-                output, "hik_oriented.png", hik_packet.image
-            )
-            for name, image in orientation_images.items():
-                evidence["orientation/{}".format(name.rsplit(".", 1)[0])] = (
-                    _save_image(output, "orientation/{}".format(name), image)
-                )
-        finally:
-            hik.stop()
+        camera_orientation = dict(captured.orientation)
+        hik_packet = captured.rectified_packet
+        full_camera_sample = captured.full_camera_sample
+        full_camera_review_space = dict(captured.full_camera_review.image_space)
+        standardized_comparison_space = dict(captured.comparison.image_space)
+        camera_evidence_timing = dict(captured.timing)
+        standardized_evidence_spaces = dict(captured.evidence_spaces)
+        evidence.update(dict(captured.evidence))
 
     orientation_agrees = (
         None
@@ -441,6 +427,14 @@ def run_game_repeatability_check(
                 if hik_packet is not None
                 else None
             ),
+            "full_camera_image_space": (
+                full_camera_sample.metadata.get("image_space")
+                if full_camera_sample is not None
+                else None
+            ),
+            "expanded_full_camera_review_space": full_camera_review_space,
+            "standardized_comparison_space": standardized_comparison_space,
+            "standardized_evidence_spaces": standardized_evidence_spaces,
             "rig_calibration": (
                 str(calibration_file.resolve()) if calibration_file else None
             ),
@@ -454,7 +448,10 @@ def run_game_repeatability_check(
             else None
         ),
         "evidence": evidence,
-        "timing": {"completed_unix_time": time.time()},
+        "timing": {
+            "completed_unix_time": time.time(),
+            "camera_evidence": camera_evidence_timing,
+        },
     }
     (output / "result.json").write_text(
         json.dumps(result, indent=2), encoding="utf-8"
