@@ -61,6 +61,11 @@ class MinimapCalibrationTests(unittest.TestCase):
                 },
             )
             boundary = result["outer_boundary"]
+            self.assertEqual("circle", boundary["geometry_type"])
+            self.assertEqual(
+                "minimap_boundary_input_pixels", boundary["space"]["space_id"]
+            )
+            self.assertEqual([220, 180], boundary["space"]["size_px"])
             self.assertLess(
                 np.linalg.norm(
                     np.array([boundary["center_x"], boundary["center_y"]])
@@ -144,6 +149,10 @@ class MinimapCalibrationTests(unittest.TestCase):
             )
             boundary = result["outer_boundary"]
             center = result["rotation_center"]
+            self.assertEqual("circle", boundary["geometry_type"])
+            self.assertEqual("point", center["geometry_type"])
+            self.assertEqual(boundary["space"], center["space"])
+            self.assertEqual(boundary["space"], result["center_offset"]["space"])
             self.assertLess(np.linalg.norm(np.array([boundary["center_x"], boundary["center_y"]]) - boundary_center), 2.0)
             self.assertLess(abs(boundary["radius"] - radius), 2.5)
             self.assertLess(np.linalg.norm(np.array([center["x"], center["y"]]) - pivot), 1.0)
@@ -159,6 +168,15 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertEqual(result["cursor_shape"]["source"], "screen_fixed_hsv_persistence_during_camera_rotation")
             self.assertTrue((Path(temporary) / "calibration.json").is_file())
             self.assertTrue((Path(temporary) / "model.npz").is_file())
+            with np.load(Path(temporary) / "model.npz") as model:
+                self.assertEqual(
+                    "minimap_calibration_crop_pixels",
+                    str(model["boundary_space_id"].item()),
+                )
+                self.assertEqual(
+                    "minimap_calibration_crop_pixels",
+                    str(model["rotation_center_space_id"].item()),
+                )
             declared = {item["name"] for item in result["evidence"]}
             self.assertIn("minimap_stacked_difference_heatmap.png", declared)
             self.assertIn("boundary_fitted_circle.png", declared)

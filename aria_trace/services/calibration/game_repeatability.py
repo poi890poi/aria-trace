@@ -8,6 +8,8 @@ from typing import Mapping, Sequence, Tuple
 import cv2
 import numpy as np
 
+from aria_trace.domain.spatial import require_spatial_geometry
+
 
 def fixed_static_features(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Return fixed-threshold structure after robust contrast normalization."""
@@ -63,9 +65,14 @@ def evaluate_minimap_static_geometry(
         )
     crop = image[y : y + height, x : x + width].copy()
     binary, edges = fixed_static_features(crop)
-    center_x = float(boundary.get("center_x"))
-    center_y = float(boundary.get("center_y"))
-    radius = float(boundary.get("radius"))
+    boundary = require_spatial_geometry(
+        boundary, "circle", expected_space_id="current_minimap_crop_pixels"
+    )
+    if boundary["space"]["size_px"] != [width, height]:
+        raise ValueError("Mini-map boundary space does not match the current crop")
+    center_x = float(boundary["center_x"])
+    center_y = float(boundary["center_y"])
+    radius = float(boundary["radius"])
     if radius <= 0.0:
         raise ValueError("Mini-map boundary radius must be positive")
     tolerance = max(float(radial_tolerance_px), radius * 0.035)

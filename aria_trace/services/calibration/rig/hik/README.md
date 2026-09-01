@@ -243,6 +243,13 @@ composite, or camera-derived raster still requires an explicit media record.
 Tests and POCs inside this repository follow the same rule even though external
 camera-adapter consumers are free to use the image-only compatibility API.
 
+Geometry follows the same rule as raster media. A circle, point, vector, mask,
+or polygon is invalid inside AriaTrace unless it carries its own coordinate
+space and raster size. Consumers cannot combine geometry from different spaces;
+they must use an explicit registered transform, which returns newly bound
+geometry. In particular, mini-map boundaries and cursor rotation centers are
+never treated as anonymous pixel values.
+
 Saving is atomic and creates `calibration.yaml`, `valid_screen_mask.png`,
 `rectification_maps.npz`, evidence, and `hik_camera_calibration.json`. The JSON
 records exact IDs and modes, exposure/gain/WB, hardware ROI, camera-visible phone

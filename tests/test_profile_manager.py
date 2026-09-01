@@ -116,6 +116,14 @@ class ProfileManagerTests(unittest.TestCase):
             summary_path = output / "localization_summary.json"
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
             published = publish_minimap_profiles(summary_path, registry=registry)
+            phone_payload = published["phone_game"]["payload"]
+            self.assertEqual(
+                "android_phone_natural_display_pixels",
+                phone_payload["outer_boundary"]["space"]["space_id"],
+            )
+            self.assertEqual(
+                "circle", phone_payload["outer_boundary"]["geometry_type"]
+            )
             self.assertEqual("review_required", published["phone_game"]["review_state"])
             with self.assertRaises(Exception):
                 registry.resolve_adapter(

@@ -6,7 +6,9 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
 
 from aria_trace.adapters.filesystem.profile_registry import (
     AdapterRequest,
@@ -16,6 +18,14 @@ from aria_trace.adapters.filesystem.profile_registry import (
     context_from_rig_calibration,
 )
 from aria_trace.adapters.hik.game_camera import _source_crop_to_canonical_phone
+from aria_trace.adapters.android.spaces import natural_to_logical_matrix
+from aria_trace.domain.spatial import (
+    normalize_legacy_geometry,
+    raster_space,
+    require_spatial_geometry,
+    transform_circle_similarity,
+    transform_point,
+)
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -102,7 +112,30 @@ def _logical_minimap_crop(summary: Mapping[str, Any]) -> list[int]:
         return [int(value) for value in summary["crop_xywh"]]
     android = summary["android"]
     width, height = map(int, android["frame_size_px"])
+    logical_space = raster_space(
+        "android_logical_display_pixels", [width, height]
+    )
     boundary = android["outer_boundary"]
+    if "space" not in boundary:
+        boundary = normalize_legacy_geometry(boundary, "circle", logical_space)
+    else:
+        boundary = require_spatial_geometry(boundary, "circle")
+        boundary_space = boundary["space"]
+        if boundary_space["space_id"] == logical_space["space_id"]:
+            if boundary_space["size_px"] != [width, height]:
+                raise ValueError("Mini-map boundary logical raster size is incompatible")
+        elif boundary_space.get("parent_space_id") == logical_space["space_id"]:
+            boundary = transform_circle_similarity(
+                boundary,
+                boundary_space["local_to_parent_3x3"],
+                logical_space,
+            )
+        else:
+            raise ValueError(
+                "Cannot derive a logical mini-map crop from boundary space {!r}".format(
+                    boundary_space["space_id"]
+                )
+            )
     center_x = float(boundary["center_x"])
     center_y = float(boundary["center_y"])
     radius = float(boundary["radius"])
@@ -113,6 +146,71 @@ def _logical_minimap_crop(summary: Mapping[str, Any]) -> list[int]:
     if right <= left or bottom <= top:
         raise ValueError("Localized mini-map does not produce a valid display crop")
     return [left, top, right - left, bottom - top]
+
+
+def _geometry_to_canonical_phone(
+    value: Mapping[str, Any],
+    geometry_type: str,
+    *,
+    logical_size_px: Sequence[int],
+    natural_size_px: Sequence[int],
+    logical_crop_xywh: Sequence[int],
+    quarter_turns_clockwise_from_natural: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Normalize source geometry and explicitly convert it to panel space."""
+
+    logical_size = [int(item) for item in logical_size_px]
+    natural_size = [int(item) for item in natural_size_px]
+    crop = [int(item) for item in logical_crop_xywh]
+    logical_space = raster_space("android_logical_display_pixels", logical_size)
+    natural_space = raster_space(
+        "android_phone_natural_display_pixels", natural_size
+    )
+    source = dict(value)
+    if "space" not in source:
+        source = normalize_legacy_geometry(source, geometry_type, logical_space)
+    else:
+        source = require_spatial_geometry(source, geometry_type)
+
+    source_space = source["space"]
+    source_id = source_space["space_id"]
+    source_size = list(map(int, source_space["size_px"]))
+    logical_to_natural = np.linalg.inv(
+        natural_to_logical_matrix(
+            natural_size, int(quarter_turns_clockwise_from_natural) % 4
+        )
+    )
+    if source_id == natural_space["space_id"]:
+        if source_size != natural_size:
+            raise ValueError("Natural-panel geometry has an incompatible raster size")
+        return source, source
+    if source_id in (
+        logical_space["space_id"],
+        "profile_android_logical_display_pixels",
+    ):
+        if source_size != logical_size:
+            raise ValueError("Android logical geometry has an incompatible raster size")
+        source_to_natural = logical_to_natural
+    elif source_size == crop[2:]:
+        crop_to_logical = np.asarray(
+            [[1.0, 0.0, crop[0]], [0.0, 1.0, crop[1]], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        source_to_natural = logical_to_natural.dot(crop_to_logical)
+    else:
+        raise ValueError(
+            "Cannot convert {} geometry from space {!r} size {} to canonical "
+            "phone space".format(geometry_type, source_id, source_size)
+        )
+    if geometry_type == "circle":
+        canonical = transform_circle_similarity(
+            source, source_to_natural, natural_space
+        )
+    elif geometry_type == "point":
+        canonical = transform_point(source, source_to_natural, natural_space)
+    else:
+        raise ValueError("Unsupported profile geometry {}".format(geometry_type))
+    return source, canonical
 
 
 def _profile_context_from_localization(
@@ -208,6 +306,41 @@ def publish_minimap_profiles(
     fitted_boundary = summary.get("outer_boundary") or android_result.get(
         "outer_boundary"
     )
+    if not isinstance(fitted_boundary, Mapping):
+        raise ValueError("Localization result has no mini-map boundary geometry")
+    logical_size = context.game_display["logical_frame_px"]
+    natural_size = context.game_display["natural_panel_px"]
+    turns = int(context.game_display["rotation_quarter_turns"])
+    fitted_boundary, canonical_boundary = _geometry_to_canonical_phone(
+        fitted_boundary,
+        "circle",
+        logical_size_px=logical_size,
+        natural_size_px=natural_size,
+        logical_crop_xywh=logical_crop,
+        quarter_turns_clockwise_from_natural=turns,
+    )
+    if isinstance(source_boundary, Mapping):
+        source_boundary, _ = _geometry_to_canonical_phone(
+            source_boundary,
+            "circle",
+            logical_size_px=logical_size,
+            natural_size_px=natural_size,
+            logical_crop_xywh=logical_crop,
+            quarter_turns_clockwise_from_natural=turns,
+        )
+    rotation_center = summary.get("rotation_center") or android_result.get(
+        "rotation_center"
+    )
+    canonical_rotation_center = None
+    if isinstance(rotation_center, Mapping):
+        rotation_center, canonical_rotation_center = _geometry_to_canonical_phone(
+            rotation_center,
+            "point",
+            logical_size_px=logical_size,
+            natural_size_px=natural_size,
+            logical_crop_xywh=logical_crop,
+            quarter_turns_clockwise_from_natural=turns,
+        )
     evidence = summary.get("evidence") or android_result.get(
         "verified_backend_evidence"
     ) or []
@@ -217,7 +350,8 @@ def publish_minimap_profiles(
         "canonical_phone_crop_xywh": canonical_crop,
         "android_logical_crop_xywh": logical_crop,
         "phone_surface_orientation": surface,
-        "outer_boundary": fitted_boundary,
+        "outer_boundary": canonical_boundary,
+        "rotation_center": canonical_rotation_center,
         "source_boundary": source_boundary,
         "shift_estimation_mask": android_result.get("shift_estimation_mask"),
         "capabilities": {"adb_minimap": True, "camera_independent": True},

@@ -115,6 +115,19 @@ class MediaTraceTests(unittest.TestCase):
         self.assertTrue(
             all(panel["phone_display_quadrilateral_comparison_xy"] for panel in panels)
         )
+        self.assertTrue(
+            all(
+                panel["phone_display_quadrilateral"]["space"]["space_id"]
+                == "rig_standardized_three_space_comparison_pixels"
+                for panel in panels
+            )
+        )
+        self.assertTrue(
+            all(
+                panel["source_quadrilateral"]["geometry_type"] == "polygon"
+                for panel in panels
+            )
+        )
         self.assertIsNotNone(
             panels[1]["full_camera_sensor_quadrilateral_comparison_xy"]
         )

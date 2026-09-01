@@ -19,6 +19,18 @@ from .provenance import (
 from .quality import CheckStatus, Decision, QualityCheck, QualityInfo, QualityMetric
 from .schema import SchemaRef
 from .spaces import SpaceRef
+from .spatial import (
+    PIXEL_SPACE_KIND,
+    SPATIAL_SCHEMA_VERSION,
+    bind_geometry,
+    normalize_legacy_geometry,
+    raster_space,
+    require_same_space,
+    require_spatial_geometry,
+    transform_circle_similarity,
+    transform_point,
+    validate_raster_space,
+)
 from .timing import TimePoint, TimingInfo
 
 __all__ = [
@@ -43,6 +55,16 @@ __all__ = [
     "SchemaRef",
     "SourceRef",
     "SpaceRef",
+    "PIXEL_SPACE_KIND",
+    "SPATIAL_SCHEMA_VERSION",
+    "bind_geometry",
+    "normalize_legacy_geometry",
+    "raster_space",
+    "require_same_space",
+    "require_spatial_geometry",
+    "transform_circle_similarity",
+    "transform_point",
+    "validate_raster_space",
     "TimePoint",
     "TimingInfo",
     "TeleportBehaviorSample",

@@ -327,6 +327,14 @@ outside the acquired ROI. The media registry stores the exact placements; an
 early failure before geometry is known is labeled as projection unavailable.
 See [the HIK rig calibration documentation](aria_trace/services/calibration/rig/hik/README.md#spatially-traceable-evidence).
 
+Spatial metadata also stays attached to geometry. Mini-map circles, cursor
+rotation centers, vectors, masks, polygons, and evidence quadrilaterals carry
+their own `geometry_type`, spatial schema version, and raster `space`. Internal
+consumers reject missing or incompatible spaces and require an explicit
+transform before combining shapes. Older profiles are normalized only at a
+named compatibility boundary where the containing crop/display contract proves
+their legacy coordinate space; new results are always written space-aware.
+
 | Mode | Rectified output | `rectify=False` / `--no-rectify` |
 |---|---|---|
 | `full` | rig-normalized phone display | hardware-ROI camera raster |

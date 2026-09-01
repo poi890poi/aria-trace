@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from aria_trace.domain.packets import FramePacket
+from aria_trace.domain.spatial import bind_geometry, raster_space
 from aria_trace.services.calibration.game_repeatability import (
     compare_thresholded_app_geometry,
     evaluate_minimap_static_geometry,
@@ -16,6 +17,14 @@ from aria_trace.workflows import game_repeatability as workflow
 
 
 class GameRepeatabilityGeometryTests(unittest.TestCase):
+    @staticmethod
+    def boundary(center_x=110, center_y=105, radius=80):
+        return bind_geometry(
+            {"center_x": center_x, "center_y": center_y, "radius": radius},
+            "circle",
+            raster_space("current_minimap_crop_pixels", [220, 220]),
+        )
+
     def test_minimap_check_uses_static_rim_and_tolerates_contrast_change(self):
         dark = np.full((220, 220, 3), 25, np.uint8)
         cv2.circle(dark, (110, 105), 80, (110, 110, 110), 3)
@@ -23,7 +32,7 @@ class GameRepeatabilityGeometryTests(unittest.TestCase):
         result, images = evaluate_minimap_static_geometry(
             bright,
             [0, 0, 220, 220],
-            {"center_x": 110, "center_y": 105, "radius": 80},
+            self.boundary(),
         )
         self.assertTrue(result["matches"])
         self.assertGreater(result["angular_coverage"], 0.9)
@@ -35,10 +44,19 @@ class GameRepeatabilityGeometryTests(unittest.TestCase):
         result, _images = evaluate_minimap_static_geometry(
             image,
             [0, 0, 220, 220],
-            {"center_x": 110, "center_y": 105, "radius": 80},
+            self.boundary(),
         )
         self.assertFalse(result["matches"])
         self.assertEqual(0.0, result["angular_coverage"])
+
+    def test_minimap_check_rejects_geometry_without_space(self):
+        image = np.full((220, 220, 3), 80, np.uint8)
+        with self.assertRaisesRegex(ValueError, "spatial schema"):
+            evaluate_minimap_static_geometry(
+                image,
+                [0, 0, 220, 220],
+                {"center_x": 110, "center_y": 105, "radius": 80},
+            )
 
     def test_diagnostic_app_check_compares_fixed_threshold_features(self):
         reference = np.full((160, 240, 3), 20, np.uint8)
@@ -77,7 +95,10 @@ class GameRepeatabilityWorkflowTests(unittest.TestCase):
         self.assertEqual([140, 10, 40, 40], crop)
         self.assertAlmostEqual(19.0, boundary["center_x"])
         self.assertAlmostEqual(20.0, boundary["center_y"])
-        self.assertEqual("current_minimap_crop_pixels", boundary["coordinate_space"])
+        self.assertEqual(
+            "current_minimap_crop_pixels", boundary["space"]["space_id"]
+        )
+        self.assertEqual("circle", boundary["geometry_type"])
 
     def test_camera_candidate_uses_inverse_android_surface_convention(self):
         self.assertTrue(

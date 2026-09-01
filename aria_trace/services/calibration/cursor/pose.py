@@ -11,6 +11,12 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
+from aria_trace.domain.spatial import require_same_space, require_spatial_geometry
+from aria_trace.services.calibration.minimap.spatial import (
+    minimap_crop_space,
+    normalize_minimap_geometry,
+)
+
 from .shape import edge_distance_transform, polygon_edge, render_polygon
 from aria_trace.adapters.filesystem.session import SessionReader
 
@@ -94,6 +100,34 @@ class CursorPoseEstimator:
         self.validation_policy = validation_policy
         self.root = self.calibration_path.parent
         self.calibration = json.loads(self.calibration_path.read_text(encoding="utf-8"))
+        self.crop_xywh = tuple(map(int, self.calibration["config"]["crop_xywh"]))
+        crop_space = minimap_crop_space(self.crop_xywh[2:])
+        self.calibration = normalize_minimap_geometry(
+            self.calibration,
+            crop_space,
+            require_rotation_center=True,
+            allow_legacy=True,
+        )
+        model_geometry = self.calibration.get("model_geometry")
+        if model_geometry is not None:
+            mask_geometry = require_spatial_geometry(
+                model_geometry.get("minimap_mask"),
+                "mask",
+                expected_space_id=crop_space["space_id"],
+            )
+            polygon_geometry = require_spatial_geometry(
+                model_geometry.get("cursor_polygon"),
+                "polygon",
+                expected_space_id=crop_space["space_id"],
+            )
+            require_same_space(
+                self.calibration["outer_boundary"],
+                self.calibration["rotation_center"],
+                mask_geometry,
+                polygon_geometry,
+            )
+        elif str(self.calibration.get("schema_version")) == "2.0":
+            raise ValueError("Spatial calibration is missing model_geometry")
         model_path = self.root / self.calibration.get("model_file", "model.npz")
         model = np.load(model_path)
         self.template = model["cursor_binary"].astype(np.float32)
@@ -101,8 +135,49 @@ class CursorPoseEstimator:
             raise ValueError("Calibration predates the rigid symmetric polygon model")
         self.polygon = model["cursor_polygon_relative_xy"].astype(np.float64)
         self.symmetry_axis_deg = float(model["cursor_symmetry_axis_deg"][0])
-        self.pivot = model["rotation_center"].astype(np.float32)
-        self.crop_xywh = tuple(map(int, self.calibration["config"]["crop_xywh"]))
+        model_pivot = model["rotation_center"].astype(np.float32)
+        spatial_version = model.get("geometry_spatial_schema_version")
+        if spatial_version is not None:
+            if int(np.asarray(spatial_version).reshape(-1)[0]) != 1:
+                raise ValueError("Model uses an unsupported spatial geometry schema")
+            expected_space_id = crop_space["space_id"]
+            for field in ("boundary_space_id", "rotation_center_space_id"):
+                if field not in model:
+                    raise ValueError("Spatial model is missing {}".format(field))
+                if str(np.asarray(model[field]).item()) != expected_space_id:
+                    raise ValueError(
+                        "Spatial model {} does not match calibration space {}".format(
+                            field, expected_space_id
+                        )
+                    )
+            if str(np.asarray(model["minimap_mask_space_id"]).item()) != expected_space_id:
+                raise ValueError("Mini-map mask space does not match calibration")
+            if (
+                str(np.asarray(model["cursor_polygon_parent_space_id"]).item())
+                != expected_space_id
+            ):
+                raise ValueError("Cursor polygon parent space does not match calibration")
+            if str(
+                np.asarray(model["cursor_polygon_coordinate_convention"]).item()
+            ) != "offset_xy_from_rotation_center":
+                raise ValueError("Cursor polygon coordinate convention is unsupported")
+            if "geometry_space_size_px" not in model or list(
+                map(int, np.asarray(model["geometry_space_size_px"]).reshape(-1))
+            ) != list(crop_space["size_px"]):
+                raise ValueError("Spatial model raster size does not match calibration")
+        json_center = self.calibration["rotation_center"]
+        expected_pivot = np.asarray(
+            [json_center["x"], json_center["y"]], dtype=np.float32
+        )
+        if not np.allclose(model_pivot, expected_pivot, atol=1.0e-4):
+            raise ValueError("Model rotation center disagrees with spatial calibration")
+        if spatial_version is not None and not np.allclose(
+            np.asarray(model["cursor_polygon_origin_xy"], dtype=np.float32),
+            expected_pivot,
+            atol=1.0e-4,
+        ):
+            raise ValueError("Cursor polygon origin disagrees with rotation center")
+        self.pivot = expected_pivot
         self.cursor_config = self.calibration["config"]["cursor"]
         self.hsv_lower = np.asarray(
             self.cursor_config["hsv_lower"], dtype=np.uint8

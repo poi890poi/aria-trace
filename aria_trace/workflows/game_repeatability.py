@@ -29,6 +29,12 @@ from aria_trace.adapters.filesystem.system_configuration import (
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
 from aria_trace.adapters.rig.devices import create_camera_adapter
 from aria_trace.adapters.sources import AdbScreenshotFrameSource
+from aria_trace.domain.spatial import (
+    normalize_legacy_geometry,
+    raster_space,
+    require_spatial_geometry,
+    transform_circle_similarity,
+)
 from aria_trace.services.calibration.game_repeatability import (
     compare_thresholded_app_geometry,
     evaluate_minimap_static_geometry,
@@ -138,21 +144,66 @@ def _logical_profile_crop(
         stored_surface.get("quarter_turns_clockwise_from_natural", current_turns)
     ) % 4
     natural_size = surface["natural_size_px"]
+    stored_logical_size = list(
+        map(
+            int,
+            stored_surface.get("logical_size_px")
+            or (
+                [natural_size[1], natural_size[0]]
+                if stored_turns % 2
+                else natural_size
+            ),
+        )
+    )
+    stored_logical_space = raster_space(
+        "profile_android_logical_display_pixels", stored_logical_size
+    )
+    if "space" not in boundary:
+        boundary = normalize_legacy_geometry(
+            boundary, "circle", stored_logical_space
+        )
+    else:
+        boundary = require_spatial_geometry(boundary, "circle")
+    source_space = boundary["space"]
     stored_to_natural = np.linalg.inv(
         natural_to_logical_matrix(natural_size, stored_turns)
     )
     natural_to_current = natural_to_logical_matrix(natural_size, current_turns)
-    stored_center = np.asarray(
-        [float(boundary["center_x"]), float(boundary["center_y"]), 1.0],
+    if source_space["space_id"] == "android_phone_natural_display_pixels":
+        if source_space["size_px"] != list(map(int, natural_size)):
+            raise RuntimeError("Profile boundary natural-panel size is incompatible")
+        source_to_current = natural_to_current
+    elif source_space["space_id"] in (
+        "android_logical_display_pixels",
+        "profile_android_logical_display_pixels",
+    ):
+        if source_space["size_px"] != stored_logical_size:
+            raise RuntimeError("Profile boundary logical-display size is incompatible")
+        source_to_current = natural_to_current.dot(stored_to_natural)
+    else:
+        raise RuntimeError(
+            "Profile mini-map boundary uses unsupported space {!r}".format(
+                source_space["space_id"]
+            )
+        )
+    current_to_crop = np.asarray(
+        [[1.0, 0.0, -crop[0]], [0.0, 1.0, -crop[1]], [0.0, 0.0, 1.0]],
         dtype=np.float64,
     )
-    current_center = natural_to_current.dot(stored_to_natural).dot(stored_center)
-    local_boundary = dict(boundary)
-    local_boundary.update(
-        center_x=float(current_center[0]) - float(crop[0]),
-        center_y=float(current_center[1]) - float(crop[1]),
-        coordinate_space="current_minimap_crop_pixels",
-        source_coordinate_space="profile_android_logical_display_pixels",
+    local_space = raster_space(
+        "current_minimap_crop_pixels",
+        crop[2:],
+        parent_space_id="android_logical_display_pixels",
+        local_to_parent_3x3=[
+            [1.0, 0.0, crop[0]],
+            [0.0, 1.0, crop[1]],
+            [0.0, 0.0, 1.0],
+        ],
+    )
+    local_boundary = transform_circle_similarity(
+        boundary,
+        current_to_crop.dot(source_to_current),
+        local_space,
     )
     return crop, local_boundary
 

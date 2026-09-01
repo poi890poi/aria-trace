@@ -17,6 +17,10 @@ from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
 from aria_trace.services.calibration.cursor.worker import CursorPoseProcessExecutor
 from aria_trace.services.calibration.minimap.transition import TransitionController
 from aria_trace.services.calibration.minimap.verification import estimate_masked_shift
+from aria_trace.services.calibration.minimap.spatial import (
+    minimap_crop_space,
+    normalize_minimap_geometry,
+)
 
 
 def _gradient(image: np.ndarray) -> np.ndarray:
@@ -447,13 +451,18 @@ class GlobalMapLocalizer:
 class MinimapExtractor:
     def __init__(self, crop_xywh, calibration: dict) -> None:
         self.crop_xywh = tuple(int(value) for value in crop_xywh)
-        boundary = calibration.get("outer_boundary") or {}
+        _, _, width, height = self.crop_xywh
+        calibration = normalize_minimap_geometry(
+            calibration,
+            minimap_crop_space([width, height]),
+            allow_legacy=True,
+        )
+        boundary = calibration["outer_boundary"]
         self.center = (
             float(boundary.get("center_x", self.crop_xywh[2] / 2.0)),
             float(boundary.get("center_y", self.crop_xywh[3] / 2.0)),
         )
         self.radius = float(boundary.get("radius", min(self.crop_xywh[2:]) * 0.4))
-        _, _, width, height = self.crop_xywh
         cx, cy = self.center
         radius = int(round(self.radius))
         left = max(0, int(round(cx)) - radius)
@@ -1663,8 +1672,13 @@ def render_minimap_route_overlay(
     points = np.asarray(route_points, dtype=np.float64).reshape((-1, 2))
     if len(points) < 2 or not np.all(np.isfinite(points)):
         return overlay
+    minimap_calibration = normalize_minimap_geometry(
+        minimap_calibration,
+        minimap_crop_space([width, height]),
+        allow_legacy=True,
+    )
     center_model = minimap_calibration.get("rotation_center") or {}
-    boundary = minimap_calibration.get("outer_boundary") or {}
+    boundary = minimap_calibration["outer_boundary"]
     center = np.asarray(
         [
             float(center_model.get("x", boundary.get("center_x", width / 2.0))),

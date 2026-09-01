@@ -2990,7 +2990,8 @@ class WorkbenchTests(unittest.TestCase):
                     json.dumps(
                         {
                             "outer_boundary": {
-                                "center_xy": [64.0, 64.0],
+                                "center_x": 64.0,
+                                "center_y": 64.0,
                                 "radius": 60.0,
                             }
                         }

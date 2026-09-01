@@ -9,6 +9,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from aria_trace.services.calibration.minimap.spatial import (
+    minimap_crop_space,
+    normalize_minimap_geometry,
+)
+
 from aria_trace.adapters.filesystem.session import SessionReader
 
 
@@ -83,7 +88,12 @@ def _correlation_heatmap(response, best_location, second_location) -> np.ndarray
 
 def _minimap_reference(image: np.ndarray, calibration: dict):
     """Extract the calibrated circular map content used for cross-space scale."""
-    boundary = calibration.get("outer_boundary") or {}
+    calibration = normalize_minimap_geometry(
+        calibration,
+        minimap_crop_space([image.shape[1], image.shape[0]]),
+        allow_legacy=True,
+    )
+    boundary = calibration["outer_boundary"]
     center_x = float(boundary["center_x"])
     center_y = float(boundary["center_y"])
     radius = float(boundary["radius"])

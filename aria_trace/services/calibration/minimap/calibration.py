@@ -22,9 +22,16 @@ import numpy as np
 
 from aria_trace.services.calibration.cursor.shape import fit_symmetric_polygon
 from aria_trace.adapters.filesystem.session import SessionReader
+from aria_trace.domain.spatial import (
+    SPATIAL_SCHEMA_VERSION,
+    bind_geometry,
+    raster_space,
+    require_same_space,
+    validate_raster_space,
+)
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 ORDINARY_MOTION_SEGMENT_LABELS = ("ordinary_cruise", "route")
 DEFAULT_CONFIG = {
     "crop_xywh": [0, 0, 220, 180],
@@ -41,6 +48,28 @@ DEFAULT_CONFIG = {
         "shape_persistence_threshold": 0.72,
     },
 }
+
+
+def _prepared_frame_space(
+    frames: np.ndarray,
+    supplied: Optional[dict],
+    default_space_id: str,
+) -> dict:
+    height, width = frames.shape[1:3]
+    if supplied is None:
+        return raster_space(default_space_id, [width, height])
+    space = validate_raster_space(supplied)
+    if space["size_px"] != [width, height]:
+        raise ValueError(
+            "Prepared mini-map frames are {}x{}, but their coordinate space "
+            "declares {}x{}".format(
+                width,
+                height,
+                space["size_px"][0],
+                space["size_px"][1],
+            )
+        )
+    return space
 
 def _atomic_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -931,6 +960,20 @@ def _write_evidence(
         cursor_symmetry_axis_deg=np.array(
             [shape["symmetric_model"]["axis_angle_deg"]], dtype=np.float64
         ),
+        geometry_spatial_schema_version=np.array(
+            [SPATIAL_SCHEMA_VERSION], dtype=np.int32
+        ),
+        boundary_space_id=np.array(str(bmetrics["space"]["space_id"])),
+        rotation_center_space_id=np.array(str(cm["space"]["space_id"])),
+        minimap_mask_space_id=np.array(str(bmetrics["space"]["space_id"])),
+        cursor_polygon_parent_space_id=np.array(str(cm["space"]["space_id"])),
+        cursor_polygon_coordinate_convention=np.array(
+            "offset_xy_from_rotation_center"
+        ),
+        cursor_polygon_origin_xy=np.asarray([cm["x"], cm["y"]], dtype=np.float64),
+        geometry_space_size_px=np.asarray(
+            bmetrics["space"]["size_px"], dtype=np.int32
+        ),
     )
     return files
 
@@ -941,6 +984,7 @@ def calibrate_minimap_boundary_frames(
     config: Optional[dict] = None,
     progress=None,
     write_evidence: bool = True,
+    frame_space: Optional[dict] = None,
 ) -> dict:
     """Run the verified mini-map boundary calibration on prepared frame arrays.
 
@@ -963,6 +1007,12 @@ def calibrate_minimap_boundary_frames(
     if progress:
         progress("Fitting the circular mini-map boundary")
     boundary = _boundary_model(frames, boundary_config)
+    space = _prepared_frame_space(
+        frames, frame_space, "minimap_boundary_input_pixels"
+    )
+    boundary["metrics"] = bind_geometry(
+        boundary["metrics"], "circle", space
+    )
     evidence = []
     if write_evidence:
         if progress:
@@ -981,6 +1031,7 @@ def calibrate_minimap_boundary_frames(
     return {
         "model": boundary,
         "outer_boundary": boundary["metrics"],
+        "geometry_space": space,
         "config": boundary_config,
         "evidence": evidence,
     }
@@ -994,18 +1045,29 @@ def calibrate_minimap_frames(
     provenance: Optional[dict] = None,
     progress=None,
     ordinary_frames: Optional[np.ndarray] = None,
+    frame_space: Optional[dict] = None,
 ) -> dict:
     """Calibrate from already labeled frame arrays and persist review evidence."""
     config = _merged_config(config)
     output_path = Path(output_path)
     if rotation_frames.ndim != 4 or movement_frames.ndim != 4:
         raise ValueError("Calibration frames must be N x H x W x C arrays")
+    if rotation_frames.shape[1:3] != movement_frames.shape[1:3]:
+        raise ValueError("Rotation and movement frames must share one raster space")
+    space = _prepared_frame_space(
+        rotation_frames, frame_space, "minimap_calibration_crop_pixels"
+    )
     if progress:
         progress("Fitting the circular mini-map boundary")
     boundary = _boundary_model(rotation_frames, config["boundary"])
+    boundary["metrics"] = bind_geometry(
+        boundary["metrics"], "circle", space
+    )
     if progress:
         progress("Fitting the cursor pivot from movement frames")
     center = _rotation_center(movement_frames, boundary["metrics"], config["cursor"])
+    center["metrics"] = bind_geometry(center["metrics"], "point", space)
+    require_same_space(boundary["metrics"], center["metrics"])
     if progress:
         progress("Fitting the cursor shape and polar template")
     shape = _cursor_shape(rotation_frames, center["metrics"], config["cursor"])
@@ -1026,10 +1088,37 @@ def calibrate_minimap_frames(
         "config": config,
         "outer_boundary": outer,
         "rotation_center": pivot,
-        "center_offset": {
-            "dx": float(offset_x),
-            "dy": float(offset_y),
-            "magnitude_px": float(math.hypot(offset_x, offset_y)),
+        "center_offset": bind_geometry(
+            {
+                "dx": float(offset_x),
+                "dy": float(offset_y),
+                "magnitude_px": float(math.hypot(offset_x, offset_y)),
+            },
+            "vector",
+            space,
+        ),
+        "geometry_space": space,
+        "model_geometry": {
+            "minimap_mask": bind_geometry(
+                {"array_name": "minimap_mask"}, "mask", space
+            ),
+            "cursor_polygon": bind_geometry(
+                {
+                    "points_xy": (
+                        np.asarray(
+                            shape["symmetric_model"]["polygon_relative_xy"],
+                            dtype=np.float64,
+                        )
+                        + np.asarray([pivot["x"], pivot["y"]], dtype=np.float64)
+                    ).tolist(),
+                    "model_array_name": "cursor_polygon_relative_xy",
+                    "model_coordinate_convention": (
+                        "offset_xy_from_rotation_center"
+                    ),
+                },
+                "polygon",
+                space,
+            ),
         },
         "cursor_shape": shape["metrics"],
         "overall_confidence": float(

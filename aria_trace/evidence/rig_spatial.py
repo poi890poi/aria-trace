@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from aria_trace.evidence.media_trace import raster_record
+from aria_trace.domain.spatial import bind_geometry, raster_space
 from aria_trace.services.calibration.rig.contracts import FrameSample
 
 
@@ -430,6 +431,33 @@ def expanded_rig_camera_review(
         "review_scale": float(scale),
         "header_height_px": int(header_height),
     }
+    review_geometry_space = raster_space(
+        "rig_expanded_camera_review_pixels", [canvas_width, canvas_height]
+    )
+    full_sensor_geometry_space = raster_space(
+        "hik_full_sensor_camera_pixels", [full_width, full_height]
+    )
+    geometry["full_sensor_quadrilateral"] = bind_geometry(
+        {"points_xy": full_review.tolist()}, "polygon", review_geometry_space
+    )
+    geometry["phone_display_quadrilateral"] = (
+        bind_geometry(
+            {"points_xy": phone_review.tolist()},
+            "polygon",
+            review_geometry_space,
+        )
+        if phone_review is not None
+        else None
+    )
+    geometry["phone_display_quadrilateral_full_sensor"] = (
+        bind_geometry(
+            {"points_xy": phone_corners.tolist()},
+            "polygon",
+            full_sensor_geometry_space,
+        )
+        if phone_corners is not None
+        else None
+    )
     review_space = {
         "schema_version": "1.0",
         "space_id": "rig_expanded_camera_review_pixels",
@@ -565,6 +593,10 @@ def standardized_rig_comparison(
     panel_header = 74
     canvas_width = panel_width * 3 + gap * 4
     canvas_height = global_header + panel_header + panel_height + gap * 2
+    comparison_geometry_space = raster_space(
+        "rig_standardized_three_space_comparison_pixels",
+        [canvas_width, canvas_height],
+    )
     canvas = _checkerboard(canvas_height, canvas_width)
     cv2.rectangle(canvas, (0, 0), (canvas_width - 1, global_header - 1), (24, 24, 24), -1)
     cv2.putText(
@@ -681,8 +713,7 @@ def standardized_rig_comparison(
                 3,
                 cv2.LINE_AA,
             )
-        panels.append(
-            {
+        panel_geometry = {
                 "role": ("adb_view", "full_camera_view", "rectified_view")[index],
                 "source_space_id": str(space["space_id"]),
                 "source_size_px": _size_wh(image),
@@ -694,8 +725,31 @@ def standardized_rig_comparison(
                 "phone_display_quadrilateral_comparison_xy": (
                     phone_quad.tolist() if phone_quad is not None else None
                 ),
+                "source_quadrilateral": bind_geometry(
+                    {"points_xy": image_quad.tolist()},
+                    "polygon",
+                    comparison_geometry_space,
+                ),
+                "full_camera_sensor_quadrilateral": (
+                    bind_geometry(
+                        {"points_xy": full_sensor_quad.tolist()},
+                        "polygon",
+                        comparison_geometry_space,
+                    )
+                    if full_sensor_quad is not None
+                    else None
+                ),
+                "phone_display_quadrilateral": (
+                    bind_geometry(
+                        {"points_xy": phone_quad.tolist()},
+                        "polygon",
+                        comparison_geometry_space,
+                    )
+                    if phone_quad is not None
+                    else None
+                ),
             }
-        )
+        panels.append(panel_geometry)
 
     geometry = {
         "panels": panels,
