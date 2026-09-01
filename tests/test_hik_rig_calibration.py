@@ -1343,6 +1343,87 @@ class HikPhoneTests(unittest.TestCase):
             ],
         )
 
+    def test_subprocess_runner_force_kills_adb_when_kill_server_hangs(self):
+        command_timeout = subprocess.TimeoutExpired(["adb", "devices"], 1.0)
+        kill_timeout = subprocess.TimeoutExpired(["adb", "kill-server"], 5.0)
+        success = mock.Mock(returncode=0, stdout="devices", stderr="")
+        recovery = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch(
+            "aria_trace.adapters.android.phone.os.name", "nt"
+        ), mock.patch(
+            "subprocess.run",
+            side_effect=[command_timeout, kill_timeout, recovery, recovery, success],
+        ) as run:
+            self.assertEqual(_subprocess_runner(["adb", "devices"], 1.0), "devices")
+        self.assertEqual(
+            [call[0][0] for call in run.call_args_list],
+            [
+                ["adb", "devices"],
+                ["adb", "kill-server"],
+                ["taskkill.exe", "/F", "/IM", "adb.exe", "/T"],
+                ["adb", "start-server"],
+                ["adb", "devices"],
+            ],
+        )
+
+    def test_subprocess_runner_force_kills_and_retries_when_start_server_hangs(self):
+        command_timeout = subprocess.TimeoutExpired(["adb", "devices"], 1.0)
+        start_timeout = subprocess.TimeoutExpired(["adb", "start-server"], 5.0)
+        success = mock.Mock(returncode=0, stdout="devices", stderr="")
+        recovery = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch(
+            "aria_trace.adapters.android.phone.os.name", "nt"
+        ), mock.patch(
+            "subprocess.run",
+            side_effect=[
+                command_timeout,
+                recovery,
+                start_timeout,
+                recovery,
+                recovery,
+                success,
+            ],
+        ) as run:
+            self.assertEqual(_subprocess_runner(["adb", "devices"], 1.0), "devices")
+        self.assertEqual(
+            [call[0][0] for call in run.call_args_list],
+            [
+                ["adb", "devices"],
+                ["adb", "kill-server"],
+                ["adb", "start-server"],
+                ["taskkill.exe", "/F", "/IM", "adb.exe", "/T"],
+                ["adb", "start-server"],
+                ["adb", "devices"],
+            ],
+        )
+
+    def test_subprocess_runner_reports_force_kill_diagnostic_if_restart_fails(self):
+        command_timeout = subprocess.TimeoutExpired(["adb", "devices"], 1.0)
+        kill_timeout = subprocess.TimeoutExpired(["adb", "kill-server"], 5.0)
+        taskkill_failure = mock.Mock(
+            returncode=5, stdout="", stderr="Access is denied"
+        )
+        start_failure = mock.Mock(
+            returncode=1, stdout="", stderr="cannot start daemon"
+        )
+        with mock.patch(
+            "aria_trace.adapters.android.phone.os.name", "nt"
+        ), mock.patch(
+            "subprocess.run",
+            side_effect=[
+                command_timeout,
+                kill_timeout,
+                taskkill_failure,
+                start_failure,
+            ],
+        ) as run:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "cannot start daemon.*taskkill exited 5: Access is denied",
+            ):
+                _subprocess_runner(["adb", "devices"], 1.0)
+        self.assertEqual(run.call_count, 4)
+
     def test_subprocess_runner_does_not_restart_for_non_timeout_failure(self):
         failure = mock.Mock(returncode=1, stdout="", stderr="unauthorized")
         with mock.patch("subprocess.run", return_value=failure) as run:

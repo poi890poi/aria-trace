@@ -91,25 +91,69 @@ def _run_adb_command_once(
     )
 
 
+def _force_kill_adb_process_tree(timeout_seconds: float) -> Optional[str]:
+    if os.name != "nt":
+        return None
+    try:
+        # ADB is a persistent server. Killing a timed-out client process does not
+        # guarantee that the server or one of its descendants has exited.
+        killed = _run_adb_command_once(
+            ["taskkill.exe", "/F", "/IM", "adb.exe", "/T"], timeout_seconds
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Timed out while force-killing the ADB process tree") from exc
+    if killed.returncode == 0:
+        return None
+    return "taskkill exited {}: {}".format(
+        killed.returncode,
+        killed.stderr.strip() or killed.stdout.strip() or "no diagnostic output",
+    )
+
+
 def _restart_adb_server(adb_executable: str, timeout_seconds: float) -> None:
     recovery_timeout = max(5.0, min(float(timeout_seconds), 30.0))
+    force_kill_diagnostics: List[str] = []
     try:
         _run_adb_command_once([adb_executable, "kill-server"], recovery_timeout)
     except subprocess.TimeoutExpired:
-        # A wedged server can also stall its own shutdown. Starting the server is
-        # still worth attempting because subprocess.run has terminated the client.
-        pass
+        diagnostic = _force_kill_adb_process_tree(recovery_timeout)
+        if diagnostic:
+            force_kill_diagnostics.append(diagnostic)
     try:
         started = _run_adb_command_once(
             [adb_executable, "start-server"], recovery_timeout
         )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("ADB server restart timed out") from exc
+    except subprocess.TimeoutExpired:
+        diagnostic = _force_kill_adb_process_tree(recovery_timeout)
+        if diagnostic:
+            force_kill_diagnostics.append(diagnostic)
+        try:
+            started = _run_adb_command_once(
+                [adb_executable, "start-server"], recovery_timeout
+            )
+        except subprocess.TimeoutExpired as retry_exc:
+            details = (
+                "; forced termination diagnostics: "
+                + "; ".join(force_kill_diagnostics)
+                if force_kill_diagnostics
+                else ""
+            )
+            raise RuntimeError(
+                "ADB server restart timed out after forced process-tree termination"
+                + details
+            ) from retry_exc
     if started.returncode != 0:
+        details = (
+            "; forced termination diagnostics: "
+            + "; ".join(force_kill_diagnostics)
+            if force_kill_diagnostics
+            else ""
+        )
         raise RuntimeError(
-            "ADB server restart failed ({}): {}".format(
+            "ADB server restart failed ({}): {}{}".format(
                 started.returncode,
                 started.stderr.strip() or started.stdout.strip(),
+                details,
             )
         )
 
