@@ -88,6 +88,23 @@ derived from HIK ChArUco board metric plus the native surface extent by default
 on MTK devices (`--panel-scale auto`); `adb` and `hik_charuco` are explicit
 overrides.
 
+The signed presenter APK is versioned with its source at
+`android/phone-target/aria-phone-target.apk`; no separate download is required.
+Rig calibration automatically resolves and installs it when the package is
+absent, then reuses the installed compatible app. Maintainers can rebuild the
+checked-in binary after changing the Activity:
+
+```powershell
+.\android\phone-target\build-phone-target.bat `
+  -Output .\android\phone-target\aria-phone-target.apk
+```
+
+Use `--phone-target-apk PATH` for one calibration run, or set
+`ARIA_PHONE_TARGET_APK` for a persistent explicit override. Standalone releases
+place the same APK at `phone-target/aria-phone-target.apk`. The presenter uses
+ADB only for installation, launch, reverse-port setup, and acknowledgements;
+ADB itself remains a user-managed dependency.
+
 Prepare the game at a stable playable scene. Capture settled ADB images and
 matching rig-normalized HIK images for mini-map discovery and color fitting:
 

@@ -349,6 +349,10 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
         candidates.extend(
             [
                 repository
+                / "android"
+                / "phone-target"
+                / "aria-phone-target.apk",
+                repository
                 / "artifacts"
                 / "android-phone-target"
                 / "aria-phone-target.apk",
