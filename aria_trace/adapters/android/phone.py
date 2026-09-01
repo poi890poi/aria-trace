@@ -333,6 +333,24 @@ class AdbPhoneSession:
             "source": "adb_surface_orientation_at_capture",
         }
 
+    def orientation_settings(self) -> Dict[str, Any]:
+        """Return rotation settings as telemetry; the surface remains authoritative."""
+
+        accelerometer = self._get_setting("system", "accelerometer_rotation")
+        user_rotation = self._get_setting("system", "user_rotation")
+        return {
+            "accelerometer_rotation": (
+                int(accelerometer) if accelerometer in ("0", "1") else None
+            ),
+            "user_rotation_quarter_turns": (
+                int(user_rotation) % 4
+                if user_rotation is not None and user_rotation.isdigit()
+                else None
+            ),
+            "source": "adb_settings_system",
+            "telemetry_only": True,
+        }
+
     def metrics(self, refresh_hz_override: Optional[float] = None) -> PhoneMetrics:
         size_text = self.shell("wm", "size")
         override_size = re.search(r"Override size:\s*(\d+)\s*x\s*(\d+)", size_text, re.IGNORECASE)

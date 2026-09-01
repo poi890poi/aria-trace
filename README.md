@@ -154,6 +154,40 @@ performs and publishes a fresh headless rig calibration. It never scans for a
 newer artifact outside the registry. Because calibration presents ChArUco on
 the phone, launch or restore the game only after this command finishes.
 
+Once the game is prepared, an integrator can call the standalone repeatability
+check without launching the app, sending input, changing display settings, or
+running rig calibration:
+
+```powershell
+python -m aria_tools game-repeatability --game-id GAME_ID
+# Equivalent human-friendly launcher:
+.\game-repeatability-check.bat --game-id GAME_ID
+```
+
+The command prints JSON and writes `result.json` plus review images under the
+reported output directory. It reports the foreground package, Android rotation
+settings, current surface rotation, image-selected HIK quarter-turn, and a
+geometry verdict. Production geometry uses only the static mini-map boundary
+isolated by the active `phone_game` calibration; animated scene pixels and
+color are excluded. The HIK check applies the selected quarter-turn to its
+verification stream through `CalibratedHikFrameSource.set_output_orientation`
+without changing rig geometry. Exit code `0` means match; `2` means mismatch
+or unavailable.
+
+For test apps without a mini-map profile, capture a baseline and then compare
+the same app using the explicitly diagnostic whole-screen mode:
+
+```powershell
+python -m aria_tools game-repeatability --adb-only `
+  --create-diagnostic-reference --output REFERENCE_DIRECTORY
+python -m aria_tools game-repeatability --adb-only `
+  --diagnostic-reference-result REFERENCE_DIRECTORY
+```
+
+This mode compares fixed-threshold app features and requires the prior result's
+captured image-space metadata. It is not a substitute for a production
+mini-map profile.
+
 ### 3. New game or new panel platform
 
 For a new game on the same panel, update the game default and keep the existing
