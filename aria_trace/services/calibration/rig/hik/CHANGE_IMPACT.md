@@ -156,3 +156,24 @@ behavior remains rectified for compatibility.
   `PATH`, with `MVS_RUNTIME_PATH` as an explicit override for nonstandard installs.
 - Hardware verification results are recorded only after exercising the actual
   HIK MVS SDK, camera, display, and phone; offline tests remain deterministic.
+## Native target and measured panel scale (2026-09-01)
+
+- Change class: intentional presenter replacement plus calibration-coordinate
+  extension; camera acquisition, exposure, ROI, rectification, and profile
+  selection interfaces remain unchanged.
+- Default presenter: the bundled Android Activity renders the existing HTTP
+  target revisions in an immersive full-bleed `SurfaceView` and returns the
+  existing paint acknowledgements. Browser (`owned_http`) and Gallery
+  (`legacy_gallery`) remain explicit compatibility modes.
+- Coordinate authority: ADB screen/app dimensions and physical DPI are retained
+  as diagnostic provenance. In `hik_charuco` mode, detected HIK corner IDs bind
+  camera pixels to ChArUco board-square metric, which is composed with the
+  native surface extent before homography fitting. The possibly anisotropic
+  board-to-surface scale is saved in JSON/YAML.
+- Selection: `--panel-scale auto` chooses `hik_charuco` for MTK hardware and
+  `adb` elsewhere. Explicit `adb` and `hik_charuco` modes are deterministic.
+- Failure policy: active-app size mismatch and >=1% reported DPI anisotropy emit
+  warnings and bundle diagnostics; they do not gate a working camera.
+- Verification: the Activity is built and signature-verified with installed
+  Android SDK tools. Unit tests cover default/fallback selection, native launch,
+  anomaly classification, MTK policy, and anisotropic board-metric mapping.

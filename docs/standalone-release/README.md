@@ -22,10 +22,12 @@ without a C compiler.
 - For every tool in a user-managed Python environment, run
   `install-python-tools.bat` once in that environment.
 
-Only Python executables, their Python/native-wheel dependencies, and Python
-source are bundled. ADB, scrcpy, FFmpeg, and HIK MVS are all user-managed
-environment dependencies. The camera adapter does not operate the phone during
-streaming.
+Python executables, their Python/native-wheel dependencies, Python source, and
+the small AriaTrace native phone-target APK are bundled. ADB, scrcpy, FFmpeg,
+and HIK MVS remain user-managed environment dependencies. Rig calibration
+installs the target APK only when its package is absent, then launches its
+immersive `SurfaceView` through ADB reverse. The camera adapter does not operate
+the phone during streaming.
 
 ## Start here
 
@@ -53,6 +55,13 @@ diagnostic evidence. These probes do not reject a product run; camera-observed
 ChArUco geometry and final calibration evidence remain authoritative. Test
 harnesses can opt into the old strict behavior with
 `--strict-display-screenshot-verification`.
+
+The default native presenter removes browser/Gallery fullscreen behavior. Set
+`ARIA_PHONE_TARGET_APK` or pass `--phone-target-apk` only when the bundled APK
+is relocated. `--panel-scale auto` enables ChArUco/native-surface scaling on MTK
+platforms; use `--panel-scale adb` or `--panel-scale hik_charuco` explicitly to
+override it. Active-app size mismatch and physical-DPI anisotropy are saved as
+non-gating diagnostics in both JSON and commented YAML bundles.
 
 ## Pure-Python helpers
 

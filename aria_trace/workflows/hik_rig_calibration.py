@@ -23,10 +23,20 @@ from aria_trace.adapters.filesystem.commented_yaml import (
     write_commented_yaml,
 )
 from aria_trace.adapters.rig.devices import CameraConfiguration
-from aria_trace.adapters.android.display import LocalPhoneTargetServer, PhoneTargetAdapter, Presentation
+from aria_trace.adapters.android.display import (
+    LocalPhoneTargetServer,
+    NativeImmersivePhoneTarget,
+    PhoneTargetAdapter,
+    Presentation,
+)
 from aria_trace.services.calibration.rig.bundle import build_calibration, write_calibration_bundle
 from aria_trace.services.calibration.rig.data_matrix_readability import grade_data_matrix_decode, render_data_matrix_target
-from aria_trace.services.calibration.rig.geometry import CharucoLayout, detect_charuco_correspondences, estimate_screen_geometry
+from aria_trace.services.calibration.rig.geometry import (
+    CharucoLayout,
+    charuco_board_metric_to_panel_pixels,
+    detect_charuco_correspondences,
+    estimate_screen_geometry,
+)
 from aria_trace.services.calibration.rig.distortion import (
     combined_output_to_raw_maps,
     distort_pixel_points,
@@ -127,6 +137,64 @@ def screen_filling_charuco_layout(screen_size_px: Sequence[int]) -> CharucoLayou
     )
 
 
+def android_display_scale_diagnostic(
+    metrics: PhoneMetrics, isotropy_tolerance_fraction: float = 0.01
+) -> Dict[str, Any]:
+    """Describe ADB display anomalies without using them as geometry gates."""
+
+    screen = list(map(int, metrics.screen_size_px))
+    active = (
+        list(map(int, metrics.active_app_size_px))
+        if metrics.active_app_size_px is not None
+        else None
+    )
+    dpi = (
+        list(map(float, metrics.physical_dpi_xy))
+        if metrics.physical_dpi_xy is not None
+        else None
+    )
+    anisotropy = (
+        abs(1.0 - dpi[0] / dpi[1]) if dpi is not None and dpi[1] > 0 else None
+    )
+    app_matches = active == screen if active is not None else None
+    isotropic = (
+        anisotropy < float(isotropy_tolerance_fraction)
+        if anisotropy is not None
+        else None
+    )
+    warnings = []
+    if app_matches is False:
+        warnings.append("active_app_size_differs_from_screen_size")
+    if isotropic is False:
+        warnings.append("reported_physical_pitch_is_anisotropic")
+    return {
+        "schema_version": 1,
+        "screen_size_px": screen,
+        "active_app_size_px": active,
+        "active_app_matches_screen": app_matches,
+        "physical_dpi_xy": dpi,
+        "pitch_anisotropy_fraction": anisotropy,
+        "pitch_isotropy_tolerance_fraction": float(isotropy_tolerance_fraction),
+        "pitch_isotropic_within_tolerance": isotropic,
+        "warnings": warnings,
+        "non_gating": True,
+    }
+
+
+def is_mtk_phone_platform(metrics: PhoneMetrics) -> bool:
+    value = str(getattr(metrics, "hardware_platform", "") or "").strip().lower()
+    return value.startswith("mt") or "mediatek" in value or "dimensity" in value
+
+
+def resolve_panel_scale_mode(requested: str, metrics: PhoneMetrics) -> str:
+    mode = str(requested).strip().lower()
+    if mode == "auto":
+        return "hik_charuco" if is_mtk_phone_platform(metrics) else "adb"
+    if mode not in ("adb", "hik_charuco"):
+        raise ValueError("Panel scale mode must be auto, adb, or hik_charuco")
+    return mode
+
+
 def _load_callable(specification: str):
     module_name, separator, attribute = str(specification).partition(":")
     if not separator or not module_name or not attribute:
@@ -146,7 +214,9 @@ class HikCalibrationOptions:
     camera_height_px: int = 2048
     camera_fps: float = 30.0
     target_port: int = 0
-    target_presenter: str = "owned_http"
+    target_presenter: str = "native_app"
+    phone_target_apk: Optional[Path] = None
+    panel_scale_mode: str = "auto"
     display_component: Optional[str] = None
     operation_timeout_seconds: float = 8.0
     refresh_hz_override: Optional[float] = None
@@ -204,14 +274,16 @@ class HikCalibrationOptions:
             raise ValueError("Save movement frame count must be positive")
         if self.repeatability_policy not in RIG_REPEATABILITY_POLICIES:
             raise ValueError("Unknown rig repeatability policy")
-        if self.target_presenter not in ("owned_http", "legacy_gallery"):
+        if self.target_presenter not in ("native_app", "owned_http", "legacy_gallery"):
             raise ValueError("Unknown phone target presenter")
         if not 0 <= int(self.target_port) <= 65535:
             raise ValueError("Phone target port must be within 0..65535")
-        if self.target_presenter == "owned_http" and self.display_component:
+        if self.target_presenter in ("native_app", "owned_http") and self.display_component:
             raise ValueError(
                 "display_component applies only to target_presenter=legacy_gallery"
             )
+        if self.panel_scale_mode not in ("auto", "adb", "hik_charuco"):
+            raise ValueError("Unknown panel scale mode")
         if self.distortion_correction not in ("off", "guided"):
             raise ValueError("Distortion correction must be off or guided")
         if self.distortion_view_count < 4:
@@ -236,6 +308,13 @@ class HikRigCalibrationSession:
         self.phone = phone or AdbPhoneSession(options.phone_serial)
         if target is not None:
             self.target = target
+        elif options.target_presenter == "native_app":
+            self.target = NativeImmersivePhoneTarget(
+                bind_host="127.0.0.1",
+                port=options.target_port,
+                advertised_host="127.0.0.1",
+                apk_path=options.phone_target_apk,
+            )
         elif options.target_presenter == "owned_http":
             self.target = LocalPhoneTargetServer(
                 bind_host="127.0.0.1",
@@ -256,6 +335,9 @@ class HikRigCalibrationSession:
         self.phone_display_brightness: Optional[Dict[str, Any]] = None
         self.charuco_layout: Optional[CharucoLayout] = None
         self.viewer_metrics: Dict[str, Any] = {}
+        self.display_scale_diagnostic: Dict[str, Any] = {}
+        self.panel_scale_measurement: Dict[str, Any] = {}
+        self.effective_panel_size_px: Optional[List[int]] = None
         self.camera_metadata: Dict[str, Any] = {}
         self.camera_controls: Dict[str, Any] = {}
         self.correspondences: Optional[Dict[str, Any]] = None
@@ -342,12 +424,48 @@ class HikRigCalibrationSession:
     def _read_camera(self) -> FrameSample:
         return self._remember_sample(self.camera.read())
 
+    def _calibration_screen_size_px(self) -> List[int]:
+        if self.effective_panel_size_px is not None:
+            return list(map(int, self.effective_panel_size_px))
+        if self.charuco_layout is not None:
+            return list(map(int, self.charuco_layout.screen_size_px))
+        metrics = self._required(self.phone_metrics, "phone metrics")
+        return list(map(int, metrics.screen_size_px))
+
+    def _detect_charuco(
+        self, image: np.ndarray, layout: Optional[CharucoLayout] = None
+    ) -> Dict[str, Any]:
+        """Detect IDs in HIK pixels and bind board metric to panel space."""
+
+        target_layout = layout or self._required(
+            self.charuco_layout, "screen-filling ChArUco layout"
+        )
+        detected = detect_charuco_correspondences(image, target_layout)
+        if self.panel_scale_measurement.get("resolved_mode") == "hik_charuco":
+            points, metric = charuco_board_metric_to_panel_pixels(
+                detected["board_points_square_xy"],
+                target_layout,
+                self._calibration_screen_size_px(),
+            )
+            detected["screen_points_xy"] = points
+            detected["board_metric_to_screen_scale_xy"] = metric[
+                "panel_px_per_square_xy"
+            ]
+            detected["board_metric_origin_screen_xy"] = metric[
+                "origin_panel_px_xy"
+            ]
+            detected["board_metric_panel_size_px"] = metric["panel_size_px"]
+            detected["target_raster_to_panel_scale_xy"] = metric[
+                "target_raster_to_panel_scale_xy"
+            ]
+        return detected
+
     def _phone_projection_in_raw_sensor(self) -> Optional[np.ndarray]:
         """Return the four physical display corners in raw full-sensor pixels."""
 
         if self.geometry is None or self.phone_metrics is None:
             return None
-        width, height = map(int, self.phone_metrics.screen_size_px)
+        width, height = self._calibration_screen_size_px()
         return self._screen_points_to_raw_camera(
             [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]
         )
@@ -366,7 +484,7 @@ class HikRigCalibrationSession:
         if len(full_size or []) != 2:
             raise RuntimeError("Full-sensor dimensions are unavailable for rig evidence")
         phone_size = (
-            list(map(int, self.phone_metrics.screen_size_px))
+            self._calibration_screen_size_px()
             if self.phone_metrics is not None
             else None
         )
@@ -446,7 +564,7 @@ class HikRigCalibrationSession:
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         maps = combined_output_to_raw_maps(
             geometry.matrix_3x3,
-            phone_metrics.screen_size_px,
+            self._calibration_screen_size_px(),
             self.lens_model if self._uses_measured_distortion() else None,
         )
         return cv2.remap(
@@ -1259,7 +1377,7 @@ class HikRigCalibrationSession:
                 int(self.camera_metadata.get("width_px", camera_frame.shape[1])),
                 int(self.camera_metadata.get("height_px", camera_frame.shape[0])),
             ],
-            phone_logical_size_px=self.phone_metrics.screen_size_px,
+            phone_logical_size_px=self._calibration_screen_size_px(),
         )
         (evidence / "index.json").write_text(
             json.dumps(index_document, indent=2, sort_keys=True),
@@ -1335,7 +1453,7 @@ class HikRigCalibrationSession:
 
     def _wait_painted(self, presentation: Presentation, timeout_seconds: float = 5.0) -> None:
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
-        expected_size = list(map(int, phone_metrics.screen_size_px))
+        expected_size = self._calibration_screen_size_px()
         deadline = time.monotonic() + float(timeout_seconds)
         while time.monotonic() < deadline:
             acknowledgements = self.target.telemetry().get("acknowledgements", [])
@@ -1343,7 +1461,17 @@ class HikRigCalibrationSession:
                 int(item.get("revision", -1)) == presentation.revision
                 and bool(item.get("painted"))
                 and bool(item.get("fullscreen"))
-                and self._target_canvas_matches(item, expected_size)
+                and (
+                    self._target_canvas_matches(item, expected_size)
+                    or bool(
+                        isinstance(self.target, NativeImmersivePhoneTarget)
+                        and item.get("native_surface")
+                        and min(
+                            int(item.get("canvas_width", 0) or 0),
+                            int(item.get("canvas_height", 0) or 0),
+                        ) > 0
+                    )
+                )
                 for item in acknowledgements
             ):
                 return
@@ -1359,7 +1487,10 @@ class HikRigCalibrationSession:
         layout = screen_filling_charuco_layout(canonical_size)
         self.charuco_layout = layout
         try:
-            if isinstance(self.target, LocalPhoneTargetServer):
+            if isinstance(self.target, NativeImmersivePhoneTarget):
+                self.target.start(layout)
+                self.target.activate_phone(self.phone, canonical_size, 0)
+            elif isinstance(self.target, LocalPhoneTargetServer):
                 self.target.start(layout)
                 self.phone.wake_and_hold(
                     self.target.bound_port,
@@ -1381,6 +1512,28 @@ class HikRigCalibrationSession:
             self.phone_metrics = self.phone.metrics(
                 self.options.refresh_hz_override
             )
+            self.display_scale_diagnostic = android_display_scale_diagnostic(
+                self.phone_metrics
+            )
+            for warning in self.display_scale_diagnostic["warnings"]:
+                if warning == "active_app_size_differs_from_screen_size":
+                    self._warn(
+                        "Android active app size {} differs from screen size {}; "
+                        "native-surface/HIK scale evidence will be recorded."
+                        .format(
+                            self.display_scale_diagnostic["active_app_size_px"],
+                            self.display_scale_diagnostic["screen_size_px"],
+                        )
+                    )
+                elif warning == "reported_physical_pitch_is_anisotropic":
+                    self._warn(
+                        "Android reports anisotropic physical DPI {} (pitch difference "
+                        "{:.2%}); it will not be trusted as calibration geometry."
+                        .format(
+                            self.display_scale_diagnostic["physical_dpi_xy"],
+                            self.display_scale_diagnostic["pitch_anisotropy_fraction"],
+                        )
+                    )
             if int(self.phone_metrics.orientation_quarter_turns) != 0:
                 raise RuntimeError(
                     "Android did not enter canonical rotation 0; effective "
@@ -1447,6 +1600,89 @@ class HikRigCalibrationSession:
                 )
             )
             self._wait_fullscreen_canvas()
+            resolved_scale_mode = resolve_panel_scale_mode(
+                self.options.panel_scale_mode, self.phone_metrics
+            )
+            nominal_size = list(map(int, self.phone_metrics.screen_size_px))
+            surface_size = [
+                int(self.viewer_metrics.get("surface_width") or self.viewer_metrics.get("canvas_width") or 0),
+                int(self.viewer_metrics.get("surface_height") or self.viewer_metrics.get("canvas_height") or 0),
+            ]
+            if isinstance(self.target, NativeImmersivePhoneTarget):
+                if min(surface_size) <= 0:
+                    raise RuntimeError("Native target did not report a usable SurfaceView size")
+                exact_target = self.target.configure_surface_size(surface_size)
+                self._wait_painted(exact_target)
+                for acknowledgement in reversed(
+                    self.target.telemetry().get("acknowledgements", [])
+                ):
+                    if int(acknowledgement.get("revision", -1)) == exact_target.revision:
+                        self.viewer_metrics.update(dict(acknowledgement))
+                        break
+            if resolved_scale_mode == "hik_charuco":
+                if not isinstance(self.target, NativeImmersivePhoneTarget):
+                    raise RuntimeError(
+                        "HIK ChArUco panel scale requires the native immersive presenter"
+                    )
+                self.effective_panel_size_px = surface_size
+            else:
+                self.effective_panel_size_px = nominal_size
+            self.panel_scale_measurement = {
+                "schema_version": 1,
+                "requested_mode": self.options.panel_scale_mode,
+                "resolved_mode": resolved_scale_mode,
+                "defaulted_for_mtk": bool(
+                    self.options.panel_scale_mode == "auto"
+                    and resolved_scale_mode == "hik_charuco"
+                ),
+                "hardware_platform": self.phone_metrics.hardware_platform,
+                "adb_screen_size_px": nominal_size,
+                "native_surface_size_px": surface_size,
+                "native_target_raster_size_px": [
+                    int(self.viewer_metrics.get("image_natural_width", 0) or 0),
+                    int(self.viewer_metrics.get("image_natural_height", 0) or 0),
+                ],
+                "native_target_is_one_to_one": bool(
+                    int(self.viewer_metrics.get("image_natural_width", 0) or 0)
+                    == surface_size[0]
+                    and int(self.viewer_metrics.get("image_natural_height", 0) or 0)
+                    == surface_size[1]
+                ),
+                "effective_panel_size_px": list(self.effective_panel_size_px),
+                "effective_scale_xy_from_adb_raster": [
+                    float(self.effective_panel_size_px[0]) / float(nominal_size[0]),
+                    float(self.effective_panel_size_px[1]) / float(nominal_size[1]),
+                ],
+                "fit_source": (
+                    "hik_charuco_board_metric_to_native_surface_pixels"
+                    if resolved_scale_mode == "hik_charuco"
+                    else "adb_screen_raster_compatibility"
+                ),
+                "adb_physical_dpi_used_for_geometry": False,
+            }
+            if (
+                isinstance(self.target, NativeImmersivePhoneTarget)
+                and not self.panel_scale_measurement["native_target_is_one_to_one"]
+            ):
+                raise RuntimeError(
+                    "Native phone target did not paint a 1:1 raster: surface {} versus "
+                    "target {}".format(
+                        surface_size,
+                        self.panel_scale_measurement["native_target_raster_size_px"],
+                    )
+                )
+            self.progress(
+                "Panel scale: {} -> {}x{} calibration pixels (ADB raster {}x{}; "
+                "scale {:.6f} x {:.6f}).".format(
+                    resolved_scale_mode,
+                    self.effective_panel_size_px[0],
+                    self.effective_panel_size_px[1],
+                    nominal_size[0],
+                    nominal_size[1],
+                    self.panel_scale_measurement["effective_scale_xy_from_adb_raster"][0],
+                    self.panel_scale_measurement["effective_scale_xy_from_adb_raster"][1],
+                )
+            )
             self.camera_metadata = dict(
                 self.camera.open(
                     CameraConfiguration(
@@ -1514,8 +1750,13 @@ class HikRigCalibrationSession:
             observed_browser = dict(browser)
             if browser.get("canvas_width") and browser.get("canvas_height"):
                 observed = [int(browser["canvas_width"]), int(browser["canvas_height"])]
-                if self._target_canvas_matches(browser, expected) and bool(
-                    browser.get("fullscreen")
+                native_surface_ready = bool(
+                    isinstance(self.target, NativeImmersivePhoneTarget)
+                    and browser.get("native_surface")
+                    and min(observed) > 0
+                )
+                if bool(browser.get("fullscreen")) and (
+                    native_surface_ready or self._target_canvas_matches(browser, expected)
                 ):
                     self.viewer_metrics = {
                         **dict(browser),
@@ -1576,7 +1817,7 @@ class HikRigCalibrationSession:
                 self.last_frame = sample.image.copy()
                 detected = None
                 try:
-                    detected = detect_charuco_correspondences(sample.image, layout)
+                    detected = self._detect_charuco(sample.image, layout)
                 except RuntimeError:
                     pass
                 key = self._preview_update(
@@ -1663,7 +1904,7 @@ class HikRigCalibrationSession:
             frame = sample.image
             self.last_frame = frame.copy()
             try:
-                detected = detect_charuco_correspondences(frame, layout)
+                detected = self._detect_charuco(frame, layout)
                 if self.lens_model.get("source") == "measured":
                     detected["raw_camera_points_xy"] = np.asarray(
                         detected["camera_points_xy"], dtype=np.float64
@@ -1683,6 +1924,33 @@ class HikRigCalibrationSession:
         if not candidates:
             raise RuntimeError("No usable ChArUco correspondence set was captured")
         self.correspondences = max(candidates, key=lambda row: int(row["corner_count"]))
+        calibration_screen_size = self._calibration_screen_size_px()
+        self.panel_scale_measurement.update(
+            {
+                "charuco_corner_count": int(self.correspondences["corner_count"]),
+                "charuco_board_metric_unit": self.correspondences.get(
+                    "board_metric_unit", "charuco_square"
+                ),
+                "charuco_board_metric_to_panel_px_xy": list(
+                    map(
+                        float,
+                        self.correspondences.get(
+                            "board_metric_to_screen_scale_xy",
+                            [
+                                self.charuco_layout.board_size_px[0]
+                                / float(self.charuco_layout.squares_x),
+                                self.charuco_layout.board_size_px[1]
+                                / float(self.charuco_layout.squares_y),
+                            ],
+                        ),
+                    )
+                ),
+                "homography_destination_space": "effective_native_panel_surface_pixels",
+                "scale_folded_into_homography": bool(
+                    self.panel_scale_measurement.get("resolved_mode") == "hik_charuco"
+                ),
+            }
+        )
         camera_size = [
             int(self.camera_metadata["width_px"]),
             int(self.camera_metadata["height_px"]),
@@ -1691,7 +1959,7 @@ class HikRigCalibrationSession:
             self.correspondences["camera_points_xy"],
             self.correspondences["screen_points_xy"],
             camera_size,
-            phone_metrics.screen_size_px,
+            calibration_screen_size,
         )
         self._raw_roi_cache.clear()
         viewport_polygon = (
@@ -1703,7 +1971,7 @@ class HikRigCalibrationSession:
         )
         self.visible_region = camera_visible_screen_region(
             viewport_polygon,
-            phone_metrics.screen_size_px,
+            calibration_screen_size,
             coverage_margin_px=self.options.visible_screen_margin_px,
         )
         x, y, width, height = self.visible_region["xywh"]
@@ -1725,7 +1993,7 @@ class HikRigCalibrationSession:
             if self.lens_model.get("source") == "measured"
             else camera_white_mask(
                 camera_size,
-                self.phone_metrics.screen_size_px,
+                calibration_screen_size,
                 self.visible_region["safe_xywh"],
                 self.geometry.inverse_matrix_3x3,
             )
@@ -1778,7 +2046,7 @@ class HikRigCalibrationSession:
                 corner_count = 0
                 try:
                     corner_count = int(
-                        detect_charuco_correspondences(sample.image, layout)["corner_count"]
+                        self._detect_charuco(sample.image, layout)["corner_count"]
                     )
                 except RuntimeError:
                     pass
@@ -1853,7 +2121,14 @@ class HikRigCalibrationSession:
         provisional_gain = float(bootstrap.get("gain", 0.0))
         self.camera.set_manual_imaging(provisional_exposure, provisional_gain)
         shown = self.target.present_image(
-            np.zeros((phone_metrics.screen_size_px[1], phone_metrics.screen_size_px[0], 3), np.uint8),
+            np.zeros(
+                (
+                    self._calibration_screen_size_px()[1],
+                    self._calibration_screen_size_px()[0],
+                    3,
+                ),
+                np.uint8,
+            ),
             "Black-level target",
         )
         self._wait_painted(shown)
@@ -1925,7 +2200,7 @@ class HikRigCalibrationSession:
                 .format(exc)
             )
         auto_target = white_patch(
-            phone_metrics.screen_size_px,
+            self._calibration_screen_size_px(),
             visible_region["safe_xywh"],
             intensity_bgr=(128, 128, 128),
         )
@@ -2060,7 +2335,9 @@ class HikRigCalibrationSession:
         self.progress("Locking the completed HIK one-shot exposure and gain...")
         self._set_preview_stage("Verifying HIK auto result", exposure_mode="manual locked")
         shown = self.target.present_image(
-            white_patch(phone_metrics.screen_size_px, visible_region["safe_xywh"]),
+            white_patch(
+                self._calibration_screen_size_px(), visible_region["safe_xywh"]
+            ),
             "HIK auto-result verification white patch",
         )
         self._wait_painted(shown)
@@ -2310,7 +2587,7 @@ class HikRigCalibrationSession:
             frame = sample.image
             self.last_frame = frame.copy()
             try:
-                detected = detect_charuco_correspondences(frame, layout)
+                detected = self._detect_charuco(frame, layout)
             except RuntimeError:
                 corner_counts.append(0)
                 self._preview_update(frame, sample.metadata, charuco_corners=0)
@@ -2746,7 +3023,7 @@ class HikRigCalibrationSession:
         )
         shown = self.target.present_image(
             focus_pattern(
-                phone_metrics.screen_size_px, visible_region["safe_xywh"]
+                self._calibration_screen_size_px(), visible_region["safe_xywh"]
             ),
             "Native focus and ISO 12233 slanted edge",
         )
@@ -3045,7 +3322,7 @@ class HikRigCalibrationSession:
                         }
                     )
                 batch = self._compose_data_matrix_batch(
-                    phone_metrics.screen_size_px,
+                    self._calibration_screen_size_px(),
                     visible_region["safe_xywh"],
                     module_px,
                     specifications,
@@ -3600,11 +3877,13 @@ class HikRigCalibrationSession:
                 **phone_metrics.to_dict(),
                 "calibration_display_brightness": self.phone_display_brightness,
                 "viewer": dict(self.viewer_metrics),
+                "display_scale_diagnostic": dict(self.display_scale_diagnostic),
+                "panel_scale_measurement": dict(self.panel_scale_measurement),
                 "canonical_panel_space": {
                     "space_id": "android_phone_natural_display_pixels",
                     "definition": "Android logical display raster at effective Surface rotation 0",
                     "orientation_quarter_turns_clockwise_from_natural": 0,
-                    "size_px": list(map(int, phone_metrics.screen_size_px)),
+                    "size_px": self._calibration_screen_size_px(),
                     "established_by": (
                         "fullscreen asymmetric ChArUco marker correspondences "
                         "observed by the rig camera"
@@ -3628,7 +3907,7 @@ class HikRigCalibrationSession:
                 camera_points_xy=correspondences["camera_points_xy"],
                 screen_points_xy=correspondences["screen_points_xy"],
                 camera_size_px=full_size,
-                screen_size_px=phone_metrics.screen_size_px,
+                screen_size_px=self._calibration_screen_size_px(),
                 input_frame_id="hik://{}/full_sensor".format(
                     self.camera_metadata.get("device_id", self.options.camera_id)
                 ),
@@ -3664,7 +3943,7 @@ class HikRigCalibrationSession:
                 full_size,
                 camera_roi,
                 [width, height],
-                calibration_display_size_px=phone_metrics.screen_size_px,
+                calibration_display_size_px=self._calibration_screen_size_px(),
                 phone_natural_size_px=phone_metrics.natural_screen_size_px,
                 calibration_display_quarter_turns=(
                     phone_metrics.orientation_quarter_turns
@@ -3759,6 +4038,7 @@ class HikRigCalibrationSession:
                     },
                     "full_sensor_camera_to_screen_3x3": geometry.matrix_3x3.tolist(),
                     "screen_to_full_sensor_camera_3x3": geometry.inverse_matrix_3x3.tolist(),
+                    "panel_scale_measurement": dict(self.panel_scale_measurement),
                     "camera_visible_screen_region": dict(visible_region),
                 },
                 "normalization": {

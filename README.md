@@ -79,6 +79,15 @@ before collecting geometry. A successful save publishes the active local
 python -m aria_tools rig-calibration
 ```
 
+Rig calibration uses the bundled native immersive Android target by default:
+it draws full-bleed into a `SurfaceView`, hides system bars, keeps the panel on,
+and acknowledges each painted target over ADB reverse. Browser and Gallery
+presenters are compatibility options only. At open, app-raster mismatch and
+physical-DPI anisotropy are saved as warnings rather than gates. Panel scale is
+derived from HIK ChArUco board metric plus the native surface extent by default
+on MTK devices (`--panel-scale auto`); `adb` and `hik_charuco` are explicit
+overrides.
+
 Prepare the game at a stable playable scene. Capture settled ADB images and
 matching rig-normalized HIK images for mini-map discovery and color fitting:
 

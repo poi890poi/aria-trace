@@ -106,8 +106,17 @@ class HikRigReuseTests(unittest.TestCase):
                     "canvas_width": 64,
                     "canvas_height": 48,
                     "fullscreen": True,
-                }
+                },
+                "acknowledgements": [{
+                    "revision": 2,
+                    "painted": True,
+                    "canvas_width": 64,
+                    "canvas_height": 48,
+                    "image_natural_width": 64,
+                    "image_natural_height": 48,
+                }],
             }
+            target.configure_surface_size.return_value.revision = 2
             phone = Mock()
             points = np.asarray(
                 [[10, 10], [30, 10], [10, 30], [30, 30]], np.float64
@@ -124,7 +133,7 @@ class HikRigReuseTests(unittest.TestCase):
                 "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession",
                 return_value=phone,
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.LocalPhoneTargetServer",
+                "aria_trace.workflows.rig_reuse_precheck.NativeImmersivePhoneTarget",
                 return_value=target,
             ), patch(
                 "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",
@@ -143,6 +152,7 @@ class HikRigReuseTests(unittest.TestCase):
                 )
 
             self.assertTrue(result["reusable"])
+            target.activate_phone.assert_called_once()
             adapter.reset_full_sensor_roi.assert_called_once_with()
             self.assertEqual([0, 0, 64, 48], result["effective_full_sensor_roi_xywh"])
             self.assertFalse((root / "rig" / "last_camera_frame.png").exists())
@@ -203,8 +213,17 @@ class HikRigReuseTests(unittest.TestCase):
                     "canvas_width": 64,
                     "canvas_height": 48,
                     "fullscreen": True,
-                }
+                },
+                "acknowledgements": [{
+                    "revision": 2,
+                    "painted": True,
+                    "canvas_width": 64,
+                    "canvas_height": 48,
+                    "image_natural_width": 64,
+                    "image_natural_height": 48,
+                }],
             }
+            target.configure_surface_size.return_value.revision = 2
             with patch(
                 "aria_trace.workflows.rig_reuse_precheck.RectifiedHikCamera"
             ) as validator_type, patch(
@@ -213,7 +232,7 @@ class HikRigReuseTests(unittest.TestCase):
             ), patch(
                 "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession"
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.LocalPhoneTargetServer",
+                "aria_trace.workflows.rig_reuse_precheck.NativeImmersivePhoneTarget",
                 return_value=target,
             ), patch(
                 "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",

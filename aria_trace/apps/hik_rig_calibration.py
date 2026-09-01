@@ -115,11 +115,28 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--exposure-noise-frames", type=int, default=4)
     value.add_argument(
         "--target-presenter",
-        choices=("owned_http", "legacy_gallery"),
-        default="owned_http",
+        choices=("native_app", "owned_http", "legacy_gallery"),
+        default="native_app",
         help=(
-            "phone target surface: Aria-owned exact-pixel HTTP surface through "
-            "ADB reverse (default), or the compatibility Gallery presenter"
+            "phone target surface: native immersive SurfaceView (default), "
+            "compatibility browser HTTP surface, or legacy Gallery"
+        ),
+    )
+    value.add_argument(
+        "--phone-target-apk",
+        type=Path,
+        help=(
+            "native presenter APK; normally resolved from ARIA_PHONE_TARGET_APK, "
+            "the release package, or artifacts/android-phone-target"
+        ),
+    )
+    value.add_argument(
+        "--panel-scale",
+        choices=("auto", "adb", "hik_charuco"),
+        default="auto",
+        help=(
+            "geometry destination scale: auto enables ChArUco/native-surface scale "
+            "on MTK platforms; adb retains compatibility raster dimensions"
         ),
     )
     value.add_argument(
@@ -347,6 +364,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         camera_fps=arguments.camera_fps,
         target_port=arguments.target_port,
         target_presenter=arguments.target_presenter,
+        phone_target_apk=arguments.phone_target_apk,
+        panel_scale_mode=arguments.panel_scale,
         display_component=arguments.display_component,
         operation_timeout_seconds=arguments.operation_timeout_seconds,
         refresh_hz_override=arguments.refresh_hz,

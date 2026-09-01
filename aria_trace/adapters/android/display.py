@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Mapping, Optional
+from pathlib import Path
+from typing import Any, List, Mapping, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -266,6 +269,17 @@ class LocalPhoneTargetServer(PhoneTargetAdapter):
         port = int(server.server_address[1])
         return "http://{}:{}/".format(self._host_for_operator(), port)
 
+    def configure_layout(self, layout: CharucoLayout) -> Presentation:
+        """Replace the target raster while retaining the HTTP/ack session."""
+
+        if self._server is None:
+            raise RuntimeError("Phone target service is not running")
+        self._layout = layout
+        self._charuco = generate_charuco_target(layout)
+        return self._set(
+            "image", "ChArUco screen atlas", "charuco", self._charuco
+        )
+
     def present_charuco(self) -> Presentation:
         if self._charuco is None:
             raise RuntimeError("Phone target service is not running")
@@ -303,3 +317,90 @@ class LocalPhoneTargetServer(PhoneTargetAdapter):
             thread.join(timeout=2.0)
         self._layout = None
         self._charuco = None
+
+
+class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
+    """Host half of the native immersive Android SurfaceView presenter."""
+
+    adapter_id = "android_native_surface"
+    package_name = "io.ariatrace.phonetarget"
+    component_name = (
+        "io.ariatrace.phonetarget/"
+        "io.ariatrace.phonetarget.PhoneTargetActivity"
+    )
+
+    def __init__(
+        self,
+        bind_host: str = "127.0.0.1",
+        port: int = 0,
+        advertised_host: Optional[str] = "127.0.0.1",
+        apk_path: Optional[Path] = None,
+    ) -> None:
+        super().__init__(bind_host, port, advertised_host)
+        self.apk_path = Path(apk_path).resolve() if apk_path else None
+
+    @staticmethod
+    def default_apk_candidates() -> List[Path]:
+        configured = os.environ.get("ARIA_PHONE_TARGET_APK")
+        repository = Path(__file__).resolve().parents[3]
+        candidates = []
+        if configured:
+            candidates.append(Path(configured))
+        candidates.extend(
+            [
+                repository
+                / "artifacts"
+                / "android-phone-target"
+                / "aria-phone-target.apk",
+                repository / "phone-target" / "aria-phone-target.apk",
+                Path.cwd() / "phone-target" / "aria-phone-target.apk",
+            ]
+        )
+        executable = Path(sys.executable).resolve()
+        candidates.extend(
+            parent / "phone-target" / "aria-phone-target.apk"
+            for parent in executable.parents
+        )
+        return candidates
+
+    def resolved_apk_path(self) -> Optional[Path]:
+        candidates = (
+            [self.apk_path] if self.apk_path is not None else self.default_apk_candidates()
+        )
+        return next(
+            (path.resolve() for path in candidates if path is not None and path.is_file()),
+            None,
+        )
+
+    def configure_surface_size(self, surface_size_px: Sequence[int]) -> Presentation:
+        """Publish a target raster exactly matching the native SurfaceView."""
+
+        if self._server is None or self._layout is None:
+            raise RuntimeError("Phone target service is not running")
+        width, height = map(int, surface_size_px)
+        if min(width, height) <= 0:
+            raise ValueError("Native surface size must be positive")
+        nominal = generate_charuco_target(self._layout)
+        self._charuco = cv2.resize(
+            nominal, (width, height), interpolation=cv2.INTER_NEAREST
+        )
+        return self._set(
+            "image", "ChArUco screen atlas", "charuco", self._charuco
+        )
+
+    def activate_phone(
+        self,
+        phone: Any,
+        screen_size_px: Sequence[int],
+        rotation_quarter_turns: int = 0,
+    ) -> None:
+        """Launch the native target after the host server has bound its port."""
+
+        phone.wake_and_hold_native_target(
+            self.bound_port,
+            screen_size_px,
+            rotation_quarter_turns,
+            package_name=self.package_name,
+            component_name=self.component_name,
+            apk_path=self.resolved_apk_path(),
+        )

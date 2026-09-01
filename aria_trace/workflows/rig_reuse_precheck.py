@@ -13,6 +13,7 @@ import numpy as np
 
 from aria_trace.services.calibration.rig.geometry import (
     CharucoLayout,
+    charuco_board_metric_to_panel_pixels,
     detect_charuco_correspondences,
 )
 from aria_trace.adapters.rig.devices import (
@@ -20,7 +21,10 @@ from aria_trace.adapters.rig.devices import (
     CameraConfiguration,
     create_camera_adapter as create_plugin_camera_adapter,
 )
-from aria_trace.adapters.android.display import LocalPhoneTargetServer
+from aria_trace.adapters.android.display import (
+    LocalPhoneTargetServer,
+    NativeImmersivePhoneTarget,
+)
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.evidence.media_trace import validate_media_registry
 from aria_trace.evidence.rig_spatial import (
@@ -330,6 +334,9 @@ def _wait_owned_target_fullscreen(
         ]
         if bool(last_browser.get("fullscreen")) and canvas == expected:
             return last_browser
+        if isinstance(target, NativeImmersivePhoneTarget):
+            time.sleep(0.05)
+            continue
         # Keep this trusted-input coordinate calculation identical to fresh
         # calibration.  The target canvas is reported in physical display
         # pixels; Chrome's visual viewport is reported in CSS pixels and is
@@ -342,6 +349,31 @@ def _wait_owned_target_fullscreen(
     raise RuntimeError(
         "Owned ChArUco target did not enter fullscreen at {} px: {}"
         .format(expected, dict(last_browser))
+    )
+
+
+def _wait_native_target_painted(
+    target: NativeImmersivePhoneTarget,
+    revision: int,
+    timeout_seconds: float = 5.0,
+) -> Mapping[str, object]:
+    deadline = time.monotonic() + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        for acknowledgement in reversed(
+            target.telemetry().get("acknowledgements", [])
+        ):
+            if (
+                int(acknowledgement.get("revision", -1)) == int(revision)
+                and bool(acknowledgement.get("painted"))
+                and int(acknowledgement.get("canvas_width", 0) or 0)
+                == int(acknowledgement.get("image_natural_width", -1) or -1)
+                and int(acknowledgement.get("canvas_height", 0) or 0)
+                == int(acknowledgement.get("image_natural_height", -1) or -1)
+            ):
+                return acknowledgement
+        time.sleep(0.04)
+    raise RuntimeError(
+        "Native ChArUco target revision {} was not painted 1:1".format(revision)
     )
 
 
@@ -395,7 +427,7 @@ def run_reuse_precheck(
 
     adb_path = resolve_adb_executable(adb)
     phone = AdbPhoneSession(saved_phone, adb_executable=adb_path)
-    target = LocalPhoneTargetServer(bind_host="127.0.0.1", port=0)
+    target = NativeImmersivePhoneTarget(bind_host="127.0.0.1", port=0)
     orientation = int(config["phone"].get("orientation_quarter_turns", 0))
     full_mode = config["camera"]["full_sensor_mode"]
     observations = []
@@ -408,14 +440,22 @@ def run_reuse_precheck(
     try:
         stage_started = time.perf_counter_ns()
         target.start(_saved_layout(config))
-        phone.wake_and_hold(
-            target.bound_port,
+        expected_panel_size = (
+            config["phone"].get("panel_scale_measurement", {}).get(
+                "effective_panel_size_px"
+            )
+            or config["phone"]["screen_size_px"]
+        )
+        target.activate_phone(
+            phone,
             config["phone"]["screen_size_px"],
             orientation,
         )
         _wait_owned_target_fullscreen(
-            phone, target, config["phone"]["screen_size_px"]
+            phone, target, expected_panel_size
         )
+        exact_target = target.configure_surface_size(expected_panel_size)
+        _wait_native_target_painted(target, exact_target.revision)
         timing["target_prepare_ms"] = (
             time.perf_counter_ns() - stage_started
         ) / 1.0e6
@@ -441,6 +481,9 @@ def run_reuse_precheck(
             time.perf_counter_ns() - stage_started
         ) / 1.0e6
         stage_started = time.perf_counter_ns()
+        saved_layout = _saved_layout(config)
+        panel_scale = config["phone"].get("panel_scale_measurement", {})
+        use_charuco_panel_scale = panel_scale.get("resolved_mode") == "hik_charuco"
         for frame_index in range(max(1, int(sample_frames))):
             sample = adapter.read()
             checked_sample = validated_rig_sample(
@@ -454,8 +497,16 @@ def run_reuse_precheck(
             acquired_samples.append(checked_sample)
             try:
                 detected = detect_charuco_correspondences(
-                    checked_sample.image, _saved_layout(config)
+                    checked_sample.image, saved_layout
                 )
+                if use_charuco_panel_scale:
+                    screen_points, metric = charuco_board_metric_to_panel_pixels(
+                        detected["board_points_square_xy"],
+                        saved_layout,
+                        panel_scale["effective_panel_size_px"],
+                    )
+                    detected["screen_points_xy"] = screen_points
+                    detected["precheck_panel_metric"] = metric
             except RuntimeError as exc:
                 detection_failures.append(
                     {"frame_index": int(frame_index), "error": str(exc)}

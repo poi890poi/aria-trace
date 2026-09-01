@@ -461,6 +461,49 @@ def _board_corners(board) -> np.ndarray:
     return np.asarray(board.chessboardCorners, dtype=np.float64).reshape((-1, 3))
 
 
+def charuco_board_metric_to_panel_pixels(
+    board_points_square_xy: Sequence[Sequence[float]],
+    layout: CharucoLayout,
+    panel_size_px: Optional[Sequence[int]] = None,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Map known ChArUco square coordinates into the presenter surface.
+
+    This is deliberately independent of Android's reported physical DPI.  When
+    ``layout.screen_size_px`` comes from the native SurfaceView, the resulting
+    correspondences make that possibly anisotropic surface scale part of the
+    fitted camera-to-panel homography.
+    """
+
+    board_points = points_xy(board_points_square_xy, minimum=1)
+    nominal_size = np.asarray(layout.screen_size_px, dtype=np.float64)
+    panel_size = np.asarray(
+        panel_size_px if panel_size_px is not None else layout.screen_size_px,
+        dtype=np.float64,
+    )
+    if panel_size.shape != (2,) or np.any(panel_size <= 0):
+        raise ValueError("Panel size must contain two positive pixel dimensions")
+    surface_scale = panel_size / nominal_size
+    offset = np.asarray(layout.offset_xy, dtype=np.float64) * surface_scale
+    board_width, board_height = layout.board_size_px
+    nominal_scale = np.asarray(
+        [
+            board_width / float(layout.squares_x),
+            board_height / float(layout.squares_y),
+        ],
+        dtype=np.float64,
+    )
+    scale = nominal_scale * surface_scale
+    return board_points * scale + offset, {
+        "unit": "charuco_square",
+        "panel_px_per_square_xy": scale.tolist(),
+        "origin_panel_px_xy": offset.tolist(),
+        "panel_size_px": list(map(int, panel_size)),
+        "target_raster_size_px": list(map(int, layout.screen_size_px)),
+        "target_raster_to_panel_scale_xy": surface_scale.tolist(),
+        "adb_physical_dpi_used": False,
+    }
+
+
 def generate_charuco_target(layout: CharucoLayout) -> np.ndarray:
     """Render a full-screen BGR ChArUco target for an external presenter."""
 
@@ -514,19 +557,19 @@ def detect_charuco_correspondences(
     ids = charuco_ids.reshape(-1).astype(int)
     camera_points = charuco_corners.reshape((-1, 2)).astype(np.float64)
     board_points = _board_corners(board)[ids, :2]
-    offset = np.asarray(layout.offset_xy, dtype=np.float64)
-    board_width, board_height = layout.board_size_px
-    board_scale = np.asarray(
-        [
-            board_width / float(layout.squares_x),
-            board_height / float(layout.squares_y),
-        ],
-        dtype=np.float64,
+    screen_points, board_metric = charuco_board_metric_to_panel_pixels(
+        board_points, layout
     )
-    screen_points = board_points * board_scale + offset
     return {
         "camera_points_xy": camera_points,
         "screen_points_xy": screen_points,
+        "board_points_square_xy": board_points,
+        "board_metric_unit": "charuco_square",
+        "board_metric_to_screen_scale_xy": board_metric[
+            "panel_px_per_square_xy"
+        ],
+        "board_metric_origin_screen_xy": board_metric["origin_panel_px_xy"],
+        "board_metric_panel_size_px": board_metric["panel_size_px"],
         "corner_ids": ids,
         "marker_count": int(len(marker_ids)),
         "corner_count": int(len(ids)),

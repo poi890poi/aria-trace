@@ -113,6 +113,7 @@ class PhoneMetrics:
     display_state: str = "unknown"
     physical_dpi_xy: Optional[List[float]] = None
     physical_scale_source: str = "unknown"
+    hardware_platform: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         pitch = (
@@ -141,6 +142,7 @@ class PhoneMetrics:
                 else None
             ),
             "physical_size_source": self.physical_scale_source,
+            "hardware_platform": self.hardware_platform,
             "refresh_hz": self.refresh_hz,
             "orientation_quarter_turns": self.orientation_quarter_turns,
             "orientation_degrees": self.orientation_quarter_turns * 90,
@@ -453,7 +455,61 @@ class AdbPhoneSession:
             physical_scale_source=(
                 "android_active_display_mode_xdpi_ydpi" if physical_dpi else "unknown"
             ),
+            hardware_platform=(
+                self.shell("getprop", "ro.board.platform")
+                or self.shell("getprop", "ro.hardware")
+                or "unknown"
+            ),
         )
+
+    def wake_and_hold_native_target(
+        self,
+        local_target_port: int,
+        screen_size_px: Sequence[int],
+        rotation_quarter_turns: int = 0,
+        package_name: str = "io.ariatrace.phonetarget",
+        component_name: str = (
+            "io.ariatrace.phonetarget/"
+            "io.ariatrace.phonetarget.PhoneTargetActivity"
+        ),
+        apk_path: Optional[Path] = None,
+    ) -> None:
+        """Launch the native exact-pixel target over the existing ADB reverse."""
+
+        del screen_size_px  # The native SurfaceView reports its own real extent.
+        self.wake_and_hold_display(rotation_quarter_turns)
+        try:
+            port = int(local_target_port)
+            self.run("reverse", "tcp:{}".format(port), "tcp:{}".format(port))
+            self._reverse_port = port
+            installed = self.shell("pm", "path", str(package_name)).strip()
+            if not installed:
+                if apk_path is None or not Path(apk_path).is_file():
+                    raise RuntimeError(
+                        "AriaTrace native phone target is not installed and its APK "
+                        "was not found. Build android\\phone-target\\build-phone-target.bat, "
+                        "set ARIA_PHONE_TARGET_APK, or pass --phone-target-apk."
+                    )
+                self.run("install", "-r", str(Path(apk_path).resolve()))
+                installed = self.shell("pm", "path", str(package_name)).strip()
+                if not installed:
+                    raise RuntimeError("ADB installation of the native phone target failed")
+            self.viewer_activity = str(component_name)
+            self.shell("am", "force-stop", str(package_name))
+            self.shell(
+                "am",
+                "start",
+                "-W",
+                "-n",
+                str(component_name),
+                "-a",
+                "android.intent.action.VIEW",
+                "-d",
+                "http://127.0.0.1:{}/".format(port),
+            )
+        except Exception:
+            self.cleanup(turn_display_off=True)
+            raise
 
     def wake_and_hold(
         self,

@@ -135,13 +135,24 @@ Save calibration.yaml, remap data, masks, metrics, and review images
 
 The wizard opens the requested UVC mode, then records the actual mode returned by the device. It samples focus, autofocus, exposure, auto-exposure, gain, white balance, and power-line frequency when the driver exposes them. Unsupported controls remain `unknown` rather than being filled with invented values.
 
-The default HIK workflow serves an Aria-owned exact-pixel target surface on a
-loopback port forwarded with ADB reverse. It reports target revision, drawing
-surface, natural target raster, fullscreen state, and host-received paint time.
-The former Android Gallery presenter remains available only as the explicit
-`legacy_gallery` compatibility option. The phone displays targets full-screen
-with system bars hidden and fixed orientation. The captured phone resolution
-and orientation become part of calibration applicability.
+The default HIK workflow launches the bundled AriaTrace native target Activity
+over a loopback port forwarded with ADB reverse. The Activity hides system bars
+with `WindowInsetsController`, keeps the display on, and paints every revision
+into a full-bleed `SurfaceView`. It reports the native surface extent, natural
+target raster, scale, rotation, and frame paint acknowledgement through the
+same HTTP contract. No browser fullscreen gesture or Gallery decode is part of
+the default path. `owned_http` retains the browser presenter and
+`legacy_gallery` retains the former Gallery presenter as explicit compatibility
+options.
+
+At open, calibration records—but does not gate on—an Android active-app versus
+screen-size mismatch and physical-DPI anisotropy of 1% or more. `--panel-scale
+auto` uses ADB raster coordinates on ordinary platforms and switches to
+`hik_charuco` on MTK hardware. In that mode, HIK-detected marker IDs establish
+board-square coordinates and the native Activity establishes the actual surface
+raster; their possibly anisotropic board-metric-to-surface scale is composed
+into the camera homography. Android physical DPI is never used for this fit.
+Use `--panel-scale adb` or `--panel-scale hik_charuco` to override selection.
 
 ### 5.2 Intrinsic calibration
 
@@ -165,7 +176,7 @@ If trusted intrinsics already exist for the exact camera mode, they may be reuse
 
 ### 5.3 Final ChArUco screen registration
 
-After the rig is locked, the phone displays a ChArUco board whose marker IDs and margins locate every board point in canonical phone-screen coordinates. The layout is generated for the phone aspect ratio so that useful identified corners remain visible under partial cropping.
+After the rig is locked, the phone displays a ChArUco board whose marker IDs and margins locate every board point in canonical phone-screen coordinates. The layout is generated for the phone aspect ratio so that useful identified corners remain visible under partial cropping. Under `hik_charuco` panel scaling, those same IDs are first represented in known board-square units and then mapped to the native `SurfaceView` extent before homography fitting.
 
 The board is treated as a coordinate atlas, not merely as a picture whose
 outer boundary must be visible. Detected IDs locate the camera viewport within

@@ -4,6 +4,7 @@ param(
     [string]$OutputDirectory,
     [switch]$SkipDependencyInstall,
     [switch]$SkipApplicationBuild,
+    [switch]$SkipPhoneTargetBuild,
     [switch]$NoArchive
 )
 
@@ -112,6 +113,18 @@ $ReleaseRoot = $OutputDirectory
 New-Item -ItemType Directory -Force -Path $ReleaseRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $StageRoot "apps") -Destination $ReleaseRoot -Recurse
 
+$PhoneTargetApk = Join-Path $ProjectRoot "artifacts\android-phone-target\aria-phone-target.apk"
+if (-not $SkipPhoneTargetBuild) {
+    & (Join-Path $ProjectRoot "android\phone-target\build-phone-target.ps1") -Output $PhoneTargetApk
+    if ($LASTEXITCODE -ne 0) { throw "Native phone target build failed" }
+}
+if (-not (Test-Path -LiteralPath $PhoneTargetApk -PathType Leaf)) {
+    throw "Native phone target APK is missing: $PhoneTargetApk"
+}
+$PhoneTargetRelease = Join-Path $ReleaseRoot "phone-target"
+New-Item -ItemType Directory -Force -Path $PhoneTargetRelease | Out-Null
+Copy-Item -LiteralPath $PhoneTargetApk -Destination (Join-Path $PhoneTargetRelease "aria-phone-target.apk")
+
 $PythonSource = Join-Path $ReleaseRoot "python"
 New-Item -ItemType Directory -Force -Path $PythonSource | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "acquisition") -Recurse -File -Filter "*.py" | ForEach-Object {
@@ -126,6 +139,8 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "aria_trace") -Recurse -File 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
     Copy-Item -LiteralPath $_.FullName -Destination $Destination
 }
+New-Item -ItemType Directory -Force -Path (Join-Path $PythonSource "android") | Out-Null
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "android\phone-target") -Destination (Join-Path $PythonSource "android\phone-target") -Recurse
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "hikcam.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "aria_tools.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "requirements-hik-camera-adapter.txt") -Destination $PythonSource
@@ -175,13 +190,14 @@ $Manifest = @(
     "  - apps/aria-minimap-calibration/aria-minimap-calibration.exe",
     "  - apps/aria-game-color-calibration/aria-game-color-calibration.exe",
     "camera_adapter_import: python/hikcam.py",
+    "native_phone_target: phone-target/aria-phone-target.apk",
     "python_tools_import: python/aria_tools.py",
     "external_environment:",
     "  hik_mvs: required",
     "  adb: required_on_path_or_pass_explicit_path",
     "  scrcpy_server: required_on_path_or_pass_explicit_path",
     "  ffmpeg: required_on_path_or_pass_explicit_path",
-    "bundled_scope: python_runtime_and_python_dependencies_only"
+    "bundled_scope: python_runtime_dependencies_source_and_native_phone_target"
 )
 Set-Content -LiteralPath (Join-Path $ReleaseRoot "release-manifest.yaml") -Value $Manifest -Encoding UTF8
 

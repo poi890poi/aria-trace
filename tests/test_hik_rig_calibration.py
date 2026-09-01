@@ -32,7 +32,10 @@ from acquisition.rig_calibration.hik.driver import (
     create_camera_adapter,
 )
 from acquisition.rig_calibration.hik.display import AdbDisplayTarget
-from aria_trace.adapters.android.display import LocalPhoneTargetServer
+from aria_trace.adapters.android.display import (
+    LocalPhoneTargetServer,
+    NativeImmersivePhoneTarget,
+)
 from acquisition.rig_calibration.hik.patterns import (
     camera_white_mask,
     focus_edge_regions,
@@ -51,10 +54,17 @@ from acquisition.rig_calibration.hik.stream import PhoneDisplayPowerSession
 from acquisition.rig_calibration.hik.workflow import (
     HikCalibrationOptions,
     HikRigCalibrationSession,
+    android_display_scale_diagnostic,
     cross_source_alignment_evidence,
+    is_mtk_phone_platform,
+    resolve_panel_scale_mode,
     screen_filling_charuco_layout,
 )
-from acquisition.rig_calibration.geometry import estimate_screen_geometry
+from acquisition.rig_calibration.geometry import (
+    CharucoLayout,
+    charuco_board_metric_to_panel_pixels,
+    estimate_screen_geometry,
+)
 
 
 def rig_frame_sample(image, time_ns=1, roi_xywh=None):
@@ -86,15 +96,90 @@ def rig_frame_sample(image, time_ns=1, roi_xywh=None):
 
 
 class HikAlgorithmTests(unittest.TestCase):
-    def test_owned_exact_pixel_presenter_is_default_and_gallery_is_explicit(self):
+    def test_charuco_board_metric_uses_anisotropic_native_surface_scale(self):
+        layout = CharucoLayout((1000, 2000), 10, 20, (0, 0))
+        points, metadata = charuco_board_metric_to_panel_pixels(
+            [[1.0, 1.0], [9.0, 19.0]], layout, [1000, 2100]
+        )
+        self.assertTrue(
+            np.allclose(points, [[100.0, 105.0], [900.0, 1995.0]])
+        )
+        self.assertEqual(metadata["panel_px_per_square_xy"], [100.0, 105.0])
+        self.assertFalse(metadata["adb_physical_dpi_used"])
+
+    def test_session_charuco_detection_folds_native_surface_scale_into_destinations(self):
+        session = HikRigCalibrationSession(
+            HikCalibrationOptions("fake", "phone", Path("unused")),
+            camera=mock.Mock(), phone=mock.Mock(), target=mock.Mock(),
+        )
+        session.charuco_layout = CharucoLayout((1000, 2000), 10, 20, (0, 0))
+        session.effective_panel_size_px = [1000, 2100]
+        session.panel_scale_measurement = {"resolved_mode": "hik_charuco"}
+        detected = {
+            "board_points_square_xy": np.asarray([[1.0, 1.0], [9.0, 19.0]]),
+            "screen_points_xy": np.asarray([[100.0, 100.0], [900.0, 1900.0]]),
+            "corner_count": 2,
+        }
+        with mock.patch(
+            "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
+            return_value=detected,
+        ):
+            result = session._detect_charuco(np.zeros((8, 8, 3), np.uint8))
+        self.assertTrue(
+            np.allclose(
+                result["screen_points_xy"],
+                [[100.0, 105.0], [900.0, 1995.0]],
+            )
+        )
+        self.assertEqual(result["target_raster_to_panel_scale_xy"], [1.0, 1.05])
+
+    def test_display_scale_anomaly_is_diagnostic_and_mtk_auto_uses_charuco(self):
+        metrics = PhoneMetrics(
+            "phone",
+            "Example",
+            "MTK phone",
+            "14",
+            [1080, 2400],
+            420,
+            120.0,
+            active_app_size_px=[1080, 2300],
+            physical_dpi_xy=[409.0, 430.0],
+            hardware_platform="mt6893",
+        )
+        diagnostic = android_display_scale_diagnostic(metrics)
+        self.assertFalse(diagnostic["active_app_matches_screen"])
+        self.assertFalse(diagnostic["pitch_isotropic_within_tolerance"])
+        self.assertTrue(diagnostic["non_gating"])
+        self.assertTrue(is_mtk_phone_platform(metrics))
+        self.assertEqual(resolve_panel_scale_mode("auto", metrics), "hik_charuco")
+        self.assertEqual(resolve_panel_scale_mode("adb", metrics), "adb")
+
+    def test_non_mtk_auto_keeps_compatibility_raster(self):
+        metrics = PhoneMetrics(
+            "phone", "Example", "Phone", "14", [1080, 2400], 420, 120.0,
+            hardware_platform="qcom",
+        )
+        self.assertEqual(resolve_panel_scale_mode("auto", metrics), "adb")
+
+    def test_native_exact_pixel_presenter_is_default_and_fallbacks_are_explicit(self):
         owned = HikRigCalibrationSession(
             HikCalibrationOptions("fake", "phone", Path("unused")),
             camera=mock.Mock(),
             phone=mock.Mock(),
         )
-        self.assertIsInstance(owned.target, LocalPhoneTargetServer)
+        self.assertIsInstance(owned.target, NativeImmersivePhoneTarget)
         self.assertEqual(owned.target.bind_host, "127.0.0.1")
         self.assertEqual(owned.target.port, 0)
+
+        browser = HikRigCalibrationSession(
+            HikCalibrationOptions(
+                "fake", "phone", Path("unused"), target_presenter="owned_http"
+            ),
+            camera=mock.Mock(),
+            phone=mock.Mock(),
+        )
+        self.assertIsInstance(browser.target, LocalPhoneTargetServer)
+        self.assertNotIsInstance(browser.target, NativeImmersivePhoneTarget)
 
         legacy = HikRigCalibrationSession(
             HikCalibrationOptions(
@@ -107,6 +192,13 @@ class HikAlgorithmTests(unittest.TestCase):
             phone=mock.Mock(),
         )
         self.assertIsInstance(legacy.target, AdbDisplayTarget)
+
+    def test_native_presenter_resolves_explicit_apk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "target.apk"
+            apk.write_bytes(b"apk")
+            target = NativeImmersivePhoneTarget(apk_path=apk)
+            self.assertEqual(target.resolved_apk_path(), apk.resolve())
 
     def test_gui_positioning_waits_for_explicit_space_signal(self):
         options = HikCalibrationOptions(
@@ -1142,6 +1234,39 @@ class FakeAdbRunner:
 
 
 class HikPhoneTests(unittest.TestCase):
+    def test_native_target_launch_uses_explicit_activity_without_browser_gesture(self):
+        class NativeRunner(FakeAdbRunner):
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:3] == ["shell", "pm", "path"]:
+                    self.commands.append(args)
+                    return "package:/data/app/io.ariatrace.phonetarget/base.apk"
+                return super().__call__(command, timeout)
+
+        runner = NativeRunner()
+        phone = AdbPhoneSession(
+            "SERIAL-1", adb_executable="adb-test", runner=runner,
+            sleeper=lambda _seconds: None,
+        )
+        phone.wake_and_hold_native_target(8765, [1080, 2400])
+        launches = [
+            command for command in runner.commands
+            if command[:3] == ["shell", "am", "start"]
+        ]
+        self.assertEqual(len(launches), 1)
+        self.assertTrue(
+            any(
+                "io.ariatrace.phonetarget.PhoneTargetActivity" in item
+                for item in launches[0]
+            )
+        )
+        self.assertNotIn("input", [item for row in launches for item in row])
+        self.assertEqual(
+            phone.viewer_activity,
+            "io.ariatrace.phonetarget/io.ariatrace.phonetarget.PhoneTargetActivity",
+        )
+        phone.cleanup(turn_display_off=True)
+
     def test_subprocess_runner_decodes_adb_output_as_utf8_without_locale_dependency(self):
         completed = mock.Mock(returncode=0, stdout="display � text", stderr="")
         with mock.patch("subprocess.run", return_value=completed) as run:

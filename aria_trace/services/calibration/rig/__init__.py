@@ -42,6 +42,7 @@ from .distortion import (
 from .geometry import (
     CharucoLayout,
     calibrate_intrinsics_from_views,
+    charuco_board_metric_to_panel_pixels,
     detect_charuco_correspondences,
     estimate_screen_geometry,
     generate_charuco_target,
@@ -98,6 +99,7 @@ __all__ = [
     "build_calibration",
     "build_rectification_maps",
     "calibrate_intrinsics_from_views",
+    "charuco_board_metric_to_panel_pixels",
     "detect_charuco_correspondences",
     "decode_data_matrix_payloads",
     "distort_pixel_points",

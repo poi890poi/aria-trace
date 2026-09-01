@@ -74,10 +74,18 @@ HIK_CONFIG_COMMENTS = {
         "zero-origin full sensor before rig calibration; hardware_roi_xywh belongs "
         "only to the production camera adapter."
     ),
-    "phone": "Phone identity, raster, orientation, refresh, brightness, and physical scale.",
+    "phone": (
+        "Phone identity, raster, orientation, refresh, brightness, and scale. "
+        "display_scale_diagnostic records ADB anomalies without gating. "
+        "panel_scale_measurement states whether geometry used the ADB raster or "
+        "HIK ChArUco board metric composed into native SurfaceView pixels."
+    ),
     "imaging": "Locked exposure, gain, black level, and white balance owned by this rig.",
     "geometry": (
         "Measured camera-sensor to phone-display coordinate relationship. In "
+        "panel_scale_measurement, scale_folded_into_homography means ChArUco "
+        "board-square coordinates were mapped to native surface pixels without "
+        "using Android physical DPI. "
         "camera_visible_screen_region, xywh covers every full-sensor-visible "
         "display pixel plus coverage_margin_px; safe_xywh is the inset, fully "
         "visible rectangle used only for calibration targets and metrics."
