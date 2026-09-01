@@ -95,6 +95,12 @@ lens, panel position, and the exact rig revision.
 
 ## Camera adapter
 
+For an existing application that imports Hikrobot's low-level
+`MvCameraControl_class` module and cannot be changed, see
+[Replacing the MVS Python wrapper without changing an application](IRIS_MVS_DROP_IN_COMPATIBILITY.md).
+That document describes a proposed compatibility shim; this low-level replacement is
+not currently implemented.
+
 ### Import from a project in another folder
 
 The Windows release ships the adapter as Python source rather than as a pip
