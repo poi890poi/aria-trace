@@ -50,12 +50,25 @@ $ClassJar = Join-Path $BuildDirectory "classes.jar"
 & jar cf $ClassJar -C $Classes .
 & $D8 --lib $AndroidJar --output $Dex $ClassJar
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
-Push-Location $BuildDirectory
-try { & $Aapt add $Unsigned "dex/classes.dex" | Out-Null } finally { Pop-Location }
-if ($LASTEXITCODE -ne 0) { throw "Cannot add classes.dex" }
+Push-Location $Dex
+try {
+    & $Aapt add $Unsigned "classes.dex" | Out-Null
+    $AaptAddExitCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+if ($AaptAddExitCode -ne 0) { throw "Cannot add root-level classes.dex" }
 $Aligned = Join-Path $BuildDirectory "aligned.apk"
 & $ZipAlign -f 4 $Unsigned $Aligned
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
+$ApkEntries = @(& $Aapt list $Aligned)
+if ($LASTEXITCODE -ne 0) { throw "Cannot inspect aligned APK structure" }
+if ($ApkEntries -notcontains "classes.dex") {
+    throw "Invalid APK structure: root-level classes.dex is missing"
+}
+if ($ApkEntries -contains "dex/classes.dex") {
+    throw "Invalid APK structure: App Bundle dex/classes.dex path found in APK"
+}
 $KeyStore = Join-Path $Repository ".tools\phone-target-debug.keystore"
 if (-not (Test-Path -LiteralPath $KeyStore)) {
     & keytool -genkeypair -keystore $KeyStore -storepass android -keypass android `
