@@ -879,9 +879,7 @@ class ProfileRegistry:
             rig_game = self.resolve("rig_game", context)
             dependencies = rig_game.get("dependencies") or {}
             try:
-                rig = self.resolve_revision(
-                    str(dependencies["rig"]), context, expected_kind="rig"
-                )
+                dependent_rig_id = str(dependencies["rig"])
                 phone_game = self.resolve_revision(
                     str(dependencies["phone_game"]),
                     context,
@@ -891,6 +889,21 @@ class ProfileRegistry:
                 raise ProfileResolutionError(
                     "Rig-game profile has incomplete dependencies: {}".format(exc)
                 )
+            active_rig = self.resolve("rig", context)
+            if dependent_rig_id != str(active_rig["revision_id"]):
+                raise ProfileResolutionError(
+                    "Active rig-game profile {} is stale: it depends on superseded "
+                    "active rig {}, while the current active rig is {}. Re-publish "
+                    "the current rig calibration to recompose game profiles before "
+                    "opening minimap or dual mode.".format(
+                        rig_game["revision_id"],
+                        dependent_rig_id,
+                        active_rig["revision_id"],
+                    )
+                )
+            rig = self.resolve_revision(
+                dependent_rig_id, context, expected_kind="rig"
+            )
         else:
             rig = self.resolve("rig", context)
 

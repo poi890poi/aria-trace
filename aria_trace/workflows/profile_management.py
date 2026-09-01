@@ -147,6 +147,19 @@ def _rig_phone_game_context(
     )
 
 
+def _portable_panel_geometry_matches(
+    rig_context: ProfileContext,
+    phone_context: ProfileContext,
+) -> bool:
+    """Match portable game geometry by physical panel raster, not all metrics."""
+
+    rig_size = rig_context.panel_display.get("natural_panel_px")
+    phone_size = phone_context.panel_display.get("natural_panel_px")
+    if rig_size is not None and phone_size is not None:
+        return list(map(int, rig_size)) == list(map(int, phone_size))
+    return rig_context.panel_signature == phone_context.panel_signature
+
+
 def recompose_active_rig_game_profiles(
     rig_profile: Mapping[str, Any],
     *,
@@ -157,6 +170,7 @@ def recompose_active_rig_game_profiles(
 
     rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
     recomposed = []
+    composed_variants = set()
     for item in registry.list_revisions(kind="phone_game", active_only=True):
         phone_profile = registry.revision(str(item["revision_id"]))
         phone_context = ProfileContext.from_dict(
@@ -164,8 +178,16 @@ def recompose_active_rig_game_profiles(
         )
         if phone_context.platform != rig_context.platform:
             continue
-        if phone_context.panel_signature != rig_context.panel_signature:
+        if not _portable_panel_geometry_matches(rig_context, phone_context):
             continue
+        target_variant = (
+            phone_context.platform,
+            phone_context.game_id,
+            phone_context.game_display_signature,
+        )
+        if target_variant in composed_variants:
+            continue
+        composed_variants.add(target_variant)
         context = _rig_phone_game_context(rig_context, phone_context)
         result = registry.publish(
             "rig_game",
@@ -179,6 +201,10 @@ def recompose_active_rig_game_profiles(
                 "composition": "active_phone_game_plus_new_rig",
                 "source_phone_game_revision": phone_profile["revision_id"],
                 "source_rig_revision": rig_profile["revision_id"],
+                "panel_compatibility": (
+                    "same_natural_panel_raster; refresh, density, and source "
+                    "phone metadata do not change portable game geometry"
+                ),
                 "source_phone_game_provenance": phone_profile.get("provenance"),
             },
             review_state="accepted",
@@ -672,6 +698,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.calibration, registry=registry, activate=not arguments.candidate
         )
         print("Rig profile: {} ({})".format(result["revision_id"], result["publication"]))
+        if not arguments.candidate:
+            print(
+                "Recomposed {} active rig-game profile(s) for this panel.".format(
+                    len(result.get("recomposed_rig_game_profiles") or [])
+                )
+            )
         return 0
     if arguments.command == "publish-minimap":
         from aria_trace.adapters.filesystem.system_configuration import (

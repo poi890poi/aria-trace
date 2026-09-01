@@ -6,7 +6,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from acquisition.profile_registry import ProfileContext, ProfileRegistry
+from acquisition.profile_registry import (
+    AdapterRequest,
+    ProfileContext,
+    ProfileRegistry,
+    ProfileResolutionError,
+)
 from aria_trace.adapters.hik import compat as hikcam
 from aria_trace.adapters.hik import game_camera
 
@@ -116,6 +121,46 @@ class HikAutoProfileTests(unittest.TestCase):
                 minimap_margin_px=12,
                 apply_game_color=False,
                 output_quarter_turns_clockwise=0,
+            )
+
+    def test_adapter_rejects_rig_game_pinned_to_superseded_active_rig(self):
+        phone_game = self.registry.publish(
+            "phone_game",
+            self.context,
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            review_state="accepted",
+            activate=True,
+        )
+        self.registry.publish(
+            "rig_game",
+            self.context,
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            dependencies={
+                "rig": self.rig["revision_id"],
+                "phone_game": phone_game["revision_id"],
+            },
+            review_state="accepted",
+            activate=True,
+        )
+        replacement = self.registry.publish(
+            "rig",
+            self.context,
+            {"profile_kind": "rig", "generation": 2},
+            runtime_files={"hik_camera_calibration": self.calibration},
+            review_state="accepted",
+            activate=True,
+        )
+
+        full = self.registry.resolve_adapter(
+            self.context, AdapterRequest(mode="full")
+        )
+        self.assertEqual(replacement["revision_id"], full["profiles"]["rig"])
+        with self.assertRaisesRegex(
+            ProfileResolutionError, "stale.*superseded active rig"
+        ):
+            self.registry.resolve_adapter(
+                self.context,
+                AdapterRequest(mode="dual", color_policy="rig_locked"),
             )
 
     def test_facade_rejects_transform_policy_it_cannot_enforce(self):

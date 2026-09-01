@@ -198,14 +198,32 @@ class ProfileManagerTests(unittest.TestCase):
                 phone_id="PHONE-1",
                 panel_display={
                     "natural_panel_px": [100, 200],
-                    "logical_frame_px": [100, 200],
-                    "refresh_hz": 120,
-                    "density_dpi": 400,
                 },
                 game_display={
                     "logical_frame_px": [100, 200],
                     "rotation_quarter_turns": 0,
                 },
+            )
+            registry.publish(
+                "phone_game",
+                ProfileContext(
+                    game_id="game-1",
+                    camera_id="CAM-1",
+                    phone_id="PHONE-1",
+                    panel_display={
+                        "natural_panel_px": [100, 200],
+                        "logical_frame_px": [100, 200],
+                        "refresh_hz": 120,
+                        "density_dpi": 400,
+                    },
+                    game_display=phone_context.game_display,
+                ),
+                {
+                    "profile_kind": "phone_game",
+                    "canonical_phone_crop_xywh": [1, 2, 30, 32],
+                },
+                review_state="accepted",
+                activate=True,
             )
             phone_game = registry.publish(
                 "phone_game",
@@ -250,7 +268,10 @@ class ProfileManagerTests(unittest.TestCase):
                 phone_game["payload"]["rotation_center"],
                 recomposed["payload"]["rotation_center"],
             )
-            active = registry.resolve("rig_game", phone_context)
+            active = registry.resolve(
+                "rig_game",
+                ProfileContext(game_id="game-1", camera_id="CAM-1"),
+            )
             self.assertEqual(recomposed["revision_id"], active["revision_id"])
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):

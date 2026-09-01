@@ -430,6 +430,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 profile["revision_id"], profile["publication"]
             )
         )
+        print(
+            "Recomposed {} active rig-game profile(s) for this panel.".format(
+                len(profile.get("recomposed_rig_game_profiles") or [])
+            )
+        )
         _write_standalone_adapter(
             Path(result),
             Path(result) / "hikcam_adapter.py",
