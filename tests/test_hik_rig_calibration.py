@@ -1938,6 +1938,11 @@ class HikRectifiedStreamTests(unittest.TestCase):
             )
             self.assertEqual(config["camera"]["controls"]["gain"]["maximum"], 24.0)
             self.assertEqual(config["imaging"]["black_level"], 240)
+            self.assertEqual(
+                "valid_screen_mask.png",
+                config["normalization"]["valid_mask_file"],
+            )
+            self.assertTrue((saved / "valid_screen_mask.png").is_file())
             self.assertTrue(config["results"]["cross_source_check"]["non_gating"])
             self.assertEqual(
                 config["results"]["cross_source_check"]["status"], "unavailable"

@@ -44,12 +44,14 @@ def write_rig(root: Path) -> Path:
                 "normalization": {
                     "output_size_px": [100, 80],
                     "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
+                    "valid_mask_file": "valid_screen_mask.png",
                 },
             }
         ),
         encoding="utf-8",
     )
     (root / "last_camera_frame.png").write_bytes(b"snapshot")
+    (root / "valid_screen_mask.png").write_bytes(b"mask")
     return calibration
 
 
@@ -73,6 +75,18 @@ class ProfileManagerTests(unittest.TestCase):
             self.assertEqual(profile["revision_id"], resolved["revision_id"])
             self.assertTrue(registry.runtime_file(resolved, "hik_camera_calibration").is_file())
             self.assertTrue(registry.runtime_file(resolved, "last_camera_frame").is_file())
+            mask = registry.runtime_file(resolved, "valid_screen_mask")
+            self.assertTrue(mask.is_file())
+            calibration = json.loads(
+                registry.runtime_file(resolved, "hik_camera_calibration").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                mask,
+                registry.runtime_file(resolved, "hik_camera_calibration").parent
+                / calibration["normalization"]["valid_mask_file"],
+            )
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):
         with tempfile.TemporaryDirectory() as directory:

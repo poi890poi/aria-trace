@@ -25,7 +25,7 @@ class GameCrossSourceCheckTests(unittest.TestCase):
         self.assertEqual([60, 140, 30, 40], natural_crop_to_logical(crop, natural, 2))
         self.assertEqual([20, 60, 40, 30], natural_crop_to_logical(crop, natural, 3))
 
-    def _calibration(self, root: Path) -> Path:
+    def _calibration(self, root: Path, *, write_mask: bool = True) -> Path:
         config = root / "hik_camera_calibration.json"
         config.write_text(
             json.dumps(
@@ -44,7 +44,11 @@ class GameCrossSourceCheckTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        cv2.imwrite(str(root / "valid_screen_mask.png"), np.full((40, 30), 255, np.uint8))
+        if write_mask:
+            cv2.imwrite(
+                str(root / "valid_screen_mask.png"),
+                np.full((40, 30), 255, np.uint8),
+            )
         return config
 
     def test_loads_and_rotates_saved_rig_geometry(self):
@@ -59,6 +63,49 @@ class GameCrossSourceCheckTests(unittest.TestCase):
             )
             self.assertEqual([10, 20, 30, 40], geometry["logical_crop_xywh"])
             self.assertEqual((40, 30), geometry["valid_mask"].shape)
+            self.assertEqual("available", geometry["valid_mask_status"]["status"])
+
+    def test_missing_mask_does_not_block_geometry_or_orientation_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._calibration(root, write_mask=False)
+            geometry = load_game_alignment_geometry(
+                config,
+                {"quarter_turns_clockwise_from_natural": 1},
+            )
+            self.assertIsNone(geometry["valid_mask"])
+            self.assertEqual("missing", geometry["valid_mask_status"]["status"])
+
+            rng = np.random.RandomState(17)
+            hik = rng.randint(0, 256, (40, 30, 3), dtype=np.uint8)
+            adb = np.zeros((100, 200, 3), np.uint8)
+            adb[20:60, 10:40] = hik
+            summary, _images = match_game_camera_orientation(adb, hik, config)
+            self.assertEqual(
+                "full_output_unmasked_fallback",
+                summary["valid_screen_mask"]["orientation_comparison"],
+            )
+            self.assertIn("unmasked", summary["warning"])
+
+            recorder = GameCrossSourceEvidenceRecorder(
+                config,
+                {"quarter_turns_clockwise_from_natural": 1},
+                sample_period_seconds=0.0,
+            )
+            session = root / "session"
+            session.mkdir()
+            recorder.start(session, "session-id", 0)
+            recorder.process(FramePacket("android_phone", adb, 100, 100), 0, 0)
+            recorder.process(FramePacket("hik_phone", hik, 110, 110), 0, 10)
+            recorder.close()
+            saved = json.loads(
+                (session / "cross_source_check" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual("unavailable", saved["status"])
+            self.assertEqual(0, saved["evaluated_pairs"])
+            self.assertEqual("missing", saved["valid_screen_mask"]["status"])
 
     def test_first_images_select_orientation_without_trusting_android_report(self):
         with tempfile.TemporaryDirectory() as directory:

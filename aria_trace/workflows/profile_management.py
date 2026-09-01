@@ -56,6 +56,13 @@ def publish_rig_calibration(
     for logical_name, filename in (
         ("hik_camera_calibration_yaml", "hik_camera_calibration.yaml"),
         ("rectification_maps", str((document.get("normalization") or {}).get("dense_map_file") or "")),
+        (
+            "valid_screen_mask",
+            str(
+                (document.get("normalization") or {}).get("valid_mask_file")
+                or "valid_screen_mask.png"
+            ),
+        ),
         ("last_camera_frame", "last_camera_frame.png"),
     ):
         if not filename:

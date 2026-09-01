@@ -13,6 +13,37 @@ from aria_trace.evidence.rig_alignment import cross_source_alignment_evidence
 from .hik.spaces import RigCalibratedSpaceConverter
 
 
+def _load_optional_valid_mask(
+    calibration_file: Path,
+    normalization: Mapping[str, object],
+    expected_size_px: Sequence[int],
+) -> tuple[Optional[np.ndarray], dict]:
+    """Load validity evidence without making its absence block acquisition."""
+
+    width, height = map(int, expected_size_px)
+    filename = str(
+        normalization.get("valid_mask_file") or "valid_screen_mask.png"
+    )
+    path = Path(calibration_file).parent / filename
+    status = {
+        "file": filename,
+        "expected_size_px": [width, height],
+        "required_for_acquisition": False,
+    }
+    if not path.is_file():
+        return None, {**status, "status": "missing"}
+    mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        return None, {**status, "status": "unreadable"}
+    if mask.shape[:2] != (height, width):
+        return None, {
+            **status,
+            "status": "shape_mismatch",
+            "actual_size_px": [int(mask.shape[1]), int(mask.shape[0])],
+        }
+    return mask, {**status, "status": "available"}
+
+
 def natural_crop_to_logical(
     crop_xywh: Sequence[int],
     natural_size_px: Sequence[int],
@@ -55,18 +86,9 @@ def load_game_alignment_geometry(
             )
         ),
     )
-    mask_file = normalization.get("valid_mask_file", "valid_screen_mask.png")
-    mask = cv2.imread(
-        str(calibration_file.parent / str(mask_file)), cv2.IMREAD_GRAYSCALE
+    mask, mask_status = _load_optional_valid_mask(
+        calibration_file, normalization, [width, height]
     )
-    if mask is None:
-        raise RuntimeError("Rig calibration valid-screen mask is missing")
-    if mask.shape[:2] != (height, width):
-        raise RuntimeError(
-            "Rig valid-screen mask is {}x{}, expected {}x{}".format(
-                mask.shape[1], mask.shape[0], width, height
-            )
-        )
     return {
         "logical_crop_xywh": converter.camera_adapter_bounds_in_adb_xywh(),
         "natural_crop_xywh": [
@@ -74,7 +96,12 @@ def load_game_alignment_geometry(
             width,
             height,
         ],
-        "valid_mask": converter.camera_adapter_image_to_adb_orientation(mask),
+        "valid_mask": (
+            converter.camera_adapter_image_to_adb_orientation(mask)
+            if mask is not None
+            else None
+        ),
+        "valid_mask_status": mask_status,
         "android_surface_quarter_turns_clockwise_from_natural": (
             converter.adb_surface_quarter_turns_clockwise_from_natural
         ),
@@ -124,14 +151,14 @@ def match_game_camera_orientation(
                 expected_height,
             )
         )
-    mask_file = normalization.get("valid_mask_file", "valid_screen_mask.png")
-    valid_mask = cv2.imread(
-        str(calibration_file.parent / str(mask_file)), cv2.IMREAD_GRAYSCALE
+    valid_mask, valid_mask_status = _load_optional_valid_mask(
+        calibration_file, normalization, [expected_width, expected_height]
     )
-    if valid_mask is None:
-        raise RuntimeError("Rig calibration valid-screen mask is missing")
-    if valid_mask.shape[:2] != (expected_height, expected_width):
-        raise RuntimeError("Rig calibration valid-screen mask has the wrong size")
+    comparison_mask = (
+        valid_mask
+        if valid_mask is not None
+        else np.full((expected_height, expected_width), 255, dtype=np.uint8)
+    )
 
     adb_height, adb_width = adb_image.shape[:2]
     candidates = []
@@ -176,7 +203,7 @@ def match_game_camera_orientation(
             hik_calibration_display_image
         )
         candidate_mask = converter.camera_adapter_image_to_adb_orientation(
-            valid_mask
+            comparison_mask
         )
         if hik_candidate.shape[:2] != adb_crop.shape[:2]:
             candidate["status"] = "not_scored_image_size_mismatch"
@@ -233,6 +260,16 @@ def match_game_camera_orientation(
     selected_image_turns = int(
         best["camera_adapter_image_quarter_turns_clockwise_from_calibration_display"]
     )
+    warnings = []
+    if valid_mask is None:
+        warnings.append(
+            "Rig valid-screen mask is {}; orientation used an explicitly "
+            "unmasked full-output comparison.".format(valid_mask_status["status"])
+        )
+    if not preferred:
+        warnings.append(
+            "The best image-evidence candidate was applied, but the match is ambiguous."
+        )
     summary = {
         "schema_version": 1,
         "status": "selected" if preferred else "selected_low_confidence",
@@ -273,11 +310,16 @@ def match_game_camera_orientation(
         "confidence_margin": margin,
         "preferred_confidence": float(preferred_confidence),
         "preferred_margin": float(preferred_margin),
-        "warning": (
-            None
-            if preferred
-            else "The best image-evidence candidate was applied, but the match is ambiguous."
-        ),
+        "valid_screen_mask": {
+            **valid_mask_status,
+            "orientation_comparison": (
+                "saved_valid_mask"
+                if valid_mask is not None
+                else "full_output_unmasked_fallback"
+            ),
+        },
+        "warning": " ".join(warnings) if warnings else None,
+        "warnings": warnings,
         "candidates": candidates,
     }
     return summary, evidence_images
@@ -380,7 +422,14 @@ class GameCrossSourceEvidenceRecorder:
         self._best_metrics = None
         self._best_images = None
         self._best_pair_delta_ms = None
-        self._warning = None
+        self._warning = (
+            None
+            if self.geometry["valid_mask"] is not None
+            else "Cross-source quality evidence skipped because the rig "
+            "valid-screen mask is {}.".format(
+                self.geometry["valid_mask_status"]["status"]
+            )
+        )
 
     def start(self, session_path: Path, _session_id: str, _origin_ns: int) -> None:
         self._path = Path(session_path) / "cross_source_check"
@@ -393,6 +442,8 @@ class GameCrossSourceEvidenceRecorder:
             )
             return
         if packet.stream_id != self.hik_stream_id or self._latest_adb is None:
+            return
+        if self.geometry["valid_mask"] is None:
             return
         capture_ns = int(packet.host_capture_time_ns)
         if (
@@ -454,6 +505,7 @@ class GameCrossSourceEvidenceRecorder:
             "best_pair_delta_ms": self._best_pair_delta_ms,
             "metrics": self._best_metrics,
             "warning": self._warning,
+            "valid_screen_mask": self.geometry["valid_mask_status"],
             "orientation_match": self.orientation_match,
         }
         (self._path / "summary.json").write_text(
@@ -478,6 +530,7 @@ class GameCrossSourceEvidenceRecorder:
             "path": "cross_source_check/summary.json",
             "logical_adb_crop_xywh": self.geometry["logical_crop_xywh"],
             "evaluated_pairs": self._evaluated_pairs,
+            "valid_screen_mask": self.geometry["valid_mask_status"],
         }
         if self._best_metrics is not None:
             result["best_metrics"] = dict(self._best_metrics)

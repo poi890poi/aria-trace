@@ -4050,6 +4050,7 @@ class HikRigCalibrationSession:
                     ),
                     "output_size_px": [width, height],
                     "origin_screen_xy": [x, y],
+                    "valid_mask_file": "valid_screen_mask.png",
                     "dense_map_file": "rectification_maps.npz",
                     "runtime_resampling": "single_precomposed_cv2_remap",
                     "lens_correction_in_dense_map": bool(
