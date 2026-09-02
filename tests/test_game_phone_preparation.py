@@ -43,6 +43,23 @@ class FakePhone:
         return ""
 
 
+class ForegroundCaptureMetadataTests(unittest.TestCase):
+    def test_actual_foreground_package_is_recorded_for_manual_game(self):
+        with patch.object(
+            capture,
+            "foreground_component",
+            return_value="org.example.game/.MainActivity",
+        ):
+            result = capture._record_foreground_at_capture(
+                Mock(), {"status": "manual_current_game", "package": None}
+            )
+        self.assertEqual("org.example.game", result["package"])
+        self.assertEqual(
+            "org.example.game", result["foreground_package_at_capture"]
+        )
+        self.assertEqual("adb_foreground_at_capture", result["package_source"])
+
+
 class GamePhonePreparationTests(unittest.TestCase):
     def test_hik_fallback_is_limited_to_absence_or_ownership_failures(self):
         self.assertTrue(

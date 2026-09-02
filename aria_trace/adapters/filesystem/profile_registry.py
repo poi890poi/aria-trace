@@ -939,6 +939,14 @@ class ProfileRegistry:
             except ProfileResolutionError as exc:
                 if not str(exc).startswith("No active rig_game_orientation profile"):
                     raise
+                resolution_warnings.append(
+                    "No active game-orientation profile matches game {!r}; "
+                    "adapter output remains rig-calibration-display-up, which "
+                    "may be Android/presenter-up rather than game-up. Run game "
+                    "calibration, compose from the foreground Android surface, "
+                    "or invoke runtime ADB/HIK image orientation correction."
+                    .format(context.game_id)
+                )
             else:
                 orientation_rig_id = str(
                     (candidate.get("dependencies") or {}).get("rig") or ""

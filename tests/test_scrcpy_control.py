@@ -1,6 +1,7 @@
 import struct
 import threading
 import unittest
+from unittest import mock
 
 from acquisition.android_zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from acquisition.scrcpy_control import (
@@ -78,7 +79,7 @@ class ScrcpyControlTests(unittest.TestCase):
         self.assertEqual(len(fake_socket.messages), 2)
         self.assertEqual(controller.describe()["events_sent"], 2)
 
-    def test_zigzag_uses_reusable_controller_and_reports_completion(self):
+    def test_zigzag_uses_one_android_swipe_command_per_stroke(self):
         controller = FakeController()
         plan = ZigzagTouchPlan(
             start_xy=[90, 50],
@@ -93,21 +94,29 @@ class ScrcpyControlTests(unittest.TestCase):
             "adb.exe", "serial", plan, controller=controller
         )
         packets = []
-        source.start(packets.append)
-        self.assertTrue(source.wait_completed(2.0))
-        source.stop()
+        with mock.patch(
+            "aria_trace.adapters.android.zigzag.subprocess.check_call"
+        ) as command:
+            source.start(packets.append)
+            self.assertTrue(source.wait_completed(2.0))
+            source.stop()
 
         self.assertTrue(source.completed)
         self.assertEqual(source.events_issued, source.expected_event_count)
-        self.assertEqual([item[0] for item in controller.actions], [
-            "DOWN", "MOVE", "MOVE", "UP",
-            "DOWN", "MOVE", "MOVE", "UP",
-            "DOWN", "MOVE", "MOVE", "UP",
-            "DOWN", "MOVE", "MOVE", "UP",
+        self.assertEqual(4, command.call_count)
+        for call in command.call_args_list:
+            arguments = call[0][0]
+            self.assertEqual("swipe", arguments[6])
+            self.assertEqual("30", arguments[-1])
+        self.assertEqual([packet.payload["action"] for packet in packets], [
+            "SWIPE", "SWIPE", "SWIPE", "SWIPE",
         ])
-        self.assertEqual(len(packets), 16)
-        self.assertTrue(controller.opened)
-        self.assertTrue(controller.closed)
+        self.assertEqual(
+            "adb_shell_input_touchscreen_swipe",
+            source.describe()["transport"],
+        )
+        self.assertFalse(controller.opened)
+        self.assertFalse(controller.closed)
 
     def test_default_zigzag_splits_motion_into_twelve_balanced_strokes(self):
         plan = ZigzagTouchPlan(
@@ -136,7 +145,7 @@ class ScrcpyControlTests(unittest.TestCase):
             self.assertEqual(abs(delta_x), 243)
             self.assertEqual(abs(delta_y), 486)
 
-    def test_long_swipe_uses_progressive_move_events_before_release(self):
+    def test_legacy_progressive_points_remain_available_for_micro_movements(self):
         plan = ZigzagTouchPlan(
             start_xy=[1320, 540],
             end_x=1077,
@@ -167,7 +176,7 @@ class ScrcpyControlTests(unittest.TestCase):
 
         self.assertEqual(plan.move_samples_per_stroke, 8)
         self.assertEqual(len(plan.strokes()), 12)
-        self.assertEqual(12 * (8 + 2), 120)
+        self.assertEqual(12, len(plan.strokes()))
 
 if __name__ == "__main__":
     unittest.main()

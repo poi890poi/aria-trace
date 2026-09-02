@@ -77,6 +77,17 @@ def _touch_intervals(
         elif action == "UP" and active_start is not None:
             intervals.append((active_start, time_ns))
             active_start = None
+        elif action == "SWIPE":
+            duration_ns = max(
+                0,
+                int(payload.get("command_end_host_time_ns") or 0)
+                - int(payload.get("command_start_host_time_ns") or 0),
+            )
+            if duration_ns <= 0:
+                duration_ns = int(
+                    float(payload.get("duration_ms") or 0.0) * 1.0e6
+                )
+            intervals.append((max(0, time_ns - duration_ns), time_ns))
     return sorted(intervals)
 
 

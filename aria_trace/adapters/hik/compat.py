@@ -27,7 +27,11 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 import cv2
 import numpy as np
 
-from .driver import HikMvsCameraAdapter, RectifiedHikCamera
+from .driver import (
+    HikMvsCameraAdapter,
+    RectifiedHikCamera,
+    rotate_quarter_turns_clockwise,
+)
 from aria_trace.services.calibration.rig.hik.spaces import RigCalibratedSpaceConverter
 
 
@@ -241,6 +245,7 @@ class HikCamera:
         self.last_time_get_frame = 0.0
         self._reader = None
         self._last_frame = None
+        self._last_frame_by_stream: Dict[str, np.ndarray] = {}
         self.last_frame_metadata: Dict[str, Any] = {}
         self._last_frame_metadata_by_stream: Dict[str, Dict[str, Any]] = {}
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
@@ -416,6 +421,7 @@ class HikCamera:
             reader.release()
         self.last_frame_metadata = {}
         self._last_frame_metadata_by_stream = {}
+        self._last_frame_by_stream = {}
 
     release = close
 
@@ -474,6 +480,10 @@ class HikCamera:
                 self.last_frame_metadata
             )
         }
+        stream_id = str(self.last_frame_metadata.get("stream_id", "default"))
+        self._last_frame_by_stream = {stream_id: frame}
+        if str(self.config.get("mode", "full")) == "full":
+            self._last_frame_by_stream["full"] = frame
         self._last_frame = frame
         self.last_time_get_frame = time.time()
         self.shape = tuple(frame.shape)
@@ -492,6 +502,7 @@ class HikCamera:
             name: self._convert_output(frame)
             for name, frame in frame_set.streams.items()
         }
+        self._last_frame_by_stream = dict(frames)
         self._last_frame_metadata_by_stream = {
             str(name): self._public_frame_metadata(
                 {
@@ -521,6 +532,168 @@ class HikCamera:
                 * (preferred.shape[2] if preferred.ndim == 3 else 1)
             )
         return frames
+
+    def correct_game_orientation(
+        self,
+        adb_image: np.ndarray,
+        hik_full_image: Optional[np.ndarray] = None,
+        *,
+        preferred_confidence: float = 0.50,
+        preferred_margin: float = 0.08,
+    ) -> Dict[str, Any]:
+        """Correct game-up from one current ADB/HIK image pair.
+
+        This proprietary IRIS operation tries all four discrete orientations
+        with the existing cross-source evidence matcher. It never operates the
+        phone: callers must provide the canonical full ADB screenshot. On a
+        confident match an open adapter is reopened once, rebuilding its dense
+        maps with the selected quarter-turn and adding no per-frame overhead.
+        """
+
+        if not self._rectify_enabled:
+            raise RuntimeError(
+                "Runtime game-orientation correction requires rectification; "
+                "an unrectified hardware-ROI frame is not calibration-display space"
+            )
+        if adb_image is None or not isinstance(adb_image, np.ndarray):
+            raise ValueError("adb_image must be a decoded full ADB screenshot")
+        if hik_full_image is None:
+            hik_full_image = self._last_frame_by_stream.get("full")
+        if hik_full_image is None:
+            raise RuntimeError(
+                "Runtime game-orientation correction needs a current full HIK "
+                "frame; open the adapter in full or dual mode"
+            )
+
+        current_turns = int(self._game_upright_turns) % 4
+        public_bgr = (
+            cv2.cvtColor(hik_full_image, cv2.COLOR_RGB2BGR)
+            if self._color_order == "RGB"
+            else hik_full_image
+        )
+        calibration_display_bgr = rotate_quarter_turns_clockwise(
+            public_bgr, -current_turns
+        )
+        from aria_trace.services.calibration.rig.cross_source import (
+            match_game_camera_orientation,
+        )
+
+        summary, _evidence = match_game_camera_orientation(
+            adb_image,
+            calibration_display_bgr,
+            self.calibration_path,
+            preferred_confidence=float(preferred_confidence),
+            preferred_margin=float(preferred_margin),
+        )
+        selected_turns = int(
+            summary[
+                "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+            ]
+        ) % 4
+        result = {
+            **summary,
+            "previous_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+                current_turns
+            ),
+            "applied": False,
+            "adapter_reopened": False,
+        }
+        if summary.get("status") != "selected":
+            result["application_status"] = "not_applied_ambiguous_image_evidence"
+            return result
+
+        application = self._apply_game_orientation_turns(selected_turns)
+        result["applied"] = True
+        result.update(application)
+        return result
+
+    def _apply_game_orientation_turns(self, selected_turns: int) -> Dict[str, Any]:
+        selected_turns = int(selected_turns) % 4
+        previous_turns = int(self._game_upright_turns) % 4
+        was_open = bool(self.is_open)
+        if was_open:
+            self.close()
+        self._game_upright_turns = selected_turns
+        self.config["game_upright_quarter_turns_clockwise"] = selected_turns
+        adapter_plan = self.resolved_config.setdefault("adapter_plan", {})
+        adapter_plan["game_upright_quarter_turns_clockwise"] = selected_turns
+        if (previous_turns - selected_turns) % 2 and len(self.shape) >= 2:
+            self.shape = (self.shape[1], self.shape[0]) + tuple(self.shape[2:])
+        if was_open:
+            self.open()
+        return {
+            "adapter_reopened": was_open,
+            "application_status": (
+                "applied_dense_maps_rebuilt"
+                if was_open
+                else "applied_for_next_open"
+            ),
+        }
+
+    def correct_game_orientation_from_android_surface(
+        self,
+        android_surface_quarter_turns_clockwise_from_natural: int,
+        *,
+        foreground_package: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Compose game-up from Android surface telemetry and the saved rig.
+
+        This deterministic operation assumes the foreground game renders its
+        top edge at the top of Android's current logical surface. It is separate
+        from :meth:`correct_game_orientation`, which verifies real pixels by
+        trying all four ADB/HIK image orientations.
+        """
+
+        surface_turns = int(
+            android_surface_quarter_turns_clockwise_from_natural
+        ) % 4
+        phone = dict(self.calibration.get("phone") or {})
+        viewer = dict(phone.get("viewer") or {})
+        rig_display_turns = int(
+            phone.get(
+                "orientation_quarter_turns",
+                viewer.get("canonical_orientation_quarter_turns", 0),
+            )
+        ) % 4
+        selected_turns = (surface_turns - rig_display_turns) % 4
+        expected_package = str(
+            (((self.resolved_config.get("context") or {}).get("game") or {}).get(
+                "package"
+            ) or "")
+        ).strip()
+        observed_package = str(foreground_package or "").strip()
+        warnings = []
+        if expected_package and observed_package and expected_package != observed_package:
+            warnings.append(
+                "Foreground package {!r} differs from profile package {!r}; "
+                "orientation was composed from the observed Android surface as "
+                "requested, but image-evidence verification is recommended."
+                .format(observed_package, expected_package)
+            )
+        application = self._apply_game_orientation_turns(selected_turns)
+        return {
+            "schema_version": 1,
+            "status": "applied_surface_composition",
+            "selection_basis": "foreground_game_android_surface_and_saved_rig_relation",
+            "assumption": "foreground_game_top_matches_android_logical_surface_top",
+            "foreground_package": observed_package or None,
+            "profile_package": expected_package or None,
+            "android_surface_quarter_turns_clockwise_from_phone_natural": surface_turns,
+            "rig_calibration_display_quarter_turns_clockwise_from_phone_natural": (
+                rig_display_turns
+            ),
+            "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+                selected_turns
+            ),
+            "selected_camera_adapter_image_degrees_clockwise_from_calibration_display": (
+                selected_turns * 90
+            ),
+            "warnings": warnings,
+            "image_evidence_used": False,
+            "image_evidence_override_available": True,
+            "applied": True,
+            **application,
+        }
 
     def get_iris_frame_metadata(
         self, stream_id: Optional[str] = None

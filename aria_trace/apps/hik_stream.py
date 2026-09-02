@@ -7,11 +7,13 @@ from collections import deque
 from dataclasses import dataclass
 import importlib
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 import cv2
+import numpy as np
 
 from aria_trace.apps.rig_presentation import console_print as print
 
@@ -20,6 +22,85 @@ from aria_trace.adapters.hik.capture import NativeHikFrameSource
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
 from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
 from aria_trace.adapters.android.phone import AdbPhoneSession
+from aria_trace.adapters.android.phone import resolve_adb_executable
+from aria_trace.adapters.android.game_launcher import (
+    foreground_component,
+    launch_android_game,
+)
+
+
+def capture_adb_screenshot(
+    adb_executable: str, serial: str, timeout_seconds: float = 10.0
+):
+    """Capture one canonical full ADB raster without operating the phone UI."""
+
+    adb = resolve_adb_executable(adb_executable)
+    command = [adb, "-s", str(serial), "exec-out", "screencap", "-p"]
+    completed = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=float(timeout_seconds),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "ADB screencap failed: {}".format(
+                completed.stderr.decode("utf-8", errors="replace").strip()
+                or "exit {}".format(completed.returncode)
+            )
+        )
+    image = cv2.imdecode(np.frombuffer(completed.stdout, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise RuntimeError("ADB screencap returned no decodable PNG image")
+    return image
+
+
+def wait_for_foreground_game_surface(
+    phone: AdbPhoneSession,
+    package: str,
+    *,
+    timeout_seconds: float = 15.0,
+    stable_probes: int = 3,
+) -> Mapping[str, object]:
+    """Wait until the foreground game's Android surface rotation is stable."""
+
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    stable = 0
+    last_signature = None
+    last_component = None
+    last_surface = None
+    while time.monotonic() < deadline:
+        last_component = foreground_component(phone)
+        observed_package = (
+            last_component.split("/", 1)[0] if last_component else None
+        )
+        if observed_package != str(package):
+            stable = 0
+            time.sleep(0.25)
+            continue
+        last_surface = phone.capture_surface()
+        signature = (
+            int(last_surface["quarter_turns_clockwise_from_natural"]),
+            tuple(map(int, last_surface["logical_size_px"])),
+        )
+        stable = stable + 1 if signature == last_signature else 1
+        last_signature = signature
+        if stable >= max(1, int(stable_probes)):
+            return {
+                "foreground_component": last_component,
+                "foreground_package": observed_package,
+                "surface": dict(last_surface),
+                "stable_probes": stable,
+            }
+        time.sleep(0.25)
+    raise RuntimeError(
+        "Game package {} did not reach a stable foreground Android surface; "
+        "last activity {}, last surface {}".format(
+            package, last_component or "unknown", last_surface or "unknown"
+        )
+    )
 
 
 class LiveStreamTelemetry:
@@ -371,6 +452,18 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--mvs-python-path")
     value.add_argument("--profile-root", type=Path)
     value.add_argument("--game-id")
+    value.add_argument(
+        "--launch-game",
+        action="store_true",
+        help=(
+            "Demo only: wake the calibrated phone, bring the selected game to "
+            "foreground, wait for a stable surface, and compose game-up before streaming"
+        ),
+    )
+    value.add_argument(
+        "--android-package",
+        help="Explicit package used with --launch-game; otherwise profile/game mapping is used",
+    )
     value.add_argument("--camera-id")
     value.add_argument("--phone-serial")
     value.add_argument("--color-order", choices=("RGB", "BGR"), default="BGR")
@@ -392,7 +485,10 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--gui",
         action="store_true",
-        help="Show live frames; G/B/C toggles geometry and Q/Esc closes",
+        help=(
+            "Show live frames; G/B/C toggles geometry, O corrects game-up "
+            "from fresh ADB/HIK evidence, and Q/Esc closes"
+        ),
     )
     value.add_argument(
         "--no-rectify",
@@ -404,7 +500,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Wake the calibrated phone display for the GUI session and sleep it on exit",
     )
-    value.add_argument("--adb", default="adb", help="ADB executable used only for display power")
+    value.add_argument(
+        "--adb",
+        default="adb",
+        help="ADB executable used for display power and GUI O orientation correction",
+    )
     return value
 
 
@@ -469,6 +569,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.manage_phone_display and not arguments.gui:
         parser().error("--manage-phone-display requires --gui")
+    if arguments.launch_game and not arguments.gui:
+        parser().error("--launch-game requires --gui")
     if arguments.mask_policy != "none":
         if arguments.camera_library == "native":
             parser().error(
@@ -494,6 +596,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "--camera-library native does not identify a calibrated phone; "
                 "remove --manage-phone-display"
             )
+        if arguments.launch_game:
+            parser().error(
+                "--launch-game orientation composition requires --camera-library adapter"
+            )
+    if arguments.launch_game and arguments.diagnostic_calibration_override is not None:
+        parser().error(
+            "--launch-game requires automatic profile-managed adapter selection"
+        )
     if (
         arguments.diagnostic_calibration_override is not None
         and arguments.diagnostic_rig_game_profile_override is None
@@ -547,8 +657,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             configuration = json.loads(
                 arguments.diagnostic_calibration_override.read_text(encoding="utf-8")
             )
-        if arguments.manage_phone_display:
-            serial = str(configuration.get("phone", {}).get("serial", "")).strip()
+        if arguments.manage_phone_display or arguments.launch_game:
+            serial = str(
+                arguments.phone_serial
+                or (configuration or {}).get("phone", {}).get("serial", "")
+            ).strip()
             if serial:
                 try:
                     display = PhoneDisplayPowerSession(
@@ -572,6 +685,76 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         .format(exc),
                         flush=True,
                     )
+        if arguments.launch_game:
+            serial = str(
+                arguments.phone_serial
+                or (configuration or {}).get("phone", {}).get("serial", "")
+            ).strip()
+            if not serial:
+                raise RuntimeError(
+                    "--launch-game needs --phone-serial or a phone serial in the active rig"
+                )
+            phone = AdbPhoneSession(serial, adb_executable=arguments.adb)
+            profile_package = str(
+                (((getattr(camera, "resolved_config", {}).get("context") or {}).get(
+                    "game"
+                ) or {}).get("package") or "")
+            ).strip()
+            profile_game_id = str(
+                (((getattr(camera, "resolved_config", {}).get("context") or {}).get(
+                    "game"
+                ) or {}).get("id") or "")
+            ).strip()
+            explicit_package = arguments.android_package or profile_package or None
+            selected_game_id = (
+                arguments.game_id
+                or profile_game_id
+                or arguments.android_package
+            )
+            if not selected_game_id:
+                raise RuntimeError(
+                    "--launch-game needs a game selected by auto configuration, "
+                    "--game-id, or --android-package"
+                )
+            launch = launch_android_game(
+                phone,
+                selected_game_id,
+                explicit_package=explicit_package,
+            )
+            package = str(launch.get("package") or "").strip()
+            if not package:
+                raise RuntimeError(
+                    "No Android package is known for {!r}; pass --android-package"
+                    .format(arguments.game_id)
+                )
+            ready = wait_for_foreground_game_surface(phone, package)
+            compose = getattr(
+                camera, "correct_game_orientation_from_android_surface", None
+            )
+            if not callable(compose):
+                raise RuntimeError(
+                    "Loaded camera adapter does not support deterministic game orientation"
+                )
+            orientation = compose(
+                ready["surface"]["quarter_turns_clockwise_from_natural"],
+                foreground_package=ready["foreground_package"],
+            )
+            print(
+                "Game ready: {} at Android surface {} degrees; adapter game-up "
+                "is {} degrees clockwise from rig-calibration-display-up."
+                .format(
+                    ready["foreground_package"],
+                    int(ready["surface"][
+                        "quarter_turns_clockwise_from_natural"
+                    ]) * 90,
+                    int(orientation[
+                        "selected_camera_adapter_image_degrees_clockwise_from_calibration_display"
+                    ]),
+                ),
+                flush=True,
+            )
+            for warning in orientation.get("warnings") or []:
+                print("Orientation warning: {}".format(warning), flush=True)
         if camera is None:
             camera = open_camera(
                 arguments.diagnostic_calibration_override,
@@ -613,6 +796,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         windows = ["HIK {}".format(name) for name in stream_names]
         print(
             "Live {} stream opened. G toggles geometry, B boundary, C cursor; "
+            "O matches all four orientations against a fresh ADB screenshot; "
             "Q/Esc or close a window exits."
             .format(
                 arguments.mode
@@ -677,6 +861,74 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q"), ord("Q")):
                 return 0
+            if key in (ord("o"), ord("O")):
+                correction = getattr(camera, "correct_game_orientation", None)
+                if arguments.camera_library != "adapter" or not callable(correction):
+                    print(
+                        "Orientation correction unavailable: use the IRIS adapter, "
+                        "not the native HIK stream.",
+                        flush=True,
+                    )
+                elif "full" not in displayed:
+                    print(
+                        "Orientation correction needs the full stream; restart the "
+                        "demo with --mode full or --mode dual.",
+                        flush=True,
+                    )
+                else:
+                    serial = str(
+                        arguments.phone_serial
+                        or (configuration or {}).get("phone", {}).get("serial", "")
+                    ).strip()
+                    if not serial:
+                        print(
+                            "Orientation correction needs --phone-serial because "
+                            "the active rig calibration has no phone serial.",
+                            flush=True,
+                        )
+                    else:
+                        try:
+                            print(
+                                "Checking four game-up orientations from fresh "
+                                "ADB/HIK image evidence...",
+                                flush=True,
+                            )
+                            adb_image = capture_adb_screenshot(arguments.adb, serial)
+                            result = correction(adb_image, displayed["full"])
+                            if result.get("applied"):
+                                print(
+                                    "Game-up corrected to {} degrees clockwise "
+                                    "from calibration-display-up (confidence {:.3f}, "
+                                    "margin {:.3f}); rectification maps rebuilt."
+                                    .format(
+                                        int(result[
+                                            "selected_camera_adapter_image_degrees_clockwise_from_calibration_display"
+                                        ]),
+                                        float(result["selected_confidence"]),
+                                        float(result.get("confidence_margin") or 0.0),
+                                    ),
+                                    flush=True,
+                                )
+                            else:
+                                print(
+                                    "Game-up was not changed: image evidence is "
+                                    "ambiguous (confidence {:.3f}, margin {:.3f}; "
+                                    "required {:.3f}/{:.3f})."
+                                    .format(
+                                        float(result["selected_confidence"]),
+                                        float(result.get("confidence_margin") or 0.0),
+                                        float(result["preferred_confidence"]),
+                                        float(result["preferred_margin"]),
+                                    ),
+                                    flush=True,
+                                )
+                        except Exception as exc:
+                            print(
+                                "Orientation correction failed: {}: {}".format(
+                                    type(exc).__name__, exc
+                                ),
+                                flush=True,
+                            )
             message = geometry_overlay.handle_key(key)
             if message:
                 print(message, flush=True)

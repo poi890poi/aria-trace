@@ -24,7 +24,10 @@ from aria_trace.adapters.android.capture import (
     find_scrcpy_server,
 )
 from aria_trace.adapters.android.spaces import image_space_from_surface
-from aria_trace.adapters.android.game_launcher import launch_android_game
+from aria_trace.adapters.android.game_launcher import (
+    foreground_component,
+    launch_android_game,
+)
 from aria_trace.adapters.android.zigzag import AndroidZigzagInputSource, ZigzagTouchPlan
 from aria_trace.adapters.android.cursor_orbit import (
     AndroidCursorOrbitInputSource,
@@ -541,6 +544,34 @@ def _launch_or_defer_game(phone: AdbPhoneSession, arguments) -> dict:
     return result
 
 
+def _record_foreground_at_capture(
+    phone: AdbPhoneSession, game_launch: dict
+) -> dict:
+    """Record the actual resumed package immediately before acquisition."""
+
+    result = dict(game_launch)
+    try:
+        component = foreground_component(phone)
+    except Exception as exc:
+        result["foreground_probe_error"] = "{}: {}".format(
+            type(exc).__name__, exc
+        )
+        component = None
+    package = component.split("/", 1)[0] if component else None
+    expected = str(result.get("package") or "").strip() or None
+    result["foreground_at_capture"] = component
+    result["foreground_package_at_capture"] = package
+    if package and expected is None:
+        result["package"] = package
+        result["package_source"] = "adb_foreground_at_capture"
+    elif package and expected != package:
+        result["package_mismatch_warning"] = (
+            "Expected package {!r}, but {!r} was foreground when acquisition "
+            "started".format(expected, package)
+        )
+    return result
+
+
 def _session_game_label(game_id: Optional[str], android_package: Optional[str]) -> str:
     value = game_id or android_package or "unidentified-game"
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value).strip()).strip("-.")
@@ -638,17 +669,24 @@ def _run_control_only(arguments) -> int:
                 control.events_issued, control.expected_event_count
             )
         )
+    unit = (
+        "swipes"
+        if arguments.capture_mode == "zigzag"
+        else "touch events"
+    )
     print(
-        "{} control completed: {}/{} touch events.".format(
+        "{} control completed: {}/{} {}.".format(
             arguments.capture_mode,
-            control.events_issued, control.expected_event_count
+            control.events_issued,
+            control.expected_event_count,
+            unit,
         )
     )
     return 0
 
 
 class _AdbSettledScreenshotSource:
-    """Session descriptor for screenshots synchronously triggered by swipe UP."""
+    """Describe settled screenshots triggered after each completed control."""
 
     stream_id = "android_phone"
 
@@ -666,15 +704,18 @@ class _AdbSettledScreenshotSource:
         self.capture_count = 0
 
     def describe(self) -> dict:
+        completion_action = (
+            "SWIPE" if self.capture_mode == "zigzag" else "UP"
+        )
         return {
             "type": type(self).__name__,
             "stream_id": self.stream_id,
             "transport": "adb_exec_out_screencap_png",
             "scrcpy_used": False,
-            "trigger": "after_each_{}_touch_UP".format(
-                self.capture_mode.replace("-", "_")
+            "trigger": "after_each_{}_touch_{}".format(
+                self.capture_mode.replace("-", "_"), completion_action
             ),
-            "settle_seconds_after_up": self.settle_seconds,
+            "settle_seconds_after_control": self.settle_seconds,
             "lossless_pngs_retained": True,
             "preferred_frame_storage": "image_series",
             "preferred_image_format": "png",
@@ -815,12 +856,17 @@ def _record_adb_screenshot_zigzag(
         nonlocal orientation_match, orientation_images, output_image_turns
         nonlocal aligned_surface
         input_packets.append(packet)
-        if packet.kind != touch_kind or packet.payload.get("action") != "UP":
+        if packet.kind != touch_kind or packet.payload.get("action") not in (
+            "UP",
+            "SWIPE",
+        ):
             return
         stroke_index = int(packet.payload.get("point_index", len(captured_pairs)))
         if screenshot_settle_seconds:
             time.sleep(float(screenshot_settle_seconds))
-        trigger = "settled_after_{}_UP".format(touch_kind)
+        trigger = "settled_after_{}_{}".format(
+            touch_kind, packet.payload.get("action")
+        )
         if capture_mode in ("micro-movement", "cursor-orbit"):
             adb_packet, _raw_png = _capture_adb_screenshot_packet(
                 adb, serial, stroke_index, trigger=trigger
@@ -1011,8 +1057,11 @@ def _record_adb_screenshot_zigzag(
             "transport": "adb_exec_out_screencap_png",
             "scrcpy_used": False,
             "external_ffmpeg_used": False,
-            "trigger": "after_each_{}_UP".format(touch_kind),
-            "settle_seconds_after_up": float(screenshot_settle_seconds),
+            "trigger": "after_each_{}_{}".format(
+                touch_kind,
+                "SWIPE" if capture_mode == "zigzag" else "UP",
+            ),
+            "settle_seconds_after_control": float(screenshot_settle_seconds),
             "lossless_png_directory": "frames/android_phone",
             "lossless_png_space_metadata": "frames.jsonl#metadata.image_space",
             "adb_frame_storage": "lossless_png_image_series",
@@ -1242,6 +1291,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     preparation["game_booster_before_control"] = _dismiss_game_booster_lock(
         phone, adb, server, serial, [width, height]
     )
+    # The human checkpoint or app launch can change both the foreground package
+    # and logical orientation. The capture contract must describe this final
+    # state, and control coordinates must be rebuilt for it.
+    time.sleep(0.25)
+    game_launch = _record_foreground_at_capture(phone, game_launch)
+    surface = _phone_surface(adb, serial)
+    ready_width, ready_height = surface["logical_size_px"]
+    if [ready_width, ready_height] != [width, height]:
+        width, height = ready_width, ready_height
+        plan = _build_control_plan(arguments, width, height)
+        print(
+            "Game-ready Android surface changed to {}x{}; swipe coordinates "
+            "were rebuilt from the fresh surface.".format(width, height),
+            flush=True,
+        )
+    if game_launch.get("foreground_package_at_capture"):
+        print(
+            "Foreground package at acquisition: {}".format(
+                game_launch["foreground_package_at_capture"]
+            ),
+            flush=True,
+        )
+    if game_launch.get("package_mismatch_warning"):
+        print(
+            "Warning: {}".format(game_launch["package_mismatch_warning"]),
+            flush=True,
+        )
 
     if arguments.android_capture == "adb-screenshot":
         try:
@@ -1563,9 +1639,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if pending_path.is_dir():
             shutil.rmtree(str(pending_path))
         raise
+    unit = "swipe" if arguments.capture_mode == "zigzag" else "event"
     print(
-        "Captured {}-event {} with {}: {}".format(
+        "Captured {}-{} {} with {}: {}".format(
             control.expected_event_count,
+            unit,
             arguments.capture_mode,
             "ADB and HIK" if hik is not None else "ADB only",
             session_path.resolve(),

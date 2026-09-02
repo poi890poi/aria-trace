@@ -10,6 +10,25 @@ from aria_trace.apps import hik_stream as stream
 
 
 class HikStreamCliTests(unittest.TestCase):
+    def test_wait_for_game_surface_requires_stable_foreground_rotation(self):
+        phone = Mock()
+        phone.capture_surface.side_effect = [
+            {"quarter_turns_clockwise_from_natural": 0, "logical_size_px": [1080, 2400]},
+            {"quarter_turns_clockwise_from_natural": 1, "logical_size_px": [2400, 1080]},
+            {"quarter_turns_clockwise_from_natural": 1, "logical_size_px": [2400, 1080]},
+            {"quarter_turns_clockwise_from_natural": 1, "logical_size_px": [2400, 1080]},
+        ]
+        with patch.object(
+            stream,
+            "foreground_component",
+            return_value="org.example.game/.MainActivity",
+        ), patch.object(stream.time, "sleep"):
+            result = stream.wait_for_foreground_game_surface(
+                phone, "org.example.game", stable_probes=3
+            )
+        self.assertEqual(1, result["surface"]["quarter_turns_clockwise_from_natural"])
+        self.assertEqual("org.example.game", result["foreground_package"])
+
     def test_live_telemetry_reports_measured_fps_read_time_and_same_clock_age(self):
         telemetry = stream.LiveStreamTelemetry(history=4)
         telemetry.observe(
@@ -149,6 +168,13 @@ class HikStreamCliTests(unittest.TestCase):
             Path("profile.json"),
             arguments.diagnostic_rig_game_profile_override,
         )
+
+    def test_parser_accepts_automatic_game_launch_orientation(self):
+        arguments = stream.parser().parse_args(
+            ["--gui", "--launch-game", "--game-id", "game-1"]
+        )
+        self.assertTrue(arguments.launch_game)
+        self.assertEqual("game-1", arguments.game_id)
 
     def test_parser_accepts_precomposed_minimap_mask(self):
         arguments = stream.parser().parse_args(

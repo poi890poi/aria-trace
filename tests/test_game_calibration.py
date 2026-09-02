@@ -18,11 +18,32 @@ from aria_trace.services.calibration.minimap.discovery import (
 )
 from aria_trace.workflows.game_calibration import (
     _available_cursor_acquisition_series,
+    _touch_intervals,
     calibrate_game_session,
 )
 
 
 class GameCalibrationTests(unittest.TestCase):
+    def test_touch_intervals_accept_one_recorded_high_level_swipe(self):
+        class Reader:
+            inputs = [
+                {
+                    "kind": "zigzag_touch",
+                    "session_time_ns": 2_000_000_000,
+                    "payload": {
+                        "action": "SWIPE",
+                        "duration_ms": 350,
+                        "command_start_host_time_ns": 10,
+                        "command_end_host_time_ns": 350_000_010,
+                    },
+                }
+            ]
+
+        self.assertEqual(
+            [(1_650_000_000, 2_000_000_000)],
+            _touch_intervals(Reader()),
+        )
+
     def test_cursor_uses_boundary_profile_from_same_candidate_run(self):
         class Reader:
             manifest = {

@@ -134,6 +134,7 @@ class AndroidCursorOrbitInputSource(AndroidZigzagInputSource):
     touch_kind = "cursor_orbit_touch"
     error_kind = "cursor_orbit_control_error"
     thread_name = "android-cursor-orbit"
+    use_high_level_swipe = False
 
 
 class AndroidMicroMovementInputSource(AndroidCursorOrbitInputSource):

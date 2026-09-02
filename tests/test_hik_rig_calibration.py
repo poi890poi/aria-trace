@@ -2433,6 +2433,111 @@ class HikCompatibleFacadeTests(unittest.TestCase):
                     },
                 )
 
+    def test_runtime_orientation_correction_reopens_for_dense_map_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config_path(directory)
+            FakeFacadeReader.instances = []
+            camera = hikcam.HikCamera(
+                config={
+                    "diagnostic_calibration_override": path,
+                    "reader_factory": FakeFacadeReader,
+                    "color_order": "BGR",
+                }
+            )
+            camera.open()
+            with mock.patch(
+                "aria_trace.services.calibration.rig.cross_source."
+                "match_game_camera_orientation",
+                return_value=(
+                    {
+                        "status": "selected",
+                        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 1,
+                        "selected_camera_adapter_image_degrees_clockwise_from_calibration_display": 90,
+                        "selected_confidence": 0.9,
+                        "confidence_margin": 0.4,
+                        "preferred_confidence": 0.5,
+                        "preferred_margin": 0.08,
+                    },
+                    {},
+                ),
+            ):
+                result = camera.correct_game_orientation(
+                    np.zeros((2, 3, 3), np.uint8),
+                    np.zeros((2, 3, 3), np.uint8),
+                )
+            self.assertTrue(result["applied"])
+            self.assertTrue(result["adapter_reopened"])
+            self.assertEqual(1, camera._game_upright_turns)
+            self.assertEqual(2, len(FakeFacadeReader.instances))
+            self.assertTrue(FakeFacadeReader.instances[0].released)
+            self.assertTrue(FakeFacadeReader.instances[1].opened)
+            camera.close()
+
+    def test_runtime_orientation_correction_rejects_ambiguous_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config_path(directory)
+            FakeFacadeReader.instances = []
+            camera = hikcam.HikCamera(
+                config={
+                    "diagnostic_calibration_override": path,
+                    "reader_factory": FakeFacadeReader,
+                    "color_order": "BGR",
+                }
+            )
+            camera.open()
+            with mock.patch(
+                "aria_trace.services.calibration.rig.cross_source."
+                "match_game_camera_orientation",
+                return_value=(
+                    {
+                        "status": "selected_low_confidence",
+                        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 2,
+                        "selected_camera_adapter_image_degrees_clockwise_from_calibration_display": 180,
+                        "selected_confidence": 0.3,
+                        "confidence_margin": 0.01,
+                        "preferred_confidence": 0.5,
+                        "preferred_margin": 0.08,
+                    },
+                    {},
+                ),
+            ):
+                result = camera.correct_game_orientation(
+                    np.zeros((2, 3, 3), np.uint8),
+                    np.zeros((2, 3, 3), np.uint8),
+                )
+            self.assertFalse(result["applied"])
+            self.assertEqual(0, camera._game_upright_turns)
+            self.assertEqual(1, len(FakeFacadeReader.instances))
+            camera.close()
+
+    def test_android_surface_orientation_composes_with_saved_rig_relation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config_path(directory)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["phone"] = {"orientation_quarter_turns": 3}
+            path.write_text(json.dumps(document), encoding="utf-8")
+            FakeFacadeReader.instances = []
+            camera = hikcam.HikCamera(
+                config={
+                    "diagnostic_calibration_override": path,
+                    "reader_factory": FakeFacadeReader,
+                    "color_order": "BGR",
+                }
+            )
+            camera.open()
+            result = camera.correct_game_orientation_from_android_surface(
+                1, foreground_package="org.example.game"
+            )
+            self.assertEqual(2, camera._game_upright_turns)
+            self.assertEqual(
+                "foreground_game_android_surface_and_saved_rig_relation",
+                result["selection_basis"],
+            )
+            self.assertFalse(result["image_evidence_used"])
+            self.assertTrue(result["adapter_reopened"])
+            self.assertEqual(2, len(FakeFacadeReader.instances))
+            camera.close()
+
 
 if __name__ == "__main__":
     unittest.main()
