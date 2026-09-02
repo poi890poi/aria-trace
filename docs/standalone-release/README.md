@@ -193,7 +193,10 @@ game-color-calibration.bat sessions\calibration\SESSION
 ```
 
 The preferred game-level command automatically runs every capability supported
-by the session and skips unavailable ones without inventing results:
+by the session and skips unavailable ones without inventing results. A session
+with synchronized HIK images and its coordinate-space conversion also updates
+the portable phone-game color reference and active rig-specific game-color
+profile:
 
 ```bat
 game-calibration.bat sessions\calibration\SESSION --game-id GAME_ID
@@ -268,8 +271,17 @@ python-tools.bat profiles export-adapter my_hikcam.py --game-id genshin-impact -
 
 The optional `--mask-policy minimap_circle` adapter setting precomposes the
 verified fitted mini-map circle into the dense map and retains one remap per
-frame. Export every active portable game model, mini-map/cursor geometry, and
-phone-game color reference with:
+frame. In the GUI demo, enable it with:
+
+```bat
+camera-adapter-demo.bat --game-id GAME_ID --mode dual ^
+  --mask-policy minimap_circle --gui
+```
+
+Rectification must remain enabled. Press `G`, `B`, or `C` to toggle the
+display-only geometry overlay, boundary, or cursor respectively; these keys do
+not change masking or returned frames. Export every active portable game model,
+mini-map/cursor geometry, and phone-game color reference with:
 
 ```bat
 python-tools.bat profiles export-deployment iris-games.zip

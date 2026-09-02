@@ -100,7 +100,10 @@ python -m iris_tools game-calibration SESSION --game-id GAME_ID
 ```
 
 The workflow uses the available, space-tagged evidence and skips calibration
-that cannot be supported by the session. Cursor evidence is optional: a
+that cannot be supported by the session. When synchronized HIK images and their
+space conversion are present, the same command also calibrates and activates
+the portable phone-game color reference and the rig-specific game-color
+profile. Cursor evidence is optional: a
 rotating series fits the rotation center, rotating envelope diameter, and
 shape; a static series fits only the observable shape/span unless a verified
 center already exists; both series may accumulate into the same active
@@ -220,11 +223,15 @@ with hikcam.HikCamera(config={
     frames = camera.get_frames()
     phone_frame = frames["full"]
     minimap_frame = frames["minimap"]
+    boundary = camera.get_minimap_geometry("minimap")
     cursor = camera.get_cursor_geometry("minimap")
     game_model = camera.get_game_model()
 ```
 
-`get_cursor_geometry()` reports canonical spatial geometry and, when a verified
+`get_minimap_geometry()` reports the fitted outer boundary in canonical phone
+space and, for a rectified runtime stream, a space-tagged center and ellipse
+size suitable for rendering on that exact frame. `get_cursor_geometry()`
+reports canonical spatial geometry and, when a verified
 rotation center exists, its center and rotating-envelope diameter in the
 selected runtime stream space. Static-only calibration reports the observed
 static span but explicitly leaves the rotation center unavailable.
@@ -248,8 +255,22 @@ python -m iris_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --color-policy game_matched --gui
 
 python -m iris_tools camera-adapter-demo `
+  --game-id GAME_ID --mode dual --mask-policy minimap_circle --gui
+
+python -m iris_tools camera-adapter-demo `
   --camera-library native --camera-id CAMERA_ID --gui
 ```
+
+The calibrated GUI draws the mini-map boundary in cyan and the cursor rotation
+center/envelope in magenta. Press `G` to toggle all geometry, `B` to toggle only
+the boundary, and `C` to toggle only cursor geometry. These are display-only
+overlays; returned camera frames are unchanged. FPS is a rolling average and
+the telemetry label refreshes twice per second so it remains readable.
+
+Mini-map masking requires an active mini-map profile, `--mode minimap` or
+`--mode dual`, and rectification (the default; do not pass `--no-rectify`). It
+is an adapter output policy, not a GUI overlay: off-circle pixels in the
+mini-map stream are black, while the full stream in dual mode remains intact.
 
 The adapter resolves profiles once when it opens. It does not wake, unlock,
 touch, launch applications on, or power-manage the phone during ordinary

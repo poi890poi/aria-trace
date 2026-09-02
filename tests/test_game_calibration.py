@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -17,10 +18,85 @@ from aria_trace.services.calibration.minimap.discovery import (
 )
 from aria_trace.workflows.game_calibration import (
     _available_cursor_acquisition_series,
+    calibrate_game_session,
 )
 
 
 class GameCalibrationTests(unittest.TestCase):
+    def test_synchronized_hik_session_runs_and_activates_game_color_calibration(self):
+        class Reader:
+            manifest = {"status": "complete", "context": {"game_id": "game"}}
+            frames_by_stream = {
+                "android_phone": [{"frame_index": 0}],
+                "hik_phone": [{"frame_index": 0}],
+            }
+            inputs = []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session"
+            session.mkdir()
+            (session / "coordinate_spaces.yaml").write_text(
+                "schema_version: '1.0'\n", encoding="utf-8"
+            )
+            output = root / "output"
+            color_result = {
+                "status": "accepted",
+                "profile_revision": "rig-game-color-revision",
+            }
+            with mock.patch(
+                "aria_trace.workflows.game_calibration.SessionReader",
+                return_value=Reader(),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.load_system_configuration",
+                return_value={
+                    "game": {"game_id": "game"},
+                    "devices": {"phone_id": None, "camera_id": None},
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.resolve_game_model",
+                return_value={
+                    "cursor_follows": "character",
+                    "cursor_behavior_by_acquisition": {
+                        "zigzag": "static",
+                        "micro_movement": "rotating",
+                    },
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.calibrate_game_orientation_session",
+                side_effect=ValueError("not relevant"),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
+                side_effect=ValueError("not relevant"),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.calibrate_game_color_session",
+                return_value=color_result,
+            ) as color_calibration:
+                result = calibrate_game_session(
+                    session,
+                    output,
+                    profile_root=root / "profiles",
+                    game_id="game",
+                    activate=True,
+                )
+
+            color_calibration.assert_called_once_with(
+                session.resolve(),
+                output.resolve() / "color",
+                profile_root=(root / "profiles").resolve(),
+                game_id="game",
+                maximum_pairs=12,
+                activate=True,
+                phone_game_revision=None,
+            )
+            self.assertEqual(
+                "accepted", result["capabilities"]["game_color"]["status"]
+            )
+            self.assertEqual(
+                "rig-game-color-revision",
+                result["capabilities"]["game_color"]["profile_revision"],
+            )
+
     def test_cursor_series_classification_describes_input_not_cursor_behavior(self):
         class Reader:
             manifest = {
