@@ -448,6 +448,8 @@ def calibrate_game_session(
     maximum_pairs: int = 12,
     discovery_config: Optional[Mapping[str, object]] = None,
     activate: bool = True,
+    include_color: bool = False,
+    activate_color: bool = False,
 ) -> Mapping[str, object]:
     """Run independent game capabilities, skipping only unavailable inputs."""
 
@@ -652,9 +654,17 @@ def calibrate_game_session(
             rig_dependency=None,
         )
 
-    if not (session / "coordinate_spaces.yaml").is_file() or not reader.frames_by_stream.get("hik_phone"):
+    if not include_color:
         capabilities["game_color"] = _outcome(
-            "skipped_missing_or_ineligible_data",
+            "optional_not_requested",
+            reason=(
+                "Locked rig imaging and HIK auto white balance remain active; "
+                "pass --include-color to produce an optional reviewed fit"
+            ),
+        )
+    elif not (session / "coordinate_spaces.yaml").is_file() or not reader.frames_by_stream.get("hik_phone"):
+        capabilities["game_color"] = _outcome(
+            "optional_skipped_missing_data",
             reason="Synchronized ADB/HIK space conversion is unavailable",
         )
     else:
@@ -665,16 +675,17 @@ def calibrate_game_session(
                 profile_root=registry.root,
                 game_id=selected_game,
                 maximum_pairs=maximum_pairs,
-                activate=activate,
+                activate=bool(activate and activate_color),
                 phone_game_revision=current_phone_game_revision,
             )
         except (ValueError, FileNotFoundError) as exc:
             capabilities["game_color"] = _outcome(
-                "skipped_missing_or_ineligible_data", reason=str(exc)
+                "optional_skipped_ineligible_data", reason=str(exc)
             )
         except Exception as exc:
             capabilities["game_color"] = _outcome(
-                "failed", error="{}: {}".format(type(exc).__name__, exc)
+                "optional_failed_non_gating",
+                error="{}: {}".format(type(exc).__name__, exc),
             )
         else:
             capabilities["game_color"] = _outcome(
@@ -722,11 +733,23 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--maximum-pairs", type=int, default=12)
     value.add_argument("--discovery-config", type=Path)
     value.add_argument("--candidate", action="store_true")
+    value.add_argument(
+        "--include-color",
+        action="store_true",
+        help="fit optional HIK/ADB game color; locked rig auto-WB is the default",
+    )
+    value.add_argument(
+        "--activate-color",
+        action="store_true",
+        help="activate an accepted optional color fit (requires --include-color)",
+    )
     return value
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
+    if arguments.activate_color and not arguments.include_color:
+        raise ValueError("--activate-color requires --include-color")
     registry = ProfileRegistry(arguments.profile_root)
     settings = load_system_configuration(arguments.profile_root)
     game_id = arguments.game_id or settings["game"].get("game_id")
@@ -743,6 +766,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         maximum_pairs=arguments.maximum_pairs,
         discovery_config=discovery,
         activate=not arguments.candidate,
+        include_color=arguments.include_color,
+        activate_color=arguments.activate_color,
     )
     print("Game calibration: {}".format(Path(output).resolve()))
     for name, outcome in result["capabilities"].items():

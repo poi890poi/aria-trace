@@ -196,6 +196,8 @@ class GameCalibrationTests(unittest.TestCase):
                     profile_root=root / "profiles",
                     game_id="game",
                     activate=True,
+                    include_color=True,
+                    activate_color=True,
                 )
 
             color_calibration.assert_called_once_with(
@@ -214,6 +216,60 @@ class GameCalibrationTests(unittest.TestCase):
                 "rig-game-color-revision",
                 result["capabilities"]["game_color"]["profile_revision"],
             )
+
+    def test_color_is_not_run_or_gating_by_default(self):
+        class Reader:
+            manifest = {"status": "complete", "context": {"game_id": "game"}}
+            frames_by_stream = {
+                "android_phone": [{"frame_index": 0}],
+                "hik_phone": [{"frame_index": 0}],
+            }
+            inputs = []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session"
+            session.mkdir()
+            output = root / "output"
+            with mock.patch(
+                "aria_trace.workflows.game_calibration.SessionReader",
+                return_value=Reader(),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.load_system_configuration",
+                return_value={
+                    "game": {"game_id": "game"},
+                    "devices": {"phone_id": None, "camera_id": None},
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.resolve_game_model",
+                return_value={
+                    "cursor_follows": "character",
+                    "cursor_behavior_by_acquisition": {
+                        "zigzag": "static",
+                        "micro_movement": "rotating",
+                    },
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.calibrate_portable_game_orientation_session",
+                side_effect=ValueError("not relevant"),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
+                side_effect=ValueError("not relevant"),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.calibrate_game_color_session"
+            ) as color_calibration:
+                result = calibrate_game_session(
+                    session,
+                    output,
+                    profile_root=root / "profiles",
+                    game_id="game",
+                )
+            color_calibration.assert_not_called()
+            self.assertEqual(
+                "optional_not_requested",
+                result["capabilities"]["game_color"]["status"],
+            )
+            self.assertNotIn("game_color", result["successful_capabilities"])
 
     def test_portable_orientation_uses_android_space_metadata_without_rig(self):
         class Reader:
