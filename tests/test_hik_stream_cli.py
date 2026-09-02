@@ -10,6 +10,36 @@ from aria_trace.apps import hik_stream as stream
 
 
 class HikStreamCliTests(unittest.TestCase):
+    @staticmethod
+    def _gui_camera(*, open_error=None, fail_once=False):
+        class FakeCamera:
+            def __init__(self, config=None):
+                self.config = dict(config or {})
+                self.config["minimap_calibration"] = "profile.json"
+                self.calibration = {"phone": {"serial": "PHONE-1"}}
+                self.resolved_config = {
+                    "context": {"game": {"id": "game-1", "package": "game.pkg"}},
+                    "adapter_plan": {"mode": self.config.get("mode", "full")},
+                }
+                self.is_open = False
+                self.open_calls = 0
+                self.released = False
+
+            def open(self):
+                self.open_calls += 1
+                if open_error is not None and (not fail_once or self.open_calls == 1):
+                    raise open_error
+                self.is_open = True
+                return self
+
+            def get_frame(self):
+                return np.zeros((20, 30, 3), np.uint8)
+
+            def release(self):
+                self.released = True
+
+        return FakeCamera
+
     def test_wait_for_game_surface_requires_stable_foreground_rotation(self):
         phone = Mock()
         phone.capture_surface.side_effect = [
@@ -274,6 +304,95 @@ class HikStreamCliTests(unittest.TestCase):
             )
         opener.assert_called_once_with("DA9066154", "MVS/MvImport")
         source.stop.assert_called_once_with()
+
+    def test_game_launch_failure_skips_orientation_and_still_opens_gui_stream(self):
+        camera_class = self._gui_camera()
+        display = Mock(last_error=None)
+        with patch.object(
+            stream, "adapter_hik_camera_class", return_value=camera_class
+        ), patch.object(
+            stream, "PhoneDisplayPowerSession", return_value=display
+        ), patch.object(
+            stream, "launch_android_game", side_effect=RuntimeError("game asleep")
+        ), patch.object(stream.cv2, "namedWindow"), patch.object(
+            stream.cv2, "imshow"
+        ), patch.object(
+            stream.cv2, "waitKey", return_value=ord("q")
+        ), patch.object(stream.cv2, "destroyAllWindows"):
+            result = stream.main(
+                ["--gui", "--launch-game", "--game-id", "game-1"]
+            )
+        self.assertEqual(0, result)
+        display.open.assert_called_once_with()
+        display.close.assert_called_once_with(turn_display_off=True)
+
+    def test_failed_demo_startup_does_not_turn_phone_display_off(self):
+        camera_class = self._gui_camera(open_error=RuntimeError("camera failed"))
+        display = Mock(last_error=None)
+        with patch.object(
+            stream, "adapter_hik_camera_class", return_value=camera_class
+        ), patch.object(
+            stream, "PhoneDisplayPowerSession", return_value=display
+        ):
+            with self.assertRaisesRegex(RuntimeError, "camera failed"):
+                stream.main(["--gui", "--manage-phone-display"])
+        display.close.assert_called_once_with(turn_display_off=False)
+
+    def test_minimap_roi_failure_falls_back_to_full_gui_stream(self):
+        camera_class = self._gui_camera(
+            open_error=stream.MinimapRoiUnavailableError("outside sensor"),
+            fail_once=True,
+        )
+        instances = []
+
+        class RecordingCamera(camera_class):
+            def __init__(self, config=None):
+                super().__init__(config)
+                instances.append(self)
+
+        with patch.object(
+            stream, "adapter_hik_camera_class", return_value=RecordingCamera
+        ), patch.object(stream.cv2, "namedWindow"), patch.object(
+            stream.cv2, "imshow"
+        ), patch.object(
+            stream.cv2, "waitKey", return_value=ord("q")
+        ), patch.object(stream.cv2, "destroyAllWindows"):
+            result = stream.main(["--gui", "--mode", "minimap", "--game-id", "game-1"])
+        self.assertEqual(0, result)
+        self.assertEqual(2, instances[0].open_calls)
+        self.assertEqual("full", instances[0].config["mode"])
+
+    def test_diagnostic_minimap_roi_failure_also_falls_back_to_full_stream(self):
+        camera = self._gui_camera()({"mode": "full"})
+        camera.is_open = True
+        with patch.object(
+            stream,
+            "open_camera",
+            side_effect=[
+                stream.MinimapRoiUnavailableError("outside sensor"),
+                camera,
+            ],
+        ) as opener, patch.object(stream.json, "loads", return_value={}), patch.object(
+            stream.Path, "read_text", return_value="{}"
+        ), patch.object(stream.cv2, "namedWindow"), patch.object(
+            stream.cv2, "imshow"
+        ), patch.object(
+            stream.cv2, "waitKey", return_value=ord("q")
+        ), patch.object(stream.cv2, "destroyAllWindows"):
+            result = stream.main(
+                [
+                    "--gui",
+                    "--mode",
+                    "minimap",
+                    "--diagnostic-calibration-override",
+                    "rig.json",
+                    "--diagnostic-rig-game-profile-override",
+                    "game.json",
+                ]
+            )
+        self.assertEqual(0, result)
+        self.assertEqual(2, opener.call_count)
+        self.assertEqual("full", opener.call_args_list[1][1]["mode"])
 
     def test_legacy_positional_paths_are_obsolete(self):
         with self.assertRaises(SystemExit):

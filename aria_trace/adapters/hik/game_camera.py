@@ -33,6 +33,10 @@ from .driver import (
 PathLike = Union[str, Path]
 
 
+class MinimapRoiUnavailableError(RuntimeError):
+    """The calibrated mini-map cannot be acquired from the current rig view."""
+
+
 def _load_json(value: PathLike, names: Sequence[str]) -> tuple[Path, dict]:
     path = Path(value)
     if path.is_dir():
@@ -173,6 +177,7 @@ class ProfiledHikGameCamera:
         apply_game_color: bool = True,
         bayer_conversion: Optional[Mapping[str, object]] = None,
         output_quarter_turns_clockwise: int = 0,
+        runtime_surface_quarter_turns_clockwise_from_natural: Optional[int] = None,
         mask_policy: str = "none",
     ) -> None:
         if mode not in self.MODES:
@@ -198,6 +203,11 @@ class ProfiledHikGameCamera:
         self.output_quarter_turns_clockwise = (
             int(output_quarter_turns_clockwise) % 4
         )
+        self.runtime_surface_quarter_turns_clockwise_from_natural = (
+            int(runtime_surface_quarter_turns_clockwise_from_natural) % 4
+            if runtime_surface_quarter_turns_clockwise_from_natural is not None
+            else None
+        )
         self.mask_policy = str(mask_policy)
         if self.mask_policy not in ("none", "minimap_circle"):
             raise ValueError("Mask policy must be none or minimap_circle")
@@ -221,6 +231,7 @@ class ProfiledHikGameCamera:
         self._minimap_map_y: Optional[np.ndarray] = None
         self._minimap_in_full_xywh: Optional[list[int]] = None
         self._screen_crop_xywh: Optional[list[int]] = None
+        self._screen_crop_selection: Dict[str, object] = {}
         self._normalization_origin_xy = (0.0, 0.0)
         self._screen_units_per_output_pixel_xy = (1.0, 1.0)
         self._minimap_mask_precomposed = False
@@ -228,7 +239,7 @@ class ProfiledHikGameCamera:
         self._upright_to_base_minimap = np.eye(3, dtype=np.float64)
         self._last_stream_metadata: Dict[str, Mapping[str, object]] = {}
 
-    def _screen_crop(self) -> list[int]:
+    def _base_screen_crop(self) -> list[int]:
         crop = _source_crop_to_canonical_phone(self.minimap)
         phone_size = self.rig.get("phone", {}).get("natural_screen_size_px")
         if phone_size is None:
@@ -261,6 +272,90 @@ class ProfiledHikGameCamera:
                     )
                 )
         return crop
+
+    def _phone_natural_size(self) -> Optional[list[int]]:
+        phone_size = self.rig.get("phone", {}).get("natural_screen_size_px")
+        if phone_size is None:
+            phone_size = self.rig.get("phone", {}).get("natural_size_px")
+        if phone_size is None:
+            phone_size = self.rig.get("normalization", {}).get("phone_size_px")
+        return list(map(int, phone_size)) if phone_size is not None else None
+
+    def _screen_crop_candidates(self) -> list[dict]:
+        """Express the saved game crop at each possible Android surface turn.
+
+        Android rotation telemetry is useful as an ordering hint, not proof: an
+        app or compatibility layer can render in a differently transformed
+        surface. The hardware-ROI projection therefore evaluates all four
+        quarter-turn hypotheses and keeps the deterministic one first.
+        """
+
+        base = self._base_screen_crop()
+        natural_size = self._phone_natural_size()
+        if natural_size is None:
+            return [{"xywh": base, "surface_quarter_turns": None, "preferred": True}]
+        natural_width, natural_height = natural_size
+        stored_surface = self.minimap.get("phone_surface_orientation") or {}
+        stored_turns = int(
+            stored_surface.get("quarter_turns_clockwise_from_natural", 0)
+            if isinstance(stored_surface, Mapping)
+            else 0
+        ) % 4
+        preferred_turns = (
+            self.runtime_surface_quarter_turns_clockwise_from_natural
+            if self.runtime_surface_quarter_turns_clockwise_from_natural is not None
+            else stored_turns
+        )
+        matrices = (
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            [[0, -1, natural_height], [1, 0, 0], [0, 0, 1]],
+            [[-1, 0, natural_width], [0, -1, natural_height], [0, 0, 1]],
+            [[0, 1, 0], [-1, 0, natural_width], [0, 0, 1]],
+        )
+        source_to_logical = np.asarray(matrices[stored_turns], dtype=np.float64)
+        candidates = []
+        for turns in [preferred_turns] + [
+            value for value in range(4) if value != preferred_turns
+        ]:
+            candidate_to_logical = np.asarray(matrices[turns], dtype=np.float64)
+            matrix = np.linalg.inv(candidate_to_logical).dot(source_to_logical)
+            x, y, width, height = base
+            corners = np.asarray(
+                [
+                    [x, y, 1.0],
+                    [x + width, y, 1.0],
+                    [x + width, y + height, 1.0],
+                    [x, y + height, 1.0],
+                ],
+                dtype=np.float64,
+            )
+            mapped = (matrix.dot(corners.T)).T
+            mapped = mapped[:, :2] / mapped[:, 2:3]
+            left = int(round(float(np.min(mapped[:, 0]))))
+            top = int(round(float(np.min(mapped[:, 1]))))
+            right = int(round(float(np.max(mapped[:, 0]))))
+            bottom = int(round(float(np.max(mapped[:, 1]))))
+            crop = [left, top, right - left, bottom - top]
+            phone_bounds_valid = not (
+                crop[0] < 0
+                or crop[1] < 0
+                or crop[2] <= 0
+                or crop[3] <= 0
+                or crop[0] + crop[2] > natural_width
+                or crop[1] + crop[3] > natural_height
+            )
+            candidates.append(
+                {
+                    "xywh": crop,
+                    "surface_quarter_turns": turns,
+                    "preferred": turns == preferred_turns,
+                    "phone_bounds_valid": phone_bounds_valid,
+                }
+            )
+        return candidates
+
+    def _screen_crop(self) -> list[int]:
+        return list(self._screen_crop_xywh or self._base_screen_crop())
 
     def _sensor_size(self) -> list[int]:
         camera = self.rig["camera"]
@@ -513,30 +608,96 @@ class ProfiledHikGameCamera:
         )
         try:
             self._apply_locked_imaging()
-            screen_crop = self._screen_crop()
-            self._screen_crop_xywh = list(screen_crop)
             coordinate_schema = int(
                 (self.rig.get("coordinate_spaces") or {}).get("schema_version", 0)
             )
             lens_model = (self.rig.get("optics") or {}).get("lens_model") or {}
-            if coordinate_schema >= 3:
-                requested_minimap_roi = distorted_screen_region_roi(
-                    self._sensor_size(),
-                    screen_crop,
-                    self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
-                    lens_model,
-                    margin_px=self.minimap_margin_px,
+            candidates = self._screen_crop_candidates()
+            screen_crop = list(candidates[0]["xywh"])
+            if self.mode != "full":
+                valid_candidates = []
+                failures = []
+                for candidate in candidates:
+                    if not candidate.get("phone_bounds_valid", True):
+                        failures.append(
+                            {
+                                "surface_quarter_turns": candidate[
+                                    "surface_quarter_turns"
+                                ],
+                                "crop_xywh": list(candidate["xywh"]),
+                                "reason": "candidate crop is outside the canonical phone raster",
+                            }
+                        )
+                        continue
+                    try:
+                        if coordinate_schema >= 3:
+                            requested = distorted_screen_region_roi(
+                                self._sensor_size(),
+                                candidate["xywh"],
+                                self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
+                                lens_model,
+                                margin_px=self.minimap_margin_px,
+                            )
+                        else:
+                            requested = camera_roi_for_screen_region(
+                                candidate["xywh"],
+                                self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
+                                self._sensor_size(),
+                                margin_px=self.minimap_margin_px,
+                            )
+                    except RuntimeError as exc:
+                        failures.append(
+                            {
+                                "surface_quarter_turns": candidate[
+                                    "surface_quarter_turns"
+                                ],
+                                "crop_xywh": list(candidate["xywh"]),
+                                "reason": str(exc),
+                            }
+                        )
+                        continue
+                    valid_candidates.append((candidate, list(requested)))
+                if not valid_candidates:
+                    raise MinimapRoiUnavailableError(
+                        "No mini-map crop from the four Android/game orientation "
+                        "hypotheses intersects the calibrated HIK sensor: {}"
+                        .format(failures)
+                    )
+                selected, requested_minimap_roi = next(
+                    (
+                        item
+                        for item in valid_candidates
+                        if bool(item[0].get("preferred"))
+                    ),
+                    max(
+                        valid_candidates,
+                        key=lambda item: int(item[1][2]) * int(item[1][3]),
+                    ),
                 )
+                screen_crop = list(selected["xywh"])
+                self._minimap_sensor_roi = list(
+                    self.adapter.align_roi(requested_minimap_roi)
+                )
+                self._screen_crop_selection = {
+                    "status": (
+                        "deterministic_orientation_intersection"
+                        if selected.get("preferred")
+                        else "four_orientation_intersection_fallback"
+                    ),
+                    "selected_surface_quarter_turns": selected[
+                        "surface_quarter_turns"
+                    ],
+                    "evaluated_candidates": len(candidates),
+                    "valid_candidates": len(valid_candidates),
+                    "failed_candidates": failures,
+                }
             else:
-                requested_minimap_roi = camera_roi_for_screen_region(
-                    screen_crop,
-                    self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
-                    self._sensor_size(),
-                    margin_px=self.minimap_margin_px,
-                )
-            self._minimap_sensor_roi = list(
-                self.adapter.align_roi(requested_minimap_roi)
-            )
+                self._minimap_sensor_roi = None
+                self._screen_crop_selection = {
+                    "status": "not_required_for_full_stream",
+                    "evaluated_candidates": 0,
+                }
+            self._screen_crop_xywh = list(screen_crop)
             requested_roi = (
                 self._minimap_sensor_roi
                 if self.mode == "minimap"
@@ -598,25 +759,26 @@ class ProfiledHikGameCamera:
                     raise RuntimeError(
                         "Distortion-corrected HIK game stream requires its dense remap"
                     )
-                mini_x, mini_y, mini_width, mini_height = self._minimap_in_full_xywh
-                if (
-                    mini_x < 0
-                    or mini_y < 0
-                    or mini_x + mini_width > self._full_map_x.shape[1]
-                    or mini_y + mini_height > self._full_map_x.shape[0]
-                ):
-                    raise ValueError(
-                        "Mini-map crop {} exceeds the saved dense rectification map"
-                        .format(self._minimap_in_full_xywh)
-                    )
-                self._minimap_map_x = self._full_map_x[
-                    mini_y : mini_y + mini_height,
-                    mini_x : mini_x + mini_width,
-                ]
-                self._minimap_map_y = self._full_map_y[
-                    mini_y : mini_y + mini_height,
-                    mini_x : mini_x + mini_width,
-                ]
+                if self.mode != "full":
+                    mini_x, mini_y, mini_width, mini_height = self._minimap_in_full_xywh
+                    if (
+                        mini_x < 0
+                        or mini_y < 0
+                        or mini_x + mini_width > self._full_map_x.shape[1]
+                        or mini_y + mini_height > self._full_map_x.shape[0]
+                    ):
+                        raise MinimapRoiUnavailableError(
+                            "Mini-map crop {} exceeds the saved dense rectification map"
+                            .format(self._minimap_in_full_xywh)
+                        )
+                    self._minimap_map_x = self._full_map_x[
+                        mini_y : mini_y + mini_height,
+                        mini_x : mini_x + mini_width,
+                    ]
+                    self._minimap_map_y = self._full_map_y[
+                        mini_y : mini_y + mini_height,
+                        mini_x : mini_x + mini_width,
+                    ]
             if self.rectify_minimap and self.output_quarter_turns_clockwise:
                 turns = self.output_quarter_turns_clockwise
                 base_full_size = self._full_size
@@ -637,21 +799,22 @@ class ProfiledHikGameCamera:
                 elif self._full_matrix is not None:
                     self._full_matrix = full_rotation.dot(self._full_matrix)
 
-                minimap_rotation, self._minimap_size = quarter_turn_output_geometry(
-                    self._minimap_size, turns
-                )
-                self._upright_to_base_minimap = np.linalg.inv(minimap_rotation)
-                if self._minimap_map_x is not None:
-                    self._minimap_map_x = rotate_quarter_turns_clockwise(
-                        self._minimap_map_x, turns
+                if self.mode != "full":
+                    minimap_rotation, self._minimap_size = quarter_turn_output_geometry(
+                        self._minimap_size, turns
                     )
-                    self._minimap_map_y = rotate_quarter_turns_clockwise(
-                        self._minimap_map_y, turns
-                    )
-                elif self._minimap_matrix is not None:
-                    self._minimap_matrix = minimap_rotation.dot(
-                        self._minimap_matrix
-                    )
+                    self._upright_to_base_minimap = np.linalg.inv(minimap_rotation)
+                    if self._minimap_map_x is not None:
+                        self._minimap_map_x = rotate_quarter_turns_clockwise(
+                            self._minimap_map_x, turns
+                        )
+                        self._minimap_map_y = rotate_quarter_turns_clockwise(
+                            self._minimap_map_y, turns
+                        )
+                    elif self._minimap_matrix is not None:
+                        self._minimap_matrix = minimap_rotation.dot(
+                            self._minimap_matrix
+                        )
             elif self.output_quarter_turns_clockwise:
                 turns = self.output_quarter_turns_clockwise
                 self._upright_to_base_full = np.linalg.inv(
@@ -660,15 +823,16 @@ class ProfiledHikGameCamera:
                         turns,
                     )[0]
                 )
-                self._upright_to_base_minimap = np.linalg.inv(
-                    quarter_turn_output_geometry(
-                        (
-                            int(self._minimap_sensor_roi[2]),
-                            int(self._minimap_sensor_roi[3]),
-                        ),
-                        turns,
-                    )[0]
-                )
+                if self._minimap_sensor_roi is not None:
+                    self._upright_to_base_minimap = np.linalg.inv(
+                        quarter_turn_output_geometry(
+                            (
+                                int(self._minimap_sensor_roi[2]),
+                                int(self._minimap_sensor_roi[3]),
+                            ),
+                            turns,
+                        )[0]
+                    )
             self._precompose_minimap_mask()
             self._opened = True
         except Exception:
@@ -773,7 +937,14 @@ class ProfiledHikGameCamera:
                 self.rectify_minimap and self.mode != "minimap"
             ),
             "acquisition_roi_xywh": list(self._effective_roi),
-            "minimap_sensor_roi_xywh": list(self._minimap_sensor_roi),
+            "minimap_sensor_roi_xywh": (
+                list(self._minimap_sensor_roi)
+                if self._minimap_sensor_roi is not None
+                else None
+            ),
+            "minimap_crop_orientation_selection": copy.deepcopy(
+                self._screen_crop_selection
+            ),
             "full_output_normalized_by_base_rig": bool(
                 self.rectify_minimap and self.mode != "minimap"
             ),
@@ -982,4 +1153,8 @@ class ProfiledHikGameCamera:
         self.release()
 
 
-__all__ = ["HikGameFrameSet", "ProfiledHikGameCamera"]
+__all__ = [
+    "HikGameFrameSet",
+    "MinimapRoiUnavailableError",
+    "ProfiledHikGameCamera",
+]

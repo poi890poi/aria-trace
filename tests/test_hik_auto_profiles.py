@@ -121,6 +121,7 @@ class HikAutoProfileTests(unittest.TestCase):
                 minimap_margin_px=12,
                 apply_game_color=False,
                 output_quarter_turns_clockwise=0,
+                runtime_surface_quarter_turns_clockwise_from_natural=None,
                 mask_policy="none",
             )
 

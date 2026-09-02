@@ -407,6 +407,48 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(["full"], list(frame_set.streams))
         self.assertEqual([0, 0, 100, 80], adapter.roi)
 
+    def test_full_mode_never_gates_on_unprojectable_minimap_crop(self):
+        document = rig_document()
+        document["geometry"]["screen_to_full_sensor_camera_3x3"] = [
+            [1, 0, -200], [0, 1, 0], [0, 0, 1]
+        ]
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        adapter = FakeAdapter()
+        camera = self.camera("full", False, adapter).open()
+        frame_set = camera.read_streams()
+        self.assertEqual(["full"], list(frame_set.streams))
+        self.assertEqual([0, 0, 100, 80], adapter.roi)
+        self.assertEqual(
+            "not_required_for_full_stream",
+            frame_set.metadata["minimap_crop_orientation_selection"]["status"],
+        )
+
+    def test_minimap_roi_tries_all_surface_orientations_after_preferred_misses(self):
+        document = rig_document()
+        document["geometry"]["screen_to_full_sensor_camera_3x3"] = [
+            [1, 0, -50], [0, 1, 0], [0, 0, 1]
+        ]
+        document["geometry"]["full_sensor_camera_to_screen_3x3"] = [
+            [1, 0, 50], [0, 1, 0], [0, 0, 1]
+        ]
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        adapter = FakeAdapter()
+        camera = ProfiledHikGameCamera(
+            self.rig_path,
+            self.minimap_path,
+            mode="minimap",
+            rectify_minimap=False,
+            minimap_margin_px=0,
+            runtime_surface_quarter_turns_clockwise_from_natural=0,
+            adapter=adapter,
+        ).open()
+        frame_set = camera.read_streams()
+        selection = frame_set.metadata["minimap_crop_orientation_selection"]
+        self.assertEqual("four_orientation_intersection_fallback", selection["status"])
+        self.assertEqual(2, selection["selected_surface_quarter_turns"])
+        self.assertEqual(4, selection["evaluated_candidates"])
+        self.assertEqual([10, 40, 30, 20], adapter.roi)
+
     def test_bayer_color_match_is_set_once_at_open_not_per_frame(self):
         document = {
             "canonical_phone_crop_xywh": [10, 20, 30, 20],

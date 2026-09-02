@@ -20,7 +20,10 @@ from aria_trace.apps.rig_presentation import console_print as print
 from aria_trace.adapters.hik.compat import Camera, HikCamera
 from aria_trace.adapters.hik.capture import NativeHikFrameSource
 from aria_trace.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
-from aria_trace.adapters.hik.game_camera import ProfiledHikGameCamera
+from aria_trace.adapters.hik.game_camera import (
+    MinimapRoiUnavailableError,
+    ProfiledHikGameCamera,
+)
 from aria_trace.adapters.android.phone import AdbPhoneSession
 from aria_trace.adapters.android.phone import resolve_adb_executable
 from aria_trace.adapters.android.game_launcher import (
@@ -398,11 +401,12 @@ class PhoneDisplayPowerSession:
             self.last_error = str(exc)
         return self
 
-    def close(self) -> None:
+    def close(self, *, turn_display_off: bool = True) -> None:
         if not self._opened:
             return
         try:
-            self.phone.shell("input", "keyevent", "KEYCODE_SLEEP")
+            if turn_display_off:
+                self.phone.shell("input", "keyevent", "KEYCODE_SLEEP")
         except Exception as exc:
             self.last_error = str(exc)
         finally:
@@ -624,6 +628,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     display = None
     camera = None
     windows = []
+    stream_started = False
+    effective_mode = arguments.mode
     try:
         if arguments.camera_library == "native":
             camera = open_native_mvs_source(
@@ -686,91 +692,146 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         flush=True,
                     )
         if arguments.launch_game:
-            serial = str(
-                arguments.phone_serial
-                or (configuration or {}).get("phone", {}).get("serial", "")
-            ).strip()
-            if not serial:
-                raise RuntimeError(
-                    "--launch-game needs --phone-serial or a phone serial in the active rig"
+            try:
+                serial = str(
+                    arguments.phone_serial
+                    or (configuration or {}).get("phone", {}).get("serial", "")
+                ).strip()
+                if not serial:
+                    raise RuntimeError(
+                        "no phone serial is available from --phone-serial or the active rig"
+                    )
+                phone = AdbPhoneSession(serial, adb_executable=arguments.adb)
+                profile_package = str(
+                    (((getattr(camera, "resolved_config", {}).get("context") or {}).get(
+                        "game"
+                    ) or {}).get("package") or "")
+                ).strip()
+                profile_game_id = str(
+                    (((getattr(camera, "resolved_config", {}).get("context") or {}).get(
+                        "game"
+                    ) or {}).get("id") or "")
+                ).strip()
+                explicit_package = arguments.android_package or profile_package or None
+                selected_game_id = (
+                    arguments.game_id
+                    or profile_game_id
+                    or arguments.android_package
                 )
-            phone = AdbPhoneSession(serial, adb_executable=arguments.adb)
-            profile_package = str(
-                (((getattr(camera, "resolved_config", {}).get("context") or {}).get(
-                    "game"
-                ) or {}).get("package") or "")
-            ).strip()
-            profile_game_id = str(
-                (((getattr(camera, "resolved_config", {}).get("context") or {}).get(
-                    "game"
-                ) or {}).get("id") or "")
-            ).strip()
-            explicit_package = arguments.android_package or profile_package or None
-            selected_game_id = (
-                arguments.game_id
-                or profile_game_id
-                or arguments.android_package
-            )
-            if not selected_game_id:
-                raise RuntimeError(
-                    "--launch-game needs a game selected by auto configuration, "
-                    "--game-id, or --android-package"
+                if not selected_game_id:
+                    raise RuntimeError(
+                        "no game is selected by auto configuration, --game-id, "
+                        "or --android-package"
+                    )
+                launch = launch_android_game(
+                    phone,
+                    selected_game_id,
+                    explicit_package=explicit_package,
                 )
-            launch = launch_android_game(
-                phone,
-                selected_game_id,
-                explicit_package=explicit_package,
-            )
-            package = str(launch.get("package") or "").strip()
-            if not package:
-                raise RuntimeError(
-                    "No Android package is known for {!r}; pass --android-package"
-                    .format(arguments.game_id)
+                package = str(launch.get("package") or "").strip()
+                if not package:
+                    raise RuntimeError(
+                        "no Android package is known for {!r}; pass --android-package"
+                        .format(selected_game_id)
+                    )
+                ready = wait_for_foreground_game_surface(phone, package)
+                compose = getattr(
+                    camera, "correct_game_orientation_from_android_surface", None
                 )
-            ready = wait_for_foreground_game_surface(phone, package)
-            compose = getattr(
-                camera, "correct_game_orientation_from_android_surface", None
-            )
-            if not callable(compose):
-                raise RuntimeError(
-                    "Loaded camera adapter does not support deterministic game orientation"
+                if not callable(compose):
+                    raise RuntimeError(
+                        "the loaded camera adapter has no Android-surface "
+                        "orientation composition function"
+                    )
+                orientation = compose(
+                    ready["surface"]["quarter_turns_clockwise_from_natural"],
+                    foreground_package=ready["foreground_package"],
                 )
-            orientation = compose(
-                ready["surface"]["quarter_turns_clockwise_from_natural"],
-                foreground_package=ready["foreground_package"],
-            )
-            print(
-                "Game ready: {} at Android surface {} degrees; adapter game-up "
-                "is {} degrees clockwise from rig-calibration-display-up."
-                .format(
-                    ready["foreground_package"],
-                    int(ready["surface"][
-                        "quarter_turns_clockwise_from_natural"
-                    ]) * 90,
-                    int(orientation[
-                        "selected_camera_adapter_image_degrees_clockwise_from_calibration_display"
-                    ]),
-                ),
-                flush=True,
-            )
-            for warning in orientation.get("warnings") or []:
-                print("Orientation warning: {}".format(warning), flush=True)
+                print(
+                    "Game ready: {} at Android surface {} degrees; adapter game-up "
+                    "is {} degrees clockwise from rig-calibration-display-up."
+                    .format(
+                        ready["foreground_package"],
+                        int(ready["surface"][
+                            "quarter_turns_clockwise_from_natural"
+                        ]) * 90,
+                        int(orientation[
+                            "selected_camera_adapter_image_degrees_clockwise_from_calibration_display"
+                        ]),
+                    ),
+                    flush=True,
+                )
+                for warning in orientation.get("warnings") or []:
+                    print("Orientation warning: {}".format(warning), flush=True)
+            except Exception as exc:
+                print(
+                    "Game preparation/orientation skipped: {}: {}. The demo will "
+                    "continue with the saved adapter orientation; press O later "
+                    "for four-orientation ADB/HIK image verification."
+                    .format(type(exc).__name__, exc),
+                    flush=True,
+                )
         if camera is None:
-            camera = open_camera(
-                arguments.diagnostic_calibration_override,
-                arguments.mvs_python_path,
-                rectify=not arguments.no_rectify,
-                diagnostic_rig_game_profile_override=(
-                    arguments.diagnostic_rig_game_profile_override
-                ),
-                mode=arguments.mode,
-                color_order=arguments.color_order,
-                color_policy=arguments.color_policy,
-                minimap_margin_px=arguments.minimap_margin_px,
-                mask_policy=arguments.mask_policy,
-            )
+            try:
+                camera = open_camera(
+                    arguments.diagnostic_calibration_override,
+                    arguments.mvs_python_path,
+                    rectify=not arguments.no_rectify,
+                    diagnostic_rig_game_profile_override=(
+                        arguments.diagnostic_rig_game_profile_override
+                    ),
+                    mode=arguments.mode,
+                    color_order=arguments.color_order,
+                    color_policy=arguments.color_policy,
+                    minimap_margin_px=arguments.minimap_margin_px,
+                    mask_policy=arguments.mask_policy,
+                )
+            except MinimapRoiUnavailableError as exc:
+                if arguments.mode == "full" or arguments.camera_library != "adapter":
+                    raise
+                print(
+                    "Mini-map ROI unavailable after checking all four game "
+                    "orientations: {}. Continuing the demo with the full "
+                    "rig-calibrated phone stream; mini-map output is skipped."
+                    .format(exc),
+                    flush=True,
+                )
+                camera = open_camera(
+                    arguments.diagnostic_calibration_override,
+                    arguments.mvs_python_path,
+                    rectify=not arguments.no_rectify,
+                    diagnostic_rig_game_profile_override=(
+                        arguments.diagnostic_rig_game_profile_override
+                    ),
+                    mode="full",
+                    color_order=arguments.color_order,
+                    color_policy=arguments.color_policy,
+                    minimap_margin_px=arguments.minimap_margin_px,
+                    mask_policy="none",
+                )
+                effective_mode = "full"
         elif arguments.camera_library == "adapter" and not camera.is_open:
-            camera.open()
+            try:
+                camera.open()
+            except MinimapRoiUnavailableError as exc:
+                if arguments.mode == "full":
+                    raise
+                print(
+                    "Mini-map ROI unavailable after checking all four game "
+                    "orientations: {}. Continuing the demo with the full "
+                    "rig-calibrated phone stream; mini-map output is skipped."
+                    .format(exc),
+                    flush=True,
+                )
+                camera.config["mode"] = "full"
+                adapter_plan = getattr(camera, "resolved_config", {}).get(
+                    "adapter_plan"
+                )
+                if isinstance(adapter_plan, dict):
+                    adapter_plan["mode"] = "full"
+                camera.open()
+                effective_mode = "full"
+        stream_started = True
         if not arguments.gui:
             label = (
                 "Native Hikrobot MVS stream"
@@ -790,8 +851,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         stream_names = (
             ["full", "minimap"]
-            if profiled and arguments.mode == "dual"
-            else [arguments.mode if profiled else "full"]
+            if profiled and effective_mode == "dual"
+            else [effective_mode if profiled else "full"]
         )
         windows = ["HIK {}".format(name) for name in stream_names]
         print(
@@ -799,7 +860,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "O matches all four orientations against a fresh ADB screenshot; "
             "Q/Esc or close a window exits."
             .format(
-                arguments.mode
+                effective_mode
                 if profiled
                 else (
                     "native Hikrobot MVS"
@@ -816,7 +877,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         while True:
             read_started_ns = time.perf_counter_ns()
             native_packet = None
-            if profiled and arguments.mode == "dual":
+            if profiled and effective_mode == "dual":
                 if hasattr(camera, "get_frames"):
                     displayed = camera.get_frames()
                 else:
@@ -950,8 +1011,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 except cv2.error:
                     pass
             if display is not None:
-                print("Turning off Android display.", flush=True)
-                display.close()
+                if stream_started:
+                    print("Turning off Android display.", flush=True)
+                else:
+                    print(
+                        "Demo startup did not complete; leaving Android display "
+                        "power unchanged.",
+                        flush=True,
+                    )
+                display.close(turn_display_off=stream_started)
 
 
 if __name__ == "__main__":

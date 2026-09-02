@@ -253,6 +253,14 @@ class HikCamera:
         self._game_upright_turns = int(
             self.config.get("game_upright_quarter_turns_clockwise", 0)
         ) % 4
+        runtime_surface_turns = self.config.get(
+            "runtime_surface_quarter_turns_clockwise_from_natural"
+        )
+        self._runtime_surface_turns = (
+            int(runtime_surface_turns) % 4
+            if runtime_surface_turns is not None
+            else None
+        )
         if self._color_order not in ("RGB", "BGR"):
             raise ValueError("config['color_order'] must be RGB or BGR")
         imaging = self.calibration["imaging"]
@@ -380,6 +388,9 @@ class HikCamera:
                 "minimap_margin_px": int(self.config.get("minimap_margin_px", 6)),
                 "apply_game_color": use_game_color,
                 "output_quarter_turns_clockwise": self._game_upright_turns,
+                "runtime_surface_quarter_turns_clockwise_from_natural": (
+                    self._runtime_surface_turns
+                ),
                 "mask_policy": str(self.config.get("mask_policy", "none")),
             }
             if game_color:
@@ -602,6 +613,19 @@ class HikCamera:
             result["application_status"] = "not_applied_ambiguous_image_evidence"
             return result
 
+        phone = dict(self.calibration.get("phone") or {})
+        viewer = dict(phone.get("viewer") or {})
+        rig_display_turns = int(
+            phone.get(
+                "orientation_quarter_turns",
+                viewer.get("canonical_orientation_quarter_turns", 0),
+            )
+        ) % 4
+        self._runtime_surface_turns = (rig_display_turns + selected_turns) % 4
+        self.config[
+            "runtime_surface_quarter_turns_clockwise_from_natural"
+        ] = self._runtime_surface_turns
+
         application = self._apply_game_orientation_turns(selected_turns)
         result["applied"] = True
         result.update(application)
@@ -656,6 +680,10 @@ class HikCamera:
             )
         ) % 4
         selected_turns = (surface_turns - rig_display_turns) % 4
+        self._runtime_surface_turns = surface_turns
+        self.config[
+            "runtime_surface_quarter_turns_clockwise_from_natural"
+        ] = surface_turns
         expected_package = str(
             (((self.resolved_config.get("context") or {}).get("game") or {}).get(
                 "package"
