@@ -1804,6 +1804,29 @@ class HikPhoneTests(unittest.TestCase):
             metrics.to_dict()["physical_pixel_pitch_mm_xy"][0], 25.4 / 406.4
         )
 
+    def test_display_manager_rotation_overrides_stale_input_orientation(self):
+        class GameRotationRunner(FakeAdbRunner):
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:3] == ["shell", "dumpsys", "input"]:
+                    self.commands.append(args)
+                    return "SurfaceOrientation: 0"
+                if args[:3] == ["shell", "dumpsys", "display"]:
+                    self.commands.append(args)
+                    return (
+                        "mCurrentOrientation=0 "
+                        "mOverrideDisplayInfo=DisplayInfo{real 2400 x 1080, "
+                        "rotation 1, app 2400 x 1080, state ON} "
+                        "mActiveSfDisplayMode=DisplayMode{refreshRate=120.0}"
+                    )
+                return super().__call__(command, timeout)
+
+        metrics = AdbPhoneSession(
+            "SERIAL-1", runner=GameRotationRunner(), sleeper=lambda _seconds: None
+        ).metrics()
+        self.assertEqual([2400, 1080], metrics.screen_size_px)
+        self.assertEqual(1, metrics.orientation_quarter_turns)
+
 
 class FakeRectifiedAdapter:
     def __init__(self, image):

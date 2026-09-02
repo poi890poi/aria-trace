@@ -115,8 +115,9 @@ python -m iris_tools zigzag-acquisition `
   --require-hik
 ```
 
-Every diagonal stroke defaults to 20% of the landscape display height on both
-axes (216 px horizontally and vertically on a 2400x1080 game raster).
+Every diagonal stroke defaults to 10% of the current game-display width
+horizontally and 20% of its height vertically (240x216 px on a 2400x1080 game
+raster). It starts at `(72% width, 50% height)` and lasts 120 ms.
 Override either distance independently with
 `--horizontal-swipe-distance-px PX` or `--vertical-swipe-distance-px PX`.
 

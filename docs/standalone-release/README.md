@@ -255,8 +255,9 @@ To collect the session without running scrcpy, use:
 zigzag-acquisition.bat --android-capture adb-screenshot --require-hik
 ```
 
-Swipe distances default to 20% of landscape display height on both axes
-(216 px horizontally and vertically at 2400x1080). Use
+Swipe distances default to 10% of the current game-display width horizontally
+and 20% of its height vertically (240x216 px at 2400x1080). Each 120 ms swipe
+starts at `(72% width, 50% height)`. Use
 `--horizontal-swipe-distance-px PX` and `--vertical-swipe-distance-px PX` to
 override them independently.
 

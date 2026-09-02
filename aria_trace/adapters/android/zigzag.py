@@ -28,7 +28,7 @@ class ZigzagTouchPlan:
     end_x: int
     vertical_amplitude_px: int
     move_count: int = 12
-    step_seconds: float = 0.35
+    step_seconds: float = 0.12
     settle_seconds: float = 1.0
     reset_seconds: float = 0.10
     move_sample_hz: float = 22.0

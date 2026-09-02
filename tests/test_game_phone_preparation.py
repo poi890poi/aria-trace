@@ -98,9 +98,10 @@ class GamePhonePreparationTests(unittest.TestCase):
     def test_swipe_distance_defaults_are_device_scaled(self):
         arguments = capture.parser().parse_args([])
         plan = capture._build_zigzag_plan(arguments, 2400, 1080)
-        self.assertEqual([1320, 540], plan.start_xy)
-        self.assertEqual(1104, plan.end_x)
+        self.assertEqual([1728, 540], plan.start_xy)
+        self.assertEqual(1488, plan.end_x)
         self.assertEqual(216, plan.vertical_amplitude_px)
+        self.assertEqual(0.12, plan.step_seconds)
 
     def test_swipe_distances_can_be_overridden_in_pixels(self):
         arguments = capture.parser().parse_args(
@@ -112,8 +113,8 @@ class GamePhonePreparationTests(unittest.TestCase):
             ]
         )
         plan = capture._build_zigzag_plan(arguments, 2400, 1080)
-        self.assertEqual([1320, 540], plan.start_xy)
-        self.assertEqual(1000, plan.end_x)
+        self.assertEqual([1728, 540], plan.start_xy)
+        self.assertEqual(1408, plan.end_x)
         self.assertEqual(600, plan.vertical_amplitude_px)
 
     def test_swipe_distance_override_must_fit_the_display(self):

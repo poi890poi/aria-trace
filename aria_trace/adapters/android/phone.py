@@ -418,10 +418,22 @@ class AdbPhoneSession:
 
     @staticmethod
     def _orientation_from_dumpsys(input_text: str, display_text: str) -> int:
-        orientation_match = re.search(r"SurfaceOrientation:\s*([0-3])", input_text)
+        # DisplayManager's current override is the raster actually exposed to
+        # screenshots and foreground apps.  Some vendor builds leave
+        # InputReader's SurfaceOrientation stale while a landscape-only game is
+        # active, so it is a fallback rather than the primary source.
+        orientation_match = re.search(
+            r"mOverrideDisplayInfo=.*?\brotation\s+([0-3])\b",
+            display_text,
+            re.DOTALL,
+        )
         if orientation_match is None:
             orientation_match = re.search(
                 r"mCurrentOrientation=([0-3])", display_text
+            )
+        if orientation_match is None:
+            orientation_match = re.search(
+                r"SurfaceOrientation:\s*([0-3])", input_text
             )
         if orientation_match is None:
             orientation_match = re.search(r"\brotation\s+([0-3])\b", display_text)

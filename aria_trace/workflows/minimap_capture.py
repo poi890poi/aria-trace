@@ -346,8 +346,8 @@ def parser() -> argparse.ArgumentParser:
         type=_positive_pixel_distance,
         metavar="PX",
         help=(
-            "horizontal distance of every diagonal swipe; default is 20%% "
-            "of the landscape display height (216 px at 2400x1080)"
+            "horizontal distance of every diagonal swipe; default is 10%% "
+            "of the current game-display width (240 px at 2400x1080)"
         ),
     )
     value.add_argument(
@@ -359,7 +359,12 @@ def parser() -> argparse.ArgumentParser:
             "of the landscape display height (216 px at 2400x1080)"
         ),
     )
-    value.add_argument("--step-seconds", type=float, default=0.35)
+    value.add_argument(
+        "--step-seconds",
+        type=float,
+        default=0.12,
+        help="duration of each long diagonal swipe (default: 0.12)",
+    )
     value.add_argument("--reset-seconds", type=float, default=0.10)
     value.add_argument("--settle-seconds", type=float, default=1.5)
     value.add_argument("--tail-seconds", type=float, default=1.5)
@@ -423,7 +428,7 @@ def parser() -> argparse.ArgumentParser:
 def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
     horizontal_distance = getattr(arguments, "horizontal_swipe_distance_px", None)
     if horizontal_distance is None:
-        horizontal_distance = round(height * 0.20)
+        horizontal_distance = round(width * 0.10)
     vertical_distance = getattr(arguments, "vertical_swipe_distance_px", None)
     if vertical_distance is None:
         vertical_distance = round(height * 0.20)
@@ -433,9 +438,10 @@ def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
         raise ValueError("Horizontal swipe distance must be positive")
     if vertical_distance <= 0:
         raise ValueError("Vertical swipe distance must be positive")
-    # Start on the typical unobstructed look-control surface. A right-side
-    # action cluster can consume DOWN before the camera handler sees it.
-    start_x = round(width * 0.55)
+    # The game receives Android input in its current logical display raster.
+    # Anchor on the right-center look-control surface, away from the movement
+    # joystick and common edge gestures.
+    start_x = round(width * 0.72)
     horizon_y = round(height * 0.50)
     upper_y = horizon_y - round(vertical_distance / 2.0)
     lower_y = upper_y + vertical_distance
@@ -460,7 +466,7 @@ def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
         settle_seconds=arguments.settle_seconds,
         reset_seconds=arguments.reset_seconds,
     )
-    plan.sampled_strokes()
+    plan.strokes()
     return plan
 
 
