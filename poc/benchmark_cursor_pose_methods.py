@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
+import platform
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -34,6 +38,31 @@ from aria_trace.services.calibration.minimap.verification import (
 
 DEFAULT_SESSIONS = ("run_03", "run_04", "run_12", "run_13")
 DEVELOPMENT_SESSIONS = frozenset(("run_03", "run_04"))
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_output(*arguments):
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(Path(__file__).resolve().parents[1]), *arguments),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip()
 
 
 def _percentile(values, percentile):
@@ -532,6 +561,7 @@ def _aggregate(rows, expected_by_split):
                 "pose_produced_count": len(method_rows),
                 "expected_count": expected,
                 "pose_production_rate": float(len(method_rows) / expected),
+                "mean_abs_error_deg": float(np.mean(errors)),
                 "median_abs_error_deg": float(np.median(errors)),
                 "p95_abs_error_deg": _percentile(errors, 95),
                 "latency": _timing(timings),
@@ -590,45 +620,63 @@ def _write_report(path, result):
         "travel vector over a multi-second window. Input logs are used only to verify "
         "forward control and absence of camera motion. End-to-end motion remains an audit.",
         "",
-        "## Holdout results",
+        "## Holdout method ranking",
         "",
-        "| Method | Pose produced | Median error | p95 error | Median ms | p95 ms | Decision |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "Errors are mean / median / P95. No worst value is reported here because "
+        "this is a sampled method layer, not a complete chronological E2E output.",
+        "",
     ]
     for row in aggregate:
-        lines.append(
-            "| {method} | {fresh:.1%} | {median:.2f}° | {p95:.2f}° | "
-            "{latency:.3f} | {latency95:.3f} | {decision} |".format(
-                method=row["method"],
-                fresh=row["pose_production_rate"],
-                median=row["median_abs_error_deg"],
-                p95=row["p95_abs_error_deg"],
-                latency=row["latency"]["median_ms"],
-                latency95=row["latency"]["p95_ms"],
-                decision=result["decisions"].get(row["method"], ""),
-            )
+        lines.extend(
+            [
+                "### {}".format(row["method"]),
+                "",
+                "- Group: {}".format(row["group"]),
+                "- Pose produced: {:.1%}".format(row["pose_production_rate"]),
+                "- Error: {:.2f} / {:.2f} / {:.2f} deg".format(
+                    row["mean_abs_error_deg"],
+                    row["median_abs_error_deg"],
+                    row["p95_abs_error_deg"],
+                ),
+                "- Latency: {:.3f} / {:.3f} ms median / P95".format(
+                    row["latency"]["median_ms"], row["latency"]["p95_ms"]
+                ),
+                "- Decision: {}".format(
+                    result["decisions"].get(row["method"], "")
+                ),
+                "",
+            ]
         )
     lines.extend(
         [
-            "",
             "## Reference audit",
             "",
-            "| Session | Split | Travel angle | Shift | Response | Inputs |",
-            "|---|---|---:|---:|---:|---|",
         ]
     )
     for session, reference in result["references"].items():
         audit = reference["input_audit"]
-        lines.append(
-            "| {} | {} | {:.2f}° | {:.2f}px | {:.3f} | keys {}; mouse events {} |".format(
-                session,
-                "development" if session in DEVELOPMENT_SESSIONS else "holdout",
-                reference["travel_angle_screen_deg"],
-                reference["map_content_shift_magnitude_px"],
-                reference["phase_correlation_response"],
-                ",".join(audit["keys"]),
-                audit["event_kinds"].get("pc_raw_mouse", 0),
-            )
+        lines.extend(
+            [
+                "### {}".format(session),
+                "",
+                "- Split: {}".format(
+                    "development" if session in DEVELOPMENT_SESSIONS else "holdout"
+                ),
+                "- Travel angle: {:.2f} deg".format(
+                    reference["travel_angle_screen_deg"]
+                ),
+                "- Shift: {:.2f} px".format(
+                    reference["map_content_shift_magnitude_px"]
+                ),
+                "- Correlation response: {:.3f}".format(
+                    reference["phase_correlation_response"]
+                ),
+                "- Input keys: {}".format(", ".join(audit["keys"])),
+                "- Mouse events: {}".format(
+                    audit["event_kinds"].get("pc_raw_mouse", 0)
+                ),
+                "",
+            ]
         )
     lines.extend(
         [
@@ -1304,12 +1352,54 @@ def run(
         "references": references,
         "sample_references": sample_references,
         "aggregate": aggregates,
+        "provenance": {
+            "git_revision": _git_output("rev-parse", "HEAD"),
+            "git_branch": _git_output("branch", "--show-current"),
+            "tested_source_dirty": bool(
+                _git_output(
+                    "status", "--porcelain", "--", "poc/benchmark_cursor_pose_methods.py"
+                )
+            ),
+            "benchmark_source_sha256": _sha256(Path(__file__).resolve()),
+            "pose_source_sha256": _sha256(
+                Path(sys.modules[CursorPoseEstimator.__module__].__file__).resolve()
+            ),
+            "environment": {
+                "python": sys.version,
+                "python_executable": sys.executable,
+                "platform": platform.platform(),
+                "opencv": cv2.__version__,
+                "numpy": np.__version__,
+            },
+        },
     }
     result["decisions"] = _decisions(aggregates)
     (output_path / "results.json").write_text(
         json.dumps(result, indent=2), encoding="utf-8"
     )
     _write_csv(output_path / "measurements.csv", rows)
+    (output_path / "method_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "git_revision": result["provenance"]["git_revision"],
+                "benchmark_source_sha256": result["provenance"][
+                    "benchmark_source_sha256"
+                ],
+                "methods": [
+                    {
+                        "method_id": row["method"],
+                        "group": row["group"],
+                        "implementation_file": str(Path(__file__).resolve()),
+                    }
+                    for row in aggregates
+                    if row["split"] == "holdout"
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     _write_report(output_path / "REPORT.md", result)
     return result
 

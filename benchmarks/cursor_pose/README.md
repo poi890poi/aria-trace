@@ -81,12 +81,13 @@ solution then has exactly one action: publish unavailable (`reject`), reuse the
 previous accepted state (`hold`), or extrapolate the last two accepted states
 (`predict`). There is no chained filter or fallback-of-fallback.
 
-The default comparison contains the current confidence+hold solution and
-strict-gate/reject/predict negative controls. The human report shows only the
-currently validated complete solution; negative-control rows remain in
-machine-readable results for traceability. `fast_strict_hold`
-and `accurate_strict_hold` are optional named experiments, not default report
-rows. There is no profile/fallback Cartesian product.
+The default matrix is orthogonal: accurate/real-time/fast estimator profiles
+use the same confidence+hold policy; confidence-only and strict temporal gates
+use the same real-time estimator and hold policy; hold/predict/unavailable use
+the same real-time estimator and confidence-only gate. The human summary can
+therefore attribute each change to one layer. Negative controls remain in
+machine-readable results for traceability. There is no unrestricted Cartesian
+product.
 
 Natural confidence decisions are the authoritative acceptance/rejection result.
 Deterministic outage scenarios hide the same otherwise accepted frames for every
@@ -103,7 +104,7 @@ Every run writes:
 - `primary_measurements.csv`: raw estimator results before fallback;
 - `e2e_rows.csv`: every published state, provenance, label, and error;
 - `results.json`: machine-readable aggregates and environment provenance; and
-- `REPORT.md`: review-oriented tables and definitions.
+- `REPORT.md`: narrow-screen result cards and definitions.
 
 `results.json` records the Git revision and separately records whether any
 tested source is dirty. A run with `tested_source_dirty=true` is diagnostic and
@@ -130,3 +131,16 @@ $python = '.tools\standalone-release-py31210\Scripts\python.exe'
 Use repeated `--solution NAME` arguments to restrict the complete solutions.
 Video hashing is enabled by default;
 `--skip-video-hash` is only for a quick local diagnostic.
+
+After running the experimental method screen and this chronological E2E
+benchmark, combine them without merging their different evidence semantics:
+
+```powershell
+& $python -m benchmarks.cursor_pose.build_layered_report `
+  artifacts\poc\cursor-pose-method-screen\results.json `
+  artifacts\poc\cursor-pose-e2e\results.json `
+  artifacts\poc\cursor-pose-layered-report
+```
+
+The combined `REPORT.md` is phone-readable. `layered_results.json` preserves
+the compared rows and hashes both authoritative source result files.

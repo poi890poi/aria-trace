@@ -50,17 +50,11 @@ OUTAGE_SCENARIOS = {
     "three_frame_burst_every_90": {"period_frames": 90, "burst_frames": 3},
 }
 SOLUTION_CONFIGS = {
-    "realtime_confidence_hold_baseline": {
+    "realtime_confidence_hold": {
         "profile": "real-time",
         "fallback_strategy": "reuse_previous_state",
         "temporal_outlier_gate": False,
         "report_role": "current_solution",
-    },
-    "realtime_strict_reject": {
-        "profile": "real-time",
-        "fallback_strategy": "no_fallback",
-        "temporal_outlier_gate": True,
-        "report_role": "experiment",
     },
     "realtime_strict_hold": {
         "profile": "real-time",
@@ -68,30 +62,38 @@ SOLUTION_CONFIGS = {
         "temporal_outlier_gate": True,
         "report_role": "experiment",
     },
-    "realtime_strict_predict": {
+    "realtime_confidence_predict": {
         "profile": "real-time",
         "fallback_strategy": "constant_velocity_last_2_accepted",
-        "temporal_outlier_gate": True,
+        "temporal_outlier_gate": False,
         "report_role": "experiment",
     },
-    "fast_strict_hold": {
+    "realtime_confidence_reject": {
+        "profile": "real-time",
+        "fallback_strategy": "no_fallback",
+        "temporal_outlier_gate": False,
+        "report_role": "experiment",
+    },
+    "fast_confidence_hold": {
         "profile": "fast",
         "fallback_strategy": "reuse_previous_state",
-        "temporal_outlier_gate": True,
+        "temporal_outlier_gate": False,
         "report_role": "experiment",
     },
-    "accurate_strict_hold": {
+    "accurate_confidence_hold": {
         "profile": "accurate",
         "fallback_strategy": "reuse_previous_state",
-        "temporal_outlier_gate": True,
+        "temporal_outlier_gate": False,
         "report_role": "experiment",
     },
 }
 DEFAULT_SOLUTIONS = (
-    "realtime_confidence_hold_baseline",
+    "realtime_confidence_hold",
     "realtime_strict_hold",
-    "realtime_strict_reject",
-    "realtime_strict_predict",
+    "realtime_confidence_predict",
+    "realtime_confidence_reject",
+    "fast_confidence_hold",
+    "accurate_confidence_hold",
 )
 
 
@@ -585,150 +587,153 @@ def _format_number(value: Optional[float], suffix: str = "") -> str:
 
 def _write_report(path: Path, result: dict) -> None:
     selected = [row for row in result["aggregate"] if row["split"] == "holdout"]
-    main_rows = [row for row in selected if row["report_role"] == "current_solution"]
-    natural_by_role = {
-        row["report_role"]: row
-        for row in main_rows
-        if row["outage_scenario"] == "natural"
+    lookup = {
+        (row["solution"], row["outage_scenario"]): row for row in selected
     }
+
+    def add_result(lines, label, row):
+        if row is None:
+            lines.extend(["### {}".format(label), "", "Not run.", ""])
+            return
+        error = row["e2e_absolute_error_deg"]
+        lines.extend(
+            [
+                "### {}".format(label),
+                "",
+                "- Candidate: {}".format(
+                    _format_percent(row["primary_candidate_produced_rate"])
+                ),
+                "- Accepted fresh: {}".format(
+                    _format_percent(row["primary_measurement_accepted_rate"])
+                ),
+                "- Held: {}".format(
+                    _format_percent(row["output_provenance_rate"]["held"])
+                ),
+                "- Available: {}".format(
+                    _format_percent(row["final_output_available_rate"])
+                ),
+                "- Error mean / median: {} / {}".format(
+                    _format_number(error["mean"], " deg"),
+                    _format_number(error["median"], " deg"),
+                ),
+                "- Error P95 / worst: {} / {}".format(
+                    _format_number(error["p95"], " deg"),
+                    _format_number(error["worst"], " deg"),
+                ),
+                "- Median latency: {}".format(
+                    _format_number(row["e2e_latency_ms"]["median"], " ms")
+                ),
+                "",
+            ]
+        )
+
     lines = [
-        "# Cursor pose causal E2E benchmark",
+        "# Cursor pose layered comparison",
         "",
-        "This report measures the complete estimator-to-published-state chain on "
-        "chronological frames. The whole-session E2E motion reference is evaluator-only; "
-        "fallbacks receive past measurements only.",
+        "Holdout frames are chronological. Each section changes one layer only.",
         "",
-        "The current complete solution has two decisions: a one-frame pose candidate, "
-        "then the profile confidence gate. A rejected measurement does not update "
-        "state; publication reuses the previous accepted state.",
+        "## Layer 1 — estimator profile",
         "",
-        "## Rate definitions",
+        "Gate is confidence-only. Publication is previous-state hold.",
         "",
-        "- **Primary candidate produced rate**: frames where the first-layer one-frame "
-        "estimator produced a pose / all attempted frames.",
-        "- **Final measurement accepted rate**: candidates passing the complete "
-        "solution's final acceptance decision / all attempted frames. The current "
-        "solution uses confidence; experimental controls may add temporal checks.",
-        "- **Final measurement rejected rate**: candidates rejected by that final "
-        "decision / all attempted frames. It complements final accepted.",
-        "- **Fallback invocation rate**: frames passed to the fallback because the "
-        "primary measurement was rejected / all attempted frames.",
-        "- **Fallback output success rate**: held or predicted outputs / fallback "
-        "invocations. This denominator is different from the other rates.",
-        "- **Final output available rate**: fresh + held + predicted outputs "
-        "/ all attempted frames.",
-        "- The output provenance rates (fresh, held, predicted, unavailable) "
-        "are mutually exclusive and sum to 100%.",
-        "",
-        "`pixel_validation_performed` and `gaussian_fitter_fallback_used` are internal "
-        "algorithm path rates. They are not measurement acceptance rates.",
-        "",
-        "## Holdout: natural confidence decisions",
-        "",
-        "| Complete solution | Layer-1 candidate | Accepted fresh | Held state | "
-        "Available | "
-        "Mean error | Median | P95 | Worst E2E | Median latency |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for row in main_rows:
-        if row["outage_scenario"] != "natural":
-            continue
-        error = row["e2e_absolute_error_deg"]
-        latency = row["e2e_latency_ms"]
-        lines.append(
-            "| {solution} | {coverage} | {accepted} | {held} | "
-            "{available} | {mean} | {median} | {p95} | {worst} | {latency} |".format(
-                solution=row["solution"],
-                coverage=_format_percent(row["primary_candidate_produced_rate"]),
-                accepted=_format_percent(row["primary_measurement_accepted_rate"]),
-                held=_format_percent(row["output_provenance_rate"]["held"]),
-                available=_format_percent(row["final_output_available_rate"]),
-                mean=_format_number(error["mean"], " deg"),
-                median=_format_number(error["median"], " deg"),
-                p95=_format_number(error["p95"], " deg"),
-                worst=_format_number(error["worst"], " deg"),
-                latency=_format_number(latency["median"], " ms"),
-            )
-        )
+    add_result(
+        lines,
+        "Accurate: vectorized Gaussian + full validation",
+        lookup.get(("accurate_confidence_hold", "natural")),
+    )
+    add_result(
+        lines,
+        "Real-time: Gaussian cascade + ambiguous validation",
+        lookup.get(("realtime_confidence_hold", "natural")),
+    )
+    add_result(
+        lines,
+        "Fast: Gaussian cascade + minimal validation",
+        lookup.get(("fast_confidence_hold", "natural")),
+    )
     lines.extend(
         [
+            "## Layer 2 — final gate",
             "",
-            "## Decision",
+            "Estimator is real-time. Publication is previous-state hold.",
             "",
         ]
     )
-    current = natural_by_role.get("current_solution")
-    if current:
-        lines.append(
-            "No new fallback or temporal gate is recommended. The current "
-            "confidence+previous-state-hold mechanism is the only validated complete "
-            "solution in this report. Strict-gate, prediction, and publish-unavailable "
-            "experiments remain in `results.json` as negative controls."
-        )
-    else:
-        lines.append("The current complete solution was not included in this run.")
+    add_result(
+        lines,
+        "Confidence-only gate (current)",
+        lookup.get(("realtime_confidence_hold", "natural")),
+    )
+    add_result(
+        lines,
+        "Strict temporal gate (negative control)",
+        lookup.get(("realtime_strict_hold", "natural")),
+    )
     lines.extend(
         [
+            "## Layer 3 — rejected-state publication",
             "",
-            "## Holdout: deterministic outage stress",
+            "Estimator is real-time. Gate is confidence-only.",
+            "A deterministic three-frame outage is injected every 90 frames.",
             "",
-            "These rows deliberately hide otherwise accepted measurements. They do "
-            "not change the natural rejection rate and are used only to make fallback "
-            "behavior comparable under identical single-frame and burst losses.",
-            "",
-            "| Complete solution | Injected | Available | Mean error | Median | "
-            "P95 | Worst E2E | Longest unavailable |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    for row in main_rows:
-        if row["outage_scenario"] == "natural":
-            continue
-        error = row["e2e_absolute_error_deg"]
-        lines.append(
-            "| {solution} | {injected} | {available} | "
-            "{mean} | {median} | {p95} | {worst} | {loss} |".format(
-                solution=row["solution"],
-                injected=_format_percent(row["injected_outage_rate"]),
-                available=_format_percent(row["final_output_available_rate"]),
-                mean=_format_number(error["mean"], " deg"),
-                median=_format_number(error["median"], " deg"),
-                p95=_format_number(error["p95"], " deg"),
-                worst=_format_number(error["worst"], " deg"),
-                loss=row["continuity"]["longest_unavailable_episode_frames"],
-            )
-        )
+    add_result(
+        lines,
+        "Hold previous accepted state",
+        lookup.get(("realtime_confidence_hold", "three_frame_burst_every_90")),
+    )
+    add_result(
+        lines,
+        "Constant-velocity prediction",
+        lookup.get(("realtime_confidence_predict", "three_frame_burst_every_90")),
+    )
+    add_result(
+        lines,
+        "Publish unavailable",
+        lookup.get(("realtime_confidence_reject", "three_frame_burst_every_90")),
+    )
     lines.extend(
         [
+            "## Complete stack decision",
             "",
-            "## Accuracy semantics",
+            "Keep: real-time estimator + confidence gate + previous-state hold.",
             "",
-            "Mean, median, P95, and worst are absolute circular heading errors. `worst` "
-            "is emitted only for the complete chronological E2E output. Fresh-only and "
-            "fallback-only diagnostics intentionally omit a maximum because they are "
-            "partial-path samples, not the user's complete observed behavior.",
+            "Do not land the strict temporal gate from this evidence. Its rejected "
+            "frames must be checked against pose labels, because travel direction is "
+            "not pixel-level cursor truth.",
             "",
-            "An unavailable output is excluded from the error distribution and remains "
-            "visible through availability and loss-episode metrics; it is never scored "
-            "as zero error.",
+            "Prediction and unavailable output remain negative controls unless they "
+            "beat hold on both availability and worst E2E error.",
             "",
-            "The whole-session travel vector is a functional E2E reference, not a "
-            "pixel-level cursor-pose label. A collision, initial alignment, or path "
-            "curvature can make a correct cursor pose disagree with travel. Therefore "
-            "this error may rank complete publication behavior, but must not by itself "
-            "train or tune the final pose-outlier gate.",
+            "## Rate meanings",
+            "",
+            "- Candidate: first-layer pose produced / attempted frames.",
+            "- Accepted fresh: final accepted measurements / attempted frames.",
+            "- Held: reused states / attempted frames.",
+            "- Available: fresh + held + predicted / attempted frames.",
+            "- Internal validation invocation is not acceptance or rejection.",
+            "",
+            "## Accuracy limits",
+            "",
+            "Mean, median, P95, and worst are absolute circular E2E travel-heading "
+            "errors. Worst is reported only for a complete chronological output.",
+            "",
+            "Whole-session travel is functional evidence, not per-frame cursor truth. "
+            "It must not train a pose-outlier gate by itself.",
             "",
             "## Traceability",
             "",
-            "- Git revision: `{}`".format(result["provenance"]["repository"]["revision"]),
+            "- Git: `{}`".format(result["provenance"]["repository"]["revision"]),
             "- Tested source dirty: `{}`".format(
                 result["provenance"]["repository"]["tested_source_dirty"]
             ),
-            "- Configuration: `benchmark_config.json`",
-            "- Exact method/source hashes: `method_manifest.json`",
-            "- Raw primary measurements: `primary_measurements.csv`",
-            "- Every stateful output and provenance: `e2e_rows.csv`",
-            "- Machine-readable aggregate: `results.json`",
+            "- Config: `benchmark_config.json`",
+            "- Methods: `method_manifest.json`",
+            "- Raw measurements: `primary_measurements.csv`",
+            "- Stateful rows: `e2e_rows.csv`",
+            "- Aggregates: `results.json`",
             "",
         ]
     )

@@ -8,6 +8,7 @@ from benchmarks.cursor_pose.stateful import (
 )
 from benchmarks.cursor_pose.run_e2e import (
     CausalOutlierGate,
+    SOLUTION_CONFIGS,
     _forward_only_input_audit,
 )
 
@@ -25,6 +26,41 @@ def _measurement(frame, angle, accepted=True):
 
 
 class CursorPoseE2EBenchmarkTests(unittest.TestCase):
+    def test_default_solution_matrix_changes_one_layer_at_a_time(self):
+        baseline = SOLUTION_CONFIGS["realtime_confidence_hold"]
+
+        for name in ("accurate_confidence_hold", "fast_confidence_hold"):
+            candidate = SOLUTION_CONFIGS[name]
+            self.assertNotEqual(candidate["profile"], baseline["profile"])
+            self.assertEqual(
+                candidate["fallback_strategy"], baseline["fallback_strategy"]
+            )
+            self.assertEqual(
+                candidate["temporal_outlier_gate"],
+                baseline["temporal_outlier_gate"],
+            )
+
+        strict = SOLUTION_CONFIGS["realtime_strict_hold"]
+        self.assertEqual(strict["profile"], baseline["profile"])
+        self.assertEqual(strict["fallback_strategy"], baseline["fallback_strategy"])
+        self.assertNotEqual(
+            strict["temporal_outlier_gate"], baseline["temporal_outlier_gate"]
+        )
+
+        for name in (
+            "realtime_confidence_predict",
+            "realtime_confidence_reject",
+        ):
+            candidate = SOLUTION_CONFIGS[name]
+            self.assertEqual(candidate["profile"], baseline["profile"])
+            self.assertNotEqual(
+                candidate["fallback_strategy"], baseline["fallback_strategy"]
+            )
+            self.assertEqual(
+                candidate["temporal_outlier_gate"],
+                baseline["temporal_outlier_gate"],
+            )
+
     def test_e2e_reference_requires_forward_only_input_evidence(self):
         reader = SimpleNamespace(
             inputs=[
