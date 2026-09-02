@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -263,6 +264,9 @@ class HikCamera:
         self._last_frame_by_stream: Dict[str, np.ndarray] = {}
         self.last_frame_metadata: Dict[str, Any] = {}
         self._last_frame_metadata_by_stream: Dict[str, Dict[str, Any]] = {}
+        self._orientation_job_lock = threading.Lock()
+        self._orientation_job: Dict[str, Any] = {}
+        self._orientation_job_thread: Optional[threading.Thread] = None
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
         self._rectify_enabled = bool(self.config.get("rectify", True))
         self._game_upright_turns = int(
@@ -648,7 +652,8 @@ class HikCamera:
         payload["initialization_recovery"] = {
             "schema_version": "1.0",
             "selection_basis": (
-                "complete_saved_adb_minimap_projects_inside_current_hik_sensor"
+                decision.get("selection_basis")
+                or "complete_saved_adb_minimap_projects_inside_current_hik_sensor"
             ),
             "attempt_order": "saved_then_180_then_90_then_270",
             "selected_surface_quarter_turns_clockwise_from_phone_natural": (
@@ -924,7 +929,129 @@ class HikCamera:
         application = self._apply_game_orientation_turns(selected_turns)
         result["applied"] = True
         result.update(application)
+        if self._persist_initialization_recovery:
+            decision = {
+                "selected_output_quarter_turns": selected_turns,
+                "selected_surface_quarter_turns": self._runtime_surface_turns,
+                "previous_output_quarter_turns": current_turns,
+                "selection_basis": "integrator_adb_hik_image_evidence",
+                "selected_confidence": summary.get("selected_confidence"),
+                "confidence_margin": summary.get("confidence_margin"),
+            }
+            try:
+                result["profile_writeback"] = self._persist_recovered_orientation(
+                    decision
+                )
+            except Exception as exc:
+                result["profile_writeback"] = {
+                    "status": "failed_non_gating",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                result["application_status"] += "_profile_writeback_failed_non_gating"
+        else:
+            result["profile_writeback"] = {
+                "status": "disabled_by_configuration"
+            }
         return result
+
+    def request_game_orientation_correction(
+        self,
+        adb_image: np.ndarray,
+        hik_full_image: Optional[np.ndarray] = None,
+        *,
+        preferred_confidence: float = 0.50,
+        preferred_margin: float = 0.08,
+    ) -> Dict[str, Any]:
+        """Schedule retryable image-evidence orientation correction.
+
+        This method returns immediately.  Poll
+        :meth:`get_game_orientation_correction` for the structured result. A
+        failed or ambiguous job never closes the adapter permanently, changes
+        a portable profile, or prevents a later retry.
+        """
+
+        if adb_image is None or not isinstance(adb_image, np.ndarray):
+            raise ValueError("adb_image must be a decoded full ADB screenshot")
+        selected_hik = hik_full_image
+        if selected_hik is None:
+            selected_hik = self._last_frame_by_stream.get("full")
+        if selected_hik is None:
+            return {
+                "accepted": False,
+                "status": "not_scheduled_missing_full_hik_frame",
+                "retryable": True,
+                "non_blocking": True,
+            }
+        with self._orientation_job_lock:
+            if (
+                self._orientation_job_thread is not None
+                and self._orientation_job_thread.is_alive()
+            ):
+                return {
+                    "accepted": False,
+                    "status": "not_scheduled_already_running",
+                    "retryable": True,
+                    "non_blocking": True,
+                    "job_id": self._orientation_job.get("job_id"),
+                }
+            job_id = "orientation-{}".format(time.monotonic_ns())
+            adb_copy = np.ascontiguousarray(adb_image).copy()
+            hik_copy = np.ascontiguousarray(selected_hik).copy()
+            self._orientation_job = {
+                "job_id": job_id,
+                "status": "running",
+                "retryable": False,
+                "non_blocking": True,
+                "started_monotonic_ns": time.monotonic_ns(),
+            }
+
+            def worker() -> None:
+                try:
+                    result = self.correct_game_orientation(
+                        adb_copy,
+                        hik_copy,
+                        preferred_confidence=float(preferred_confidence),
+                        preferred_margin=float(preferred_margin),
+                    )
+                    status = (
+                        "completed_applied"
+                        if result.get("applied")
+                        else "completed_not_applied"
+                    )
+                    completed = {
+                        "job_id": job_id,
+                        "status": status,
+                        "retryable": not bool(result.get("applied")),
+                        "non_blocking": True,
+                        "result": result,
+                    }
+                except Exception as exc:
+                    completed = {
+                        "job_id": job_id,
+                        "status": "failed_non_gating",
+                        "retryable": True,
+                        "non_blocking": True,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                completed["finished_monotonic_ns"] = time.monotonic_ns()
+                with self._orientation_job_lock:
+                    self._orientation_job = completed
+
+            self._orientation_job_thread = threading.Thread(
+                target=worker,
+                name="iris-game-orientation-correction",
+                daemon=True,
+            )
+            self._orientation_job_thread.start()
+            return dict(self._orientation_job)
+
+    def get_game_orientation_correction(self) -> Dict[str, Any]:
+        """Return the latest asynchronous correction state without waiting."""
+
+        with self._orientation_job_lock:
+            return copy.deepcopy(self._orientation_job)
 
     def _apply_game_orientation_turns(self, selected_turns: int) -> Dict[str, Any]:
         selected_turns = int(selected_turns) % 4

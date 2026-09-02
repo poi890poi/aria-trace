@@ -2533,6 +2533,41 @@ class HikCompatibleFacadeTests(unittest.TestCase):
             self.assertEqual(1, len(FakeFacadeReader.instances))
             camera.close()
 
+    def test_runtime_orientation_request_is_non_blocking_and_retryable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config_path(directory)
+            camera = hikcam.HikCamera(
+                config={
+                    "diagnostic_calibration_override": path,
+                    "reader_factory": FakeFacadeReader,
+                    "color_order": "BGR",
+                }
+            )
+            ambiguous = {
+                "status": "selected_low_confidence",
+                "applied": False,
+                "application_status": "not_applied_ambiguous_image_evidence",
+            }
+            with mock.patch.object(
+                camera, "correct_game_orientation", return_value=ambiguous
+            ) as correction:
+                scheduled = camera.request_game_orientation_correction(
+                    np.zeros((2, 3, 3), np.uint8),
+                    np.zeros((2, 3, 3), np.uint8),
+                )
+                self.assertEqual("running", scheduled["status"])
+                camera._orientation_job_thread.join(timeout=1.0)
+                completed = camera.get_game_orientation_correction()
+                self.assertEqual("completed_not_applied", completed["status"])
+                self.assertTrue(completed["retryable"])
+                retry = camera.request_game_orientation_correction(
+                    np.zeros((2, 3, 3), np.uint8),
+                    np.zeros((2, 3, 3), np.uint8),
+                )
+                self.assertTrue(retry["non_blocking"])
+                camera._orientation_job_thread.join(timeout=1.0)
+            self.assertEqual(2, correction.call_count)
+
     def test_android_surface_orientation_composes_with_saved_rig_relation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._config_path(directory)
