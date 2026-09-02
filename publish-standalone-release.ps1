@@ -4,7 +4,8 @@ param(
     [string]$Title,
     [switch]$Prerelease,
     [switch]$SkipBuild,
-    [switch]$SkipDependencyInstall
+    [switch]$SkipDependencyInstall,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,6 +105,12 @@ Invoke-Checked "Validate package identity and checksums" {
     Assert-ArchiveHash $SourceArchive
 }
 
+if ($ValidateOnly) {
+    Write-Host ""
+    Write-Host "Release validation completed; no tag or release was changed." -ForegroundColor Green
+    exit 0
+}
+
 $Gh = Get-Command gh -ErrorAction SilentlyContinue
 if (-not $Gh) {
     throw "GitHub CLI (gh) is required only for the upload stage. Install it, run 'gh auth login', then rerun this command with -SkipBuild."
@@ -111,11 +118,20 @@ if (-not $Gh) {
 Invoke-Checked "Verify GitHub authentication" { & $Gh.Source auth status }
 
 $Head = [string](git -C $ProjectRoot rev-parse HEAD)
-$ExistingTag = git -C $ProjectRoot rev-list -n 1 $Tag 2>$null
-if ($LASTEXITCODE -eq 0 -and $ExistingTag -and ([string]$ExistingTag).Trim() -ne $Head.Trim()) {
+$PreviousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+try {
+    git -C $ProjectRoot show-ref --verify --quiet "refs/tags/$Tag"
+    $TagExists = $LASTEXITCODE -eq 0
+}
+finally {
+    $ErrorActionPreference = $PreviousErrorAction
+}
+$ExistingTag = if ($TagExists) { git -C $ProjectRoot rev-list -n 1 $Tag } else { $null }
+if ($TagExists -and $ExistingTag -and ([string]$ExistingTag).Trim() -ne $Head.Trim()) {
     throw "Tag $Tag already points to $ExistingTag, not current HEAD $Head"
 }
-if (-not $ExistingTag) {
+if (-not $TagExists) {
     Invoke-Checked "Create release tag $Tag" { git -C $ProjectRoot tag -a $Tag -m $Title $Head }
 }
 Invoke-Checked "Push release tag $Tag" { git -C $ProjectRoot push origin "refs/tags/$Tag" }
@@ -126,9 +142,15 @@ $Assets = @(
     $SourceArchive,
     "$SourceArchive.sha256"
 )
-$ExistingRelease = $false
-& $Gh.Source release view $Tag *> $null
-if ($LASTEXITCODE -eq 0) { $ExistingRelease = $true }
+$PreviousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+try {
+    & $Gh.Source release view $Tag --json tagName | Out-Null
+    $ExistingRelease = $LASTEXITCODE -eq 0
+}
+finally {
+    $ErrorActionPreference = $PreviousErrorAction
+}
 
 if ($ExistingRelease) {
     Invoke-Checked "Resume release upload $Tag" {

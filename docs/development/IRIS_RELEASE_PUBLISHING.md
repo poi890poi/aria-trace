@@ -17,6 +17,10 @@ upload fails, fix the external problem and rerun with `-SkipBuild`. The command
 is resumable: an existing tag must point to the same commit, and an existing
 release receives the verified assets with `--clobber`.
 
+Use `-ValidateOnly` for a complete local dry run. It performs source, package
+identity, and checksum validation, then exits before GitHub authentication,
+tagging, or release creation.
+
 Archives are built under temporary names and replace the prior artifacts only
 after compression succeeds. Release archives remain ignored by Git and are
 uploaded as GitHub Release assets, never committed to the source tree.
