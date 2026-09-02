@@ -11,7 +11,6 @@ from aria_trace.adapters.filesystem.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
-    ProfileResolutionError,
 )
 from aria_trace.services.calibration.minimap.discovery import (
     discover_android_minimap_crop,
@@ -446,7 +445,7 @@ class GameCalibrationTests(unittest.TestCase):
                 ],
             )
 
-    def test_stale_orientation_profile_is_not_silently_dropped(self):
+    def test_stale_orientation_profile_warns_and_does_not_gate_full_stream(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             calibration = root / "rig.json"
@@ -485,10 +484,16 @@ class GameCalibrationTests(unittest.TestCase):
                 activate=True,
             )
 
-            with self.assertRaisesRegex(
-                ProfileResolutionError, "orientation.*stale.*superseded"
+            with self.assertWarnsRegex(
+                RuntimeWarning, "ignored stale active revisions"
             ):
-                registry.resolve_adapter(context, AdapterRequest(mode="full"))
+                resolved = registry.resolve_adapter(
+                    context, AdapterRequest(mode="full")
+                )
+            self.assertIsNone(resolved["profiles"]["rig_game_orientation"])
+            self.assertEqual(0, resolved["adapter_plan"][
+                "game_upright_quarter_turns_clockwise"
+            ])
 
 
 if __name__ == "__main__":

@@ -1068,6 +1068,31 @@ class ProfileRegistry:
         else:
             rig = selected("rig")
 
+        def selected_for_resolved_rig(kind: str) -> tuple[Optional[Dict[str, Any]], list[str]]:
+            """Select an optional layer whose immutable rig dependency matches."""
+
+            rig_revision = str(rig["revision_id"])
+            if kind in selected_revisions:
+                candidate = selected(kind)
+                dependency = str((candidate.get("dependencies") or {}).get("rig") or "")
+                if dependency != rig_revision:
+                    raise ProfileResolutionError(
+                        "Manual {} revision {} depends on rig {}, not selected rig {}"
+                        .format(
+                            kind,
+                            candidate["revision_id"],
+                            dependency or "<missing>",
+                            rig_revision,
+                        )
+                    )
+                return candidate, []
+            candidates = list(self.list_candidates(kind, context, active_only=True))
+            for candidate in candidates:
+                dependency = str((candidate.get("dependencies") or {}).get("rig") or "")
+                if dependency == rig_revision:
+                    return candidate, []
+            return None, [str(item["revision_id"]) for item in candidates]
+
         # Screen-upright orientation is independent of mini-map and color.
         # It is therefore optional for every game-scoped adapter mode and is
         # accepted only when it depends on the exact resolved rig revision.
@@ -1077,61 +1102,45 @@ class ProfileRegistry:
             except ProfileResolutionError as exc:
                 if not str(exc).startswith("No active game_model profile"):
                     raise
-            try:
-                candidate = selected("rig_game_orientation")
-            except ProfileResolutionError as exc:
-                if not str(exc).startswith("No active rig_game_orientation profile"):
-                    raise
+            candidate, stale_orientation_ids = selected_for_resolved_rig(
+                "rig_game_orientation"
+            )
+            if candidate is None:
                 resolution_warnings.append(
-                    "No active game-orientation profile matches game {!r}; "
+                    "No active game-orientation profile matches game {!r} and "
+                    "resolved rig {}{}; "
                     "adapter output remains rig-calibration-display-up, which "
                     "may be Android/presenter-up rather than game-up. Run game "
                     "calibration, compose from the foreground Android surface, "
                     "or invoke runtime ADB/HIK image orientation correction."
-                    .format(context.game_id)
+                    .format(
+                        context.game_id,
+                        rig["revision_id"],
+                        (
+                            "; ignored stale active revisions {}".format(
+                                ", ".join(stale_orientation_ids)
+                            )
+                            if stale_orientation_ids else ""
+                        ),
+                    )
                 )
             else:
-                orientation_rig_id = str(
-                    (candidate.get("dependencies") or {}).get("rig") or ""
-                )
-                if orientation_rig_id == str(rig["revision_id"]):
-                    rig_game_orientation = candidate
-                else:
-                    raise ProfileResolutionError(
-                        "Active game-orientation profile {} is stale: it depends "
-                        "on superseded rig {}, while the current active rig is {}. "
-                        "Re-publish the current rig calibration to recompose game "
-                        "orientation before opening the adapter.".format(
-                            candidate["revision_id"],
-                            orientation_rig_id or "<missing>",
-                            rig["revision_id"],
-                        )
-                    )
+                rig_game_orientation = candidate
 
         if request.color_policy in ("auto", "game_matched") and context.game_id:
-            try:
-                candidate = selected("rig_game_color")
-            except ProfileResolutionError as exc:
-                if request.requires_game_color or not str(exc).startswith(
-                    "No active rig_game_color profile"
-                ):
-                    raise
-            else:
-                color_rig_id = str((candidate.get("dependencies") or {}).get("rig") or "")
-                if color_rig_id != str(rig["revision_id"]):
-                    stale_game_color_fallback = True
-                    resolution_warnings.append(
-                        "Active game-color profile {} depends on superseded rig {}; "
-                        "the adapter resolved rig {} and is using rig-locked color "
-                        "until fresh synchronized game calibration publishes a "
-                        "matching local HIK fit.".format(
-                            candidate["revision_id"],
-                            color_rig_id or "<missing>",
-                            rig["revision_id"],
-                        )
+            candidate, stale_color_ids = selected_for_resolved_rig(
+                "rig_game_color"
+            )
+            if candidate is None and stale_color_ids:
+                stale_game_color_fallback = True
+                resolution_warnings.append(
+                    "Active game-color revisions {} do not depend on resolved rig {}; "
+                    "the adapter is using rig-locked color.".format(
+                        ", ".join(stale_color_ids), rig["revision_id"]
                     )
-                else:
-                    rig_game_color = candidate
+                )
+            elif candidate is not None:
+                rig_game_color = candidate
         elif request.requires_game_color:
             raise ProfileResolutionError(
                 "Game-matched color requires a game_id"
