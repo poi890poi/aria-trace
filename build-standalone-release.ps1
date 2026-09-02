@@ -35,6 +35,7 @@ $FfmpegSourceSha256 = "693b19b88c741aa9e02566a40c9c090ca64f808aefdd7fcbff8e5d8cc
 $FfmpegBuildSourceName = "FFmpeg-Builds-48576f197ad1c2afb2e0b8efe204919a1afbff54-source.tar.gz"
 $FfmpegBuildSourceUrl = "https://github.com/BtbN/FFmpeg-Builds/archive/48576f197ad1c2afb2e0b8efe204919a1afbff54.tar.gz"
 $FfmpegBuildSourceSha256 = "04b2fcde9a02e2d42c8cb69fe43b912f127746dbc859118b0f81cd124971f8a4"
+$PhoneTargetSignerSha256 = "b7ce8a1a7953520d646ccfc21ae37a21af7a3dcca9893fa6a78f3af30943d286"
 
 function Get-PortableSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -214,7 +215,9 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\windows\release-files\
 
 $PhoneTargetApk = Join-Path $ProjectRoot "artifacts\android-phone-target\iris-phone-target.apk"
 if (-not $SkipPhoneTargetBuild) {
-    & (Join-Path $ProjectRoot "android\phone-target\build-phone-target.ps1") -Output $PhoneTargetApk
+    & (Join-Path $ProjectRoot "android\phone-target\build-phone-target.ps1") `
+        -Output $PhoneTargetApk `
+        -ExpectedSignerSha256 $PhoneTargetSignerSha256
     if ($LASTEXITCODE -ne 0) { throw "Native phone target build failed" }
 }
 if (-not (Test-Path -LiteralPath $PhoneTargetApk -PathType Leaf)) {
@@ -317,6 +320,7 @@ $Manifest = @(
     "camera_adapter_import: python/hikcam.py",
     "native_phone_target: phone-target/iris-phone-target.apk",
     "python_native_phone_target: python/android/phone-target/iris-phone-target.apk",
+    "native_phone_target_signer_sha256: '$PhoneTargetSignerSha256'",
     "python_tools_import: python/iris_tools.py",
     "bundled_tools:",
     "  scrcpy_server:",

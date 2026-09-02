@@ -2,7 +2,8 @@
 param(
     [string]$AndroidSdk = $env:ANDROID_SDK_ROOT,
     [string]$Output = "",
-    [string]$BuildDirectory = ""
+    [string]$BuildDirectory = "",
+    [string]$ExpectedSignerSha256 = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,6 +72,12 @@ if ($ApkEntries -contains "dex/classes.dex") {
 }
 $KeyStore = Join-Path $Repository ".tools\phone-target-debug.keystore"
 if (-not (Test-Path -LiteralPath $KeyStore)) {
+    if ($ExpectedSignerSha256) {
+        throw (
+            "The established phone-target signing key is missing: $KeyStore. " +
+            "A replacement key would make adb install -r fail for existing installations."
+        )
+    }
     & keytool -genkeypair -keystore $KeyStore -storepass android -keypass android `
         -alias androiddebugkey -dname "CN=IRIS Local Target,O=IRIS" `
         -keyalg RSA -keysize 2048 -validity 10000 | Out-Null
@@ -81,4 +88,18 @@ Copy-Item -LiteralPath $Aligned -Destination $Output -Force
 if ($LASTEXITCODE -ne 0) { throw "APK signing failed" }
 & $Signer verify --verbose $Output | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "APK verification failed" }
+$SignerReport = @(& $Signer verify --print-certs $Output)
+if ($LASTEXITCODE -ne 0) { throw "Cannot inspect APK signing certificate" }
+$SignerDigest = $SignerReport | Select-String -Pattern (
+    "Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]+)"
+) | Select-Object -First 1
+if (-not $SignerDigest) { throw "APK signer SHA-256 digest is unavailable" }
+$ActualSignerSha256 = $SignerDigest.Matches[0].Groups[1].Value.ToLowerInvariant()
+if (
+    $ExpectedSignerSha256 -and
+    $ActualSignerSha256 -ne $ExpectedSignerSha256.ToLowerInvariant()
+) {
+    throw "APK signer mismatch; expected $ExpectedSignerSha256, got $ActualSignerSha256"
+}
 Write-Host "Built native phone target: $Output"
+Write-Host "Phone-target signer SHA-256: $ActualSignerSha256"
