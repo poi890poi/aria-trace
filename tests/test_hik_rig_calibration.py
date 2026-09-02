@@ -1321,7 +1321,7 @@ class HikPhoneTests(unittest.TestCase):
                 return super().__call__(command, timeout)
 
         with tempfile.TemporaryDirectory() as directory:
-            apk = Path(directory) / "aria-phone-target.apk"
+            apk = Path(directory) / "explicit-phone-target.apk"
             apk.write_bytes(b"apk")
             runner = NativeInstallRunner()
             phone = AdbPhoneSession(
