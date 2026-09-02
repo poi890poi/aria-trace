@@ -142,7 +142,14 @@ def _registry_configuration(
         ),
     )
     registry = ProfileRegistry(profile_root)
-    resolved = registry.resolve_adapter(context, request)
+    profile_revisions = configured.get("profile_revisions") or {}
+    if not isinstance(profile_revisions, Mapping):
+        raise TypeError("config['profile_revisions'] must be a kind-to-revision mapping")
+    resolved = registry.resolve_adapter(
+        context,
+        request,
+        profile_revisions=profile_revisions,
+    )
     effective = dict(configured)
     effective.update(
         calibration=resolved["paths"]["rig_calibration"],
@@ -366,6 +373,70 @@ class HikCamera:
     @classmethod
     def get_cam(cls) -> "HikCamera":
         return cls()
+
+    @classmethod
+    def list_profiles(
+        cls,
+        config: Optional[Mapping[str, Any]] = None,
+        *,
+        kinds: Optional[Sequence[str]] = None,
+        active_only: bool = True,
+    ) -> Dict[str, Sequence[Dict[str, Any]]]:
+        """List profiles a caller may select through ``profile_revisions``.
+
+        Results use the same physical-to-fluid preference policy as automatic
+        adapter construction.  This method probes identity only; it does not
+        open the camera or operate the phone.
+        """
+
+        from aria_trace.adapters.filesystem.profile_registry import (
+            PROFILE_KINDS,
+            ProfileContext,
+            ProfileRegistry,
+        )
+        from aria_trace.adapters.filesystem.system_configuration import (
+            load_system_configuration,
+        )
+
+        configured = dict(config or {})
+        profile_root = (
+            Path(configured["profile_root"])
+            if configured.get("profile_root")
+            else None
+        )
+        settings = load_system_configuration(profile_root)
+        for name, value in (
+            ("camera_id", settings["devices"].get("camera_id")),
+            ("phone_id", settings["devices"].get("phone_id")),
+            ("mvs_python_path", settings["tools"].get("mvs_python_path")),
+        ):
+            if not configured.get(name) and value:
+                configured[name] = value
+        game_id = (
+            configured.get("game_id")
+            or os.environ.get("IRIS_GAME_ID")
+            or settings["game"].get("game_id")
+        )
+        context = ProfileContext(
+            game_id=str(game_id) if game_id else None,
+            platform=str(configured.get("platform", "android")),
+            package=configured.get("package"),
+            game_version=configured.get("game_version"),
+            camera_adapter="hik_mvs",
+            camera_id=_camera_id_for_registry(None, configured),
+            phone_id=configured.get("phone_id") or configured.get("phone_serial"),
+            phone_model=configured.get("phone_model"),
+            panel_display=configured.get("panel_display") or {},
+            game_display=configured.get("game_display") or {},
+        )
+        selected_kinds = tuple(kinds or PROFILE_KINDS)
+        registry = ProfileRegistry(profile_root)
+        return {
+            kind: registry.list_candidates(
+                kind, context, active_only=bool(active_only)
+            )
+            for kind in selected_kinds
+        }
 
     @classmethod
     def get_cams(cls, ips: Optional[Sequence[str]] = None) -> "MultiHikCamera":

@@ -80,6 +80,50 @@ class HikAutoProfileTests(unittest.TestCase):
         self.assertEqual("none", camera.resolved_config["adapter_plan"]["phone_operations"])
         self.assertEqual(0, camera.resolved_config["adapter_plan"]["registry_reads_per_frame"])
 
+    def test_caller_can_list_and_select_an_explicit_rig_revision(self):
+        replacement = self.registry.publish(
+            "rig",
+            self.context,
+            {"profile_kind": "rig", "generation": 2},
+            runtime_files={"hik_camera_calibration": self.calibration},
+            review_state="accepted",
+            activate=True,
+        )
+        listed = hikcam.HikCamera.list_profiles(
+            {
+                "profile_root": self.root / "profiles",
+                "camera_id": "CAM-1",
+                "game_id": "game-1",
+                "panel_display": self.context.panel_display,
+                "game_display": self.context.game_display,
+            },
+            kinds=["rig"],
+            active_only=False,
+        )
+        self.assertEqual(
+            {self.rig["revision_id"], replacement["revision_id"]},
+            {item["revision_id"] for item in listed["rig"]},
+        )
+        camera = hikcam.HikCamera(
+            config={
+                "profile_root": self.root / "profiles",
+                "camera_id": "CAM-1",
+                "game_id": "game-1",
+                "panel_display": self.context.panel_display,
+                "game_display": self.context.game_display,
+                "profile_revisions": {"rig": self.rig["revision_id"]},
+                "mode": "full",
+                "color_policy": "rig_locked",
+            }
+        )
+        self.assertEqual(
+            self.rig["revision_id"], camera.resolved_config["profiles"]["rig"]
+        )
+        self.assertEqual(
+            {"rig": self.rig["revision_id"]},
+            camera.resolved_config["manual_profile_revisions"],
+        )
+
     def test_dual_mode_resolves_exact_rig_game_and_passes_runtime_options(self):
         phone_game = self.registry.publish(
             "phone_game", self.context,

@@ -982,8 +982,30 @@ class ProfileRegistry:
         return Path(profile["revision_directory"]) / str(entry["path"])
 
     def resolve_adapter(
-        self, context: ProfileContext, request: AdapterRequest
+        self,
+        context: ProfileContext,
+        request: AdapterRequest,
+        *,
+        profile_revisions: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
+        selected_revisions = {
+            str(kind): str(revision_id)
+            for kind, revision_id in dict(profile_revisions or {}).items()
+        }
+        unsupported = sorted(set(selected_revisions) - set(PROFILE_KINDS))
+        if unsupported:
+            raise ProfileResolutionError(
+                "Unsupported manual profile kinds: {}".format(", ".join(unsupported))
+            )
+
+        def selected(kind: str) -> Dict[str, Any]:
+            revision_id = selected_revisions.get(kind)
+            if revision_id is None:
+                return self.resolve(kind, context)
+            return self.resolve_revision(
+                revision_id, context, expected_kind=kind
+            )
+
         rig_game = phone_game = rig_game_color = rig_game_orientation = None
         game_model = None
         resolution_warnings = []
@@ -993,12 +1015,13 @@ class ProfileRegistry:
                 raise ProfileResolutionError(
                     "Adapter mode {} requires a game_id".format(request.mode)
                 )
-            rig_game = self.resolve("rig_game", context)
+            rig_game = selected("rig_game")
             dependencies = rig_game.get("dependencies") or {}
             try:
                 dependent_rig_id = str(dependencies["rig"])
+                dependent_phone_game_id = str(dependencies["phone_game"])
                 phone_game = self.resolve_revision(
-                    str(dependencies["phone_game"]),
+                    dependent_phone_game_id,
                     context,
                     expected_kind="phone_game",
                 )
@@ -1006,8 +1029,29 @@ class ProfileRegistry:
                 raise ProfileResolutionError(
                     "Rig-game profile has incomplete dependencies: {}".format(exc)
                 )
-            active_rig = self.resolve("rig", context)
-            if dependent_rig_id != str(active_rig["revision_id"]):
+            requested_rig_id = selected_revisions.get("rig")
+            requested_phone_game_id = selected_revisions.get("phone_game")
+            if requested_phone_game_id and requested_phone_game_id != dependent_phone_game_id:
+                raise ProfileResolutionError(
+                    "Manual phone_game revision {} conflicts with rig_game {} "
+                    "dependency {}".format(
+                        requested_phone_game_id,
+                        rig_game["revision_id"],
+                        dependent_phone_game_id,
+                    )
+                )
+            if requested_rig_id and requested_rig_id != dependent_rig_id:
+                raise ProfileResolutionError(
+                    "Manual rig revision {} conflicts with rig_game {} dependency {}"
+                    .format(
+                        requested_rig_id, rig_game["revision_id"], dependent_rig_id
+                    )
+                )
+            active_rig = selected("rig")
+            if (
+                "rig_game" not in selected_revisions
+                and dependent_rig_id != str(active_rig["revision_id"])
+            ):
                 raise ProfileResolutionError(
                     "Active rig-game profile {} is stale: it depends on superseded "
                     "active rig {}, while the current active rig is {}. Re-publish "
@@ -1022,19 +1066,19 @@ class ProfileRegistry:
                 dependent_rig_id, context, expected_kind="rig"
             )
         else:
-            rig = self.resolve("rig", context)
+            rig = selected("rig")
 
         # Screen-upright orientation is independent of mini-map and color.
         # It is therefore optional for every game-scoped adapter mode and is
         # accepted only when it depends on the exact resolved rig revision.
         if context.game_id:
             try:
-                game_model = self.resolve("game_model", context)
+                game_model = selected("game_model")
             except ProfileResolutionError as exc:
                 if not str(exc).startswith("No active game_model profile"):
                     raise
             try:
-                candidate = self.resolve("rig_game_orientation", context)
+                candidate = selected("rig_game_orientation")
             except ProfileResolutionError as exc:
                 if not str(exc).startswith("No active rig_game_orientation profile"):
                     raise
@@ -1066,7 +1110,7 @@ class ProfileRegistry:
 
         if request.color_policy in ("auto", "game_matched") and context.game_id:
             try:
-                candidate = self.resolve("rig_game_color", context)
+                candidate = selected("rig_game_color")
             except ProfileResolutionError as exc:
                 if request.requires_game_color or not str(exc).startswith(
                     "No active rig_game_color profile"
@@ -1165,6 +1209,7 @@ class ProfileRegistry:
             "resolved_utc": datetime.now(timezone.utc).isoformat(),
             "context": context.as_dict(),
             "request": request.as_dict(),
+            "manual_profile_revisions": dict(selected_revisions),
             "profiles": {
                 "rig": rig["revision_id"],
                 "phone_game": phone_game["revision_id"] if phone_game else None,
