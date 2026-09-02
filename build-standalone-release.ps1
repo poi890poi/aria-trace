@@ -133,7 +133,8 @@ $Applications = @(
     [ordered]@{ Name = "iris-zigzag-acquisition"; Entry = "packaging\windows\entrypoints\zigzag_acquisition.py" },
     [ordered]@{ Name = "iris-minimap-calibration"; Entry = "packaging\windows\entrypoints\minimap_calibration.py" },
     [ordered]@{ Name = "iris-game-calibration"; Entry = "packaging\windows\entrypoints\game_calibration.py" },
-    [ordered]@{ Name = "iris-game-color-calibration"; Entry = "packaging\windows\entrypoints\game_color_calibration.py" }
+    [ordered]@{ Name = "iris-game-color-calibration"; Entry = "packaging\windows\entrypoints\game_color_calibration.py" },
+    [ordered]@{ Name = "iris-camera-adapter-demo"; Entry = "packaging\windows\entrypoints\camera_adapter_demo.py" }
 )
 if ($SkipApplicationBuild) {
     foreach ($Application in $Applications) {
@@ -291,7 +292,7 @@ if ($GitCommand) {
 }
 $Manifest = @(
     "# Human-readable standalone release identity and external runtime contract.",
-    "schema_version: '1.0'",
+    "schema_version: '1.1'",
     "product: iris-invariant-rig-system",
     "platform: windows-x64",
     "source_commit: '$SourceCommit'",
@@ -309,6 +310,7 @@ $Manifest = @(
     "  - apps/iris-minimap-calibration/iris-minimap-calibration.exe",
     "  - apps/iris-game-calibration/iris-game-calibration.exe",
     "  - apps/iris-game-color-calibration/iris-game-color-calibration.exe",
+    "  - apps/iris-camera-adapter-demo/iris-camera-adapter-demo.exe",
     "camera_adapter_import: python/hikcam.py",
     "native_phone_target: phone-target/iris-phone-target.apk",
     "python_tools_import: python/iris_tools.py",
@@ -343,8 +345,10 @@ foreach ($Application in $Applications) {
 
 if (-not $NoArchive) {
     $Archive = "$OutputDirectory.zip"
-    if (Test-Path -LiteralPath $Archive) { Remove-Item -LiteralPath $Archive -Force }
-    Compress-Archive -LiteralPath $OutputDirectory -DestinationPath $Archive -CompressionLevel Optimal
+    $PendingArchive = "$Archive.pending-$PID.zip"
+    if (Test-Path -LiteralPath $PendingArchive) { Remove-Item -LiteralPath $PendingArchive -Force }
+    Compress-Archive -LiteralPath $OutputDirectory -DestinationPath $PendingArchive -CompressionLevel Optimal
+    Move-Item -LiteralPath $PendingArchive -Destination $Archive -Force
     $ArchiveHash = Write-Sha256Sidecar $Archive
 
     $SourceStage = Join-Path $BuildRoot "third-party-source"
@@ -369,8 +373,10 @@ if (-not $NoArchive) {
     )
     Set-Content -LiteralPath (Join-Path $SourceStage "README.txt") -Value $SourceReadme -Encoding UTF8
     $SourceArchive = Join-Path (Split-Path -Parent $OutputDirectory) "IRIS-Third-Party-Source.zip"
-    if (Test-Path -LiteralPath $SourceArchive) { Remove-Item -LiteralPath $SourceArchive -Force }
-    Compress-Archive -Path (Join-Path $SourceStage "*") -DestinationPath $SourceArchive -CompressionLevel Optimal
+    $PendingSourceArchive = "$SourceArchive.pending-$PID.zip"
+    if (Test-Path -LiteralPath $PendingSourceArchive) { Remove-Item -LiteralPath $PendingSourceArchive -Force }
+    Compress-Archive -Path (Join-Path $SourceStage "*") -DestinationPath $PendingSourceArchive -CompressionLevel Optimal
+    Move-Item -LiteralPath $PendingSourceArchive -Destination $SourceArchive -Force
     $SourceArchiveHash = Write-Sha256Sidecar $SourceArchive
     Write-Host "Built archive: $Archive"
     Write-Host "SHA-256: $ArchiveHash"
