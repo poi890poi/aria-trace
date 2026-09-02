@@ -89,6 +89,7 @@ FALLBACKS = {
     "predict": "constant_velocity_last_2_accepted",
     "unavailable": "no_fallback",
 }
+CONFIDENCE_MODES = ("selected", "accept_all")
 
 
 def _sha256(path: Path) -> str:
@@ -360,6 +361,7 @@ def _write_plain_report(path: Path, result: dict) -> None:
         for row in holdout
         if row["outage_scenario"] == "natural"
         and row["fallback_strategy"] == "reuse_previous_state"
+        and row["confidence_mode"] == "selected"
     ]
     natural_hold.sort(
         key=lambda row: (
@@ -399,8 +401,46 @@ def _write_plain_report(path: Path, result: dict) -> None:
                 "",
             ]
         )
-    lines.extend(["FALLBACK COMPARISON UNDER THREE FRAME OUTAGES", ""])
+    lines.extend(["CONFIDENCE GATE EFFECT", ""])
     method_ids = sorted({row["profile"] for row in holdout})
+    for method_id in method_ids:
+        lines.extend([method_id, ""])
+        for confidence_mode in CONFIDENCE_MODES:
+            selected = next(
+                (
+                    row
+                    for row in holdout
+                    if row["profile"] == method_id
+                    and row["outage_scenario"] == "natural"
+                    and row["fallback_strategy"] == "reuse_previous_state"
+                    and row["confidence_mode"] == confidence_mode
+                ),
+                None,
+            )
+            if selected is None:
+                continue
+            lines.extend(
+                [
+                    confidence_mode.upper(),
+                    "Fresh accepted  {}".format(
+                        _pct(selected["primary_measurement_accepted_rate"])
+                    ),
+                    "Held  {}".format(
+                        _pct(selected["output_provenance_rate"]["held"])
+                    ),
+                    "Available  {}".format(
+                        _pct(selected["final_output_available_rate"])
+                    ),
+                    "Worst error  {}".format(
+                        _num(selected["e2e_absolute_error_deg"]["worst"], " deg")
+                    ),
+                    "P95 error  {}".format(
+                        _num(selected["e2e_absolute_error_deg"]["p95"], " deg")
+                    ),
+                    "",
+                ]
+            )
+    lines.extend(["FALLBACK COMPARISON UNDER THREE FRAME OUTAGES", ""])
     for method_id in method_ids:
         lines.extend([method_id, ""])
         for fallback_label, fallback_id in FALLBACKS.items():
@@ -411,6 +451,7 @@ def _write_plain_report(path: Path, result: dict) -> None:
                     if row["profile"] == method_id
                     and row["outage_scenario"] == "three_frame_burst_every_90"
                     and row["fallback_strategy"] == fallback_id
+                    and row["confidence_mode"] == "selected"
                 ),
                 None,
             )
@@ -565,31 +606,50 @@ def run(
 
     primary = []
     for method_id in method_ids:
-        primary.extend(
-            _apply_threshold(
-                [row for row in raw_primary if row["profile"] == method_id],
-                thresholds[method_id],
-            )
-        )
+        method_rows = [row for row in raw_primary if row["profile"] == method_id]
+        for confidence_mode in CONFIDENCE_MODES:
+            threshold = thresholds[method_id] if confidence_mode == "selected" else 0.0
+            thresholded = _apply_threshold(method_rows, threshold)
+            for row in thresholded:
+                row["confidence_mode"] = confidence_mode
+            primary.extend(thresholded)
+    _write_csv(output_path / "raw_primary_measurements.csv", raw_primary)
     _write_csv(output_path / "primary_measurements.csv", primary)
 
     e2e_rows = []
+    solution_configs = {}
     for method_id in method_ids:
-        method_rows = [row for row in primary if row["profile"] == method_id]
-        for fallback_label, fallback_id in FALLBACKS.items():
-            solution = "{}+{}".format(method_id, fallback_label)
-            for scenario in OUTAGE_SCENARIOS:
-                e2e_rows.extend(
-                    _replay_sessions(
+        for confidence_mode in CONFIDENCE_MODES:
+            method_rows = [
+                row
+                for row in primary
+                if row["profile"] == method_id
+                and row["confidence_mode"] == confidence_mode
+            ]
+            for fallback_label, fallback_id in FALLBACKS.items():
+                solution = "{}+{}+{}".format(
+                    method_id, confidence_mode, fallback_label
+                )
+                solution_configs[solution] = {
+                    "candidate": method_id,
+                    "confidence_mode": confidence_mode,
+                    "fallback": fallback_label,
+                }
+                for scenario in OUTAGE_SCENARIOS:
+                    replayed = _replay_sessions(
                         method_rows,
                         solution,
                         fallback_id,
                         gate_config,
                         scenario,
                     )
-                )
+                    for row in replayed:
+                        row["confidence_mode"] = confidence_mode
+                    e2e_rows.extend(replayed)
     _write_csv(output_path / "e2e_rows.csv", e2e_rows)
     aggregate = _aggregate(e2e_rows, development_sessions)
+    for row in aggregate:
+        row.update(solution_configs[row["solution"]])
 
     tested_files = [
         Path(__file__).resolve(),
@@ -611,6 +671,7 @@ def run(
         "holdout_sessions": sorted(set(sessions) - set(development_sessions)),
         "candidates": list(method_ids),
         "fallbacks": FALLBACKS,
+        "confidence_modes": list(CONFIDENCE_MODES),
         "outage_scenarios": OUTAGE_SCENARIOS,
         "confidence_thresholds": thresholds,
         "aggregate": aggregate,
