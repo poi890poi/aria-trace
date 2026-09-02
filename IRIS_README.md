@@ -51,6 +51,11 @@ python -m iris_tools rig-calibration `
   --save
 ```
 
+Headless `--final-benchmark auto` (the default) programs and verifies the
+runtime ROI, samples six frames, and skips reference-only display-transition
+latency trials. Use `--final-benchmark full` for the complete benchmark,
+`reduced` explicitly, or `skip` when only ROI programming evidence is needed.
+
 Rig calibration uses full-sensor frames. Hardware ROI belongs to the runtime
 adapter plan and is applied only after calibration and space conversion.
 
@@ -99,20 +104,25 @@ Run the available calibration work from one captured session:
 python -m iris_tools game-calibration SESSION --game-id GAME_ID
 ```
 
-The workflow uses the available, space-tagged evidence and skips calibration
-that cannot be supported by the session. When synchronized HIK images and their
-space conversion are present, the same command also calibrates and activates
-the portable phone-game color reference and the rig-specific game-color
-profile. Cursor evidence is optional: a
+The workflow uses the available, space-tagged Android evidence and skips
+calibration that cannot be supported by the session. Its phone-game result is
+portable and has no rig revision dependency. Cursor evidence is optional: a
 rotating series fits the rotation center, rotating envelope diameter, and
 shape; a static series fits only the observable shape/span unless a verified
 center already exists; both series may accumulate into the same active
 phone-game profile. IRIS never fabricates a rotation center from static data.
-When a fresh rig calibration changes the active rig revision, IRIS centrally
-recomposes portable mini-map geometry and game orientation. A previous
-rig-specific game-color fit is not relabeled as valid: adapter resolution falls
-back to rig-locked color with a structured warning until a synchronized
-`game-calibration` run publishes the matching local HIK fit.
+
+Locked rig imaging and HIK auto white balance are the default color policy.
+Optional synchronized color fitting is non-gating and must be requested; it is
+published for review unless activation is separately authorized:
+
+```powershell
+python -m iris_tools game-calibration SESSION --game-id GAME_ID `
+  --include-color
+
+python -m iris_tools game-calibration SESSION --game-id GAME_ID `
+  --include-color --activate-color
+```
 Dedicated commands remain available:
 
 ```powershell
@@ -130,6 +140,12 @@ python -m iris_tools profiles resolve --game-id GAME_ID --mode dual
 python -m iris_tools profiles show REVISION_ID
 python -m iris_tools profiles activate REVISION_ID
 ```
+
+Automatic adapter resolution ranks active variants lexicographically from
+physical/static facts to software/fluid facts: camera identity and adapter,
+panel raster/density/refresh, platform and game identity/package, then game
+logical raster, viewport/layout, rotation/insets, version, and finally
+revision time. Requested camera and game IDs remain hard candidate boundaries.
 
 Portable phone/game geometry and color references can be exported and imported.
 Rig and rig/game compositions remain local because they depend on the camera,
@@ -222,7 +238,7 @@ with hikcam.HikCamera(config={
     "mode": "dual",       # full, minimap, or dual
     "rectify": True,
     "color_order": "BGR",
-    "color_policy": "game_matched",
+    "color_policy": "rig_locked",
     "mask_policy": "minimap_circle",  # or "none"
 }) as camera:
     frames = camera.get_frames()
@@ -232,6 +248,29 @@ with hikcam.HikCamera(config={
     cursor = camera.get_cursor_geometry("minimap")
     game_model = camera.get_game_model()
 ```
+
+Callers may inspect the same ranked candidates and pin immutable revisions at
+construction time:
+
+```python
+candidates = hikcam.HikCamera.list_profiles(
+    {"camera_id": "CAMERA_ID", "game_id": "GAME_ID"},
+    kinds=["rig", "rig_game", "rig_game_orientation"],
+    active_only=False,
+)
+
+camera = hikcam.HikCamera(config={
+    "camera_id": "CAMERA_ID",
+    "game_id": "GAME_ID",
+    "mode": "dual",
+    "profile_revisions": {
+        "rig_game": candidates["rig_game"][0]["revision_id"],
+    },
+})
+```
+
+A selected rig-game profile carries its exact rig and phone-game dependencies;
+IRIS rejects manual combinations that splice incompatible geometry.
 
 `get_minimap_geometry()` reports the fitted outer boundary in canonical phone
 space and, for a rectified runtime stream, a space-tagged center and ellipse
@@ -281,6 +320,21 @@ The adapter resolves profiles once when it opens. It does not wake, unlock,
 touch, launch applications on, or power-manage the phone during ordinary
 streaming.
 
+After recognizable game content is ready, an integrator can request a
+non-blocking four-orientation ADB/HIK correction and poll it without adding work
+to the frame path:
+
+```python
+job = camera.request_game_orientation_correction(adb_bgr, hik_full_bgr)
+state = camera.get_game_orientation_correction()
+```
+
+A confident result rebuilds the current adapter maps and persists only the
+rig-dependent orientation composition. Ambiguous or failed evidence is a
+retryable non-gating result. `camera.get_iris_geometry_postmortem()` returns the
+requested/effective ROI, output/map observations, and calibration confidence
+captured at open for retrospective diagnosis.
+
 ## Spatial evidence contract
 
 Every IRIS-produced camera image, derived image, video stream, mask, crop, circle,
@@ -306,6 +360,10 @@ The default output is `artifacts/standalone-release/IRIS-Windows-x64` plus a ZIP
 and SHA-256 file. The release bundles Python applications, Python source,
 dependencies, helper scripts, and the phone-target APK. It does not bundle ADB
 or Hikrobot MVS.
+
+Release exports contain no `.git` tree or `.gitmodules`. The release manifest
+records the source commit when available plus a deterministic hash of the
+exported Python source tree, and publication recomputes that hash before upload.
 
 Detailed operator and packaging documentation is under
 `docs/standalone-release/`.
