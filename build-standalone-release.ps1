@@ -13,8 +13,66 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ToolchainRoot = Join-Path $ProjectRoot ".tools\standalone-release-py31210"
 $BuildRoot = Join-Path $ProjectRoot ".tools\standalone-release-pyinstaller"
 $StageRoot = Join-Path $ProjectRoot ".tools\standalone-release-stage"
+$ThirdPartyCache = Join-Path $ProjectRoot ".tools\third-party-release-cache"
 $DefaultPython = Join-Path $ProjectRoot ".tools\python-3.12.10\python.exe"
 $Requirements = Join-Path $ProjectRoot "requirements-standalone-release.txt"
+
+$ScrcpyVersion = "4.1"
+$ScrcpyArchiveName = "scrcpy-win64-v4.1.zip"
+$ScrcpyArchiveUrl = "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip"
+$ScrcpyArchiveSha256 = "5b12172b3264b2889f4583ee64752ce832e29bc8b1089dca81093459697165db"
+$ScrcpySourceName = "scrcpy-v4.1-source.tar.gz"
+$ScrcpySourceUrl = "https://github.com/Genymobile/scrcpy/archive/refs/tags/v4.1.tar.gz"
+$ScrcpySourceSha256 = "537b2ade623cb94b6edddfa5c61bf0b0af21484aa8365ea2531b686ea573249a"
+
+$FfmpegVersion = "n9.0.1-6-g9d4ca21220-20260823"
+$FfmpegArchiveName = "ffmpeg-n9.0.1-6-g9d4ca21220-win64-lgpl-9.0.zip"
+$FfmpegArchiveUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-23-13-03/$FfmpegArchiveName"
+$FfmpegArchiveSha256 = "96ee3965c8f8ba3210e59374c8b1c58f7c9552ea877d930f3fb63fac94fefcec"
+$FfmpegSourceName = "FFmpeg-9d4ca21220-source.tar.gz"
+$FfmpegSourceUrl = "https://github.com/FFmpeg/FFmpeg/archive/9d4ca21220.tar.gz"
+$FfmpegSourceSha256 = "693b19b88c741aa9e02566a40c9c090ca64f808aefdd7fcbff8e5d8cc42db04f"
+$FfmpegBuildSourceName = "FFmpeg-Builds-48576f197ad1c2afb2e0b8efe204919a1afbff54-source.tar.gz"
+$FfmpegBuildSourceUrl = "https://github.com/BtbN/FFmpeg-Builds/archive/48576f197ad1c2afb2e0b8efe204919a1afbff54.tar.gz"
+$FfmpegBuildSourceSha256 = "04b2fcde9a02e2d42c8cb69fe43b912f127746dbc859118b0f81cd124971f8a4"
+
+function Get-PinnedThirdPartyFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Sha256
+    )
+    New-Item -ItemType Directory -Force -Path $ThirdPartyCache | Out-Null
+    $Destination = Join-Path $ThirdPartyCache $Name
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        Write-Host "Downloading pinned third-party archive $Name"
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination
+    }
+    $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash.ToLowerInvariant()
+    if ($Actual -ne $Sha256) {
+        throw "Third-party archive checksum mismatch for $Name; expected $Sha256, got $Actual"
+    }
+    return $Destination
+}
+
+function Write-Sha256Sidecar {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $HashStream = [System.IO.File]::OpenRead($Path)
+    try {
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $Hash = ([System.BitConverter]::ToString($Hasher.ComputeHash($HashStream))).Replace("-", "").ToLowerInvariant()
+        }
+        finally {
+            $Hasher.Dispose()
+        }
+    }
+    finally {
+        $HashStream.Dispose()
+    }
+    Set-Content -LiteralPath "$Path.sha256" -Value "$Hash *$([IO.Path]::GetFileName($Path))" -Encoding ASCII
+    return $Hash
+}
 
 if (-not $PythonCommand) { $PythonCommand = $DefaultPython }
 if (-not (Test-Path -LiteralPath $PythonCommand -PathType Leaf)) {
@@ -114,6 +172,38 @@ $ReleaseRoot = $OutputDirectory
 New-Item -ItemType Directory -Force -Path $ReleaseRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $StageRoot "apps") -Destination $ReleaseRoot -Recurse
 
+$ScrcpyArchive = Get-PinnedThirdPartyFile $ScrcpyArchiveName $ScrcpyArchiveUrl $ScrcpyArchiveSha256
+$FfmpegArchive = Get-PinnedThirdPartyFile $FfmpegArchiveName $FfmpegArchiveUrl $FfmpegArchiveSha256
+$ScrcpySource = Get-PinnedThirdPartyFile $ScrcpySourceName $ScrcpySourceUrl $ScrcpySourceSha256
+$FfmpegSource = Get-PinnedThirdPartyFile $FfmpegSourceName $FfmpegSourceUrl $FfmpegSourceSha256
+$FfmpegBuildSource = Get-PinnedThirdPartyFile $FfmpegBuildSourceName $FfmpegBuildSourceUrl $FfmpegBuildSourceSha256
+
+$ThirdPartyRoot = Join-Path $ReleaseRoot "third_party"
+$ThirdPartyExtract = Join-Path $BuildRoot "third-party-extract"
+if (Test-Path -LiteralPath $ThirdPartyExtract) {
+    Remove-Item -LiteralPath $ThirdPartyExtract -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $ThirdPartyExtract,$ThirdPartyRoot | Out-Null
+
+$ScrcpyExtract = Join-Path $ThirdPartyExtract "scrcpy"
+Expand-Archive -LiteralPath $ScrcpyArchive -DestinationPath $ScrcpyExtract
+$ScrcpyPackageRoot = Get-ChildItem -LiteralPath $ScrcpyExtract -Directory | Select-Object -First 1
+if (-not $ScrcpyPackageRoot) { throw "Official scrcpy archive has no package root" }
+$ScrcpyReleaseRoot = Join-Path $ThirdPartyRoot "scrcpy"
+New-Item -ItemType Directory -Force -Path $ScrcpyReleaseRoot | Out-Null
+Copy-Item -LiteralPath (Join-Path $ScrcpyPackageRoot.FullName "scrcpy-server") -Destination $ScrcpyReleaseRoot
+Copy-Item -LiteralPath (Join-Path $ScrcpyPackageRoot.FullName "LICENSE.txt") -Destination (Join-Path $ScrcpyReleaseRoot "LICENSE.txt")
+
+$FfmpegExtract = Join-Path $ThirdPartyExtract "ffmpeg"
+Expand-Archive -LiteralPath $FfmpegArchive -DestinationPath $FfmpegExtract
+$FfmpegPackageRoot = Get-ChildItem -LiteralPath $FfmpegExtract -Directory | Select-Object -First 1
+if (-not $FfmpegPackageRoot) { throw "Pinned FFmpeg archive has no package root" }
+$FfmpegReleaseRoot = Join-Path $ThirdPartyRoot "ffmpeg"
+New-Item -ItemType Directory -Force -Path (Join-Path $FfmpegReleaseRoot "bin") | Out-Null
+Copy-Item -LiteralPath (Join-Path $FfmpegPackageRoot.FullName "bin\ffmpeg.exe") -Destination (Join-Path $FfmpegReleaseRoot "bin\ffmpeg.exe")
+Copy-Item -LiteralPath (Join-Path $FfmpegPackageRoot.FullName "LICENSE.txt") -Destination (Join-Path $FfmpegReleaseRoot "LICENSE.txt")
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\windows\release-files\THIRD-PARTY-NOTICES.md") -Destination $ThirdPartyRoot
+
 $PhoneTargetApk = Join-Path $ProjectRoot "artifacts\android-phone-target\iris-phone-target.apk"
 if (-not $SkipPhoneTargetBuild) {
     & (Join-Path $ProjectRoot "android\phone-target\build-phone-target.ps1") -Output $PhoneTargetApk
@@ -206,12 +296,25 @@ $Manifest = @(
     "camera_adapter_import: python/hikcam.py",
     "native_phone_target: phone-target/iris-phone-target.apk",
     "python_tools_import: python/iris_tools.py",
+    "bundled_tools:",
+    "  scrcpy_server:",
+    "    version: '$ScrcpyVersion'",
+    "    path: third_party/scrcpy/scrcpy-server",
+    "    license: Apache-2.0",
+    "    upstream_archive_sha256: '$ScrcpyArchiveSha256'",
+    "  ffmpeg:",
+    "    version: '$FfmpegVersion'",
+    "    path: third_party/ffmpeg/bin/ffmpeg.exe",
+    "    build_variant: win64-lgpl-static",
+    "    license: LGPL-2.1-or-later",
+    "    upstream_archive_sha256: '$FfmpegArchiveSha256'",
     "external_environment:",
     "  hik_mvs: required",
     "  adb: required_on_path_or_pass_explicit_path",
-    "  scrcpy_server: required_for_android_capture_scrcpy_only",
-    "  ffmpeg: required_for_android_capture_scrcpy_only",
-    "bundled_scope: python_runtime_dependencies_source_and_native_phone_target"
+    "  scrcpy_server: bundled_for_android_capture_scrcpy_only",
+    "  ffmpeg: bundled_for_android_capture_scrcpy_only",
+    "third_party_corresponding_source: ../IRIS-Third-Party-Source.zip",
+    "bundled_scope: python_runtime_dependencies_source_native_phone_target_scrcpy_server_and_ffmpeg"
 )
 Set-Content -LiteralPath (Join-Path $ReleaseRoot "release-manifest.yaml") -Value $Manifest -Encoding UTF8
 
@@ -226,21 +329,36 @@ if (-not $NoArchive) {
     $Archive = "$OutputDirectory.zip"
     if (Test-Path -LiteralPath $Archive) { Remove-Item -LiteralPath $Archive -Force }
     Compress-Archive -LiteralPath $OutputDirectory -DestinationPath $Archive -CompressionLevel Optimal
-    $HashStream = [System.IO.File]::OpenRead($Archive)
-    try {
-        $Hasher = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $ArchiveHash = ([System.BitConverter]::ToString($Hasher.ComputeHash($HashStream))).Replace("-", "").ToLowerInvariant()
-        }
-        finally {
-            $Hasher.Dispose()
-        }
-    }
-    finally {
-        $HashStream.Dispose()
-    }
-    Set-Content -LiteralPath "$Archive.sha256" -Value "$ArchiveHash *$([IO.Path]::GetFileName($Archive))" -Encoding ASCII
+    $ArchiveHash = Write-Sha256Sidecar $Archive
+
+    $SourceStage = Join-Path $BuildRoot "third-party-source"
+    if (Test-Path -LiteralPath $SourceStage) { Remove-Item -LiteralPath $SourceStage -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $SourceStage | Out-Null
+    Copy-Item -LiteralPath $ScrcpySource,$FfmpegSource,$FfmpegBuildSource -Destination $SourceStage
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\windows\release-files\THIRD-PARTY-NOTICES.md") -Destination $SourceStage
+    $SourceReadme = @(
+        "IRIS bundled third-party corresponding source",
+        "",
+        "This archive accompanies the separately aggregated scrcpy server and FFmpeg executable in IRIS-Windows-x64.zip.",
+        "",
+        "scrcpy v$ScrcpyVersion source: $ScrcpySourceName",
+        "scrcpy source SHA-256: $ScrcpySourceSha256",
+        "FFmpeg $FfmpegVersion source: $FfmpegSourceName",
+        "FFmpeg source SHA-256: $FfmpegSourceSha256",
+        "BtbN build recipe commit 48576f197ad1c2afb2e0b8efe204919a1afbff54: $FfmpegBuildSourceName",
+        "BtbN build source SHA-256: $FfmpegBuildSourceSha256",
+        "",
+        "The exact FFmpeg configure line is available from: third_party/ffmpeg/bin/ffmpeg.exe -version",
+        "The BtbN build recipes pin and fetch the LGPL-compatible dependency sources used for the build."
+    )
+    Set-Content -LiteralPath (Join-Path $SourceStage "README.txt") -Value $SourceReadme -Encoding UTF8
+    $SourceArchive = Join-Path (Split-Path -Parent $OutputDirectory) "IRIS-Third-Party-Source.zip"
+    if (Test-Path -LiteralPath $SourceArchive) { Remove-Item -LiteralPath $SourceArchive -Force }
+    Compress-Archive -Path (Join-Path $SourceStage "*") -DestinationPath $SourceArchive -CompressionLevel Optimal
+    $SourceArchiveHash = Write-Sha256Sidecar $SourceArchive
     Write-Host "Built archive: $Archive"
     Write-Host "SHA-256: $ArchiveHash"
+    Write-Host "Built corresponding-source archive: $SourceArchive"
+    Write-Host "Source SHA-256: $SourceArchiveHash"
 }
 Write-Host "Built standalone release: $OutputDirectory"

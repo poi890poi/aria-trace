@@ -1,6 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+call "%~dp0iris-runtime-env.bat"
 if defined IRIS_PYTHON (
   set "IRIS_USER_PYTHON=%IRIS_PYTHON%"
 ) else (

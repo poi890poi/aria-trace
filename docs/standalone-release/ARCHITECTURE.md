@@ -104,8 +104,8 @@ flowchart TD
     RigExe --> MVS[External HIK MVS runtime + driver]
     RigExe --> ADB[External ADB environment]
     ZigzagExe --> ADB
-    ZigzagExe -->|continuous scrcpy mode only| Scrcpy[External scrcpy-server]
-    ZigzagExe -->|continuous scrcpy mode only| FFmpeg[External FFmpeg]
+    ZigzagExe -->|continuous scrcpy mode only| Scrcpy[Bundled scrcpy-server 4.1]
+    ZigzagExe -->|continuous scrcpy mode only| FFmpeg[Bundled LGPL FFmpeg]
     ZigzagExe -. optional .-> MVS
     MiniExe --> OpenCV
     AdapterSource[Python camera adapter source] --> OpenCV

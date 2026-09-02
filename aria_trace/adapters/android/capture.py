@@ -28,6 +28,7 @@ from aria_trace.adapters.android.spaces import image_space_from_surface
 from aria_trace.domain.packets import FramePacket
 from aria_trace.adapters.sources import AdbClockMapper, FrameSource
 from aria_trace.adapters.filesystem.video import find_ffmpeg
+from aria_trace.adapters.runtime_tools import find_release_tool
 
 
 SCRCPY_SERVER_VERSION = "4.1"
@@ -89,6 +90,14 @@ def find_scrcpy_server(explicit: Optional[Path] = None) -> Path:
         if candidate.is_file():
             return candidate
         raise RuntimeError("scrcpy-server was not found at {}".format(candidate))
+    configured = os.environ.get("IRIS_SCRCPY_SERVER")
+    if configured:
+        candidate = Path(configured)
+        if candidate.is_file():
+            return candidate
+    packaged = find_release_tool("third_party/scrcpy/scrcpy-server")
+    if packaged is not None:
+        return packaged
     executable = shutil.which("scrcpy")
     if executable:
         sibling = Path(executable).resolve().parent / "scrcpy-server"

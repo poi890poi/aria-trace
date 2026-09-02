@@ -13,9 +13,9 @@ without a C compiler.
 - HIK MVS installed, including its camera driver, runtime, and Python `MvImport`
   wrapper. The vendor runtime is not redistributed.
 - Android platform-tools (`adb`) available on `PATH`, or supplied with `--adb`.
-- For continuous `--android-capture scrcpy` only: scrcpy 4.1 available on
-  `PATH`, or its server supplied with `--scrcpy-server`, and FFmpeg available
-  on `PATH` or supplied with `--ffmpeg`.
+- For continuous `--android-capture scrcpy`, the release helpers use the
+  bundled scrcpy 4.1 server and pinned LGPL FFmpeg executable. Explicit
+  `--scrcpy-server` and `--ffmpeg` arguments still override them.
 - `--android-capture adb-screenshot` requires neither scrcpy nor FFmpeg.
 - USB debugging authorized on the Android phone.
 - For `import hikcam`, a user-managed Python environment. Run
@@ -23,10 +23,11 @@ without a C compiler.
 - For every tool in a user-managed Python environment, run
   `install-python-tools.bat` once in that environment.
 
-Python executables, their Python/native-wheel dependencies, Python source, and
-the small IRIS native phone-target APK are bundled. ADB and HIK MVS remain
-user-managed environment dependencies; scrcpy and FFmpeg are user-managed only
-for continuous scrcpy acquisition. Rig calibration
+Python executables, their Python/native-wheel dependencies, Python source, the
+small IRIS native phone-target APK, scrcpy server, and FFmpeg are bundled. ADB
+and HIK MVS remain user-managed environment dependencies. Third-party license
+texts are under `third_party/`; corresponding source is published as the
+companion `IRIS-Third-Party-Source.zip` release asset. Rig calibration
 installs the target APK only when its package is absent, then launches its
 immersive `SurfaceView` through ADB reverse. The camera adapter does not operate
 the phone during streaming.

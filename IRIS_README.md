@@ -16,8 +16,10 @@ outside this product.
 - Hikrobot MVS for a HIK camera. Its SDK and driver remain user-managed.
 - Android platform-tools with `adb` available on `PATH`.
 - An authorized Android device and a supported camera.
-- scrcpy and FFmpeg only when continuous scrcpy capture is explicitly selected.
-  ADB-screenshot acquisition requires neither.
+- The standalone Windows release bundles scrcpy server and an LGPL FFmpeg
+  executable for continuous scrcpy capture, with license texts and a companion
+  corresponding-source archive. Source-tree use may instead supply either tool
+  explicitly. ADB-screenshot acquisition requires neither.
 
 Set a shared profile root before using more than one command:
 

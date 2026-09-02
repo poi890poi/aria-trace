@@ -1,11 +1,14 @@
 """Replaceable compressed-video writers for acquisition sessions."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
+
+from aria_trace.adapters.runtime_tools import find_release_tool
 
 
 def find_ffmpeg(explicit: Optional[Path] = None) -> Path:
@@ -15,6 +18,14 @@ def find_ffmpeg(explicit: Optional[Path] = None) -> Path:
         if candidate.is_file():
             return candidate
         raise RuntimeError("FFmpeg was not found at {}".format(candidate))
+    configured = os.environ.get("IRIS_FFMPEG")
+    if configured:
+        candidate = Path(configured)
+        if candidate.is_file():
+            return candidate
+    packaged = find_release_tool("third_party/ffmpeg/bin/ffmpeg.exe")
+    if packaged is not None:
+        return packaged
     located = shutil.which("ffmpeg")
     if located:
         return Path(located)
