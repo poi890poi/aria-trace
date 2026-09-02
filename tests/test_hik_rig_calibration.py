@@ -726,6 +726,92 @@ class HikAlgorithmTests(unittest.TestCase):
         self.assertEqual(session.charuco_layout.screen_size_px, (1080, 2400))
         self.assertEqual(session.phone_metrics.orientation_quarter_turns, 0)
 
+    def test_native_canonical_gate_waits_for_paint_and_stable_adb_rotation(self):
+        options = HikCalibrationOptions("camera", "phone", Path("unused"))
+        phone = mock.Mock()
+        phone.display_orientation_quarter_turns.side_effect = [1, 0, 0]
+        canonical = PhoneMetrics(
+            "phone",
+            "Example",
+            "Phone",
+            "14",
+            [1080, 2400],
+            420,
+            60.0,
+            orientation_quarter_turns=0,
+            natural_screen_size_px=[1080, 2400],
+        )
+        phone.metrics.return_value = canonical
+        target = NativeImmersivePhoneTarget()
+        target.telemetry = mock.Mock(
+            return_value={
+                "browser": {
+                    "native_surface": True,
+                    "canonical_orientation_ready": True,
+                    "display_rotation": 0,
+                    "canvas_width": 1080,
+                    "canvas_height": 2400,
+                },
+                "acknowledgements": [
+                    {
+                        "painted": True,
+                        "native_surface": True,
+                        "target_contract_version": 2,
+                        "canonical_orientation_ready": True,
+                        "display_rotation": 0,
+                        "canvas_width": 1080,
+                        "canvas_height": 2400,
+                    }
+                ],
+            }
+        )
+        session = HikRigCalibrationSession(
+            options,
+            camera=mock.Mock(),
+            phone=phone,
+            target=target,
+            progress=lambda _message: None,
+        )
+
+        with mock.patch(
+            "aria_trace.workflows.hik_rig_calibration.time.sleep"
+        ):
+            observed = session._wait_native_canonical_surface(timeout_seconds=1.0)
+
+        self.assertIs(observed, canonical)
+        self.assertEqual(phone.display_orientation_quarter_turns.call_count, 3)
+        phone.metrics.assert_called_once_with(None)
+
+    def test_native_canonical_gate_rejects_unpainted_rotation_zero_surface(self):
+        options = HikCalibrationOptions("camera", "phone", Path("unused"))
+        phone = mock.Mock()
+        phone.display_orientation_quarter_turns.return_value = 0
+        target = NativeImmersivePhoneTarget()
+        target.telemetry = mock.Mock(
+            return_value={
+                "browser": {
+                    "native_surface": True,
+                    "canonical_orientation_ready": True,
+                    "display_rotation": 0,
+                    "canvas_width": 1080,
+                    "canvas_height": 2400,
+                },
+                "acknowledgements": [],
+            }
+        )
+        session = HikRigCalibrationSession(
+            options,
+            camera=mock.Mock(),
+            phone=phone,
+            target=target,
+            progress=lambda _message: None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "painted contract-v2 target"):
+            session._wait_native_canonical_surface(timeout_seconds=0.02)
+
+        phone.metrics.assert_not_called()
+
     def test_refresh_quantization_and_exposure_selection(self):
         self.assertAlmostEqual(refresh_quantized_exposure_us(60.0, 2), 8333.333333, places=3)
         self.assertAlmostEqual(
@@ -1269,6 +1355,9 @@ class HikPhoneTests(unittest.TestCase):
                 if args[:4] == ["shell", "pm", "list", "packages"]:
                     self.commands.append(args)
                     return "package:io.iris.phonetarget"
+                if args[:3] == ["shell", "dumpsys", "package"]:
+                    self.commands.append(args)
+                    return "versionCode=2 minSdk=23 targetSdk=35"
                 return super().__call__(command, timeout)
 
         runner = NativeRunner()
@@ -1318,6 +1407,13 @@ class HikPhoneTests(unittest.TestCase):
                     self.install_timeout = timeout
                     self.installed = True
                     return "Success"
+                if args[:3] == ["shell", "dumpsys", "package"]:
+                    self.commands.append(args)
+                    return (
+                        "versionCode=2 minSdk=23 targetSdk=35"
+                        if self.installed
+                        else ""
+                    )
                 return super().__call__(command, timeout)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1347,6 +1443,48 @@ class HikPhoneTests(unittest.TestCase):
         self.assertEqual(len(launches), 1)
         self.assertGreaterEqual(runner.install_timeout, 120.0)
 
+    def test_native_target_upgrades_installed_contract_v1_before_launch(self):
+        class UpgradeRunner(FakeAdbRunner):
+            def __init__(self):
+                super().__init__()
+                self.version_code = 1
+
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:4] == ["shell", "pm", "list", "packages"]:
+                    self.commands.append(args)
+                    return "package:io.iris.phonetarget"
+                if args[:3] == ["shell", "dumpsys", "package"]:
+                    self.commands.append(args)
+                    return "versionCode={} minSdk=23 targetSdk=35".format(
+                        self.version_code
+                    )
+                if args[:2] == ["install", "-r"]:
+                    self.commands.append(args)
+                    self.version_code = 2
+                    return "Success"
+                return super().__call__(command, timeout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "iris-phone-target.apk"
+            apk.write_bytes(b"apk-v2")
+            runner = UpgradeRunner()
+            phone = AdbPhoneSession(
+                "SERIAL-1",
+                adb_executable="adb-test",
+                runner=runner,
+                sleeper=lambda _seconds: None,
+            )
+            phone.wake_and_hold_native_target(
+                8765, [1080, 2400], apk_path=apk
+            )
+
+        self.assertEqual(runner.version_code, 2)
+        self.assertEqual(
+            len([row for row in runner.commands if row[:2] == ["install", "-r"]]),
+            1,
+        )
+
     def test_native_target_accepts_package_committed_after_adb_transport_error(self):
         class CommittedInstallRunner(FakeAdbRunner):
             def __init__(self):
@@ -1366,6 +1504,13 @@ class HikPhoneTests(unittest.TestCase):
                     self.commands.append(args)
                     self.installed = True
                     raise RuntimeError("ADB transport ended after package commit")
+                if args[:3] == ["shell", "dumpsys", "package"]:
+                    self.commands.append(args)
+                    return (
+                        "versionCode=2 minSdk=23 targetSdk=35"
+                        if self.installed
+                        else ""
+                    )
                 return super().__call__(command, timeout)
 
         with tempfile.TemporaryDirectory() as directory:

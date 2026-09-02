@@ -18,6 +18,7 @@ _ADB_RECOVERY_LOCK = threading.Lock()
 _ADB_RECOVERY_GENERATIONS: Dict[str, int] = {}
 NATIVE_TARGET_INSTALL_TIMEOUT_SECONDS = 120.0
 NATIVE_TARGET_INSTALL_OBSERVE_SECONDS = 10.0
+NATIVE_TARGET_MINIMUM_VERSION_CODE = 2
 
 
 def resolve_adb_executable(value: Optional[str] = None) -> str:
@@ -315,6 +316,13 @@ class AdbPhoneSession:
         listed = self.shell("pm", "list", "packages", str(package_name))
         return any(line.strip() == expected for line in listed.splitlines())
 
+    def _package_version_code(self, package_name: str) -> Optional[int]:
+        """Return one installed package's versionCode, or ``None`` if unavailable."""
+
+        details = self.shell("dumpsys", "package", str(package_name))
+        match = re.search(r"\bversionCode=(\d+)\b", details)
+        return int(match.group(1)) if match else None
+
     def display_state(self) -> str:
         """Return Android's best-effort default-display power report.
 
@@ -585,6 +593,7 @@ class AdbPhoneSession:
             "io.iris.phonetarget.PhoneTargetActivity"
         ),
         apk_path: Optional[Path] = None,
+        minimum_version_code: int = NATIVE_TARGET_MINIMUM_VERSION_CODE,
     ) -> None:
         """Launch the native exact-pixel target over the existing ADB reverse."""
 
@@ -595,12 +604,33 @@ class AdbPhoneSession:
             self.run("reverse", "tcp:{}".format(port), "tcp:{}".format(port))
             self._reverse_port = port
             installed = self._package_is_installed(package_name)
-            if not installed:
+            installed_version = (
+                self._package_version_code(package_name) if installed else None
+            )
+            needs_install = not installed or (
+                int(minimum_version_code) > 0
+                and (
+                    installed_version is None
+                    or installed_version < int(minimum_version_code)
+                )
+            )
+            if needs_install:
                 if apk_path is None or not Path(apk_path).is_file():
+                    if installed:
+                        problem = (
+                            "IRIS native phone target versionCode {} does not satisfy "
+                            "the required versionCode {}, and its upgrade APK was not found."
+                            .format(installed_version, int(minimum_version_code))
+                        )
+                    else:
+                        problem = (
+                            "IRIS native phone target is not installed and its APK "
+                            "was not found."
+                        )
                     raise RuntimeError(
-                        "IRIS native phone target is not installed and its APK "
-                        "was not found. Build android\\phone-target\\build-phone-target.bat, "
+                        "{} Build android\\phone-target\\build-phone-target.bat, "
                         "set IRIS_PHONE_TARGET_APK, or pass --phone-target-apk."
+                        .format(problem)
                     )
                 resolved_apk = Path(apk_path).resolve()
                 install_error: Optional[RuntimeError] = None
@@ -622,12 +652,25 @@ class AdbPhoneSession:
                 while True:
                     try:
                         installed = self._package_is_installed(package_name)
+                        installed_version = (
+                            self._package_version_code(package_name)
+                            if installed
+                            else None
+                        )
                     except RuntimeError:
                         installed = False
-                    if installed or time.monotonic() >= deadline:
+                        installed_version = None
+                    version_ready = installed and (
+                        int(minimum_version_code) <= 0
+                        or (
+                            installed_version is not None
+                            and installed_version >= int(minimum_version_code)
+                        )
+                    )
+                    if version_ready or time.monotonic() >= deadline:
                         break
                     self.sleeper(0.25)
-                if not installed:
+                if not version_ready:
                     detail = (
                         ": {}".format(install_error)
                         if install_error is not None
@@ -635,8 +678,13 @@ class AdbPhoneSession:
                     )
                     raise RuntimeError(
                         "ADB installation of the native phone target did not "
-                        "produce package {} from {}{}".format(
-                            package_name, resolved_apk, detail
+                        "produce package {} versionCode >= {} from {}; observed "
+                        "versionCode {}{}".format(
+                            package_name,
+                            int(minimum_version_code),
+                            resolved_apk,
+                            installed_version,
+                            detail,
                         )
                     ) from install_error
             self.viewer_activity = str(component_name)

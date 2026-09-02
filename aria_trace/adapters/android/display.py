@@ -323,6 +323,7 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
     """Host half of the native immersive Android SurfaceView presenter."""
 
     adapter_id = "android_native_surface"
+    minimum_version_code = 2
     package_name = "io.iris.phonetarget"
     component_name = (
         "io.iris.phonetarget/"
@@ -412,4 +413,5 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
             package_name=self.package_name,
             component_name=self.component_name,
             apk_path=self.resolved_apk_path(),
+            minimum_version_code=self.minimum_version_code,
         )

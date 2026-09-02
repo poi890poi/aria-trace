@@ -1515,6 +1515,83 @@ class HikRigCalibrationSession:
             time.sleep(0.04)
         raise RuntimeError("Phone did not acknowledge target revision {}".format(presentation.revision))
 
+    def _wait_native_canonical_surface(
+        self, timeout_seconds: Optional[float] = None
+    ) -> PhoneMetrics:
+        """Wait until the native target and ADB agree on stable rotation-0 output."""
+
+        timeout = float(
+            self.options.operation_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        deadline = time.monotonic() + timeout
+        stable_probes = 0
+        stable_canvas: Optional[List[int]] = None
+        last_evidence: Dict[str, Any] = {
+            "adb_rotation": None,
+            "viewer": {},
+            "paint_ack": None,
+            "stable_probes": 0,
+        }
+        while time.monotonic() < deadline:
+            telemetry = self.target.telemetry()
+            viewer = dict(telemetry.get("viewer") or telemetry.get("browser") or {})
+            acknowledgement = next(
+                (
+                    dict(item)
+                    for item in reversed(telemetry.get("acknowledgements", []))
+                    if bool(item.get("painted"))
+                    and bool(item.get("native_surface"))
+                    and int(item.get("target_contract_version", 0) or 0) >= 2
+                    and bool(item.get("canonical_orientation_ready"))
+                    and int(item.get("display_rotation", -1)) == 0
+                    and min(
+                        int(item.get("canvas_width", 0) or 0),
+                        int(item.get("canvas_height", 0) or 0),
+                    ) > 0
+                ),
+                None,
+            )
+            try:
+                adb_rotation = int(self.phone.display_orientation_quarter_turns()) % 4
+            except RuntimeError:
+                adb_rotation = None
+            canvas = (
+                [
+                    int(acknowledgement.get("canvas_width", 0)),
+                    int(acknowledgement.get("canvas_height", 0)),
+                ]
+                if acknowledgement is not None
+                else None
+            )
+            if acknowledgement is not None and adb_rotation == 0:
+                stable_probes = stable_probes + 1 if canvas == stable_canvas else 1
+                stable_canvas = canvas
+                if stable_probes >= 2:
+                    metrics = self.phone.metrics(self.options.refresh_hz_override)
+                    if int(metrics.orientation_quarter_turns) % 4 == 0:
+                        return metrics
+                    adb_rotation = int(metrics.orientation_quarter_turns) % 4
+                    stable_probes = 0
+            else:
+                stable_probes = 0
+                stable_canvas = None
+            last_evidence = {
+                "adb_rotation": adb_rotation,
+                "viewer": viewer,
+                "paint_ack": acknowledgement,
+                "stable_probes": stable_probes,
+            }
+            time.sleep(0.10)
+        raise RuntimeError(
+            "Android native target did not enter canonical rotation 0 within "
+            "{:.1f}s. IRIS requires a painted contract-v2 target with "
+            "canonical_orientation_ready=true, display_rotation=0, and two "
+            "matching ADB rotation-0 probes. Last evidence: {}"
+            .format(timeout, last_evidence)
+        )
+
     def open(self) -> None:
         if self._opened:
             return
@@ -1527,6 +1604,7 @@ class HikRigCalibrationSession:
             if isinstance(self.target, NativeImmersivePhoneTarget):
                 self.target.start(layout)
                 self.target.activate_phone(self.phone, canonical_size, 0)
+                self.phone_metrics = self._wait_native_canonical_surface()
             elif isinstance(self.target, LocalPhoneTargetServer):
                 self.target.start(layout)
                 self.phone.wake_and_hold(
@@ -1546,9 +1624,10 @@ class HikRigCalibrationSession:
             # setting write above is merely a request; re-probe the effective
             # surface after the viewer has launched and reject a silent app or
             # OEM override before assigning ChArUco screen coordinates.
-            self.phone_metrics = self.phone.metrics(
-                self.options.refresh_hz_override
-            )
+            if self.phone_metrics is None:
+                self.phone_metrics = self.phone.metrics(
+                    self.options.refresh_hz_override
+                )
             self.display_scale_diagnostic = android_display_scale_diagnostic(
                 self.phone_metrics
             )
