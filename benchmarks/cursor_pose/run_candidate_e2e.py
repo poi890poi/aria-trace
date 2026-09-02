@@ -368,20 +368,41 @@ def _write_plain_report(path: Path, result: dict) -> None:
             -row["final_output_available_rate"],
             row["e2e_absolute_error_deg"]["worst"],
             row["e2e_absolute_error_deg"]["p95"],
+            -row["primary_measurement_accepted_rate"],
             row["e2e_latency_ms"]["median"],
         )
     )
+    winner = natural_hold[0] if natural_hold else None
     lines = [
         "CURSOR POSE COMPLETE CHRONOLOGICAL BENCHMARK",
         "",
         "BOTTOM LINE",
         "",
-        "Primary order: availability, worst error, P95 error, latency.",
+        "Primary order: availability, worst error, P95 error, fresh acceptance, latency.",
         "Held output is never counted as a fresh accepted measurement.",
         "",
-        "RANKED NATURAL HOLD STACKS",
-        "",
     ]
+    if winner is not None:
+        lines.extend(
+            [
+                "WINNER  {} plus confidence plus hold".format(winner["profile"]),
+                "Available  {}".format(_pct(winner["final_output_available_rate"])),
+                "Fresh accepted  {}".format(
+                    _pct(winner["primary_measurement_accepted_rate"])
+                ),
+                "Worst error  {}".format(
+                    _num(winner["e2e_absolute_error_deg"]["worst"], " deg")
+                ),
+                "P95 error  {}".format(
+                    _num(winner["e2e_absolute_error_deg"]["p95"], " deg")
+                ),
+                "Median latency  {}".format(
+                    _num(winner["e2e_latency_ms"]["median"], " ms")
+                ),
+                "",
+            ]
+        )
+    lines.extend(["RANKED NATURAL HOLD STACKS", ""])
     for index, row in enumerate(natural_hold, 1):
         error = row["e2e_absolute_error_deg"]
         lines.extend(
@@ -664,6 +685,7 @@ def run(
             "final_output_available_rate_desc",
             "worst_e2e_error_asc",
             "p95_e2e_error_asc",
+            "primary_measurement_accepted_rate_desc",
             "median_latency_asc",
         ],
         "sessions": list(sessions),
