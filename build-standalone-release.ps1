@@ -36,6 +36,25 @@ $FfmpegBuildSourceName = "FFmpeg-Builds-48576f197ad1c2afb2e0b8efe204919a1afbff54
 $FfmpegBuildSourceUrl = "https://github.com/BtbN/FFmpeg-Builds/archive/48576f197ad1c2afb2e0b8efe204919a1afbff54.tar.gz"
 $FfmpegBuildSourceSha256 = "04b2fcde9a02e2d42c8cb69fe43b912f127746dbc859118b0f81cd124971f8a4"
 
+function Get-PortableSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $HashStream = [System.IO.File]::OpenRead($Path)
+    try {
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString(
+                $Hasher.ComputeHash($HashStream)
+            )).Replace("-", "").ToLowerInvariant()
+        }
+        finally {
+            $Hasher.Dispose()
+        }
+    }
+    finally {
+        $HashStream.Dispose()
+    }
+}
+
 function Get-PinnedThirdPartyFile {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -48,7 +67,7 @@ function Get-PinnedThirdPartyFile {
         Write-Host "Downloading pinned third-party archive $Name"
         Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination
     }
-    $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash.ToLowerInvariant()
+    $Actual = Get-PortableSha256 $Destination
     if ($Actual -ne $Sha256) {
         throw "Third-party archive checksum mismatch for $Name; expected $Sha256, got $Actual"
     }
@@ -57,19 +76,7 @@ function Get-PinnedThirdPartyFile {
 
 function Write-Sha256Sidecar {
     param([Parameter(Mandatory = $true)][string]$Path)
-    $HashStream = [System.IO.File]::OpenRead($Path)
-    try {
-        $Hasher = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $Hash = ([System.BitConverter]::ToString($Hasher.ComputeHash($HashStream))).Replace("-", "").ToLowerInvariant()
-        }
-        finally {
-            $Hasher.Dispose()
-        }
-    }
-    finally {
-        $HashStream.Dispose()
-    }
+    $Hash = Get-PortableSha256 $Path
     Set-Content -LiteralPath "$Path.sha256" -Value "$Hash *$([IO.Path]::GetFileName($Path))" -Encoding ASCII
     return $Hash
 }
@@ -274,11 +281,20 @@ New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseRoot "artifacts"),(
 
 $EmbeddedVersions = & $EnvironmentPython -c "import cv2,numpy,yaml,zxingcpp,PyInstaller; print('|'.join([numpy.__version__,cv2.__version__,yaml.__version__,getattr(zxingcpp,'__version__','3.1.1'),PyInstaller.__version__]))"
 $VersionParts = $EmbeddedVersions -split "\|"
+$SourceCommit = "unavailable"
+$GitCommand = Get-Command git -ErrorAction SilentlyContinue
+if ($GitCommand) {
+    $CandidateCommit = & $GitCommand.Source -C $ProjectRoot rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $CandidateCommit) {
+        $SourceCommit = [string]$CandidateCommit
+    }
+}
 $Manifest = @(
     "# Human-readable standalone release identity and external runtime contract.",
     "schema_version: '1.0'",
     "product: iris-invariant-rig-system",
     "platform: windows-x64",
+    "source_commit: '$SourceCommit'",
     "python_build_version: '3.12.10'",
     "build_time_utc: '$([DateTime]::UtcNow.ToString("o"))'",
     "embedded_python_packages:",
