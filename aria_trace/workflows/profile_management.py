@@ -277,6 +277,24 @@ def _portable_panel_geometry_matches(
     return rig_context.panel_signature == phone_context.panel_signature
 
 
+def _rig_calibration_display_turns(
+    rig_profile: Mapping[str, Any], registry: ProfileRegistry
+) -> int:
+    """Return the rig-normalized display orientation relative to panel rotation 0."""
+
+    calibration = _load_json(
+        registry.runtime_file(rig_profile, "hik_camera_calibration")
+    )
+    phone = dict(calibration.get("phone") or {})
+    viewer = dict(phone.get("viewer") or {})
+    return int(
+        phone.get(
+            "orientation_quarter_turns",
+            viewer.get("canonical_orientation_quarter_turns", 0),
+        )
+    ) % 4
+
+
 def recompose_active_rig_game_profiles(
     rig_profile: Mapping[str, Any],
     *,
@@ -337,9 +355,10 @@ def recompose_active_rig_game_orientation_profiles(
     registry: ProfileRegistry,
     activate: bool = True,
 ) -> list[Dict[str, Any]]:
-    """Transfer canonical game-up quarter-turns to one new rig revision."""
+    """Re-express portable game-up orientation against one new rig revision."""
 
     rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+    target_display_turns = _rig_calibration_display_turns(rig_profile, registry)
     recomposed = []
     composed_variants = set()
     for item in registry.list_revisions(
@@ -360,21 +379,78 @@ def recompose_active_rig_game_orientation_profiles(
             continue
         composed_variants.add(target_variant)
         context = _rig_phone_game_context(rig_context, source_context)
+        source_payload = dict(source.get("payload") or {})
+        source_image_turns = int(
+            source_payload.get(
+                "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
+                0,
+            )
+        ) % 4
+        source_rig_revision = str(
+            (source.get("dependencies") or {}).get("rig") or ""
+        )
+        portable_surface_turns = source_payload.get(
+            "game_surface_quarter_turns_clockwise_from_phone_natural"
+        )
+        if portable_surface_turns is None:
+            if not source_rig_revision:
+                raise ProfileResolutionError(
+                    "Game-orientation profile {} has neither a portable game "
+                    "surface orientation nor its source rig dependency".format(
+                        source["revision_id"]
+                    )
+                )
+            source_rig = registry.revision(source_rig_revision)
+            source_display_turns = _rig_calibration_display_turns(
+                source_rig, registry
+            )
+            portable_surface_turns = (
+                source_image_turns + source_display_turns
+            ) % 4
+            portable_basis = "derived_from_legacy_source_rig_and_relative_turn"
+        else:
+            portable_surface_turns = int(portable_surface_turns) % 4
+            source_display_turns = None
+            portable_basis = "stored_portable_game_surface_orientation"
+        target_image_turns = (
+            int(portable_surface_turns) - target_display_turns
+        ) % 4
+        target_payload = dict(source_payload)
+        target_payload.update(
+            game_surface_quarter_turns_clockwise_from_phone_natural=int(
+                portable_surface_turns
+            ),
+            camera_adapter_image_quarter_turns_clockwise_from_calibration_display=(
+                target_image_turns
+            ),
+            orientation_space_contract={
+                "portable_source_space": "phone_natural_rotation_0",
+                "adapter_base_space": "rig_calibration_display",
+                "composition": (
+                    "adapter_turn = game_surface_turn - "
+                    "rig_calibration_display_turn (mod 4)"
+                ),
+            },
+        )
         result = registry.publish(
             "rig_game_orientation",
             context,
-            dict(source.get("payload") or {}),
+            target_payload,
             dependencies={"rig": str(rig_profile["revision_id"])},
             provenance={
-                "composition": "canonical_game_orientation_plus_new_rig",
+                "composition": "portable_game_surface_orientation_plus_new_rig",
                 "source_orientation_revision": source["revision_id"],
-                "source_rig_revision": (source.get("dependencies") or {}).get(
-                    "rig"
-                ),
+                "source_rig_revision": source_rig_revision or None,
                 "target_rig_revision": rig_profile["revision_id"],
+                "source_adapter_turns": source_image_turns,
+                "source_calibration_display_turns": source_display_turns,
+                "portable_game_surface_turns": int(portable_surface_turns),
+                "portable_orientation_basis": portable_basis,
+                "target_calibration_display_turns": target_display_turns,
+                "target_adapter_turns": target_image_turns,
                 "transfer_basis": (
-                    "accepted rigs normalize ChArUco app-up into the same "
-                    "canonical display space; game/display quarter-turn is unchanged"
+                    "game surface is portable in phone-natural rotation-0 space; "
+                    "the adapter-relative turn is recomputed for the target rig"
                 ),
                 "source_orientation_provenance": source.get("provenance"),
             },
@@ -751,6 +827,31 @@ def publish_minimap_profiles(
     cursor_geometry = (
         dict(source_phone_payload.get("cursor_geometry") or {}) or None
     )
+    if canonical_rotation_center is not None:
+        cursor_geometry = cursor_geometry or {"schema_version": "1.0"}
+        cursor_geometry["rotation_center"] = canonical_rotation_center
+        cursor_geometry["measurement_space"] = canonical_rotation_center["space"]
+        if canonical_rotation_center.get("centroid_orbit_radius_px") is not None:
+            cursor_geometry["centroid_orbit_radius_px"] = float(
+                canonical_rotation_center["centroid_orbit_radius_px"]
+            )
+            cursor_geometry["centroid_orbit_diameter_px"] = float(
+                2.0 * canonical_rotation_center["centroid_orbit_radius_px"]
+            )
+        cursor_geometry["rotation_center_quality"] = {
+            key: canonical_rotation_center.get(key)
+            for key in (
+                "confidence",
+                "confidence_level",
+                "detected_frames",
+                "total_frames",
+                "detection_rate",
+                "angular_coverage_10deg_bins",
+                "circle_fit_rmse_px",
+                "bootstrap_center_sigma_px",
+            )
+            if canonical_rotation_center.get(key) is not None
+        }
     if isinstance(cursor_shape, Mapping):
         cursor_geometry = cursor_geometry or {
             "schema_version": "1.0",
@@ -813,7 +914,22 @@ def publish_minimap_profiles(
         "cursor_geometry": cursor_geometry,
         "source_boundary": source_boundary,
         "shift_estimation_mask": android_result.get("shift_estimation_mask"),
-        "capabilities": {"adb_minimap": True, "camera_independent": True},
+        "capabilities": {
+            "adb_minimap": True,
+            "camera_independent": True,
+            "cursor_rotation_center": canonical_rotation_center is not None,
+            "cursor_shape": isinstance(cursor_shape, Mapping),
+            "cursor_result_level": (
+                "rotation_center_and_shape"
+                if canonical_rotation_center is not None
+                and isinstance(cursor_shape, Mapping)
+                else "rotation_center_only"
+                if canonical_rotation_center is not None
+                else "shape_only"
+                if isinstance(cursor_shape, Mapping)
+                else "unavailable"
+            ),
+        },
     }
     portable_files = {}
     shift_mask_value = android_result.get("shift_estimation_mask")

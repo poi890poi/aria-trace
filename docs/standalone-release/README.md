@@ -206,7 +206,10 @@ game-calibration.bat sessions\calibration\SESSION --game-id GAME_ID
 ```
 
 After rig displacement, publishing the fresh rig centrally recomposes portable
-mini-map geometry and game orientation. An older rig-specific color fit is
+mini-map geometry and game orientation. Game-up is stored relative to the
+phone's rotation-0 panel space; recomposition derives a new adapter-relative
+quarter-turn from the fresh rig's ChArUco calibration-display orientation. It
+does not copy the old rig-relative turn. An older rig-specific color fit is
 reported as requiring fresh evidence; the adapter safely falls back to
 rig-locked color—even when `game_matched` was requested—instead of failing to
 open. Run `game-calibration` on a synchronized ADB/HIK session to restore
@@ -225,7 +228,10 @@ zigzag-acquisition.bat --capture-mode micro-movement --android-capture adb-scree
 Static and rotating cursor series are both optional. Static-only evidence does
 not manufacture a rotation center. A rotating series adds the center and
 rotating-envelope diameter to the active phone-game profile, which callers can
-query with `camera.get_cursor_geometry()`.
+query with `camera.get_cursor_geometry()`. Cursor calibration reports evidence
+levels independently: `shape_only`, `rotation_center_only`, or
+`rotation_center_and_shape`. A valid rotation center is retained and published
+even if the later persistent-contour or polar-shape fit is unavailable.
 
 Its JSON summary distinguishes `accepted`, `review_required`,
 `skipped_missing_or_ineligible_data`, and `failed`. Screen-upright orientation
@@ -235,6 +241,13 @@ at construction. Rectified modes precompose the quarter-turn into the existing
 lookup map and retain one remap per frame; an unrectified mode performs the
 zero-interpolation quarter-turn while preserving
 the complete image-space parent transform. This is not game-world north.
+
+For a skipped cursor series, the console and JSON report the acquisition
+pattern, expected cursor behavior, failing stage, and measured gate details.
+The cursor-color gate includes its HSV interval, component-area interval,
+center-distance limit, accepted frame count, and observed rejection counts.
+Mini-map boundary heatmaps are useful review evidence, but they do not by
+themselves prove that a cursor-colored component passed this separate gate.
 
 To collect the session without running scrcpy, use:
 

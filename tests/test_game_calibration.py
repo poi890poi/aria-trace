@@ -23,6 +23,100 @@ from aria_trace.workflows.game_calibration import (
 
 
 class GameCalibrationTests(unittest.TestCase):
+    def test_cursor_uses_boundary_profile_from_same_candidate_run(self):
+        class Reader:
+            manifest = {
+                "status": "complete",
+                "session_id": "session",
+                "context": {
+                    "game_id": "game",
+                    "phone_surface_orientation": {
+                        "natural_size_px": [100, 200],
+                        "logical_size_px": [200, 100],
+                    },
+                },
+            }
+            frames_by_stream = {"android_phone": [{"frame_index": 0}]}
+            inputs = [
+                {
+                    "kind": "zigzag_touch",
+                    "session_time_ns": 10,
+                    "payload": {"action": "DOWN"},
+                },
+                {
+                    "kind": "zigzag_touch",
+                    "session_time_ns": 20,
+                    "payload": {"action": "UP"},
+                },
+            ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session"
+            session.mkdir()
+            output = root / "output"
+            cursor_value = {
+                "status": "partial",
+                "result_level": "rotation_center_only",
+                "capabilities": {
+                    "rotation_center": {"status": "available"},
+                    "cursor_shape": {"status": "unavailable"},
+                },
+                "failure_reasons": [
+                    {"stage": "cursor_shape", "reason": "shape unavailable"}
+                ],
+                "profiles": {"phone_game": "cursor-phone-revision"},
+            }
+            with mock.patch(
+                "aria_trace.workflows.game_calibration.SessionReader",
+                return_value=Reader(),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.load_system_configuration",
+                return_value={
+                    "game": {"game_id": "game"},
+                    "devices": {"phone_id": None, "camera_id": None},
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.resolve_game_model",
+                return_value={
+                    "cursor_follows": "camera",
+                    "cursor_behavior_by_acquisition": {
+                        "zigzag": "rotating",
+                        "micro_movement": "static",
+                    },
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration.calibrate_game_orientation_session",
+                side_effect=ValueError("not relevant"),
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
+                return_value={
+                    "status": "review_required",
+                    "profiles": {"phone_game": "boundary-phone-revision"},
+                },
+            ), mock.patch(
+                "aria_trace.workflows.game_calibration._calibrate_available_cursor_series",
+                return_value=cursor_value,
+            ) as cursor_calibration:
+                result = calibrate_game_session(
+                    session,
+                    output,
+                    profile_root=root / "profiles",
+                    game_id="game",
+                    activate=False,
+                )
+
+            self.assertEqual(
+                "boundary-phone-revision",
+                cursor_calibration.call_args[1]["phone_game_revision"],
+            )
+            cursor = result["capabilities"]["cursor_pose"]
+            self.assertEqual("partial", cursor["status"])
+            self.assertEqual(
+                "rotation_center_only", cursor["series"]["zigzag"]["result_level"]
+            )
+            self.assertIn("shape unavailable", cursor["series"]["zigzag"]["reason"])
+
     def test_synchronized_hik_session_runs_and_activates_game_color_calibration(self):
         class Reader:
             manifest = {"status": "complete", "context": {"game_id": "game"}}

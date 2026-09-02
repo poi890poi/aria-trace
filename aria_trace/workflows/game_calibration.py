@@ -324,6 +324,7 @@ def _calibrate_available_cursor_series(
     acquisition_pattern: str,
     cursor_behavior: str,
     touch_kind: str = "",
+    phone_game_revision: Optional[str] = None,
 ) -> Mapping[str, object]:
     """Fit one modeled cursor response against the verified map boundary."""
 
@@ -340,7 +341,9 @@ def _calibrate_available_cursor_series(
         phone_id=phone_id,
         panel_display={"natural_panel_px": surface["natural_size_px"]},
     )
-    profile = _profile_for_current_game(registry, context, revision_id=None)
+    profile = _profile_for_current_game(
+        registry, context, revision_id=phone_game_revision
+    )
     crop, boundary = _logical_profile_crop(profile, surface)
     records, selection = _select_android_records(
         reader,
@@ -378,9 +381,15 @@ def _calibrate_available_cursor_series(
         provenance=provenance,
         frame_space=boundary["space"],
     )
+    backend_status = str(result.get("status") or "review_required")
     result.update(
         {
-            "status": "accepted" if activate else "review_required",
+            "status": (
+                backend_status
+                if backend_status == "partial"
+                else "accepted" if activate else "review_required"
+            ),
+            "profile_activation_requested": bool(activate),
             "crop_xywh": crop,
             "canonical_phone_crop_xywh": (profile.get("payload") or profile).get(
                 "canonical_phone_crop_xywh"
@@ -557,6 +566,7 @@ def calibrate_game_session(
                     acquisition_pattern=pattern,
                     cursor_behavior=behavior,
                     touch_kind=series["touch_kind"],
+                    phone_game_revision=current_phone_game_revision,
                 )
             except (ValueError, FileNotFoundError, RuntimeError) as exc:
                 series_outcomes[pattern] = _outcome(
@@ -572,26 +582,50 @@ def calibrate_game_session(
                 )
             else:
                 current_phone_game_revision = value["profiles"].get("phone_game")
+                partial_reason = "; ".join(
+                    "{}: {}".format(
+                        item.get("stage", "cursor calibration"),
+                        item.get("reason", "unavailable"),
+                    )
+                    for item in (value.get("failure_reasons") or [])
+                )
                 series_outcomes[pattern] = _outcome(
                     value["status"],
                     cursor_behavior=behavior,
                     calibration=str(series_output / "calibration.json"),
                     profiles=value["profiles"],
+                    result_level=value.get("result_level"),
+                    capabilities=value.get("capabilities"),
+                    reason=partial_reason or None,
                 )
         accepted_series = [
             name for name, value in series_outcomes.items()
-            if value["status"] in ("accepted", "review_required")
+            if value["status"] in ("accepted", "review_required", "partial")
         ]
         failed_series = [
             name for name, value in series_outcomes.items()
             if value["status"] == "failed"
         ]
+        partial_series = [
+            name for name, value in series_outcomes.items()
+            if value["status"] == "partial"
+        ]
+        skipped_reasons = [
+            "{} ({}): {}".format(
+                name,
+                value.get("cursor_behavior", "unknown behavior"),
+                value.get("reason") or value.get("error") or value["status"],
+            )
+            for name, value in series_outcomes.items()
+            if value["status"] not in ("accepted", "review_required", "partial")
+        ]
         capabilities["cursor_pose"] = _outcome(
-            "complete" if accepted_series and not failed_series else (
+            "complete" if accepted_series and not failed_series and not partial_series else (
                 "partial" if accepted_series else "skipped_missing_or_ineligible_data"
             ),
             series=series_outcomes,
             selected_profile_revision=current_phone_game_revision,
+            reason="; ".join(skipped_reasons) if skipped_reasons else None,
         )
     else:
         capabilities["cursor_pose"] = _outcome(
@@ -697,6 +731,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for name, outcome in result["capabilities"].items():
         detail = outcome.get("reason") or outcome.get("error") or ""
         print("  {:18s} {}{}".format(name, outcome["status"], ": " + detail if detail else ""))
+        if name == "cursor_pose":
+            for series_name, series in (outcome.get("series") or {}).items():
+                series_detail = series.get("reason") or series.get("error") or ""
+                print(
+                    "    {:16s} {:9s} {}{}".format(
+                        series_name,
+                        "({})".format(series.get("cursor_behavior", "unknown")),
+                        series["status"],
+                        ": " + series_detail if series_detail else "",
+                    )
+                )
     return 0 if result["successful_capabilities"] else 2
 
 

@@ -13,7 +13,12 @@ from acquisition.profile_registry import AdapterRequest, ProfileContext, Profile
 from aria_trace.services.calibration.minimap.spatial import minimap_crop_space
 
 
-def write_rig(root: Path, *, camera_x_offset: float = 0.0) -> Path:
+def write_rig(
+    root: Path,
+    *,
+    camera_x_offset: float = 0.0,
+    calibration_display_turns: int = 0,
+) -> Path:
     root.mkdir()
     calibration = root / "hik_camera_calibration.json"
     calibration.write_text(
@@ -29,7 +34,13 @@ def write_rig(root: Path, *, camera_x_offset: float = 0.0) -> Path:
                     "serial": "PHONE-1",
                     "model": "phone",
                     "natural_screen_size_px": [100, 200],
-                    "screen_size_px": [100, 200],
+                    "screen_size_px": (
+                        [200, 100]
+                        if int(calibration_display_turns) % 2 else [100, 200]
+                    ),
+                    "orientation_quarter_turns": int(
+                        calibration_display_turns
+                    ) % 4,
                     "refresh_hz": 120,
                     "density_dpi": 400,
                 },
@@ -151,6 +162,16 @@ class ProfileManagerTests(unittest.TestCase):
             self.assertEqual(
                 phone["revision_id"],
                 published["rig_game"]["dependencies"]["phone_game"],
+            )
+            self.assertTrue(phone["payload"]["capabilities"]["cursor_rotation_center"])
+            self.assertFalse(phone["payload"]["capabilities"]["cursor_shape"])
+            self.assertEqual(
+                "rotation_center_only",
+                phone["payload"]["capabilities"]["cursor_result_level"],
+            )
+            self.assertEqual(
+                phone["payload"]["rotation_center"],
+                phone["payload"]["cursor_geometry"]["rotation_center"],
             )
 
     def test_rig_publication_copies_runtime_files_and_activates(self):
@@ -341,6 +362,119 @@ class ProfileManagerTests(unittest.TestCase):
             self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
             self.assertIsNone(resolved["profiles"]["rig_game_color"])
             self.assertTrue(resolved["compatibility"]["warnings"])
+
+    def test_orientation_recomposition_changes_relative_turn_for_new_rig_display(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProfileRegistry(root / "profiles")
+            first_rig = publish_rig_calibration(
+                write_rig(root / "rig-1", calibration_display_turns=1),
+                registry=registry,
+            )
+            context = ProfileContext(
+                game_id="game-1",
+                camera_id="CAM-1",
+                phone_id="PHONE-1",
+                panel_display={"natural_panel_px": [100, 200]},
+                game_display={
+                    "logical_frame_px": [100, 200],
+                    "rotation_quarter_turns": 0,
+                },
+            )
+            registry.publish(
+                "rig_game_orientation",
+                context,
+                {
+                    "profile_kind": "rig_game_orientation",
+                    # Legacy payload: game surface 0 minus old rig display 1.
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 3,
+                },
+                dependencies={"rig": first_rig["revision_id"]},
+                review_state="accepted",
+                activate=True,
+            )
+
+            second_rig = publish_rig_calibration(
+                write_rig(root / "rig-2", calibration_display_turns=0),
+                registry=registry,
+            )
+            recomposed = second_rig[
+                "recomposed_rig_game_orientation_profiles"
+            ][0]
+            self.assertEqual(
+                0,
+                recomposed["payload"][
+                    "game_surface_quarter_turns_clockwise_from_phone_natural"
+                ],
+            )
+            self.assertEqual(
+                0,
+                recomposed["payload"][
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                ],
+            )
+            resolved = registry.resolve_adapter(
+                ProfileContext(
+                    game_id="game-1",
+                    camera_id="CAM-1",
+                    game_display=context.game_display,
+                ),
+                AdapterRequest(mode="full"),
+            )
+            self.assertEqual(
+                0,
+                resolved["adapter_plan"]["game_upright_quarter_turns_clockwise"],
+            )
+            self.assertEqual(
+                "derived_from_legacy_source_rig_and_relative_turn",
+                recomposed["provenance"]["portable_orientation_basis"],
+            )
+
+    def test_orientation_recomposition_preserves_relative_turn_when_rigs_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProfileRegistry(root / "profiles")
+            first_rig = publish_rig_calibration(
+                write_rig(root / "rig-1", calibration_display_turns=1),
+                registry=registry,
+            )
+            context = ProfileContext(
+                game_id="game-1",
+                camera_id="CAM-1",
+                phone_id="PHONE-1",
+                panel_display={"natural_panel_px": [100, 200]},
+                game_display={"logical_frame_px": [200, 100]},
+            )
+            registry.publish(
+                "rig_game_orientation",
+                context,
+                {
+                    "profile_kind": "rig_game_orientation",
+                    "game_surface_quarter_turns_clockwise_from_phone_natural": 0,
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 3,
+                },
+                dependencies={"rig": first_rig["revision_id"]},
+                review_state="accepted",
+                activate=True,
+            )
+
+            second_rig = publish_rig_calibration(
+                write_rig(root / "rig-2", calibration_display_turns=1),
+                registry=registry,
+            )
+            recomposed = second_rig[
+                "recomposed_rig_game_orientation_profiles"
+            ][0]
+            self.assertEqual(
+                3,
+                recomposed["payload"][
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                ],
+            )
+            self.assertEqual(
+                "stored_portable_game_surface_orientation",
+                recomposed["provenance"]["portable_orientation_basis"],
+            )
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):
         with tempfile.TemporaryDirectory() as directory:

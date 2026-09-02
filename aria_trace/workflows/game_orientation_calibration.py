@@ -204,6 +204,15 @@ def calibrate_game_orientation_session(
         if runner is not None else None
     )
     selected_turns = int(selected["quarter_turns_clockwise_from_calibration_display"])
+    phone = dict(rig_document.get("phone") or {})
+    viewer = dict(phone.get("viewer") or {})
+    rig_display_turns = int(
+        phone.get(
+            "orientation_quarter_turns",
+            viewer.get("canonical_orientation_quarter_turns", 0),
+        )
+    ) % 4
+    game_surface_turns = (selected_turns + rig_display_turns) % 4
     eligible_pairs = [item for item in pair_results if item["eligible"]]
     consensus = float(
         np.mean(
@@ -245,7 +254,19 @@ def calibrate_game_orientation_session(
         "rig_calibration": str(rig_calibration),
         "rig_revision": active_rig["revision_id"],
         "profile_context": context.as_dict(),
+        "game_surface_quarter_turns_clockwise_from_phone_natural": game_surface_turns,
         "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": selected_turns,
+        "orientation_space_contract": {
+            "portable_source_space": "phone_natural_rotation_0",
+            "adapter_base_space": "rig_calibration_display",
+            "rig_calibration_display_quarter_turns_clockwise_from_phone_natural": (
+                rig_display_turns
+            ),
+            "composition": (
+                "adapter_turn = game_surface_turn - "
+                "rig_calibration_display_turn (mod 4)"
+            ),
+        },
         "runtime_operation": (
             "precompose_into_rectification_lookup; "
             "discrete_quarter_turn_only_when_rectification_is_disabled"
@@ -269,7 +290,11 @@ def calibrate_game_orientation_session(
         context,
         {
             "profile_kind": "rig_game_orientation",
+            "game_surface_quarter_turns_clockwise_from_phone_natural": (
+                game_surface_turns
+            ),
             "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": selected_turns,
+            "orientation_space_contract": summary["orientation_space_contract"],
             "runtime_operation": (
                 "precompose_into_rectification_lookup; "
                 "discrete_quarter_turn_only_when_rectification_is_disabled"

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -119,6 +120,79 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             self.assertIn("cursor_shape_polar_correlation.png", declared)
             self.assertTrue((Path(temporary) / "model.npz").is_file())
 
+    def test_preserves_rotation_center_when_later_shape_fit_is_ineligible(self):
+        height, width = 180, 220
+        pivot = np.asarray([111.5, 82.5])
+        cursor_color = tuple(
+            int(value)
+            for value in cv2.cvtColor(
+                np.uint8([[[93, 230, 240]]]), cv2.COLOR_HSV2BGR
+            )[0, 0]
+        )
+        frames = []
+        for index in range(12):
+            angle = 2.0 * np.pi * index / 12.0
+            centroid = np.round(
+                pivot + 7.0 * np.asarray([np.cos(angle), np.sin(angle)])
+            ).astype(np.int32)
+            image = np.full((height, width, 3), 30, np.uint8)
+            cv2.circle(image, tuple(centroid), 4, cursor_color, -1)
+            frames.append(image)
+        space = raster_space("current_minimap_crop_pixels", [width, height])
+        boundary = bind_geometry(
+            {"center_x": 112.0, "center_y": 83.0, "radius": 69.0},
+            "circle",
+            space,
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "aria_trace.services.calibration.minimap.calibration._cursor_shape",
+            side_effect=RuntimeError("persistent contour is empty"),
+        ):
+            result = calibrate_cursor_orbit_frames(
+                np.stack(frames),
+                Path(temporary),
+                outer_boundary=boundary,
+                frame_space=space,
+            )
+            self.assertEqual("partial", result["status"])
+            self.assertEqual("rotation_center_only", result["result_level"])
+            self.assertIsNotNone(result["rotation_center"])
+            self.assertIsNone(result["cursor_shape"])
+            self.assertEqual(
+                "available", result["capabilities"]["rotation_center"]["status"]
+            )
+            self.assertEqual(
+                "unavailable", result["capabilities"]["cursor_shape"]["status"]
+            )
+            self.assertIn(
+                "persistent contour is empty",
+                result["capabilities"]["cursor_shape"]["reason"],
+            )
+            self.assertTrue((Path(temporary) / "cursor_center_orbit.png").is_file())
+            with np.load(str(Path(temporary) / "model.npz")) as model:
+                self.assertIn("rotation_center", model.files)
+                self.assertNotIn("cursor_polygon_relative_xy", model.files)
+
+    def test_component_gate_reports_thresholds_and_observations(self):
+        height, width = 180, 220
+        space = raster_space("current_minimap_crop_pixels", [width, height])
+        boundary = bind_geometry(
+            {"center_x": 110.0, "center_y": 90.0, "radius": 70.0},
+            "circle",
+            space,
+        )
+        frames = np.full((8, height, width, 3), 25, np.uint8)
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+            RuntimeError,
+            r"accepted 0/8 frames.*HSV.*component area.*centroid distance.*Observed",
+        ):
+            calibrate_cursor_orbit_frames(
+                frames,
+                Path(temporary),
+                outer_boundary=boundary,
+                frame_space=space,
+            )
+
     def test_static_series_reports_shape_without_inventing_rotation_center(self):
         height, width = 180, 220
         space = raster_space("current_minimap_crop_pixels", [width, height])
@@ -154,6 +228,13 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             self.assertEqual(
                 "not_observable_from_static_cursor",
                 result["rotation_center_status"],
+            )
+            self.assertEqual("shape_only", result["result_level"])
+            self.assertEqual(
+                "unavailable", result["capabilities"]["rotation_center"]["status"]
+            )
+            self.assertEqual(
+                "available", result["capabilities"]["cursor_shape"]["status"]
             )
             self.assertIsNone(
                 result["cursor_shape"]["rotating_cursor_envelope_diameter_px"]
