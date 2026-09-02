@@ -707,6 +707,7 @@ def publish_minimap_profiles(
     phone_id: Optional[str] = None,
     camera_id: Optional[str] = None,
     activate: bool = False,
+    compose_rig: bool = True,
 ) -> Dict[str, Any]:
     summary_path = Path(localization_summary)
     if summary_path.is_dir():
@@ -721,8 +722,8 @@ def publish_minimap_profiles(
     if summary.get("status") not in ("review_required", "accepted", "complete"):
         raise ValueError("Localization result is not publishable: {}".format(summary.get("status")))
     session_path, manifest, capture_context = _session_context(summary)
-    selected_rig = rig_calibration
-    if selected_rig is None:
+    selected_rig = rig_calibration if compose_rig else None
+    if compose_rig and selected_rig is None:
         selected_rig = ((capture_context.get("hik_capture") or {}).get("rig_calibration"))
     store = registry or ProfileRegistry(profile_root)
     source_phone_payload: Dict[str, Any] = {}
@@ -747,7 +748,7 @@ def publish_minimap_profiles(
         rig_profile = publish_rig_calibration(
             rig_file, registry=store, activate=True
         )
-    if rig_profile is None:
+    if compose_rig and rig_profile is None:
         try:
             rig_profile = store.resolve(
                 "rig",

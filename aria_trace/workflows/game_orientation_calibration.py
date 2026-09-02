@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
@@ -26,6 +27,220 @@ from aria_trace.workflows.hik_game_color_calibration import (
     session_game_context,
     sha256_file,
 )
+
+
+def _portable_game_context(
+    reader: SessionReader,
+    game_id: Optional[str],
+    natural_size_px: Sequence[int],
+    logical_size_px: Sequence[int],
+    surface_turns: int,
+) -> ProfileContext:
+    capture = dict(reader.manifest.get("context") or {})
+    launch = dict(capture.get("game_launch") or {})
+    devices = dict(reader.manifest.get("devices") or {})
+    phone = dict(devices.get("phone") or {})
+    selected_game = game_id or capture.get("game_id") or launch.get("game_id")
+    if not selected_game:
+        raise ValueError("Portable game orientation requires a game_id")
+    return ProfileContext(
+        game_id=str(selected_game),
+        platform="android",
+        package=launch.get("package") or launch.get("foreground_package_at_capture"),
+        phone_id=phone.get("serial") or capture.get("phone_serial"),
+        phone_model=phone.get("model"),
+        panel_display={
+            "natural_panel_px": list(map(int, natural_size_px)),
+            "logical_frame_px": list(map(int, natural_size_px)),
+        },
+        game_display={
+            "natural_panel_px": list(map(int, natural_size_px)),
+            "logical_frame_px": list(map(int, logical_size_px)),
+            "game_viewport_xywh": [
+                0, 0, int(logical_size_px[0]), int(logical_size_px[1])
+            ],
+            "rotation_quarter_turns": int(surface_turns) % 4,
+            "ui_layout_id": "default",
+        },
+    )
+
+
+def calibrate_portable_game_orientation_session(
+    session: Path,
+    output: Path,
+    *,
+    profile_root: Optional[Path] = None,
+    game_id: Optional[str] = None,
+    activate: bool = True,
+    phone_game_revision: Optional[str] = None,
+    minimum_consensus: float = 0.80,
+) -> Mapping[str, object]:
+    """Publish game-up in canonical phone space without any rig dependency."""
+
+    session = Path(session).resolve()
+    output = Path(output).resolve()
+    reader = SessionReader(session)
+    if reader.manifest.get("status") != "complete":
+        raise ValueError("Game orientation requires a complete capture session")
+    stream_id = (
+        "android_phone" if reader.frames_by_stream.get("android_phone") else "main"
+    )
+    records = list(reader.frames_by_stream.get(stream_id) or [])
+    if not records:
+        raise ValueError("Session has no Android/main image frames")
+
+    observations = []
+    for record in records:
+        image_space = dict((record.get("metadata") or {}).get("image_space") or {})
+        turns = image_space.get(
+            "surface_quarter_turns_clockwise_from_canonical"
+        )
+        natural = image_space.get("canonical_size_px")
+        logical = image_space.get("source_logical_size_px")
+        if turns is None or not natural or not logical:
+            continue
+        observations.append(
+            {
+                "frame_index": int(record["frame_index"]),
+                "turns": int(turns) % 4,
+                "natural_size_px": list(map(int, natural)),
+                "logical_size_px": list(map(int, logical)),
+                "orientation_source": image_space.get("orientation_source"),
+            }
+        )
+    if not observations:
+        surface = dict(
+            (reader.manifest.get("context") or {}).get(
+                "phone_surface_orientation"
+            ) or {}
+        )
+        natural = surface.get("natural_size_px")
+        logical = surface.get("logical_size_px")
+        turns = surface.get("quarter_turns_clockwise_from_natural")
+        if not natural or not logical or turns is None:
+            raise ValueError(
+                "Android frames and session context have no canonical surface orientation"
+            )
+        observations.append(
+            {
+                "frame_index": None,
+                "turns": int(turns) % 4,
+                "natural_size_px": list(map(int, natural)),
+                "logical_size_px": list(map(int, logical)),
+                "orientation_source": surface.get("source") or "session_context",
+            }
+        )
+
+    counts = Counter(item["turns"] for item in observations)
+    selected_turns, selected_count = counts.most_common(1)[0]
+    consensus = float(selected_count) / float(len(observations))
+    selected_observations = [
+        item for item in observations if item["turns"] == selected_turns
+    ]
+    sizes = Counter(
+        (
+            tuple(item["natural_size_px"]),
+            tuple(item["logical_size_px"]),
+        )
+        for item in selected_observations
+    )
+    (natural_size, logical_size), size_count = sizes.most_common(1)[0]
+    size_consensus = float(size_count) / float(len(selected_observations))
+    accepted = consensus >= float(minimum_consensus) and size_consensus >= 0.80
+    context = _portable_game_context(
+        reader, game_id, natural_size, logical_size, selected_turns
+    )
+    registry = ProfileRegistry(profile_root)
+    source_profile = None
+    if phone_game_revision:
+        source_profile = registry.resolve_revision(
+            str(phone_game_revision), context, expected_kind="phone_game"
+        )
+    else:
+        try:
+            candidate = registry.resolve("phone_game", context)
+        except Exception:
+            candidate = None
+        if candidate is not None:
+            identity = dict(candidate.get("identity") or {})
+            if (
+                identity.get("panel_signature") == context.panel_signature
+                and identity.get("game_display_signature")
+                == context.game_display_signature
+            ):
+                source_profile = candidate
+    payload = dict((source_profile or {}).get("payload") or {})
+    capabilities = dict(payload.get("capabilities") or {})
+    capabilities.update(
+        camera_independent=True,
+        game_screen_orientation=True,
+    )
+    payload.update(
+        profile_kind="phone_game",
+        coordinate_space="phone_natural_display_pixels",
+        game_surface_quarter_turns_clockwise_from_phone_natural=int(
+            selected_turns
+        ),
+        orientation_source="android_per_frame_space_metadata_consensus",
+        orientation_quality={
+            "observation_count": len(observations),
+            "quarter_turn_counts": {
+                str(turns): int(count) for turns, count in sorted(counts.items())
+            },
+            "consensus": consensus,
+            "size_consensus": size_consensus,
+            "minimum_consensus": float(minimum_consensus),
+        },
+        capabilities=capabilities,
+    )
+    output.mkdir(parents=True, exist_ok=False)
+    sample_record = next(
+        (
+            record for record in records
+            if int(record["frame_index"]) == selected_observations[0]["frame_index"]
+        ),
+        records[0],
+    )
+    sample = decode_session_records(reader, stream_id, [sample_record])[0]
+    _write_image(output / "android_game_orientation_sample.png", sample)
+    summary = {
+        "schema_version": "1.0",
+        "calibration_kind": "portable_game_screen_orientation",
+        "status": (
+            "accepted" if accepted and activate else "review_required"
+        ),
+        "session": str(session),
+        "profile_context": context.as_dict(),
+        "game_surface_quarter_turns_clockwise_from_phone_natural": int(
+            selected_turns
+        ),
+        "rig_dependency": None,
+        "method": "android_per_frame_space_metadata_consensus",
+        "quality": payload["orientation_quality"],
+        "selected_observations": selected_observations,
+        "evidence": ["android_game_orientation_sample.png"],
+    }
+    summary_path = output / "game_orientation_calibration.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    profile = registry.publish(
+        "phone_game",
+        context,
+        payload,
+        dependencies={},
+        provenance={
+            "session": str(session),
+            "calibration": str(summary_path),
+            "source_phone_game_revision": (
+                source_profile.get("revision_id") if source_profile else None
+            ),
+        },
+        review_state="accepted" if accepted and activate else "review_required",
+        activate=bool(accepted and activate),
+    )
+    summary["profile_revision"] = profile["revision_id"]
+    summary["profile_activated"] = bool(accepted and activate)
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
 
 
 def _write_image(path: Path, image: np.ndarray) -> None:
@@ -331,4 +546,7 @@ def calibrate_game_orientation_session(
     return summary
 
 
-__all__ = ["calibrate_game_orientation_session"]
+__all__ = [
+    "calibrate_game_orientation_session",
+    "calibrate_portable_game_orientation_session",
+]

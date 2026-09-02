@@ -27,7 +27,7 @@ from aria_trace.services.calibration.minimap.discovery import (
     discover_android_minimap_crop,
 )
 from aria_trace.workflows.game_orientation_calibration import (
-    calibrate_game_orientation_session,
+    calibrate_portable_game_orientation_session,
 )
 from aria_trace.workflows.hik_game_color_calibration import (
     calibrate_game_color_session,
@@ -276,6 +276,7 @@ def _calibrate_available_minimap_boundary(
         phone_id=phone_id,
         camera_id=camera_id,
         activate=activate,
+        compose_rig=False,
     )
     summary["profiles"] = {
         name: value["revision_id"] if value is not None else None
@@ -424,6 +425,7 @@ def _calibrate_available_cursor_series(
         phone_id=phone_id,
         camera_id=camera_id,
         activate=activate,
+        compose_rig=False,
     )
     result["profiles"] = {
         name: value["revision_id"] if value is not None else None
@@ -482,31 +484,6 @@ def calibrate_game_session(
         raise ValueError(
             "Game model cursor_behavior_by_acquisition must map zigzag and "
             "micro_movement to static or rotating"
-        )
-
-    try:
-        value = calibrate_game_orientation_session(
-            session,
-            output / "orientation",
-            profile_root=registry.root,
-            game_id=selected_game,
-            maximum_pairs=maximum_pairs,
-            activate=activate,
-        )
-    except (ValueError, FileNotFoundError) as exc:
-        capabilities["screen_orientation"] = _outcome(
-            "skipped_missing_or_ineligible_data", reason=str(exc)
-        )
-    except Exception as exc:
-        capabilities["screen_orientation"] = _outcome(
-            "failed", error="{}: {}".format(type(exc).__name__, exc)
-        )
-    else:
-        capabilities["screen_orientation"] = _outcome(
-            value["status"],
-            calibration=str(output / "orientation" / "game_orientation_calibration.json"),
-            profile_revision=value["profile_revision"],
-            profile_activated=value["profile_activated"],
         )
 
     has_zigzag_series = any(
@@ -644,6 +621,35 @@ def calibrate_game_session(
             reason=(
                 "No Android image series is available for cursor calibration"
             ),
+        )
+
+    try:
+        value = calibrate_portable_game_orientation_session(
+            session,
+            output / "orientation",
+            profile_root=registry.root,
+            game_id=selected_game,
+            activate=activate,
+            phone_game_revision=current_phone_game_revision,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        capabilities["screen_orientation"] = _outcome(
+            "skipped_missing_or_ineligible_data", reason=str(exc)
+        )
+    except Exception as exc:
+        capabilities["screen_orientation"] = _outcome(
+            "failed", error="{}: {}".format(type(exc).__name__, exc)
+        )
+    else:
+        current_phone_game_revision = value["profile_revision"]
+        capabilities["screen_orientation"] = _outcome(
+            value["status"],
+            calibration=str(
+                output / "orientation" / "game_orientation_calibration.json"
+            ),
+            profile_revision=value["profile_revision"],
+            profile_activated=value["profile_activated"],
+            rig_dependency=None,
         )
 
     if not (session / "coordinate_spaces.yaml").is_file() or not reader.frames_by_stream.get("hik_phone"):

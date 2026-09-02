@@ -21,6 +21,9 @@ from aria_trace.workflows.game_calibration import (
     _touch_intervals,
     calibrate_game_session,
 )
+from aria_trace.workflows.game_orientation_calibration import (
+    calibrate_portable_game_orientation_session,
+)
 
 
 class GameCalibrationTests(unittest.TestCase):
@@ -107,7 +110,7 @@ class GameCalibrationTests(unittest.TestCase):
                     },
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_game_orientation_session",
+                "aria_trace.workflows.game_calibration.calibrate_portable_game_orientation_session",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
                 "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
@@ -178,7 +181,7 @@ class GameCalibrationTests(unittest.TestCase):
                     },
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_game_orientation_session",
+                "aria_trace.workflows.game_calibration.calibrate_portable_game_orientation_session",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
                 "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
@@ -211,6 +214,65 @@ class GameCalibrationTests(unittest.TestCase):
                 "rig-game-color-revision",
                 result["capabilities"]["game_color"]["profile_revision"],
             )
+
+    def test_portable_orientation_uses_android_space_metadata_without_rig(self):
+        class Reader:
+            manifest = {
+                "status": "complete",
+                "session_id": "session",
+                "context": {
+                    "game_id": "game",
+                    "game_launch": {"package": "example.game"},
+                },
+                "devices": {"phone": {"serial": "PHONE"}},
+            }
+            frames_by_stream = {
+                "android_phone": [
+                    {
+                        "frame_index": index,
+                        "metadata": {
+                            "image_space": {
+                                "surface_quarter_turns_clockwise_from_canonical": 1,
+                                "canonical_size_px": [100, 200],
+                                "source_logical_size_px": [200, 100],
+                                "orientation_source": "adb_surface",
+                            }
+                        },
+                    }
+                    for index in range(4)
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session"
+            session.mkdir()
+            output = root / "orientation"
+            with mock.patch(
+                "aria_trace.workflows.game_orientation_calibration.SessionReader",
+                return_value=Reader(),
+            ), mock.patch(
+                "aria_trace.workflows.game_orientation_calibration.decode_session_records",
+                return_value=np.zeros((1, 100, 200, 3), np.uint8),
+            ):
+                result = calibrate_portable_game_orientation_session(
+                    session,
+                    output,
+                    profile_root=root / "profiles",
+                    game_id="game",
+                    activate=True,
+                )
+            registry = ProfileRegistry(root / "profiles")
+            profile = registry.revision(result["profile_revision"])
+            self.assertEqual({}, profile["dependencies"])
+            self.assertEqual("phone_game", profile["identity"]["kind"])
+            self.assertEqual(
+                1,
+                profile["payload"][
+                    "game_surface_quarter_turns_clockwise_from_phone_natural"
+                ],
+            )
+            self.assertIsNone(result["rig_dependency"])
 
     def test_cursor_series_classification_describes_input_not_cursor_behavior(self):
         class Reader:
