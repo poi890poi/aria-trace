@@ -256,6 +256,9 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "aria_trace") -Recurse -File 
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $PythonSource "android") | Out-Null
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "android\phone-target") -Destination (Join-Path $PythonSource "android\phone-target") -Recurse
+$PythonPhoneTarget = Join-Path $PythonSource "android\phone-target"
+Get-ChildItem -LiteralPath $PythonPhoneTarget -Filter "*.apk" -File | Remove-Item -Force
+Copy-Item -LiteralPath $PhoneTargetApk -Destination (Join-Path $PythonPhoneTarget "iris-phone-target.apk")
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "hikcam.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "iris_tools.py") -Destination $PythonSource
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "requirements-hik-camera-adapter.txt") -Destination $PythonSource
@@ -292,7 +295,7 @@ if ($GitCommand) {
 }
 $Manifest = @(
     "# Human-readable standalone release identity and external runtime contract.",
-    "schema_version: '1.1'",
+    "schema_version: '1.2'",
     "product: iris-invariant-rig-system",
     "platform: windows-x64",
     "source_commit: '$SourceCommit'",
@@ -313,6 +316,7 @@ $Manifest = @(
     "  - apps/iris-camera-adapter-demo/iris-camera-adapter-demo.exe",
     "camera_adapter_import: python/hikcam.py",
     "native_phone_target: phone-target/iris-phone-target.apk",
+    "python_native_phone_target: python/android/phone-target/iris-phone-target.apk",
     "python_tools_import: python/iris_tools.py",
     "bundled_tools:",
     "  scrcpy_server:",
@@ -335,6 +339,15 @@ $Manifest = @(
     "bundled_scope: python_runtime_dependencies_source_native_phone_target_scrcpy_server_and_ffmpeg"
 )
 Set-Content -LiteralPath (Join-Path $ReleaseRoot "release-manifest.yaml") -Value $Manifest -Encoding UTF8
+
+$ReleasePhoneTarget = Join-Path $ReleaseRoot "phone-target\iris-phone-target.apk"
+$PythonReleasePhoneTarget = Join-Path $ReleaseRoot "python\android\phone-target\iris-phone-target.apk"
+if (-not (Test-Path -LiteralPath $ReleasePhoneTarget -PathType Leaf)) {
+    throw "Release phone-target APK is missing: $ReleasePhoneTarget"
+}
+if (-not (Test-Path -LiteralPath $PythonReleasePhoneTarget -PathType Leaf)) {
+    throw "Pure-Python phone-target APK is missing: $PythonReleasePhoneTarget"
+}
 
 Write-Host "Running offline command-surface smoke tests"
 foreach ($Application in $Applications) {

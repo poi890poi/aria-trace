@@ -360,6 +360,11 @@ class NativeImmersivePhoneTarget(LocalPhoneTargetServer):
                 Path.cwd() / "phone-target" / "iris-phone-target.apk",
             ]
         )
+        module = Path(__file__).resolve()
+        candidates.extend(
+            parent / "phone-target" / "iris-phone-target.apk"
+            for parent in module.parents
+        )
         executable = Path(sys.executable).resolve()
         candidates.extend(
             parent / "phone-target" / "iris-phone-target.apk"

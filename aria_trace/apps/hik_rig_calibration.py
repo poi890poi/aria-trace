@@ -400,6 +400,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     phone = AdbPhoneSession(arguments.phone_serial, adb_executable=adb)
     run_started = time.perf_counter_ns()
     session = HikRigCalibrationSession(options, camera=camera, phone=phone)
+    if arguments.target_presenter == "native_app":
+        resolved_apk = session.target.resolved_apk_path()
+        if resolved_apk is None:
+            print(
+                "Native phone target APK was not found; automatic installation "
+                "is unavailable unless the package is already installed.",
+                role="warning",
+            )
+        else:
+            print("Native phone target APK: {}".format(resolved_apk))
     result = session.run()
     run_elapsed_ms = (time.perf_counter_ns() - run_started) / 1.0e6
     if result is not None:

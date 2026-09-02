@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ from acquisition.rig_calibration.hik.algorithms import (
     temporal_white_statistics,
 )
 import aria_trace.adapters.hik.compat as hikcam
+import aria_trace.adapters.android.display as android_display
 from acquisition.rig_calibration.hik.driver import (
     HikMvsCameraAdapter,
     MvsPythonBackend,
@@ -200,6 +202,31 @@ class HikAlgorithmTests(unittest.TestCase):
             apk.write_bytes(b"apk")
             target = NativeImmersivePhoneTarget(apk_path=apk)
             self.assertEqual(target.resolved_apk_path(), apk.resolve())
+
+    def test_native_presenter_finds_release_apk_from_python_module_ancestor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory) / "IRIS-Windows-x64"
+            module = (
+                release
+                / "python"
+                / "aria_trace"
+                / "adapters"
+                / "android"
+                / "display.py"
+            )
+            apk = release / "phone-target" / "iris-phone-target.apk"
+            apk.parent.mkdir(parents=True)
+            apk.write_bytes(b"apk")
+            unrelated_executable = Path(directory) / "Python312" / "python.exe"
+            unrelated_cwd = Path(directory) / "third-party-app"
+            unrelated_cwd.mkdir()
+            with mock.patch.object(android_display, "__file__", str(module)), mock.patch.object(
+                sys, "executable", str(unrelated_executable)
+            ), mock.patch("pathlib.Path.cwd", return_value=unrelated_cwd):
+                self.assertEqual(
+                    NativeImmersivePhoneTarget().resolved_apk_path(),
+                    apk.resolve(),
+                )
 
     def test_gui_positioning_waits_for_explicit_space_signal(self):
         options = HikCalibrationOptions(
@@ -1273,6 +1300,7 @@ class HikPhoneTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.installed = False
+                self.install_timeout = None
 
             def __call__(self, command, timeout):
                 args = list(command[3:])
@@ -1287,6 +1315,7 @@ class HikPhoneTests(unittest.TestCase):
                     )
                 if args[:2] == ["install", "-r"]:
                     self.commands.append(args)
+                    self.install_timeout = timeout
                     self.installed = True
                     return "Success"
                 return super().__call__(command, timeout)
@@ -1316,6 +1345,50 @@ class HikPhoneTests(unittest.TestCase):
         ]
         self.assertEqual(len(installs), 1)
         self.assertEqual(len(launches), 1)
+        self.assertGreaterEqual(runner.install_timeout, 120.0)
+
+    def test_native_target_accepts_package_committed_after_adb_transport_error(self):
+        class CommittedInstallRunner(FakeAdbRunner):
+            def __init__(self):
+                super().__init__()
+                self.installed = False
+
+            def __call__(self, command, timeout):
+                args = list(command[3:])
+                if args[:4] == ["shell", "pm", "list", "packages"]:
+                    self.commands.append(args)
+                    return (
+                        "package:io.iris.phonetarget"
+                        if self.installed
+                        else ""
+                    )
+                if args[:2] == ["install", "-r"]:
+                    self.commands.append(args)
+                    self.installed = True
+                    raise RuntimeError("ADB transport ended after package commit")
+                return super().__call__(command, timeout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "iris-phone-target.apk"
+            apk.write_bytes(b"apk")
+            runner = CommittedInstallRunner()
+            phone = AdbPhoneSession(
+                "SERIAL-1",
+                adb_executable="adb-test",
+                runner=runner,
+                sleeper=lambda _seconds: None,
+            )
+            phone.wake_and_hold_native_target(
+                8765, [1080, 2400], apk_path=apk
+            )
+
+        self.assertTrue(runner.installed)
+        self.assertTrue(
+            any(
+                command[:3] == ["shell", "am", "start"]
+                for command in runner.commands
+            )
+        )
 
     def test_subprocess_runner_decodes_adb_output_as_utf8_without_locale_dependency(self):
         completed = mock.Mock(returncode=0, stdout="display � text", stderr="")

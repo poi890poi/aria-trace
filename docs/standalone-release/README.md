@@ -61,7 +61,10 @@ harnesses can opt into the old strict behavior with
 
 The default native presenter removes browser/Gallery fullscreen behavior. Set
 `IRIS_PHONE_TARGET_APK` or pass `--phone-target-apk` only when the bundled APK
-is relocated. `--panel-scale auto` enables ChArUco/native-surface scaling on MTK
+is relocated. Its canonical release path is
+`phone-target/iris-phone-target.apk`; the same binary is also present at
+`python/android/phone-target/iris-phone-target.apk` for imports from a different
+project directory. `--panel-scale auto` enables ChArUco/native-surface scaling on MTK
 platforms; use `--panel-scale adb` or `--panel-scale hik_charuco` explicitly to
 override it. Active-app size mismatch and physical-DPI anisotropy are saved as
 non-gating diagnostics in both JSON and commented YAML bundles.

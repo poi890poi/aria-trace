@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 Runner = Callable[[Sequence[str], float], str]
 _ADB_RECOVERY_LOCK = threading.Lock()
 _ADB_RECOVERY_GENERATIONS: Dict[str, int] = {}
+NATIVE_TARGET_INSTALL_TIMEOUT_SECONDS = 120.0
+NATIVE_TARGET_INSTALL_OBSERVE_SECONDS = 10.0
 
 
 def resolve_adb_executable(value: Optional[str] = None) -> str:
@@ -293,7 +295,15 @@ class AdbPhoneSession:
         return [self.adb_executable, "-s", self.serial]
 
     def run(self, *args: str) -> str:
-        return self.runner(self._base() + [str(value) for value in args], self.timeout_seconds)
+        return self.run_with_timeout(self.timeout_seconds, *args)
+
+    def run_with_timeout(self, timeout_seconds: float, *args: str) -> str:
+        """Run one ADB operation with a budget appropriate to that operation."""
+
+        return self.runner(
+            self._base() + [str(value) for value in args],
+            float(timeout_seconds),
+        )
 
     def shell(self, *args: str) -> str:
         return self.run("shell", *args)
@@ -592,10 +602,43 @@ class AdbPhoneSession:
                         "was not found. Build android\\phone-target\\build-phone-target.bat, "
                         "set IRIS_PHONE_TARGET_APK, or pass --phone-target-apk."
                     )
-                self.run("install", "-r", str(Path(apk_path).resolve()))
-                installed = self._package_is_installed(package_name)
+                resolved_apk = Path(apk_path).resolve()
+                install_error: Optional[RuntimeError] = None
+                try:
+                    self.run_with_timeout(
+                        max(
+                            self.timeout_seconds,
+                            NATIVE_TARGET_INSTALL_TIMEOUT_SECONDS,
+                        ),
+                        "install",
+                        "-r",
+                        str(resolved_apk),
+                    )
+                except RuntimeError as exc:
+                    # ADB can lose its host transport after Android has already
+                    # committed the package.  Package presence is authoritative.
+                    install_error = exc
+                deadline = time.monotonic() + NATIVE_TARGET_INSTALL_OBSERVE_SECONDS
+                while True:
+                    try:
+                        installed = self._package_is_installed(package_name)
+                    except RuntimeError:
+                        installed = False
+                    if installed or time.monotonic() >= deadline:
+                        break
+                    self.sleeper(0.25)
                 if not installed:
-                    raise RuntimeError("ADB installation of the native phone target failed")
+                    detail = (
+                        ": {}".format(install_error)
+                        if install_error is not None
+                        else ""
+                    )
+                    raise RuntimeError(
+                        "ADB installation of the native phone target did not "
+                        "produce package {} from {}{}".format(
+                            package_name, resolved_apk, detail
+                        )
+                    ) from install_error
             self.viewer_activity = str(component_name)
             self.shell("am", "force-stop", str(package_name))
             self.shell(
