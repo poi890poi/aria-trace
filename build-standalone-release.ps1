@@ -82,6 +82,25 @@ function Write-Sha256Sidecar {
     return $Hash
 }
 
+function Get-PortableTreeSha256 {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $AbsoluteRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $Records = Get-ChildItem -LiteralPath $AbsoluteRoot -Recurse -File -Force |
+        Sort-Object FullName |
+        ForEach-Object {
+            $Relative = $_.FullName.Substring($AbsoluteRoot.Length + 1).Replace('\', '/')
+            "$Relative`t$(Get-PortableSha256 $_.FullName)"
+        }
+    $Payload = [System.Text.Encoding]::UTF8.GetBytes(($Records -join "`n"))
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString(
+            $Hasher.ComputeHash($Payload)
+        )).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $Hasher.Dispose() }
+}
+
 if (-not $PythonCommand) { $PythonCommand = $DefaultPython }
 if (-not (Test-Path -LiteralPath $PythonCommand -PathType Leaf)) {
     throw "Python 3.12.10 was not found at $PythonCommand. Run setup-python-3.12.10.bat first."
@@ -286,6 +305,14 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs\standalone-release") -Desti
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "IRIS_README.md") -Destination (Join-Path $ReleaseRoot "README.md")
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseRoot "artifacts"),(Join-Path $ReleaseRoot "sessions"),(Join-Path $ReleaseRoot "profiles") | Out-Null
 
+$GitMetadata = Get-ChildItem -LiteralPath $ReleaseRoot -Recurse -Force | Where-Object {
+    $_.Name -eq ".git" -or $_.Name -eq ".gitmodules"
+}
+if ($GitMetadata) {
+    throw "Release export contains forbidden Git metadata: $($GitMetadata.FullName -join ', ')"
+}
+$PythonSourceTreeSha256 = Get-PortableTreeSha256 $PythonSource
+
 $EmbeddedVersions = & $EnvironmentPython -c "import cv2,numpy,yaml,zxingcpp,PyInstaller; print('|'.join([numpy.__version__,cv2.__version__,yaml.__version__,getattr(zxingcpp,'__version__','3.1.1'),PyInstaller.__version__]))"
 $VersionParts = $EmbeddedVersions -split "\|"
 $SourceCommit = "unavailable"
@@ -298,10 +325,12 @@ if ($GitCommand) {
 }
 $Manifest = @(
     "# Human-readable standalone release identity and external runtime contract.",
-    "schema_version: '1.2'",
+    "schema_version: '1.3'",
     "product: iris-invariant-rig-system",
     "platform: windows-x64",
     "source_commit: '$SourceCommit'",
+    "exported_python_source_tree_sha256: '$PythonSourceTreeSha256'",
+    "git_metadata_included: false",
     "python_build_version: '3.12.10'",
     "build_time_utc: '$([DateTime]::UtcNow.ToString("o"))'",
     "embedded_python_packages:",

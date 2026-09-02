@@ -45,6 +45,25 @@ function Get-PortableSha256 {
     finally { $Stream.Dispose() }
 }
 
+function Get-PortableTreeSha256 {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $AbsoluteRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $Records = Get-ChildItem -LiteralPath $AbsoluteRoot -Recurse -File -Force |
+        Sort-Object FullName |
+        ForEach-Object {
+            $Relative = $_.FullName.Substring($AbsoluteRoot.Length + 1).Replace('\', '/')
+            "$Relative`t$(Get-PortableSha256 $_.FullName)"
+        }
+    $Payload = [System.Text.Encoding]::UTF8.GetBytes(($Records -join "`n"))
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString(
+            $Hasher.ComputeHash($Payload)
+        )).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $Hasher.Dispose() }
+}
+
 function Assert-ArchiveHash {
     param([Parameter(Mandatory = $true)][string]$Path)
     $Sidecar = "$Path.sha256"
@@ -100,6 +119,23 @@ Invoke-Checked "Validate package identity and checksums" {
     $ManifestCommit = (($CommitLine -split ":", 2)[1]).Trim().Trim("'", '"')
     if ($ManifestCommit -ne $Head.Trim()) {
         throw "Package source_commit $ManifestCommit does not match HEAD $Head; rebuild before publishing"
+    }
+    $TreeLine = Get-Content -LiteralPath $ManifestPath | Where-Object {
+        $_ -match "^exported_python_source_tree_sha256\s*:"
+    } | Select-Object -First 1
+    if (-not $TreeLine) {
+        throw "Package manifest has no exported Python source-tree hash"
+    }
+    $ExpectedTreeHash = (($TreeLine -split ":", 2)[1]).Trim().Trim("'", '"')
+    $ActualTreeHash = Get-PortableTreeSha256 (Join-Path $PackageRoot "python")
+    if ($ExpectedTreeHash -ne $ActualTreeHash) {
+        throw "Exported Python source-tree hash mismatch; rebuild the package"
+    }
+    $GitMetadata = Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force | Where-Object {
+        $_.Name -eq ".git" -or $_.Name -eq ".gitmodules"
+    }
+    if ($GitMetadata) {
+        throw "Release package contains forbidden Git metadata: $($GitMetadata.FullName -join ', ')"
     }
     Assert-ArchiveHash $PackageArchive
     Assert-ArchiveHash $SourceArchive
