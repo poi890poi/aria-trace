@@ -887,6 +887,8 @@ class ProfileRegistry:
     ) -> Dict[str, Any]:
         rig_game = phone_game = rig_game_color = rig_game_orientation = None
         game_model = None
+        resolution_warnings = []
+        stale_game_color_fallback = False
         if request.requires_minimap_profile:
             if not context.game_id:
                 raise ProfileResolutionError(
@@ -966,11 +968,17 @@ class ProfileRegistry:
             else:
                 color_rig_id = str((candidate.get("dependencies") or {}).get("rig") or "")
                 if color_rig_id != str(rig["revision_id"]):
-                    if request.requires_game_color:
-                        raise ProfileResolutionError(
-                            "Active game-color profile depends on rig {}, but adapter "
-                            "resolved rig {}".format(color_rig_id, rig["revision_id"])
+                    stale_game_color_fallback = True
+                    resolution_warnings.append(
+                        "Active game-color profile {} depends on superseded rig {}; "
+                        "the adapter resolved rig {} and is using rig-locked color "
+                        "until fresh synchronized game calibration publishes a "
+                        "matching local HIK fit.".format(
+                            candidate["revision_id"],
+                            color_rig_id or "<missing>",
+                            rig["revision_id"],
                         )
+                    )
                 else:
                     rig_game_color = candidate
         elif request.requires_game_color:
@@ -989,7 +997,11 @@ class ProfileRegistry:
             if isinstance(conversion, Mapping) and conversion.get("status") == "selected":
                 legacy_color_profile = rig_game
         selected_color_profile = rig_game_color or legacy_color_profile
-        if request.requires_game_color and selected_color_profile is None:
+        if (
+            request.requires_game_color
+            and selected_color_profile is None
+            and not stale_game_color_fallback
+        ):
             raise ProfileResolutionError(
                 "No active game-color calibration matches the resolved rig and game"
             )
@@ -1005,7 +1017,7 @@ class ProfileRegistry:
             else None
         )
         effective_color_policy = request.color_policy
-        if request.color_policy == "auto":
+        if request.color_policy == "auto" or stale_game_color_fallback:
             effective_color_policy = (
                 "game_matched" if selected_color_profile is not None else "rig_locked"
             )
@@ -1098,7 +1110,7 @@ class ProfileRegistry:
             "game_model": game_model,
         }
         profile_compatibility = {}
-        compatibility_warnings = []
+        compatibility_warnings = list(resolution_warnings)
         provenance_notes = []
         for profile_kind, profile in selected_profiles.items():
             if profile is None:

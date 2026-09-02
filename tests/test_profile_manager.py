@@ -259,6 +259,25 @@ class ProfileManagerTests(unittest.TestCase):
                 review_state="accepted",
                 activate=True,
             )
+            old_color = registry.publish(
+                "rig_game_color",
+                phone_context,
+                {
+                    "profile_kind": "rig_game_color",
+                    "hik_bayer_conversion": {
+                        "status": "selected",
+                        "gamma": 0.9,
+                        "ccm_rgb_3x3": [
+                            [1.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0],
+                            [0.0, 0.0, 1.0],
+                        ],
+                    },
+                },
+                dependencies={"rig": first_rig["revision_id"]},
+                review_state="accepted",
+                activate=True,
+            )
 
             second_rig = publish_rig_calibration(
                 write_rig(root / "rig-2", camera_x_offset=3.0),
@@ -297,20 +316,31 @@ class ProfileManagerTests(unittest.TestCase):
                 second_rig["revision_id"],
                 recomposed_orientation["dependencies"]["rig"],
             )
-            resolved = registry.resolve_adapter(
-                ProfileContext(
-                    game_id="game-1",
-                    camera_id="CAM-1",
-                    game_display=phone_context.game_display,
-                ),
-                AdapterRequest(mode="minimap", color_policy="rig_locked"),
+            stale_color = second_rig["rig_dependent_reconciliation"][
+                "requires_fresh_evidence"
+            ]["rig_game_color"]
+            self.assertEqual(1, len(stale_color))
+            self.assertEqual(
+                old_color["revision_id"], stale_color[0]["profile_revision"]
             )
+            with self.assertWarnsRegex(RuntimeWarning, "rig-locked color"):
+                resolved = registry.resolve_adapter(
+                    ProfileContext(
+                        game_id="game-1",
+                        camera_id="CAM-1",
+                        game_display=phone_context.game_display,
+                    ),
+                    AdapterRequest(mode="minimap", color_policy="game_matched"),
+                )
             self.assertEqual(
                 3,
                 resolved["adapter_plan"][
                     "game_upright_quarter_turns_clockwise"
                 ],
             )
+            self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+            self.assertIsNone(resolved["profiles"]["rig_game_color"])
+            self.assertTrue(resolved["compatibility"]["warnings"])
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):
         with tempfile.TemporaryDirectory() as directory:

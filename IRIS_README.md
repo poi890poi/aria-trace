@@ -108,6 +108,11 @@ rotating series fits the rotation center, rotating envelope diameter, and
 shape; a static series fits only the observable shape/span unless a verified
 center already exists; both series may accumulate into the same active
 phone-game profile. IRIS never fabricates a rotation center from static data.
+When a fresh rig calibration changes the active rig revision, IRIS centrally
+recomposes portable mini-map geometry and game orientation. A previous
+rig-specific game-color fit is not relabeled as valid: adapter resolution falls
+back to rig-locked color with a structured warning until a synchronized
+`game-calibration` run publishes the matching local HIK fit.
 Dedicated commands remain available:
 
 ```powershell

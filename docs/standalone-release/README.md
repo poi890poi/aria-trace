@@ -202,6 +202,13 @@ profile:
 game-calibration.bat sessions\calibration\SESSION --game-id GAME_ID
 ```
 
+After rig displacement, publishing the fresh rig centrally recomposes portable
+mini-map geometry and game orientation. An older rig-specific color fit is
+reported as requiring fresh evidence; the adapter safely falls back to
+rig-locked color—even when `game_matched` was requested—instead of failing to
+open. Run `game-calibration` on a synchronized ADB/HIK session to restore
+game-matched color for the new rig revision.
+
 Cursor interpretation comes from the active game model, independently of the
 acquisition name. The default (`cursor_follows=character`) treats zigzag as a
 static-cursor series and micro-movement as a rotating-cursor series; a

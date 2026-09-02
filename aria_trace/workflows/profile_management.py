@@ -203,24 +203,23 @@ def publish_rig_calibration(
         review_state="accepted" if activate else "review_required",
         activate=activate,
     )
-    profile["recomposed_rig_game_profiles"] = (
-        recompose_active_rig_game_profiles(
-            profile,
-            registry=store,
-            activate=True,
-        )
+    reconciliation = (
+        reconcile_active_rig_dependents(profile, registry=store, activate=True)
         if activate
-        else []
+        else {
+            "recomposed": {"rig_game": [], "rig_game_orientation": []},
+            "requires_fresh_evidence": {"rig_game_color": []},
+        }
     )
-    profile["recomposed_rig_game_orientation_profiles"] = (
-        recompose_active_rig_game_orientation_profiles(
-            profile,
-            registry=store,
-            activate=True,
-        )
-        if activate
-        else []
-    )
+    profile["rig_dependent_reconciliation"] = reconciliation
+    # Preserve the established result keys for callers while the structured
+    # reconciliation report becomes the single owner of derived-profile state.
+    profile["recomposed_rig_game_profiles"] = reconciliation["recomposed"][
+        "rig_game"
+    ]
+    profile["recomposed_rig_game_orientation_profiles"] = reconciliation[
+        "recomposed"
+    ]["rig_game_orientation"]
     return profile
 
 
@@ -384,6 +383,55 @@ def recompose_active_rig_game_orientation_profiles(
         )
         recomposed.append(result)
     return recomposed
+
+
+def reconcile_active_rig_dependents(
+    rig_profile: Mapping[str, Any],
+    *,
+    registry: ProfileRegistry,
+    activate: bool = True,
+) -> Dict[str, Any]:
+    """Reconcile every active game profile affected by one new rig revision."""
+
+    rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+    stale_color = []
+    for item in registry.list_revisions(kind="rig_game_color", active_only=True):
+        source = registry.revision(str(item["revision_id"]))
+        source_context = ProfileContext.from_dict(source.get("context") or {})
+        if source_context.platform != rig_context.platform:
+            continue
+        if source_context.camera_id != rig_context.camera_id:
+            continue
+        if not _portable_panel_geometry_matches(rig_context, source_context):
+            continue
+        source_rig = str((source.get("dependencies") or {}).get("rig") or "")
+        if source_rig == str(rig_profile["revision_id"]):
+            continue
+        stale_color.append(
+            {
+                "profile_revision": source["revision_id"],
+                "game_id": source_context.game_id,
+                "source_rig_revision": source_rig or None,
+                "target_rig_revision": rig_profile["revision_id"],
+                "action": (
+                    "adapter_falls_back_to_rig_locked_until_fresh_synchronized_"
+                    "game_calibration_publishes_a_local_hik_fit"
+                ),
+            }
+        )
+    return {
+        "schema_version": "1.0",
+        "rig_revision": rig_profile["revision_id"],
+        "recomposed": {
+            "rig_game": recompose_active_rig_game_profiles(
+                rig_profile, registry=registry, activate=activate
+            ),
+            "rig_game_orientation": recompose_active_rig_game_orientation_profiles(
+                rig_profile, registry=registry, activate=activate
+            ),
+        },
+        "requires_fresh_evidence": {"rig_game_color": stale_color},
+    }
 
 
 def _session_context(summary: Mapping[str, Any]) -> tuple[Path, Dict[str, Any], Dict[str, Any]]:
@@ -991,6 +1039,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ),
                 )
             )
+            stale_color = (
+                ((result.get("rig_dependent_reconciliation") or {}).get(
+                    "requires_fresh_evidence"
+                ) or {}).get("rig_game_color")
+                or []
+            )
+            if stale_color:
+                print(
+                    "Game color: {} previous rig-specific fit(s) now use safe "
+                    "rig-locked fallback; run game-calibration with synchronized "
+                    "HIK images to refresh them.".format(len(stale_color))
+                )
         return 0
     if arguments.command == "publish-minimap":
         from aria_trace.adapters.filesystem.system_configuration import (

@@ -441,6 +441,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 ),
             )
         )
+        stale_color = (
+            ((profile.get("rig_dependent_reconciliation") or {}).get(
+                "requires_fresh_evidence"
+            ) or {}).get("rig_game_color")
+            or []
+        )
+        if stale_color:
+            print(
+                "Game color: {} previous rig-specific fit(s) now use safe "
+                "rig-locked fallback; run game-calibration with synchronized "
+                "HIK images to refresh them.".format(len(stale_color))
+            )
         _write_standalone_adapter(
             Path(result),
             Path(result) / "hikcam_adapter.py",
