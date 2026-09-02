@@ -263,6 +263,13 @@ class HikGameCameraTests(unittest.TestCase):
         geometry = camera.get_cursor_geometry("minimap")
         self.assertTrue(geometry["available_in_stream_space"])
         self.assertAlmostEqual(12.0, geometry["rotating_cursor_envelope_diameter_px"])
+        boundary = camera.get_minimap_geometry("minimap")
+        self.assertTrue(boundary["available_in_stream_space"])
+        self.assertEqual([15.0, 10.0], boundary["center_xy_px"])
+        self.assertEqual([12.0, 12.0], boundary["boundary_size_xy_px"])
+        self.assertEqual(
+            [30, 20], boundary["image_space"]["stored_size_px"]
+        )
 
     def test_rectified_full_rotation_is_precomposed_into_dense_remap(self):
         document = rig_document()

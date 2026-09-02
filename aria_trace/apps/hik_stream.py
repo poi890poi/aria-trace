@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from dataclasses import dataclass
 import importlib
 import json
 import time
@@ -24,11 +25,16 @@ from aria_trace.adapters.android.phone import AdbPhoneSession
 class LiveStreamTelemetry:
     """Measured GUI throughput and latency without mixing clock domains."""
 
-    def __init__(self, history: int = 60) -> None:
+    def __init__(self, history: int = 60, display_interval_ms: float = 500.0) -> None:
         self._ends = deque(maxlen=max(2, int(history)))
+        self._display_interval_ns = max(0, int(float(display_interval_ms) * 1.0e6))
+        self._last_display_refresh_ns: Optional[int] = None
         self.fps = 0.0
         self.read_latency_ms = 0.0
         self.frame_age_ms: Optional[float] = None
+        self._display_fps = 0.0
+        self._display_read_latency_ms = 0.0
+        self._display_frame_age_ms: Optional[float] = None
 
     def observe(
         self,
@@ -58,15 +64,24 @@ class LiveStreamTelemetry:
             self.frame_age_ms = age if age >= 0.0 else None
         else:
             self.frame_age_ms = None
+        if (
+            len(self._ends) <= 2
+            or self._last_display_refresh_ns is None
+            or finished - self._last_display_refresh_ns >= self._display_interval_ns
+        ):
+            self._display_fps = self.fps
+            self._display_read_latency_ms = self.read_latency_ms
+            self._display_frame_age_ms = self.frame_age_ms
+            self._last_display_refresh_ns = finished
 
     def label(self) -> str:
         age = (
-            "{:.1f} ms".format(self.frame_age_ms)
-            if self.frame_age_ms is not None
+            "{:.1f} ms".format(self._display_frame_age_ms)
+            if self._display_frame_age_ms is not None
             else "n/a"
         )
-        return "FPS {:.1f} | read {:.1f} ms | age {}".format(
-            self.fps, self.read_latency_ms, age
+        return "FPS {:.1f} avg | read {:.1f} ms | age {}".format(
+            self._display_fps, self._display_read_latency_ms, age
         )
 
 
@@ -93,6 +108,138 @@ def overlay_stream_telemetry(frame, telemetry: LiveStreamTelemetry):
         1,
         cv2.LINE_AA,
     )
+    return rendered
+
+
+@dataclass
+class GeometryOverlayState:
+    enabled: bool = True
+    minimap_boundary: bool = True
+    cursor: bool = True
+
+    def handle_key(self, key: int) -> Optional[str]:
+        if key in (ord("g"), ord("G")):
+            self.enabled = not self.enabled
+        elif key in (ord("b"), ord("B")):
+            self.minimap_boundary = not self.minimap_boundary
+            self.enabled = True
+        elif key in (ord("c"), ord("C")):
+            self.cursor = not self.cursor
+            self.enabled = True
+        else:
+            return None
+        return "Geometry overlay: {} (boundary {}, cursor {})".format(
+            "on" if self.enabled else "off",
+            "on" if self.minimap_boundary else "off",
+            "on" if self.cursor else "off",
+        )
+
+
+def _space_matches_frame(geometry: Mapping[str, object], frame) -> bool:
+    image_space = geometry.get("image_space")
+    if not isinstance(image_space, Mapping):
+        return False
+    size = image_space.get("stored_size_px")
+    return (
+        isinstance(size, Sequence)
+        and len(size) == 2
+        and [int(size[0]), int(size[1])] == [int(frame.shape[1]), int(frame.shape[0])]
+    )
+
+
+def _runtime_geometry(camera, method_name: str, stream_name: str) -> Mapping[str, object]:
+    getter = getattr(camera, method_name, None)
+    if not callable(getter):
+        return {}
+    try:
+        value = getter(stream_name)
+    except (RuntimeError, TypeError, ValueError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def overlay_stream_geometry(
+    frame,
+    camera,
+    stream_name: str,
+    state: GeometryOverlayState,
+):
+    """Draw only geometry explicitly converted into this runtime image space."""
+
+    rendered = frame.copy()
+    if not state.enabled:
+        return rendered
+    if state.minimap_boundary:
+        geometry = _runtime_geometry(camera, "get_minimap_geometry", stream_name)
+        if (
+            geometry.get("available_in_stream_space")
+            and _space_matches_frame(geometry, frame)
+        ):
+            center = tuple(int(round(value)) for value in geometry["center_xy_px"])
+            size = geometry.get("boundary_size_xy_px") or [
+                2.0 * float(geometry["radius_px"]),
+                2.0 * float(geometry["radius_px"]),
+            ]
+            axes = tuple(max(1, int(round(float(value) / 2.0))) for value in size)
+            cv2.ellipse(
+                rendered,
+                center,
+                axes,
+                0.0,
+                0.0,
+                360.0,
+                (255, 210, 0),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                rendered,
+                "mini-map boundary",
+                (max(4, center[0] - axes[0]), max(18, center[1] - axes[1] - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 210, 0),
+                1,
+                cv2.LINE_AA,
+            )
+    if state.cursor:
+        geometry = _runtime_geometry(camera, "get_cursor_geometry", stream_name)
+        if (
+            geometry.get("available_in_stream_space")
+            and _space_matches_frame(geometry, frame)
+        ):
+            center = tuple(int(round(value)) for value in geometry["center_xy_px"])
+            size = geometry.get("rotating_cursor_envelope_size_xy_px")
+            if isinstance(size, Sequence) and len(size) == 2:
+                axes = tuple(max(1, int(round(float(value) / 2.0))) for value in size)
+                cv2.ellipse(
+                    rendered,
+                    center,
+                    axes,
+                    0.0,
+                    0.0,
+                    360.0,
+                    (255, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            arm = 7
+            cv2.line(
+                rendered,
+                (center[0] - arm, center[1]),
+                (center[0] + arm, center[1]),
+                (255, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.line(
+                rendered,
+                (center[0], center[1] - arm),
+                (center[0], center[1] + arm),
+                (255, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
     return rendered
 
 
@@ -233,7 +380,20 @@ def parser() -> argparse.ArgumentParser:
         default="auto",
     )
     value.add_argument("--minimap-margin-px", type=int, default=6)
-    value.add_argument("--gui", action="store_true", help="Show live frames; Q/Esc closes")
+    value.add_argument(
+        "--mask-policy",
+        choices=("none", "minimap_circle"),
+        default="none",
+        help=(
+            "Adapter only: precompose the calibrated mini-map circle into the "
+            "rectification map (requires rectification and minimap/dual mode)"
+        ),
+    )
+    value.add_argument(
+        "--gui",
+        action="store_true",
+        help="Show live frames; G/B/C toggles geometry and Q/Esc closes",
+    )
     value.add_argument(
         "--no-rectify",
         action="store_true",
@@ -261,6 +421,7 @@ def open_camera(
     color_order: str = "BGR",
     color_policy: str = "auto",
     minimap_margin_px: int = 6,
+    mask_policy: str = "none",
 ):
     """Public UVC-like constructor for application code (read/release/isOpened)."""
 
@@ -280,6 +441,7 @@ def open_camera(
                 "color_order": color_order,
                 "color_policy": color_policy,
                 "minimap_margin_px": minimap_margin_px,
+                "mask_policy": mask_policy,
                 "mvs_python_path": mvs_python_path,
             }
         ).open()
@@ -296,6 +458,7 @@ def open_camera(
             mode=mode,
             rectify_minimap=rectify,
             adapter=adapter,
+            mask_policy=mask_policy,
         ).open()
     return RectifiedHikCamera(
         diagnostic_calibration_override, adapter=adapter, rectify=rectify
@@ -306,6 +469,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.manage_phone_display and not arguments.gui:
         parser().error("--manage-phone-display requires --gui")
+    if arguments.mask_policy != "none":
+        if arguments.camera_library == "native":
+            parser().error(
+                "--mask-policy is available only with --camera-library adapter"
+            )
+        if arguments.mode == "full":
+            parser().error("--mask-policy minimap_circle requires minimap or dual mode")
+        if arguments.no_rectify:
+            parser().error("--mask-policy minimap_circle requires rectification")
     if arguments.camera_library == "native":
         if arguments.mode != "full":
             parser().error("--camera-library native supports only --mode full")
@@ -361,6 +533,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "color_order": arguments.color_order,
                     "color_policy": arguments.color_policy,
                     "minimap_margin_px": arguments.minimap_margin_px,
+                    "mask_policy": arguments.mask_policy,
                     "mvs_python_path": arguments.mvs_python_path,
                 }
             )
@@ -411,6 +584,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 color_order=arguments.color_order,
                 color_policy=arguments.color_policy,
                 minimap_margin_px=arguments.minimap_margin_px,
+                mask_policy=arguments.mask_policy,
             )
         elif arguments.camera_library == "adapter" and not camera.is_open:
             camera.open()
@@ -438,7 +612,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         windows = ["HIK {}".format(name) for name in stream_names]
         print(
-            "Live {} stream opened. Press Q/Esc or close a window to exit."
+            "Live {} stream opened. G toggles geometry, B boundary, C cursor; "
+            "Q/Esc or close a window exits."
             .format(
                 arguments.mode
                 if profiled
@@ -453,6 +628,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for window in windows:
             cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
         telemetry = LiveStreamTelemetry()
+        geometry_overlay = GeometryOverlayState()
         while True:
             read_started_ns = time.perf_counter_ns()
             native_packet = None
@@ -491,13 +667,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     read_started_ns, read_finished_ns, metadata
                 )
             for name, frame in displayed.items():
+                rendered = overlay_stream_geometry(
+                    frame, camera, name, geometry_overlay
+                )
                 cv2.imshow(
                     "HIK {}".format(name),
-                    overlay_stream_telemetry(frame, telemetry),
+                    overlay_stream_telemetry(rendered, telemetry),
                 )
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q"), ord("Q")):
                 return 0
+            message = geometry_overlay.handle_key(key)
+            if message:
+                print(message, flush=True)
             if any(
                 cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1
                 for window in windows

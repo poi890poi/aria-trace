@@ -54,6 +54,53 @@ class HikStreamCliTests(unittest.TestCase):
         self.assertEqual(0, int(frame.max()))
         self.assertGreater(int(rendered.max()), 0)
 
+    def test_telemetry_label_is_averaged_and_visually_latched(self):
+        telemetry = stream.LiveStreamTelemetry(history=8, display_interval_ms=500)
+        telemetry.observe(0, 10_000_000, {})
+        telemetry.observe(30_000_000, 40_000_000, {})
+        first = telemetry.label()
+        telemetry.observe(45_000_000, 50_000_000, {})
+        self.assertEqual(first, telemetry.label())
+        telemetry.observe(590_000_000, 600_000_000, {})
+        self.assertNotEqual(first, telemetry.label())
+        self.assertIn("avg", telemetry.label())
+
+    def test_geometry_overlay_draws_only_matching_runtime_space(self):
+        frame = np.zeros((80, 100, 3), np.uint8)
+        camera = Mock()
+        camera.get_minimap_geometry.return_value = {
+            "available_in_stream_space": True,
+            "center_xy_px": [50.0, 40.0],
+            "boundary_size_xy_px": [60.0, 60.0],
+            "image_space": {"stored_size_px": [100, 80]},
+        }
+        camera.get_cursor_geometry.return_value = {
+            "available_in_stream_space": True,
+            "center_xy_px": [50.0, 40.0],
+            "rotating_cursor_envelope_size_xy_px": [12.0, 10.0],
+            "image_space": {"stored_size_px": [100, 80]},
+        }
+        state = stream.GeometryOverlayState()
+        rendered = stream.overlay_stream_geometry(frame, camera, "minimap", state)
+        self.assertGreater(int(rendered.max()), 0)
+        camera.get_minimap_geometry.return_value["image_space"] = {
+            "stored_size_px": [99, 80]
+        }
+        camera.get_cursor_geometry.return_value["image_space"] = {
+            "stored_size_px": [99, 80]
+        }
+        rejected = stream.overlay_stream_geometry(frame, camera, "minimap", state)
+        self.assertEqual(0, int(rejected.max()))
+
+    def test_geometry_overlay_runtime_keys_toggle_components(self):
+        state = stream.GeometryOverlayState()
+        self.assertIn("off", state.handle_key(ord("g")))
+        self.assertFalse(state.enabled)
+        self.assertIn("boundary off", state.handle_key(ord("b")))
+        self.assertTrue(state.enabled)
+        self.assertFalse(state.minimap_boundary)
+        self.assertIsNone(state.handle_key(ord("x")))
+
     def test_open_camera_delegates_profiled_modes_to_existing_game_adapter(self):
         adapter = object()
         opened = object()
@@ -74,6 +121,7 @@ class HikStreamCliTests(unittest.TestCase):
             mode="dual",
             rectify_minimap=True,
             adapter=adapter,
+            mask_policy="none",
         )
         profiled.open.assert_called_once_with()
 
@@ -96,10 +144,24 @@ class HikStreamCliTests(unittest.TestCase):
             ]
         )
         self.assertEqual("dual", arguments.mode)
+        self.assertEqual("none", arguments.mask_policy)
         self.assertEqual(
             Path("profile.json"),
             arguments.diagnostic_rig_game_profile_override,
         )
+
+    def test_parser_accepts_precomposed_minimap_mask(self):
+        arguments = stream.parser().parse_args(
+            [
+                "--game-id",
+                "game-1",
+                "--mode",
+                "dual",
+                "--mask-policy",
+                "minimap_circle",
+            ]
+        )
+        self.assertEqual("minimap_circle", arguments.mask_policy)
 
     def test_parser_allows_registry_selected_game_without_calibration_path(self):
         arguments = stream.parser().parse_args(

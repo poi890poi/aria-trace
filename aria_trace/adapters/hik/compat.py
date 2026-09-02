@@ -579,6 +579,17 @@ class HikCamera:
             return {}
         return copy.deepcopy(dict(method(stream_id)))
 
+    def get_minimap_geometry(
+        self, stream_id: str = "minimap"
+    ) -> Dict[str, Any]:
+        """Return the mini-map boundary with explicit stream-space metadata."""
+
+        reader = self._require_reader()
+        method = getattr(reader, "get_minimap_geometry", None)
+        if method is None:
+            return {}
+        return copy.deepcopy(dict(method(stream_id)))
+
     def get_aria_frame_metadata(
         self, stream_id: Optional[str] = None
     ) -> Dict[str, Any]:

@@ -436,6 +436,67 @@ class ProfiledHikGameCamera:
             )
         return result
 
+    def get_minimap_geometry(
+        self, stream_id: str = "minimap"
+    ) -> Mapping[str, object]:
+        """Return the calibrated mini-map boundary in canonical and runtime spaces."""
+
+        canonical = self.minimap.get("outer_boundary")
+        if not isinstance(canonical, Mapping):
+            return {}
+        boundary = require_spatial_geometry(
+            canonical,
+            "circle",
+            expected_space_id="android_phone_natural_display_pixels",
+        )
+        if not self._opened:
+            raise RuntimeError("Camera must be open to query runtime mini-map geometry")
+        selected = str(stream_id)
+        if selected not in ("minimap", "full", "canonical_phone"):
+            raise ValueError(
+                "Mini-map geometry stream must be minimap, full, or canonical_phone"
+            )
+        result = {
+            "schema_version": "1.0",
+            "available": True,
+            "canonical_phone": copy.deepcopy(dict(boundary)),
+            "stream_id": selected,
+        }
+        if selected == "canonical_phone":
+            return result
+        if not self.rectify_minimap:
+            result.update(
+                available_in_stream_space=False,
+                reason=(
+                    "Unrectified camera ROI is projective; use canonical_phone geometry"
+                ),
+            )
+            return result
+        center_full = self._canonical_phone_to_upright_full_xy(
+            [boundary["center_x"], boundary["center_y"]]
+        )
+        if selected == "minimap":
+            crop_x, crop_y, _, _ = self._minimap_in_full_xywh
+            center_runtime = center_full - np.asarray([crop_x, crop_y])
+        else:
+            center_runtime = center_full
+        scale_x, scale_y = self._screen_units_per_output_pixel_xy
+        diameter_xy = [
+            2.0 * float(boundary["radius"]) / scale_x,
+            2.0 * float(boundary["radius"]) / scale_y,
+        ]
+        if self.output_quarter_turns_clockwise % 2:
+            diameter_xy.reverse()
+        metadata = self._last_stream_metadata.get(selected) or {}
+        result.update(
+            available_in_stream_space=True,
+            center_xy_px=[float(center_runtime[0]), float(center_runtime[1])],
+            boundary_size_xy_px=[float(value) for value in diameter_xy],
+            radius_px=float(max(diameter_xy) / 2.0),
+            image_space=copy.deepcopy(dict(metadata.get("image_space") or {})),
+        )
+        return result
+
     def open(self) -> "ProfiledHikGameCamera":
         if self._opened:
             return self
