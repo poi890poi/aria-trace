@@ -111,7 +111,7 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual(first["revision_id"], repeated["revision_id"])
         self.assertEqual("unchanged_existing_revision", repeated["publication"])
 
-    def test_incomplete_context_uses_newest_active_variant(self):
+    def test_incomplete_context_uses_recency_only_after_rank_tie(self):
         first = self.publish_rig(context())
         newest = self.publish_rig(context(refresh=60.0))
         incomplete = ProfileContext(camera_id="CAM-1", phone_id="PHONE-1")
@@ -119,9 +119,45 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertNotEqual(first["revision_id"], resolved["revision_id"])
         self.assertEqual(newest["revision_id"], resolved["revision_id"])
         self.assertEqual(
-            "newest_active_compatible_revision",
+            "best_ranked_active_revision",
             resolved["resolution"]["selection"],
         )
+
+    def test_profile_ranking_prefers_static_panel_match_over_newer_variant(self):
+        expected = self.publish_rig(context(refresh=120.0))
+        self.publish_rig(context(refresh=60.0))
+        requested = ProfileContext(
+            camera_id="CAM-1",
+            panel_display={
+                "natural_panel_px": [1080, 2400],
+                "density_dpi": 480,
+                "refresh_hz": 120.0,
+            },
+        )
+        candidates = self.registry.list_candidates("rig", requested)
+        resolved = self.registry.resolve("rig", requested)
+        self.assertEqual(expected["revision_id"], resolved["revision_id"])
+        self.assertEqual(expected["revision_id"], candidates[0]["revision_id"])
+        self.assertEqual(2, resolved["resolution"]["candidate_count"])
+        self.assertEqual(
+            "physical_static_then_software_fluid_v1",
+            resolved["resolution"]["rank"]["policy"],
+        )
+
+    def test_candidate_listing_never_crosses_requested_camera_or_game(self):
+        expected = self.publish_rig(context())
+        self.publish_rig(
+            ProfileContext(
+                camera_id="CAM-2",
+                panel_display=context().panel_display,
+            )
+        )
+        candidates = self.registry.list_candidates(
+            "rig", ProfileContext(camera_id="CAM-1")
+        )
+        self.assertEqual([expected["revision_id"]], [
+            item["revision_id"] for item in candidates
+        ])
 
     def test_phone_game_is_owned_by_platform_panel_and_game_not_phone_serial(self):
         source = context()

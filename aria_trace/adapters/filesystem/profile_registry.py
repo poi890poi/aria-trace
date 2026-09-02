@@ -445,6 +445,73 @@ def _profile_compatibility(
     }
 
 
+def _profile_match_rank(
+    kind: str,
+    requested: ProfileContext,
+    stored: ProfileContext,
+) -> Dict[str, Any]:
+    """Rank compatible active variants from physical/static to fluid facts.
+
+    Camera identity and requested game identity are filtered before ranking.
+    Missing caller facts are neutral: they never masquerade as a match.  The
+    ordered score is deliberately lexicographic so a later software or runtime
+    fact cannot outweigh an earlier physical display fact.
+    """
+
+    rig_scoped = kind in (
+        "rig", "rig_game", "rig_game_color", "rig_game_orientation"
+    )
+    game_scoped = kind != "rig"
+    fields = []
+
+    def add(name: str, requested_value: Any, stored_value: Any) -> None:
+        if requested_value is None or requested_value == {}:
+            fields.append({"field": name, "state": "caller_unspecified", "score": 1})
+        elif stored_value is None or stored_value == {}:
+            fields.append({"field": name, "state": "profile_unspecified", "score": 1})
+        elif requested_value == stored_value:
+            fields.append({"field": name, "state": "exact", "score": 2})
+        else:
+            fields.append({"field": name, "state": "mismatch", "score": 0})
+
+    if rig_scoped:
+        add("camera_id", requested.camera_id, stored.camera_id)
+        add("camera_adapter", requested.camera_adapter, stored.camera_adapter)
+    if kind != "game_model":
+        for name in ("natural_panel_px", "density_dpi", "refresh_millihz"):
+            add(
+                "panel.{}".format(name),
+                requested.panel_display.get(name),
+                stored.panel_display.get(name),
+            )
+    add("platform", requested.platform, stored.platform)
+    if game_scoped:
+        add("game_id", requested.game_id, stored.game_id)
+        add("game_package", requested.package, stored.package)
+        if kind != "game_model":
+            for name in (
+                "logical_frame_px",
+                "game_viewport_xywh",
+                "content_layout_id",
+                "ui_layout_id",
+                "rotation_quarter_turns",
+                "insets_px",
+            ):
+                add(
+                    "game_display.{}".format(name),
+                    requested.game_display.get(name),
+                    stored.game_display.get(name),
+                )
+        add("game_version", requested.game_version, stored.game_version)
+    return {
+        "policy": "physical_static_then_software_fluid_v1",
+        "ordered_fields": fields,
+        "score": [int(item["score"]) for item in fields],
+        "exact_count": sum(item["state"] == "exact" for item in fields),
+        "mismatch_count": sum(item["state"] == "mismatch" for item in fields),
+    }
+
+
 class ProfileRegistry:
     """SQLite activation index plus immutable human-readable revision bundles."""
 
@@ -745,26 +812,66 @@ class ProfileRegistry:
         if kind != "rig" and context.game_id:
             clauses.append("r.game_id=?")
             values.append(context.game_id)
-        if context.panel_signature and kind != "game_model":
-            if kind in ("phone_game", "phone_game_color"):
-                # Schema 2.0 phone-game revisions used '_' here and retained
-                # the real panel in context_json. Keep those revisions usable.
-                clauses.append("(r.panel_signature=? OR r.panel_signature='_')")
-            else:
-                clauses.append("r.panel_signature=?")
-            values.append(context.panel_signature)
-        if kind not in ("rig", "game_model") and context.game_display_signature:
-            clauses.append("r.game_signature=?")
-            values.append(context.game_display_signature)
         query = """SELECT r.* FROM active_profiles a
                    JOIN revisions r ON r.revision_id=a.revision_id
                    WHERE {} ORDER BY r.created_utc DESC""".format(" AND ".join(clauses))
         with self._connect() as connection:
             return connection.execute(query, values).fetchall()
 
+    def list_candidates(
+        self,
+        kind: str,
+        context: ProfileContext,
+        *,
+        active_only: bool = True,
+    ) -> Sequence[Dict[str, Any]]:
+        """List selectable revisions in automatic preference order."""
+
+        if kind not in PROFILE_KINDS:
+            raise ValueError("Unsupported profile kind: {}".format(kind))
+        if active_only:
+            rows = list(self._active_rows(kind, context))
+        else:
+            clauses = ["kind=?"]
+            values = [kind]
+            if kind in (
+                "rig", "rig_game", "rig_game_color", "rig_game_orientation"
+            ) and context.camera_id:
+                clauses.append("camera_id=?")
+                values.append(context.camera_id)
+            if kind != "rig" and context.game_id:
+                clauses.append("game_id=?")
+                values.append(context.game_id)
+            query = "SELECT * FROM revisions WHERE {}".format(
+                " AND ".join(clauses)
+            )
+            with self._connect() as connection:
+                rows = list(connection.execute(query, values).fetchall())
+        candidates = []
+        for row in rows:
+            profile = self.revision(row["revision_id"])
+            stored = ProfileContext.from_dict(profile.get("context") or {})
+            profile["resolution"] = {
+                "selection": "candidate",
+                "compatibility": _profile_compatibility(kind, context, stored),
+                "rank": _profile_match_rank(kind, context, stored),
+            }
+            candidates.append(profile)
+        candidates.sort(
+            key=lambda item: (
+                tuple(item["resolution"]["rank"]["score"]),
+                str(item.get("created_utc") or ""),
+            ),
+            reverse=True,
+        )
+        for index, item in enumerate(candidates, start=1):
+            item["resolution"]["preference_index"] = index
+            item["resolution"]["candidate_count"] = len(candidates)
+        return candidates
+
     def resolve(self, kind: str, context: ProfileContext) -> Dict[str, Any]:
-        rows = list(self._active_rows(kind, context))
-        if not rows:
+        candidates = list(self.list_candidates(kind, context, active_only=True))
+        if not candidates:
             raise ProfileResolutionError(
                 "No active {} profile matches camera={!r}, phone={!r}, game={!r}, "
                 "panel={!r}, game_display={!r}".format(
@@ -772,24 +879,16 @@ class ProfileRegistry:
                     context.panel_signature, context.game_display_signature,
                 )
             )
-        rows.sort(
-            key=lambda row: (
-                int(
-                    context.panel_signature is not None
-                    and row["panel_signature"] == context.panel_signature
-                ),
-                str(row["created_utc"]),
-            ),
-            reverse=True,
-        )
-        result = self.revision(rows[0]["revision_id"])
+        result = candidates[0]
+        rank = dict(result["resolution"]["rank"])
         result["resolution"] = {
             "selection": (
-                "newest_active_compatible_revision"
-                if len(rows) > 1
-                else "active_compatible_revision"
+                "best_ranked_active_revision"
+                if len(candidates) > 1
+                else "active_revision"
             ),
-            "candidate_count": len(rows),
+            "candidate_count": len(candidates),
+            "rank": rank,
             "compatibility": _profile_compatibility(
                 kind,
                 context,
