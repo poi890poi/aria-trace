@@ -122,8 +122,196 @@ class HikAutoProfileTests(unittest.TestCase):
                 apply_game_color=False,
                 output_quarter_turns_clockwise=0,
                 runtime_surface_quarter_turns_clockwise_from_natural=None,
+                best_effort_initialization=True,
                 mask_policy="none",
             )
+
+    def test_initialization_recovery_updates_only_rig_orientation_profile(self):
+        phone_game_payload = {"canonical_phone_crop_xywh": [10, 20, 30, 30]}
+        phone_game = self.registry.publish(
+            "phone_game",
+            self.context,
+            phone_game_payload,
+            review_state="accepted",
+            activate=True,
+        )
+        rig_game_payload = {
+            "canonical_phone_crop_xywh": [10, 20, 30, 30],
+            "portable_marker": "must-not-change",
+        }
+        rig_game = self.registry.publish(
+            "rig_game",
+            self.context,
+            rig_game_payload,
+            dependencies={
+                "rig": self.rig["revision_id"],
+                "phone_game": phone_game["revision_id"],
+            },
+            review_state="accepted",
+            activate=True,
+        )
+        orientation_payload = {
+            "profile_kind": "rig_game_orientation",
+            "game_surface_quarter_turns_clockwise_from_phone_natural": 1,
+            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 0,
+            "portable_marker": {"game": "unchanged"},
+        }
+        orientation = self.registry.publish(
+            "rig_game_orientation",
+            self.context,
+            orientation_payload,
+            dependencies={"rig": self.rig["revision_id"]},
+            review_state="accepted",
+            activate=True,
+        )
+        reader = Mock()
+        reader.open.return_value = reader
+        reader.initialization_orientation_recovery.return_value = {
+            "status": "four_orientation_intersection_fallback",
+            "selected_surface_quarter_turns": 3,
+            "previous_output_quarter_turns": 0,
+            "selected_output_quarter_turns": 2,
+            "orientation_recovered": True,
+            "runtime_cost": "initialization_only",
+        }
+        camera = hikcam.HikCamera(
+            config={
+                "profile_root": self.root / "profiles",
+                "game_id": "game-1",
+                "camera_id": "CAM-1",
+                "phone_id": "PHONE-1",
+                "panel_display": self.context.panel_display,
+                "game_display": self.context.game_display,
+                "mode": "dual",
+                "color_policy": "rig_locked",
+                "reader_factory": lambda _path: reader,
+            }
+        ).open()
+
+        recovery = camera.get_iris_initialization_recovery()
+        self.assertEqual("recovered_and_profile_updated", recovery["status"])
+        active_orientation = self.registry.resolve(
+            "rig_game_orientation", self.context
+        )
+        self.assertNotEqual(orientation["revision_id"], active_orientation["revision_id"])
+        self.assertEqual(
+            self.rig["revision_id"], active_orientation["dependencies"]["rig"]
+        )
+        self.assertEqual(
+            2,
+            active_orientation["payload"][
+                "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+            ],
+        )
+        self.assertEqual(
+            1,
+            active_orientation["payload"][
+                "game_surface_quarter_turns_clockwise_from_phone_natural"
+            ],
+        )
+        self.assertEqual(
+            {"game": "unchanged"},
+            active_orientation["payload"]["portable_marker"],
+        )
+        self.assertEqual(
+            phone_game["revision_id"],
+            self.registry.resolve("phone_game", self.context)["revision_id"],
+        )
+        self.assertEqual(
+            rig_game["revision_id"],
+            self.registry.resolve("rig_game", self.context)["revision_id"],
+        )
+        self.assertEqual(2, camera.resolved_config["adapter_plan"][
+            "game_upright_quarter_turns_clockwise"
+        ])
+        self.assertEqual(3, camera.resolved_config["adapter_plan"][
+            "initialization_surface_quarter_turns_clockwise_from_natural"
+        ])
+        next_run = self.registry.resolve_adapter(
+            self.context,
+            AdapterRequest(mode="dual", color_policy="rig_locked"),
+        )
+        self.assertEqual(
+            2,
+            next_run["adapter_plan"][
+                "game_upright_quarter_turns_clockwise"
+            ],
+        )
+        self.assertEqual(
+            3,
+            next_run["adapter_plan"][
+                "initialization_surface_quarter_turns_clockwise_from_natural"
+            ],
+        )
+
+    def test_initialization_recovery_and_writeback_can_be_disabled(self):
+        phone_game = self.registry.publish(
+            "phone_game",
+            self.context,
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            review_state="accepted",
+            activate=True,
+        )
+        self.registry.publish(
+            "rig_game",
+            self.context,
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            dependencies={
+                "rig": self.rig["revision_id"],
+                "phone_game": phone_game["revision_id"],
+            },
+            review_state="accepted",
+            activate=True,
+        )
+        profiled = Mock()
+        profiled.open.return_value = profiled
+        with patch.object(
+            game_camera, "ProfiledHikGameCamera", return_value=profiled
+        ) as constructor:
+            camera = hikcam.HikCamera(
+                config={
+                    "profile_root": self.root / "profiles",
+                    "game_id": "game-1",
+                    "camera_id": "CAM-1",
+                    "phone_id": "PHONE-1",
+                    "panel_display": self.context.panel_display,
+                    "game_display": self.context.game_display,
+                    "mode": "minimap",
+                    "color_policy": "rig_locked",
+                    "best_effort_initialization": False,
+                    "persist_initialization_recovery": False,
+                }
+            ).open()
+        self.assertFalse(constructor.call_args[1]["best_effort_initialization"])
+        self.assertEqual({}, camera.get_iris_initialization_recovery())
+
+    def test_initialization_profile_write_failure_is_non_gating(self):
+        reader = Mock()
+        reader.open.return_value = reader
+        reader.initialization_orientation_recovery.return_value = {
+            "selected_surface_quarter_turns": 2,
+            "previous_output_quarter_turns": 0,
+            "selected_output_quarter_turns": 2,
+            "orientation_recovered": True,
+        }
+        camera = hikcam.HikCamera(
+            config={
+                "diagnostic_calibration_override": self.calibration,
+                "reader_factory": lambda _path: reader,
+            }
+        )
+        with patch.object(
+            camera,
+            "_persist_recovered_orientation",
+            side_effect=PermissionError("read-only profile store"),
+        ), self.assertWarnsRegex(RuntimeWarning, "could not update"):
+            opened = camera.open()
+        self.assertIs(camera, opened)
+        self.assertTrue(camera.is_open)
+        self.assertEqual(
+            "recovered_profile_update_failed_non_gating",
+            camera.get_iris_initialization_recovery()["status"],
+        )
 
     def test_adapter_rejects_rig_game_pinned_to_superseded_active_rig(self):
         phone_game = self.registry.publish(

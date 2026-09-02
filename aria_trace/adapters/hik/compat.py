@@ -21,6 +21,7 @@ import copy
 import json
 import os
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
@@ -155,6 +156,9 @@ def _registry_configuration(
         game_upright_quarter_turns_clockwise=resolved["adapter_plan"].get(
             "game_upright_quarter_turns_clockwise", 0
         ),
+        runtime_surface_quarter_turns_clockwise_from_natural=resolved[
+            "adapter_plan"
+        ].get("initialization_surface_quarter_turns_clockwise_from_natural"),
     )
     if resolved["paths"]["rig_game_profile"]:
         effective["minimap_calibration"] = resolved["paths"]["rig_game_profile"]
@@ -170,7 +174,11 @@ class HikCamera:
 
     The supported compatibility surface is deliberately high-level. It does not
     impersonate the vendor's ctypes structures or status-code based ``MV_CC_*``
-    ABI. Methods raise Python exceptions on failure.
+    ABI. Methods raise Python exceptions on failure. For mini-map and dual
+    streams, ``config['best_effort_initialization']`` defaults to true and tests
+    the saved orientation, then 180, 90, and 270 degrees only while opening.
+    ``config['persist_initialization_recovery']`` controls the default-on,
+    rig-orientation-only profile write-back.
     """
 
     TIMEOUT_MS = 40000
@@ -260,6 +268,12 @@ class HikCamera:
             int(runtime_surface_turns) % 4
             if runtime_surface_turns is not None
             else None
+        )
+        self._best_effort_initialization = bool(
+            self.config.get("best_effort_initialization", True)
+        )
+        self._persist_initialization_recovery = bool(
+            self.config.get("persist_initialization_recovery", True)
         )
         if self._color_order not in ("RGB", "BGR"):
             raise ValueError("config['color_order'] must be RGB or BGR")
@@ -391,6 +405,7 @@ class HikCamera:
                 "runtime_surface_quarter_turns_clockwise_from_natural": (
                     self._runtime_surface_turns
                 ),
+                "best_effort_initialization": self._best_effort_initialization,
                 "mask_policy": str(self.config.get("mask_policy", "none")),
             }
             if game_color:
@@ -414,6 +429,7 @@ class HikCamera:
             opened = reader.open()
             self._reader = opened if opened is not None else reader
             self.is_open = True
+            self._consume_initialization_orientation_recovery()
             self.setting()
         except Exception:
             try:
@@ -424,6 +440,214 @@ class HikCamera:
             self.is_open = False
             raise
         return self
+
+    def _consume_initialization_orientation_recovery(self) -> None:
+        """Apply and optionally persist an initialization-only orientation fix."""
+
+        reader = self._reader
+        describe = getattr(reader, "initialization_orientation_recovery", None)
+        if not callable(describe):
+            return
+        described = describe()
+        if not isinstance(described, Mapping):
+            return
+        decision = copy.deepcopy(dict(described))
+        if not decision:
+            return
+        result = {
+            "schema_version": "1.0",
+            "runtime_cost": "initialization_only",
+            "best_effort_initialization": self._best_effort_initialization,
+            "decision": decision,
+        }
+        if not bool(decision.get("orientation_recovered")):
+            result["status"] = "saved_orientation_remains_valid"
+            self.resolved_config["initialization_recovery"] = result
+            return
+
+        selected_turns = int(decision["selected_output_quarter_turns"]) % 4
+        selected_surface_turns = decision.get("selected_surface_quarter_turns")
+        if selected_surface_turns is not None:
+            selected_surface_turns = int(selected_surface_turns) % 4
+        previous_turns = int(self._game_upright_turns) % 4
+        self._game_upright_turns = selected_turns
+        self._runtime_surface_turns = selected_surface_turns
+        self.config["game_upright_quarter_turns_clockwise"] = selected_turns
+        self.config[
+            "runtime_surface_quarter_turns_clockwise_from_natural"
+        ] = selected_surface_turns
+        adapter_plan = self.resolved_config.setdefault("adapter_plan", {})
+        adapter_plan["game_upright_quarter_turns_clockwise"] = selected_turns
+        adapter_plan[
+            "initialization_surface_quarter_turns_clockwise_from_natural"
+        ] = selected_surface_turns
+        if (previous_turns - selected_turns) % 2 and len(self.shape) >= 2:
+            self.shape = (self.shape[1], self.shape[0]) + tuple(self.shape[2:])
+
+        if not self._persist_initialization_recovery:
+            result["status"] = "recovered_not_persisted_by_configuration"
+        else:
+            try:
+                writeback = self._persist_recovered_orientation(
+                    decision
+                )
+                result["profile_writeback"] = writeback
+                result["status"] = (
+                    "recovered_and_profile_updated"
+                    if writeback.get("status")
+                    == "active_rig_orientation_revision_updated"
+                    else "recovered_profile_update_skipped"
+                )
+            except Exception as exc:
+                result["status"] = "recovered_profile_update_failed_non_gating"
+                result["profile_writeback"] = {
+                    "status": "failed_non_gating",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                warnings.warn(
+                    "IRIS recovered the mini-map orientation for this adapter "
+                    "session, but could not update the active rig-dependent "
+                    "orientation profile: {}: {}".format(type(exc).__name__, exc),
+                    RuntimeWarning,
+                )
+        self.resolved_config["initialization_recovery"] = result
+        self.config["initialization_recovery"] = copy.deepcopy(result)
+
+    def _persist_recovered_orientation(
+        self, decision: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Publish only the rig-dependent orientation correction.
+
+        Portable phone/game geometry is never republished here. The source
+        orientation payload is copied and only its adapter-relative turn plus
+        the initialization audit record are replaced.
+        """
+
+        if self.resolved_config.get("schema_version") == "explicit-path":
+            return {"status": "skipped_diagnostic_override"}
+
+        from aria_trace.adapters.filesystem.profile_registry import (
+            ProfileContext,
+            ProfileRegistry,
+            ProfileResolutionError,
+        )
+
+        profiles = dict(self.resolved_config.get("profiles") or {})
+        rig_revision = str(profiles.get("rig") or "")
+        if not rig_revision:
+            raise RuntimeError("Resolved adapter has no rig revision dependency")
+        source_revision_id = profiles.get("rig_game_orientation")
+        profile_root = (
+            Path(self.config["profile_root"])
+            if self.config.get("profile_root")
+            else None
+        )
+        registry = ProfileRegistry(profile_root)
+        context = ProfileContext.from_dict(
+            dict(self.resolved_config.get("context") or {})
+        )
+        source_payload: Dict[str, Any] = {}
+        if source_revision_id:
+            source_profile = registry.revision(str(source_revision_id))
+            source_payload = copy.deepcopy(dict(source_profile.get("payload") or {}))
+        else:
+            try:
+                concurrently_active = registry.resolve(
+                    "rig_game_orientation", context
+                )
+            except ProfileResolutionError:
+                concurrently_active = None
+            if concurrently_active is not None:
+                raise RuntimeError(
+                    "Active orientation profile changed after adapter resolution; "
+                    "initialization recovery was not written"
+                )
+
+        selected_turns = int(decision["selected_output_quarter_turns"]) % 4
+        selected_surface_turns = decision.get("selected_surface_quarter_turns")
+        if selected_surface_turns is not None:
+            selected_surface_turns = int(selected_surface_turns) % 4
+        protected_payload = copy.deepcopy(source_payload)
+        payload = copy.deepcopy(source_payload)
+        payload.setdefault("profile_kind", "rig_game_orientation")
+        payload[
+            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+        ] = selected_turns
+        payload["initialization_recovery"] = {
+            "schema_version": "1.0",
+            "selection_basis": (
+                "complete_saved_adb_minimap_projects_inside_current_hik_sensor"
+            ),
+            "attempt_order": "saved_then_180_then_90_then_270",
+            "selected_surface_quarter_turns_clockwise_from_phone_natural": (
+                selected_surface_turns
+            ),
+            "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+                selected_turns
+            ),
+            "previous_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+                int(decision.get("previous_output_quarter_turns", 0)) % 4
+            ),
+            "runtime_cost": "initialization_only",
+            "rig_revision": rig_revision,
+        }
+        mutable_keys = {
+            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
+            "initialization_recovery",
+        }
+        for key, value in protected_payload.items():
+            if key not in mutable_keys and payload.get(key) != value:
+                raise AssertionError(
+                    "Initialization recovery attempted to change portable "
+                    "orientation field {!r}".format(key)
+                )
+
+        published = registry.publish(
+            "rig_game_orientation",
+            context,
+            payload,
+            dependencies={"rig": rig_revision},
+            provenance={
+                "operation": "camera_adapter_initialization_orientation_recovery",
+                "runtime_cost": "initialization_only",
+                "source_orientation_revision": source_revision_id,
+                "selection": copy.deepcopy(dict(decision)),
+            },
+            review_state="accepted",
+            activate=False,
+        )
+        if source_revision_id:
+            activated = registry.activate(
+                str(published["revision_id"]),
+                expected_current=str(source_revision_id),
+            )
+        else:
+            activated = registry.activate(str(published["revision_id"]))
+        revision_id = str(activated["revision_id"])
+        profiles["rig_game_orientation"] = revision_id
+        self.resolved_config["profiles"] = profiles
+        self.resolved_config.setdefault("paths", {})[
+            "game_orientation_profile"
+        ] = str(
+            (
+                Path(activated["revision_directory"]) / "profile.json"
+            ).resolve()
+        )
+        return {
+            "status": "active_rig_orientation_revision_updated",
+            "source_revision": source_revision_id,
+            "active_revision": revision_id,
+            "rig_revision": rig_revision,
+            "portable_profile_kinds_touched": [],
+        }
+
+    def get_iris_initialization_recovery(self) -> Dict[str, Any]:
+        """Return the initialization recovery decision and write-back status."""
+
+        return copy.deepcopy(
+            dict(self.resolved_config.get("initialization_recovery") or {})
+        )
 
     def close(self) -> None:
         reader, self._reader = self._reader, None

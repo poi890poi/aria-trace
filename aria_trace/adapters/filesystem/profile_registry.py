@@ -1051,6 +1051,16 @@ class ProfileRegistry:
                     "micro_movement": "rotating",
                 }
             )
+        orientation_payload = dict(
+            (rig_game_orientation.get("payload") or {})
+            if rig_game_orientation else {}
+        )
+        initialization_recovery = dict(
+            orientation_payload.get("initialization_recovery") or {}
+        )
+        initialization_surface_turns = initialization_recovery.get(
+            "selected_surface_quarter_turns_clockwise_from_phone_natural"
+        )
         result = {
             "schema_version": SCHEMA_VERSION,
             "resolved_utc": datetime.now(timezone.utc).isoformat(),
@@ -1099,11 +1109,16 @@ class ProfileRegistry:
                 "mask_policy": request.mask_policy,
                 "minimap_margin_px": int(request.minimap_margin_px),
                 "game_upright_quarter_turns_clockwise": int(
-                    ((rig_game_orientation.get("payload") or {}).get(
+                    (orientation_payload.get(
                         "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
                         0,
                     ))
                 ) % 4 if rig_game_orientation else 0,
+                "initialization_surface_quarter_turns_clockwise_from_natural": (
+                    int(initialization_surface_turns) % 4
+                    if initialization_surface_turns is not None
+                    else None
+                ),
                 "game_model": game_model_plan,
                 "registry_reads_per_frame": 0,
                 "phone_operations": "none",

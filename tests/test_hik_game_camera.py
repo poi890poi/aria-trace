@@ -8,6 +8,7 @@ import numpy as np
 
 from acquisition.rig_calibration.contracts import FrameSample
 from acquisition.rig_calibration.hik.game_camera import (
+    MinimapRoiUnavailableError,
     ProfiledHikGameCamera,
     _source_crop_to_canonical_phone,
 )
@@ -446,8 +447,34 @@ class HikGameCameraTests(unittest.TestCase):
         selection = frame_set.metadata["minimap_crop_orientation_selection"]
         self.assertEqual("four_orientation_intersection_fallback", selection["status"])
         self.assertEqual(2, selection["selected_surface_quarter_turns"])
+        self.assertEqual(2, selection["selected_output_quarter_turns"])
+        self.assertTrue(selection["orientation_recovered"])
+        self.assertEqual("initialization_only", selection["runtime_cost"])
         self.assertEqual(4, selection["evaluated_candidates"])
         self.assertEqual([10, 40, 30, 20], adapter.roi)
+
+    def test_minimap_roi_best_effort_can_be_disabled(self):
+        document = rig_document()
+        document["geometry"]["screen_to_full_sensor_camera_3x3"] = [
+            [1, 0, -50], [0, 1, 0], [0, 0, 1]
+        ]
+        document["geometry"]["full_sensor_camera_to_screen_3x3"] = [
+            [1, 0, 50], [0, 1, 0], [0, 0, 1]
+        ]
+        self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(
+            MinimapRoiUnavailableError, "1 Android/game orientation"
+        ):
+            ProfiledHikGameCamera(
+                self.rig_path,
+                self.minimap_path,
+                mode="minimap",
+                rectify_minimap=False,
+                minimap_margin_px=0,
+                runtime_surface_quarter_turns_clockwise_from_natural=0,
+                best_effort_initialization=False,
+                adapter=FakeAdapter(),
+            ).open()
 
     def test_bayer_color_match_is_set_once_at_open_not_per_frame(self):
         document = {

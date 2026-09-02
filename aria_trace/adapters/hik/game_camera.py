@@ -15,8 +15,10 @@ from aria_trace.adapters.rig.devices import CameraConfiguration
 from aria_trace.domain.spatial import require_spatial_geometry
 from aria_trace.services.calibration.rig.contracts import FrameSample
 from aria_trace.services.calibration.rig.distortion import (
+    distort_pixel_points,
     distorted_screen_region_roi,
 )
+from aria_trace.services.calibration.rig.geometry import transform_points
 from aria_trace.services.calibration.rig.hik.algorithms import (
     camera_adapter_roi_to_output_homography,
     camera_roi_for_screen_region,
@@ -35,6 +37,43 @@ PathLike = Union[str, Path]
 
 class MinimapRoiUnavailableError(RuntimeError):
     """The calibrated mini-map cannot be acquired from the current rig view."""
+
+
+def _projected_screen_crop_is_complete(
+    screen_crop_xywh: Sequence[int],
+    screen_to_camera_3x3: Sequence[Sequence[float]],
+    camera_size_px: Sequence[int],
+    *,
+    lens_model: Optional[Mapping[str, object]] = None,
+) -> bool:
+    """Return whether every sampled crop-boundary point lies on the sensor."""
+
+    x, y, width, height = map(float, screen_crop_xywh)
+    count = 17 if lens_model else 2
+    xs = np.linspace(x, x + width, count)
+    ys = np.linspace(y, y + height, count)
+    boundary = np.vstack(
+        [
+            np.column_stack([xs, np.full(count, y)]),
+            np.column_stack([np.full(count, x + width), ys]),
+            np.column_stack([xs[::-1], np.full(count, y + height)]),
+            np.column_stack([np.full(count, x), ys[::-1]]),
+        ]
+    )
+    projected = transform_points(boundary, np.asarray(screen_to_camera_3x3))
+    if lens_model:
+        projected = distort_pixel_points(projected, lens_model)
+    if not np.all(np.isfinite(projected)):
+        return False
+    camera_width, camera_height = map(int, camera_size_px)
+    return bool(
+        np.all(projected[:, 0] >= 0.0)
+        and np.all(projected[:, 1] >= 0.0)
+        # XYWH rectangles use an exclusive right/bottom boundary throughout
+        # the rig ROI code, so a boundary exactly on width/height is visible.
+        and np.all(projected[:, 0] <= float(camera_width))
+        and np.all(projected[:, 1] <= float(camera_height))
+    )
 
 
 def _load_json(value: PathLike, names: Sequence[str]) -> tuple[Path, dict]:
@@ -178,6 +217,7 @@ class ProfiledHikGameCamera:
         bayer_conversion: Optional[Mapping[str, object]] = None,
         output_quarter_turns_clockwise: int = 0,
         runtime_surface_quarter_turns_clockwise_from_natural: Optional[int] = None,
+        best_effort_initialization: bool = True,
         mask_policy: str = "none",
     ) -> None:
         if mode not in self.MODES:
@@ -208,6 +248,7 @@ class ProfiledHikGameCamera:
             if runtime_surface_quarter_turns_clockwise_from_natural is not None
             else None
         )
+        self.best_effort_initialization = bool(best_effort_initialization)
         self.mask_policy = str(mask_policy)
         if self.mask_policy not in ("none", "minimap_circle"):
             raise ValueError("Mask policy must be none or minimap_circle")
@@ -314,9 +355,19 @@ class ProfiledHikGameCamera:
         )
         source_to_logical = np.asarray(matrices[stored_turns], dtype=np.float64)
         candidates = []
-        for turns in [preferred_turns] + [
-            value for value in range(4) if value != preferred_turns
-        ]:
+        orientation_order = [preferred_turns]
+        if self.best_effort_initialization:
+            # Mobile games normally remain landscape. A 180-degree reversal is
+            # therefore both more likely and less destructive than guessing a
+            # portrait/landscape transition; test the odd turns only afterward.
+            orientation_order.extend(
+                [
+                    (preferred_turns + 2) % 4,
+                    (preferred_turns + 1) % 4,
+                    (preferred_turns + 3) % 4,
+                ]
+            )
+        for turns in orientation_order:
             candidate_to_logical = np.asarray(matrices[turns], dtype=np.float64)
             matrix = np.linalg.inv(candidate_to_logical).dot(source_to_logical)
             x, y, width, height = base
@@ -629,6 +680,25 @@ class ProfiledHikGameCamera:
                             }
                         )
                         continue
+                    if not _projected_screen_crop_is_complete(
+                        candidate["xywh"],
+                        self.rig["geometry"]["screen_to_full_sensor_camera_3x3"],
+                        self._sensor_size(),
+                        lens_model=(lens_model if coordinate_schema >= 3 else None),
+                    ):
+                        failures.append(
+                            {
+                                "surface_quarter_turns": candidate[
+                                    "surface_quarter_turns"
+                                ],
+                                "crop_xywh": list(candidate["xywh"]),
+                                "reason": (
+                                    "projected complete mini-map is not fully "
+                                    "visible on the HIK sensor"
+                                ),
+                            }
+                        )
+                        continue
                     try:
                         if coordinate_schema >= 3:
                             requested = distorted_screen_region_roi(
@@ -659,9 +729,9 @@ class ProfiledHikGameCamera:
                     valid_candidates.append((candidate, list(requested)))
                 if not valid_candidates:
                     raise MinimapRoiUnavailableError(
-                        "No mini-map crop from the four Android/game orientation "
-                        "hypotheses intersects the calibrated HIK sensor: {}"
-                        .format(failures)
+                        "No complete mini-map crop from {} Android/game orientation "
+                        "hypothesis/hypotheses is fully visible on the calibrated "
+                        "HIK sensor: {}".format(len(candidates), failures)
                     )
                 selected, requested_minimap_roi = next(
                     (
@@ -669,12 +739,25 @@ class ProfiledHikGameCamera:
                         for item in valid_candidates
                         if bool(item[0].get("preferred"))
                     ),
-                    max(
-                        valid_candidates,
-                        key=lambda item: int(item[1][2]) * int(item[1][3]),
-                    ),
+                    valid_candidates[0],
                 )
                 screen_crop = list(selected["xywh"])
+                previous_output_turns = self.output_quarter_turns_clockwise
+                recovered_output_turns = previous_output_turns
+                if not selected.get("preferred"):
+                    phone = self.rig.get("phone") or {}
+                    viewer = phone.get("viewer") or {}
+                    calibration_display_turns = int(
+                        phone.get(
+                            "orientation_quarter_turns",
+                            viewer.get("canonical_orientation_quarter_turns", 0),
+                        )
+                    ) % 4
+                    recovered_output_turns = (
+                        int(selected["surface_quarter_turns"])
+                        - calibration_display_turns
+                    ) % 4
+                    self.output_quarter_turns_clockwise = recovered_output_turns
                 self._minimap_sensor_roi = list(
                     self.adapter.align_roi(requested_minimap_roi)
                 )
@@ -687,6 +770,10 @@ class ProfiledHikGameCamera:
                     "selected_surface_quarter_turns": selected[
                         "surface_quarter_turns"
                     ],
+                    "previous_output_quarter_turns": previous_output_turns,
+                    "selected_output_quarter_turns": recovered_output_turns,
+                    "orientation_recovered": not bool(selected.get("preferred")),
+                    "runtime_cost": "initialization_only",
                     "evaluated_candidates": len(candidates),
                     "valid_candidates": len(valid_candidates),
                     "failed_candidates": failures,
@@ -842,6 +929,11 @@ class ProfiledHikGameCamera:
 
     def isOpened(self) -> bool:
         return self._opened
+
+    def initialization_orientation_recovery(self) -> Mapping[str, object]:
+        """Return the initialization-only crop/orientation decision."""
+
+        return copy.deepcopy(self._screen_crop_selection)
 
     def _minimap_from_acquisition(self, image: np.ndarray) -> np.ndarray:
         if self.rectify_minimap:
