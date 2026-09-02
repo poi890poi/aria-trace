@@ -722,6 +722,42 @@ class HikMvsCameraAdapter(CameraAdapter):
 
         return copy.deepcopy(self._last_frame_metadata)
 
+    def geometry_postmortem(self) -> Mapping[str, Any]:
+        """Describe observed runtime geometry without accepting or gating it."""
+
+        expected_roi = list(map(int, self.config["camera"]["hardware_roi_xywh"]))
+        effective_roi = (
+            list(map(int, self._effective_roi))
+            if self._effective_roi is not None else None
+        )
+        finite_map_fraction = None
+        if self._map_x is not None and self._map_y is not None:
+            valid = np.isfinite(self._map_x) & np.isfinite(self._map_y)
+            finite_map_fraction = float(np.mean(valid))
+        return {
+            "schema_version": "1.0",
+            "status": "observed" if self._opened else "not_open",
+            "non_gating": True,
+            "reader": type(self).__name__,
+            "rectification_enabled": bool(self._rectify_enabled),
+            "expected_hardware_roi_xywh": expected_roi,
+            "effective_hardware_roi_xywh": effective_roi,
+            "effective_roi_matches_profile": effective_roi == expected_roi,
+            "output_size_px": (
+                list(map(int, self._output_size))
+                if self._output_size is not None else None
+            ),
+            "output_quarter_turns_clockwise": int(self._output_quarter_turns),
+            "dense_map_loaded": bool(
+                self._map_x is not None and self._map_y is not None
+            ),
+            "dense_map_finite_fraction": finite_map_fraction,
+            "calibration_geometry_confidence": (
+                (self.config.get("results") or {}).get("cv_verification")
+                or (self.config.get("image_quality") or {}).get("confidence")
+            ),
+        }
+
     def get_aria_frame_metadata(self) -> Mapping[str, Any]:
         """Compatibility alias for :meth:`get_iris_frame_metadata`."""
 

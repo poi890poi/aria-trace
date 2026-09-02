@@ -210,6 +210,11 @@ class HikAutoProfileTests(unittest.TestCase):
         )
         reader = Mock()
         reader.open.return_value = reader
+        reader.geometry_postmortem.return_value = {
+            "schema_version": "1.0",
+            "status": "observed",
+            "effective_hardware_roi_xywh": [0, 0, 8, 8],
+        }
         reader.initialization_orientation_recovery.return_value = {
             "status": "four_orientation_intersection_fallback",
             "selected_surface_quarter_turns": 3,
@@ -256,6 +261,12 @@ class HikAutoProfileTests(unittest.TestCase):
         self.assertEqual(
             {"game": "unchanged"},
             active_orientation["payload"]["portable_marker"],
+        )
+        self.assertEqual(
+            "observed",
+            active_orientation["payload"]["initialization_recovery"][
+                "runtime_geometry_postmortem"
+            ]["status"],
         )
         self.assertEqual(
             phone_game["revision_id"],
@@ -356,6 +367,22 @@ class HikAutoProfileTests(unittest.TestCase):
             "recovered_profile_update_failed_non_gating",
             camera.get_iris_initialization_recovery()["status"],
         )
+
+    def test_geometry_postmortem_failure_does_not_block_open(self):
+        reader = Mock()
+        reader.open.return_value = reader
+        reader.geometry_postmortem.side_effect = RuntimeError("diagnostic failed")
+        reader.initialization_orientation_recovery.return_value = {}
+        camera = hikcam.HikCamera(
+            config={
+                "diagnostic_calibration_override": self.calibration,
+                "reader_factory": lambda _path: reader,
+            }
+        ).open()
+        observed = camera.get_iris_geometry_postmortem()
+        self.assertEqual("unavailable_non_gating", observed["status"])
+        self.assertEqual("RuntimeError", observed["error_type"])
+        self.assertTrue(camera.is_open)
 
     def test_adapter_rejects_rig_game_pinned_to_superseded_active_rig(self):
         phone_game = self.registry.publish(

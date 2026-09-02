@@ -935,6 +935,66 @@ class ProfiledHikGameCamera:
 
         return copy.deepcopy(self._screen_crop_selection)
 
+    def geometry_postmortem(self) -> Mapping[str, object]:
+        """Describe runtime ROI/map composition for retrospective diagnosis."""
+
+        requested_roi = (
+            list(self._minimap_sensor_roi)
+            if self.mode == "minimap" and self._minimap_sensor_roi is not None
+            else list(self._full_mode_roi())
+        )
+        effective_roi = (
+            list(self._effective_roi) if self._effective_roi is not None else None
+        )
+        map_arrays = [
+            value for value in (
+                self._full_map_x,
+                self._full_map_y,
+                self._minimap_map_x,
+                self._minimap_map_y,
+            ) if value is not None
+        ]
+        finite_fraction = (
+            float(np.mean(np.logical_and.reduce([
+                np.isfinite(value) for value in map_arrays
+                if value.shape == map_arrays[0].shape
+            ])))
+            if map_arrays else None
+        )
+        return {
+            "schema_version": "1.0",
+            "status": "observed" if self._opened else "not_open",
+            "non_gating": True,
+            "reader": type(self).__name__,
+            "mode": self.mode,
+            "rectification_enabled": bool(self.rectify_minimap),
+            "requested_hardware_roi_xywh": requested_roi,
+            "effective_hardware_roi_xywh": effective_roi,
+            "effective_roi_matches_request": effective_roi == requested_roi,
+            "screen_crop_xywh": (
+                list(self._screen_crop_xywh)
+                if self._screen_crop_xywh is not None else None
+            ),
+            "minimap_in_full_xywh": (
+                list(self._minimap_in_full_xywh)
+                if self._minimap_in_full_xywh is not None else None
+            ),
+            "full_output_size_px": list(self._full_size),
+            "minimap_output_size_px": list(self._minimap_size),
+            "output_quarter_turns_clockwise": int(
+                self.output_quarter_turns_clockwise
+            ),
+            "dense_map_array_count": len(map_arrays),
+            "dense_map_finite_fraction": finite_fraction,
+            "orientation_initialization": copy.deepcopy(
+                self._screen_crop_selection
+            ),
+            "calibration_geometry_confidence": (
+                (self.rig.get("results") or {}).get("cv_verification")
+                or (self.rig.get("image_quality") or {}).get("confidence")
+            ),
+        }
+
     def _minimap_from_acquisition(self, image: np.ndarray) -> np.ndarray:
         if self.rectify_minimap:
             if self._minimap_map_x is not None and self._minimap_map_y is not None:

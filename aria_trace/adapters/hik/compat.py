@@ -504,6 +504,7 @@ class HikCamera:
             opened = reader.open()
             self._reader = opened if opened is not None else reader
             self.is_open = True
+            self._capture_geometry_postmortem()
             self._consume_initialization_orientation_recovery()
             self.setting()
         except Exception:
@@ -515,6 +516,30 @@ class HikCamera:
             self.is_open = False
             raise
         return self
+
+    def _capture_geometry_postmortem(self) -> None:
+        reader = self._reader
+        describe = getattr(reader, "geometry_postmortem", None)
+        if not callable(describe):
+            self.resolved_config["runtime_geometry_postmortem"] = {
+                "schema_version": "1.0",
+                "status": "unavailable_reader_does_not_report",
+                "non_gating": True,
+            }
+            return
+        try:
+            observed = copy.deepcopy(dict(describe()))
+        except Exception as exc:
+            observed = {
+                "schema_version": "1.0",
+                "status": "unavailable_non_gating",
+                "non_gating": True,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        observed["non_gating"] = True
+        self.resolved_config["runtime_geometry_postmortem"] = observed
+        self.config["runtime_geometry_postmortem"] = copy.deepcopy(observed)
 
     def _consume_initialization_orientation_recovery(self) -> None:
         """Apply and optionally persist an initialization-only orientation fix."""
@@ -667,6 +692,9 @@ class HikCamera:
             ),
             "runtime_cost": "initialization_only",
             "rig_revision": rig_revision,
+            "runtime_geometry_postmortem": copy.deepcopy(
+                self.resolved_config.get("runtime_geometry_postmortem") or {}
+            ),
         }
         mutable_keys = {
             "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
@@ -689,6 +717,9 @@ class HikCamera:
                 "runtime_cost": "initialization_only",
                 "source_orientation_revision": source_revision_id,
                 "selection": copy.deepcopy(dict(decision)),
+                "runtime_geometry_postmortem": copy.deepcopy(
+                    self.resolved_config.get("runtime_geometry_postmortem") or {}
+                ),
             },
             review_state="accepted",
             activate=False,
@@ -723,6 +754,13 @@ class HikCamera:
 
         return copy.deepcopy(
             dict(self.resolved_config.get("initialization_recovery") or {})
+        )
+
+    def get_iris_geometry_postmortem(self) -> Dict[str, Any]:
+        """Return non-gating runtime geometry observations for this open."""
+
+        return copy.deepcopy(
+            dict(self.resolved_config.get("runtime_geometry_postmortem") or {})
         )
 
     def close(self) -> None:
