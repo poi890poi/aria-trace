@@ -1,5 +1,10 @@
 # Pose estimation POC
 
+Algorithm screening may begin in `poc`, but a landing decision must use the
+traceable protocol under [benchmarks](../benchmarks/README.md). In particular,
+do not call an unqualified production fraction `rate`, count held state as a
+fresh pose, or report a sampled-method maximum as an E2E worst case.
+
 This is a supporting experiment for AriaTrace, not the project objective. Its outputs may help align a live run to a human demonstration, but replay success must be measured by route completion and recovery rather than pose accuracy alone.
 
 Portal-start camera initialization is evaluated separately in [PORTAL_INITIALIZATION_RESULTS.md](PORTAL_INITIALIZATION_RESULTS.md). It uses repeated TartanAir visits to one synthetic portal, compares one-direction and bidirectional reference maps, and applies a three-pose confirmation rule.
