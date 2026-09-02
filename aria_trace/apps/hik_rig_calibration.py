@@ -196,6 +196,15 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--headless", action="store_true", help="Skip interactive focus UI")
     value.add_argument(
+        "--final-benchmark",
+        choices=("auto", "full", "reduced", "skip"),
+        default="auto",
+        help=(
+            "final stream benchmark policy: auto uses reduced reads and no "
+            "display transitions in headless mode, full in GUI mode"
+        ),
+    )
+    value.add_argument(
         "--test",
         action="store_true",
         help="Run a no-save headless observation test",
@@ -396,6 +405,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         save_movement_consecutive_frames=repeatability[
             "save_movement_consecutive_frames"
         ],
+        final_benchmark_mode=arguments.final_benchmark,
     )
     phone = AdbPhoneSession(arguments.phone_serial, adb_executable=adb)
     run_started = time.perf_counter_ns()

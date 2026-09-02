@@ -328,6 +328,46 @@ class HikAlgorithmTests(unittest.TestCase):
             240.0, float(np.mean(session.final_verification_sample.image))
         )
 
+    def test_headless_auto_uses_reduced_final_benchmark_without_display_cycles(self):
+        options = HikCalibrationOptions(
+            "fake",
+            "phone",
+            Path("unused"),
+            headless=True,
+            final_benchmark_mode="auto",
+        )
+        camera = mock.Mock()
+        camera.align_roi.side_effect = lambda roi: list(map(int, roi))
+        camera.set_roi.side_effect = lambda roi: list(map(int, roi))
+        target = mock.Mock()
+        session = HikRigCalibrationSession(
+            options,
+            camera=camera,
+            target=target,
+            progress=lambda _message: None,
+        )
+        session.geometry = mock.Mock(inverse_matrix_3x3=np.eye(3))
+        session.visible_region = {"xywh": [0, 0, 8, 8]}
+        session.white_mask = np.full((8, 8), 255, np.uint8)
+        session.camera_metadata = {"width_px": 8, "height_px": 8}
+        session.camera_controls = {}
+        session.lens_model = {}
+        session._read_camera = mock.Mock(
+            side_effect=[
+                rig_frame_sample(np.zeros((8, 8, 3), np.uint8), index + 1)
+                for index in range(6)
+            ]
+        )
+        session.benchmark_final_stream()
+        self.assertEqual(6, session._read_camera.call_count)
+        self.assertEqual("reduced", session.transport_benchmark["benchmark_mode"])
+        self.assertEqual(6, session.transport_benchmark["sample_count"])
+        self.assertEqual(
+            "skipped_in_reduced_headless_mode",
+            session.latency_benchmark["status"],
+        )
+        target.present_signal.assert_not_called()
+
     def test_latency_rejects_cross_clock_negative_or_unbounded_values(self):
         elapsed = HikRigCalibrationSession._same_clock_elapsed_ms
         self.assertEqual(elapsed(1_000_000_000, 1_075_000_000, 1000.0), 75.0)

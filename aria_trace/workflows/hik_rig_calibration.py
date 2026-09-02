@@ -249,6 +249,7 @@ class HikCalibrationOptions:
     save_movement_consecutive_frames: int = int(
         _DEFAULT_REPEATABILITY["save_movement_consecutive_frames"]
     )
+    final_benchmark_mode: str = "auto"
 
     def __post_init__(self) -> None:
         if self.maximum_shutter_multiplier not in (2, 3):
@@ -273,6 +274,10 @@ class HikCalibrationOptions:
             raise ValueError("Operation timeout must be positive")
         if self.visible_screen_margin_px < 0:
             raise ValueError("Visible-screen coverage margin cannot be negative")
+        if self.final_benchmark_mode not in ("auto", "full", "reduced", "skip"):
+            raise ValueError(
+                "Final benchmark mode must be auto, full, reduced, or skip"
+            )
         if self.save_max_displacement_px <= 0:
             raise ValueError("Save displacement threshold must be positive")
         if self.save_movement_consecutive_frames <= 0:
@@ -2933,9 +2938,38 @@ class HikRigCalibrationSession:
             "Benchmarking final {}x{} hardware ROI and display-to-camera response..."
             .format(width, height)
         )
+        requested_mode = str(self.options.final_benchmark_mode)
+        benchmark_mode = (
+            "reduced"
+            if requested_mode == "auto" and self.options.headless
+            else "full" if requested_mode == "auto" else requested_mode
+        )
+        if benchmark_mode == "skip":
+            full_pixels = int(full_size[0] * full_size[1])
+            roi_pixels = int(width * height)
+            self.transport_benchmark = {
+                "status": "skipped_by_configuration",
+                "benchmark_mode": benchmark_mode,
+                "hardware_roi_xywh": effective,
+                "full_sensor_pixels": full_pixels,
+                "roi_pixels": roi_pixels,
+                "pixel_reduction_fraction": 1.0 - roi_pixels / float(full_pixels),
+                "sample_count": 0,
+            }
+            self.latency_benchmark = {
+                "status": "skipped_by_configuration",
+                "reference_only": True,
+                "benchmark_mode": benchmark_mode,
+            }
+            self.progress(
+                "Final ROI configured; optional transport and display-response "
+                "benchmark skipped by configuration."
+            )
+            return
         read_durations_ms = []
         receive_times_ns = []
-        for _ in range(24):
+        read_sample_count = 6 if benchmark_mode == "reduced" else 24
+        for _ in range(read_sample_count):
             started = time.monotonic_ns()
             sample = self._read_camera()
             finished = time.monotonic_ns()
@@ -2962,6 +2996,8 @@ class HikRigCalibrationSession:
         full_pixels = int(full_size[0] * full_size[1])
         roi_pixels = int(width * height)
         self.transport_benchmark = {
+            "status": "measured",
+            "benchmark_mode": benchmark_mode,
             "endpoint": "adapter_read_after_hardware_roi",
             "hardware_roi_xywh": effective,
             "full_sensor_pixels": full_pixels,
@@ -2976,7 +3012,29 @@ class HikRigCalibrationSession:
             ),
             "adapter_read_duration_ms": self._distribution_ms(read_durations_ms),
             "frame_interval_ms": self._distribution_ms(intervals_ms),
+            "sample_count": read_sample_count,
         }
+
+        if benchmark_mode == "reduced":
+            self.latency_benchmark = {
+                "status": "skipped_in_reduced_headless_mode",
+                "reference_only": True,
+                "benchmark_mode": benchmark_mode,
+                "reason": (
+                    "Display transition latency is reference-only and requires "
+                    "multiple target settling cycles"
+                ),
+            }
+            self.progress(
+                "ROI reduces sensor payload by {:.1%}; reduced read benchmark "
+                "p50 {:.2f} ms ({} frames); display-response trials skipped."
+                .format(
+                    self.transport_benchmark["pixel_reduction_fraction"],
+                    self.transport_benchmark["adapter_read_duration_ms"]["p50"],
+                    read_sample_count,
+                )
+            )
+            return
 
         black = self.target.present_signal("black", "latency-baseline-black")
         self._wait_painted(black, timeout_seconds=self.options.operation_timeout_seconds)
