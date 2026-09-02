@@ -20,6 +20,7 @@ from aria_trace.workflows.game_calibration import (
     _available_cursor_acquisition_series,
     _touch_intervals,
     calibrate_game_session,
+    format_game_calibration_report,
 )
 from aria_trace.workflows.game_orientation_calibration import (
     calibrate_portable_game_orientation_session,
@@ -27,6 +28,31 @@ from aria_trace.workflows.game_orientation_calibration import (
 
 
 class GameCalibrationTests(unittest.TestCase):
+    def test_final_report_separates_status_reason_and_evidence(self):
+        report = format_game_calibration_report(
+            {
+                "status": "partial",
+                "game_id": "game",
+                "capabilities": {
+                    "minimap_boundary": {
+                        "status": "review_required",
+                        "calibration": "evidence/minimap.json",
+                    },
+                    "game_color": {
+                        "status": "optional_failed_non_gating",
+                        "error": "fit rejected",
+                    },
+                },
+            },
+            Path("output"),
+        )
+        text = "\n".join(report)
+        self.assertIn("IRIS game calibration summary", text)
+        self.assertIn("[REVIEW", text)
+        self.assertIn("Evidence: evidence/minimap.json", text)
+        self.assertIn("[OPTIONAL-WARN]", text)
+        self.assertIn("Reason: fit rejected", text)
+
     def test_touch_intervals_accept_one_recorded_high_level_swipe(self):
         class Reader:
             inputs = [

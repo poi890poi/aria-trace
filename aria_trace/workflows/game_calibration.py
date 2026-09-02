@@ -746,6 +746,62 @@ def parser() -> argparse.ArgumentParser:
     return value
 
 
+def format_game_calibration_report(
+    result: Mapping[str, object], output: Path
+) -> list[str]:
+    """Render one stable, final operator report; no live values are rewritten."""
+
+    labels = {
+        "accepted": "OK",
+        "complete": "OK",
+        "review_required": "REVIEW",
+        "partial": "REVIEW",
+        "optional_not_requested": "OPTIONAL",
+        "optional_skipped_missing_data": "OPTIONAL",
+        "optional_skipped_ineligible_data": "OPTIONAL",
+        "optional_failed_non_gating": "OPTIONAL-WARN",
+        "skipped_existing_profile_reused": "REUSED",
+        "skipped_missing_or_ineligible_data": "SKIPPED",
+        "failed": "ERROR",
+    }
+    lines = [
+        "",
+        "IRIS game calibration summary",
+        "  Overall: {}".format(str(result.get("status") or "unknown").upper()),
+        "  Output:  {}".format(Path(output).resolve()),
+        "  Game:    {}".format(result.get("game_id") or "unidentified"),
+        "",
+        "Capabilities",
+    ]
+    for name, outcome_value in (result.get("capabilities") or {}).items():
+        outcome = dict(outcome_value or {})
+        status = str(outcome.get("status") or "unknown")
+        label = labels.get(status, status.upper())
+        lines.append("  [{:13s}] {:18s} {}".format(label, name, status))
+        detail = outcome.get("reason") or outcome.get("error")
+        if detail:
+            lines.append("                  Reason: {}".format(detail))
+        calibration = outcome.get("calibration")
+        if calibration:
+            lines.append("                  Evidence: {}".format(calibration))
+        if name == "cursor_pose":
+            for series_name, series_value in (outcome.get("series") or {}).items():
+                series = dict(series_value or {})
+                series_status = str(series.get("status") or "unknown")
+                lines.append(
+                    "                  - {} / {}: {}".format(
+                        series_name,
+                        series.get("cursor_behavior") or "unknown behavior",
+                        series_status,
+                    )
+                )
+                series_detail = series.get("reason") or series.get("error")
+                if series_detail:
+                    lines.append("                    Reason: {}".format(series_detail))
+    lines.extend(["", "Review the evidence paths above before accepting REVIEW results."])
+    return lines
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.activate_color and not arguments.include_color:
@@ -769,21 +825,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         include_color=arguments.include_color,
         activate_color=arguments.activate_color,
     )
-    print("Game calibration: {}".format(Path(output).resolve()))
-    for name, outcome in result["capabilities"].items():
-        detail = outcome.get("reason") or outcome.get("error") or ""
-        print("  {:18s} {}{}".format(name, outcome["status"], ": " + detail if detail else ""))
-        if name == "cursor_pose":
-            for series_name, series in (outcome.get("series") or {}).items():
-                series_detail = series.get("reason") or series.get("error") or ""
-                print(
-                    "    {:16s} {:9s} {}{}".format(
-                        series_name,
-                        "({})".format(series.get("cursor_behavior", "unknown")),
-                        series["status"],
-                        ": " + series_detail if series_detail else "",
-                    )
-                )
+    for line in format_game_calibration_report(result, output):
+        print(line)
     return 0 if result["successful_capabilities"] else 2
 
 
@@ -791,4 +834,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["calibrate_game_session", "main"]
+__all__ = ["calibrate_game_session", "format_game_calibration_report", "main"]
