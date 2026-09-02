@@ -62,6 +62,12 @@ class RigConsolePresentationTests(unittest.TestCase):
         )
         self.assertEqual(message_role("Calibrating exposure..."), "stage")
         self.assertEqual(message_role("Calibration complete."), "success")
+        self.assertIsNone(
+            message_role(
+                "Rig repeatability policy: relaxed (reuse ChArUco displacement "
+                "<= 18.0 px; save is blocked after displacement > 24.0 px)."
+            )
+        )
         self.assertEqual(message_role("Save blocked because the rig moved."), "error")
         self.assertIsNone(message_role('{"status": "complete"}'))
 

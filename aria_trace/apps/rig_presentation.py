@@ -33,6 +33,10 @@ def message_role(message: str) -> Optional[str]:
     value = str(message).strip().lower()
     if not value or value.startswith(("{", "[")):
         return None
+    if value.startswith("rig repeatability policy:"):
+        # This is a configuration summary.  It describes the threshold at
+        # which a future save would be blocked; it is not a blocked operation.
+        return None
     if (
         "warning" in value
         or value.startswith(
