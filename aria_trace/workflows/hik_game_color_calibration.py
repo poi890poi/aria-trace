@@ -28,6 +28,11 @@ from aria_trace.domain.spatial import (
     require_spatial_geometry,
     transform_circle_similarity,
 )
+from aria_trace.evidence.rig_alignment import (
+    DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX,
+    cross_source_alignment_evidence,
+    cross_source_alignment_warning,
+)
 from aria_trace.services.calibration.rig.hik.color_match import (
     optimize_mvs_bayer_conversion,
     synchronized_frame_pairs,
@@ -249,6 +254,179 @@ def _decode_session_records(
     )
 
 
+def _check_color_spatial_alignment(
+    android_frames: np.ndarray,
+    hik_frames: np.ndarray,
+    adb_to_hik_3x3: np.ndarray,
+    hik_sampling_mask: np.ndarray,
+    output: Path,
+) -> Mapping[str, object]:
+    """Verify declared geometry before fitting HIK appearance parameters."""
+
+    pair_results = []
+    representative = None
+    for index, (adb_frame, hik_frame) in enumerate(
+        zip(android_frames, hik_frames)
+    ):
+        adb_in_hik = cv2.warpPerspective(
+            adb_frame,
+            adb_to_hik_3x3,
+            (hik_frame.shape[1], hik_frame.shape[0]),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        try:
+            metrics, images = cross_source_alignment_evidence(
+                adb_in_hik,
+                hik_frame,
+                hik_sampling_mask,
+            )
+        except ValueError as exc:
+            pair_results.append(
+                {
+                    "pair_index": index,
+                    "confidence": 0.0,
+                    "information_eligible": False,
+                    "residual_translation": {
+                        "status": "ineligible",
+                        "reason": str(exc),
+                    },
+                    "warning": str(exc),
+                }
+            )
+            continue
+        residual = dict(metrics.get("residual_translation") or {})
+        pair_results.append(
+            {
+                "pair_index": index,
+                "confidence": float(metrics["confidence"]),
+                "information_eligible": bool(metrics["information_eligible"]),
+                "residual_translation": residual,
+                "warning": cross_source_alignment_warning(metrics),
+            }
+        )
+        rank = (
+            residual.get("status") == "measured",
+            float(residual.get("median_phase_response", 0.0)),
+            float(metrics["information_quality"]),
+        )
+        if representative is None or rank > representative[0]:
+            representative = (rank, index, images)
+
+    measured = [
+        item
+        for item in pair_results
+        if item["information_eligible"]
+        and item["residual_translation"].get("status") == "measured"
+    ]
+    status = "inconclusive"
+    warning = (
+        "Cross-source mini-map alignment could not be verified from the "
+        "selected synchronized frames; color fitting will continue with a "
+        "review-required spatial warning"
+    )
+    aggregate = None
+    if len(measured) >= 2:
+        offsets = np.asarray(
+            [
+                item["residual_translation"]["hik_offset_xy_px_from_adb"]
+                for item in measured
+            ],
+            dtype=np.float64,
+        )
+        median_offset = np.median(offsets, axis=0)
+        spread = float(
+            np.median(np.linalg.norm(offsets - median_offset, axis=1))
+        )
+        magnitude = float(np.linalg.norm(median_offset))
+        aggregate = {
+            "hik_offset_xy_px_from_adb": median_offset.tolist(),
+            "hik_correction_xy_px_to_adb": (-median_offset).tolist(),
+            "magnitude_px": magnitude,
+            "pair_consensus_spread_px": spread,
+            "measured_pair_count": len(measured),
+            "maximum_allowed_residual_translation_px": (
+                DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX
+            ),
+        }
+        if spread <= DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX:
+            if magnitude <= DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX:
+                status = "aligned"
+                warning = ""
+            else:
+                status = "displaced"
+                warning = (
+                    "Declared ADB-to-HIK mini-map conversion is consistently "
+                    "displaced by {:.2f}px (HIK relative to ADB: dx={:.2f}, "
+                    "dy={:.2f}). Color fitting was stopped because it would "
+                    "compare different pixels; repair/recompose the owning "
+                    "space conversion and capture fresh synchronized data."
+                ).format(magnitude, median_offset[0], median_offset[1])
+        else:
+            warning = (
+                "Cross-source residual translations disagree by {:.2f}px "
+                "across synchronized frames; color fitting will continue with "
+                "a review-required spatial warning"
+            ).format(spread)
+
+    output.mkdir(parents=True, exist_ok=False)
+    evidence_files = []
+    if representative is not None:
+        _rank, pair_index, images = representative
+        for filename, image in images.items():
+            evidence_name = "spatial_alignment_{}".format(filename)
+            if not cv2.imwrite(str(output / evidence_name), image):
+                raise RuntimeError(
+                    "Cannot write spatial-alignment evidence {}".format(
+                        evidence_name
+                    )
+                )
+            evidence_files.append(evidence_name)
+    summary = {
+        "schema_version": "1.0",
+        "status": status,
+        "method": "declared_space_transform_then_multilevel_threshold_features",
+        "non_correcting": True,
+        "space_contract": {
+            "comparison_space": "hik_phone_video",
+            "adb_source_space": "android_logical_display_pixels",
+            "hik_source_space": "hik_phone_video",
+            "adb_to_comparison_3x3": adb_to_hik_3x3.tolist(),
+            "mask_space": "hik_phone_video",
+            "coordinates": "pixel_center_xy",
+        },
+        "representative_pair_index": (
+            representative[1] if representative is not None else None
+        ),
+        "aggregate": aggregate,
+        "pairs": pair_results,
+        "evidence_files": evidence_files,
+        "warning": warning or None,
+    }
+    (output / "spatial_alignment_check.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+    if status == "displaced":
+        raise ValueError(
+            "{} Evidence: {}".format(
+                warning,
+                output / "spatial_alignment_check.json",
+            )
+        )
+    if warning:
+        print("Warning: {} Evidence: {}".format(
+            warning,
+            output / "spatial_alignment_check.json",
+        ))
+    else:
+        print(
+            "Cross-source mini-map alignment verified: residual {:.2f}px."
+            .format(float(aggregate["magnitude_px"]))
+        )
+    return summary
+
+
 def _session_game_context(
     reader: SessionReader,
     rig_document: Mapping[str, object],
@@ -426,6 +604,13 @@ def calibrate_game_color_session(
         raise ValueError(
             "Projected mini-map has no valid HIK pixels for color fitting"
         )
+    spatial_alignment = _check_color_spatial_alignment(
+        android_frames,
+        hik_frames,
+        np.asarray(matrix, np.float64),
+        mask,
+        output,
+    )
     conversion, evidence = optimize_mvs_bayer_conversion(
         android_frames,
         selected_android_times,
@@ -436,7 +621,6 @@ def calibrate_game_color_session(
         maximum_pairs=maximum_pairs,
     )
 
-    output.mkdir(parents=True, exist_ok=False)
     evidence = dict(evidence)
     evidence["adb_minimap_color_sampling_mask.png"] = adb_mask
     evidence["hik_minimap_color_sampling_mask.png"] = mask
@@ -466,13 +650,14 @@ def calibrate_game_color_session(
         "hik_bayer_conversion": conversion,
         "adb_game_color_reference": adb_color_reference,
         "sampling_geometry": sampling_geometry,
+        "spatial_alignment": spatial_alignment,
         "synchronized_source_frames": {
             "android_phone": [int(row["frame_index"]) for row in selected_android],
             "hik_phone": [int(row["frame_index"]) for row in selected_hik],
             "host_delta_ms": [float(row[2]) for row in selected],
             "coordinate_conversion": "coordinate_spaces.yaml#conversions.adb_to_hik_phone_video_3x3",
         },
-        "evidence": list(evidence),
+        "evidence": list(evidence) + list(spatial_alignment["evidence_files"]),
     }
     summary_path = output / "game_color_calibration.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -513,6 +698,11 @@ def calibrate_game_color_session(
                 "game_matched_color": conversion.get("status") == "selected",
                 "runtime_frame_passes": 0,
             },
+            "spatial_alignment": {
+                "status": spatial_alignment["status"],
+                "aggregate": spatial_alignment["aggregate"],
+                "method": spatial_alignment["method"],
+            },
         },
         dependencies={
             "rig": active_rig["revision_id"],
@@ -521,7 +711,8 @@ def calibrate_game_color_session(
         provenance={
             "game_color_calibration": str(summary_path),
             "session": str(session),
-            "evidence": list(evidence),
+            "evidence": list(evidence)
+            + list(spatial_alignment["evidence_files"]),
         },
         review_state="accepted" if activate else "review_required",
         activate=activate,

@@ -68,6 +68,7 @@ from acquisition.rig_calibration.geometry import (
     charuco_board_metric_to_panel_pixels,
     estimate_screen_geometry,
 )
+from aria_trace.evidence.rig_alignment import cross_source_alignment_warning
 
 
 def rig_frame_sample(image, time_ns=1, roi_xywh=None):
@@ -398,6 +399,11 @@ class HikAlgorithmTests(unittest.TestCase):
         aligned, _ = cross_source_alignment_evidence(image, image, mask)
         displaced, _ = cross_source_alignment_evidence(image, shifted, mask)
         self.assertLess(displaced["confidence"], aligned["confidence"] - 0.25)
+        residual = displaced["residual_translation"]
+        self.assertEqual("measured", residual["status"])
+        self.assertAlmostEqual(24.0, residual["hik_offset_xy_px_from_adb"][0], delta=1.0)
+        self.assertAlmostEqual(0.0, residual["hik_offset_xy_px_from_adb"][1], delta=1.0)
+        self.assertIn("displaced", cross_source_alignment_warning(displaced))
 
     def test_cross_source_check_rectifies_saved_roi_and_writes_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -438,7 +444,7 @@ class HikAlgorithmTests(unittest.TestCase):
                     / "full_camera_and_projected_phone_review.png"
                 ).is_file()
             )
-            self.assertEqual(8, len(result["media"]))
+            self.assertEqual(9, len(result["media"]))
             full_adb = next(
                 row
                 for row in result["media"]

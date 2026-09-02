@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 import yaml
 
@@ -16,6 +17,7 @@ from aria_trace.adapters.filesystem.session import SessionReader, SessionWriter
 from aria_trace.domain.packets import FramePacket
 from aria_trace.domain.spatial import bind_geometry, raster_space
 from aria_trace.workflows.hik_game_color_calibration import (
+    _check_color_spatial_alignment,
     _decode_session_records,
     calibrate_game_color_session,
     main,
@@ -24,6 +26,41 @@ from aria_trace.workflows.profile_management import publish_rig_calibration
 
 
 class HikGameColorWorkflowTests(unittest.TestCase):
+    def test_color_spatial_check_stops_consistent_xy_displacement(self):
+        image = np.zeros((120, 160, 3), np.uint8)
+        image[10:55, 20:75] = 255
+        image[65:105, 90:145] = 180
+        cv2.line(image, (5, 115), (155, 5), (90, 90, 90), 3)
+        shifted = np.zeros_like(image)
+        shifted[:, 14:] = image[:, :-14]
+        adb_frames = np.stack([image] * 4)
+        hik_frames = np.stack([shifted] * 4)
+        mask = np.full(image.shape[:2], 255, np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "alignment"
+            with self.assertRaisesRegex(ValueError, "consistently displaced"):
+                _check_color_spatial_alignment(
+                    adb_frames,
+                    hik_frames,
+                    np.eye(3, dtype=np.float64),
+                    mask,
+                    output,
+                )
+            summary = json.loads(
+                (output / "spatial_alignment_check.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual("displaced", summary["status"])
+            self.assertAlmostEqual(
+                14.0,
+                summary["aggregate"]["hik_offset_xy_px_from_adb"][0],
+                delta=1.0,
+            )
+            self.assertTrue(
+                (output / "spatial_alignment_residual_translation_overlay.png").is_file()
+            )
+
     def test_color_decoder_reads_adb_image_series_without_video(self):
         class Source:
             stream_id = "android_phone"

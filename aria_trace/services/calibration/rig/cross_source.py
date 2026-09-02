@@ -9,7 +9,10 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
-from aria_trace.evidence.rig_alignment import cross_source_alignment_evidence
+from aria_trace.evidence.rig_alignment import (
+    cross_source_alignment_evidence,
+    cross_source_alignment_warning,
+)
 from .hik.spaces import RigCalibratedSpaceConverter
 
 
@@ -478,6 +481,9 @@ class GameCrossSourceEvidenceRecorder:
         except Exception as exc:
             self._warning = "{}: {}".format(type(exc).__name__, exc)
             return
+        spatial_warning = cross_source_alignment_warning(metrics)
+        if spatial_warning:
+            self._warning = spatial_warning
         self._evaluated_pairs += 1
         if (
             self._best_metrics is None

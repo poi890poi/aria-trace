@@ -2,17 +2,126 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Sequence
 
 import cv2
 import numpy as np
+
+
+DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX = 3.0
+
+
+def _multi_threshold_residual_translation(
+    adb_blur: np.ndarray,
+    hik_blur: np.ndarray,
+    selected: np.ndarray,
+    adb_values: np.ndarray,
+    hik_values: np.ndarray,
+    percentiles: Sequence[int] = (30, 50, 70),
+) -> dict:
+    """Measure HIK's residual XY offset from ADB without changing the mapping.
+
+    The independent percentile masks make this insensitive to exposure, gamma,
+    and most color differences.  Phase correlation is used only as a
+    diagnostic: callers must repair the owning spatial transform rather than
+    applying this residual as an untracked crop correction.
+    """
+
+    points = cv2.findNonZero(selected.astype(np.uint8))
+    if points is None:
+        return {"status": "ineligible", "reason": "empty_valid_mask"}
+    x, y, width, height = cv2.boundingRect(points)
+    if min(width, height) < 16:
+        return {"status": "ineligible", "reason": "valid_region_too_small"}
+    support = selected[y : y + height, x : x + width].astype(np.float32)
+    window = cv2.createHanningWindow((width, height), cv2.CV_32F) * support
+    estimates = []
+    for percentile in percentiles:
+        adb_threshold = float(np.percentile(adb_values, percentile))
+        hik_threshold = float(np.percentile(hik_values, percentile))
+        adb_binary = (
+            adb_blur[y : y + height, x : x + width] > adb_threshold
+        ).astype(np.float32)
+        hik_binary = (
+            hik_blur[y : y + height, x : x + width] > hik_threshold
+        ).astype(np.float32)
+        active = support > 0
+        adb_occupancy = float(np.mean(adb_binary[active]))
+        hik_occupancy = float(np.mean(hik_binary[active]))
+        if not (
+            0.015 <= adb_occupancy <= 0.985
+            and 0.015 <= hik_occupancy <= 0.985
+        ):
+            continue
+        adb_signal = (adb_binary - adb_occupancy) * window
+        hik_signal = (hik_binary - hik_occupancy) * window
+        shift, response = cv2.phaseCorrelate(adb_signal, hik_signal)
+        shift_xy = np.asarray(shift, dtype=np.float64)
+        if not np.all(np.isfinite(shift_xy)) or not np.isfinite(response):
+            continue
+        estimates.append(
+            {
+                "percentile": int(percentile),
+                "hik_offset_xy_px_from_adb": shift_xy.tolist(),
+                "response": float(response),
+            }
+        )
+    if len(estimates) < 2:
+        return {
+            "status": "ineligible",
+            "reason": "fewer_than_two_usable_threshold_levels",
+            "threshold_estimates": estimates,
+        }
+    shifts = np.asarray(
+        [item["hik_offset_xy_px_from_adb"] for item in estimates],
+        dtype=np.float64,
+    )
+    median_shift = np.median(shifts, axis=0)
+    deviations = np.linalg.norm(shifts - median_shift, axis=1)
+    response = float(np.median([item["response"] for item in estimates]))
+    magnitude = float(np.linalg.norm(median_shift))
+    consensus_spread = float(np.median(deviations))
+    reliable = response >= 0.03 and consensus_spread <= 3.0
+    return {
+        "status": "measured" if reliable else "inconclusive",
+        "hik_offset_xy_px_from_adb": median_shift.tolist(),
+        "hik_correction_xy_px_to_adb": (-median_shift).tolist(),
+        "magnitude_px": magnitude,
+        "threshold_consensus_spread_px": consensus_spread,
+        "median_phase_response": response,
+        "threshold_estimates": estimates,
+    }
+
+
+def cross_source_alignment_warning(
+    metrics: dict,
+    maximum_residual_translation_px: float = DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX,
+) -> str:
+    """Return a clear spatial-contract warning, or an empty string."""
+
+    residual = dict(metrics.get("residual_translation") or {})
+    if residual.get("status") == "measured":
+        magnitude = float(residual.get("magnitude_px", 0.0))
+        if magnitude > float(maximum_residual_translation_px):
+            offset = residual.get("hik_offset_xy_px_from_adb") or [0.0, 0.0]
+            return (
+                "Declared ADB/HIK space conversion is displaced by "
+                "{:.2f}px (HIK relative to ADB: dx={:.2f}, dy={:.2f}); "
+                "repair or recompose the owning rig/game transform before use"
+            ).format(magnitude, float(offset[0]), float(offset[1]))
+    if residual.get("status") in ("ineligible", "inconclusive"):
+        return (
+            "ADB/HIK residual translation is {} ({}); the declared space "
+            "conversion was not independently verified from image features"
+        ).format(residual.get("status"), residual.get("reason", "weak consensus"))
+    return ""
 
 
 def cross_source_alignment_evidence(
     adb_crop: np.ndarray,
     hik_rectified: np.ndarray,
     valid_mask: np.ndarray,
-) -> tuple[Dict[str, float], Dict[str, np.ndarray]]:
+) -> tuple[dict, Dict[str, np.ndarray]]:
     """Compare already-aligned ADB and HIK views without fitting a transform."""
 
     if adb_crop is None or hik_rectified is None:
@@ -50,8 +159,8 @@ def cross_source_alignment_evidence(
     for percentile in (30, 50, 70):
         adb_threshold = float(np.percentile(adb_values, percentile))
         hik_threshold = float(np.percentile(hik_values, percentile))
-        adb_binary = adb_blur >= adb_threshold
-        hik_binary = hik_blur >= hik_threshold
+        adb_binary = adb_blur > adb_threshold
+        hik_binary = hik_blur > hik_threshold
         adb_occupancy = float(np.mean(adb_binary[selected]))
         hik_occupancy = float(np.mean(hik_binary[selected]))
         threshold_occupancies.append([adb_occupancy, hik_occupancy])
@@ -59,6 +168,14 @@ def cross_source_alignment_evidence(
             float(np.mean(adb_binary[selected] == hik_binary[selected]))
         )
     binary_agreement = float(np.median(threshold_agreements))
+
+    residual_translation = _multi_threshold_residual_translation(
+        adb_blur,
+        hik_blur,
+        selected,
+        adb_values,
+        hik_values,
+    )
 
     def adaptive_edges(image, values):
         median = float(np.median(values))
@@ -102,7 +219,7 @@ def cross_source_alignment_evidence(
             1.0,
         )
     ) if occupancy_valid and edge_density_valid else 0.0
-    confidence = float(
+    appearance_confidence = float(
         np.clip(
             (0.45 * max(0.0, correlation)
             + 0.25 * binary_agreement
@@ -111,6 +228,19 @@ def cross_source_alignment_evidence(
             1.0,
         )
     )
+    spatial_alignment_factor = 1.0
+    if residual_translation.get("status") == "measured":
+        residual_px = float(residual_translation["magnitude_px"])
+        spatial_alignment_factor = float(
+            np.exp(
+                -max(
+                    0.0,
+                    residual_px - DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX,
+                )
+                / DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX
+            )
+        )
+    confidence = appearance_confidence * spatial_alignment_factor
 
     adb_normalized = cv2.normalize(adb_blur, None, 0, 255, cv2.NORM_MINMAX)
     hik_normalized = cv2.normalize(hik_blur, None, 0, 255, cv2.NORM_MINMAX)
@@ -123,9 +253,40 @@ def cross_source_alignment_evidence(
     invalid = ~selected
     heatmap[invalid] = 0
     overlay[invalid] = 0
+    translation_overlay = overlay.copy()
+    if residual_translation.get("status") == "measured":
+        dx, dy = residual_translation["hik_offset_xy_px_from_adb"]
+        selected_points = cv2.findNonZero(selected.astype(np.uint8))
+        box_x, box_y, box_width, box_height = cv2.boundingRect(selected_points)
+        origin = (box_x + box_width // 2, box_y + box_height // 2)
+        endpoint = (
+            int(round(origin[0] + float(dx))),
+            int(round(origin[1] + float(dy))),
+        )
+        cv2.arrowedLine(
+            translation_overlay,
+            origin,
+            endpoint,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+            tipLength=0.25,
+        )
+        cv2.putText(
+            translation_overlay,
+            "HIK offset dx={:.1f} dy={:.1f}px".format(float(dx), float(dy)),
+            (max(4, box_x), max(20, box_y + box_height - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
     side_by_side = np.hstack([adb_crop, hik_rectified])
     metrics = {
         "confidence": confidence,
+        "appearance_confidence": appearance_confidence,
+        "spatial_alignment_factor": spatial_alignment_factor,
         "grayscale_correlation": correlation,
         "binary_agreement": binary_agreement,
         "threshold_agreements": threshold_agreements,
@@ -138,11 +299,13 @@ def cross_source_alignment_evidence(
         "hik_edge_density": hik_edge_density,
         "information_quality": information_quality,
         "information_eligible": bool(information_quality > 0.0),
+        "residual_translation": residual_translation,
     }
     images = {
         "adb_visible_crop.png": adb_crop,
         "hik_rectified.png": hik_rectified,
         "edge_overlay_adb_red_hik_cyan.png": overlay,
+        "residual_translation_overlay.png": translation_overlay,
         "normalized_difference_heatmap.png": heatmap,
         "side_by_side_adb_then_hik.png": side_by_side,
         "valid_mask.png": np.asarray(valid_mask, dtype=np.uint8),

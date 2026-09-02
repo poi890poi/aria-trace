@@ -75,7 +75,10 @@ from aria_trace.evidence.rig_media import (
     build_hik_calibration_media_registry,
     build_hik_failure_media_registry,
 )
-from aria_trace.evidence.rig_alignment import cross_source_alignment_evidence
+from aria_trace.evidence.rig_alignment import (
+    cross_source_alignment_evidence,
+    cross_source_alignment_warning,
+)
 from aria_trace.evidence.media_trace import raster_record
 from aria_trace.evidence.rig_spatial import (
     expanded_review_media_record,
@@ -3846,6 +3849,10 @@ class HikRigCalibrationSession:
             comparison_records = [full_adb_record, adb_record, rectified_record]
             for name, operation in (
                 ("edge_overlay_adb_red_hik_cyan.png", "aligned_edge_comparison"),
+                (
+                    "residual_translation_overlay.png",
+                    "multilevel_threshold_residual_translation",
+                ),
                 ("normalized_difference_heatmap.png", "aligned_difference_heatmap"),
                 ("valid_mask.png", "rectification_validity_mask"),
             ):
@@ -3903,10 +3910,24 @@ class HikRigCalibrationSession:
                     "media": comparison_records,
                 }
             )
-            self.progress(
-                "Cross-source alignment check: confidence {:.3f}; evidence saved with calibration."
-                .format(result["confidence"])
-            )
+            spatial_warning = cross_source_alignment_warning(metrics)
+            if spatial_warning:
+                result["warning"] = spatial_warning
+                self.progress(
+                    "Warning: Cross-source alignment check: {} Evidence saved "
+                    "with calibration (non-gating).".format(spatial_warning)
+                )
+            else:
+                self.progress(
+                    "Cross-source alignment check: confidence {:.3f}; residual "
+                    "translation {:.2f}px; evidence saved with calibration."
+                    .format(
+                        result["confidence"],
+                        float(
+                            result["residual_translation"]["magnitude_px"]
+                        ),
+                    )
+                )
         except Exception as exc:
             result["error"] = str(exc)
             try:
