@@ -90,9 +90,15 @@ Invoke-Checked "Validate package identity and checksums" {
         throw "Release manifest is missing: $ManifestPath"
     }
     $Head = [string](git -C $ProjectRoot rev-parse HEAD)
-    $Manifest = Get-Content -LiteralPath $ManifestPath -Raw
-    if ($Manifest -notmatch "(?m)^source_commit:\s*'?$([regex]::Escape($Head))'?$" ) {
-        throw "Package source_commit does not match HEAD $Head; rebuild before publishing"
+    $CommitLine = Get-Content -LiteralPath $ManifestPath | Where-Object {
+        $_ -match "^source_commit\s*:"
+    } | Select-Object -First 1
+    if (-not $CommitLine) {
+        throw "Package manifest has no source_commit field"
+    }
+    $ManifestCommit = (($CommitLine -split ":", 2)[1]).Trim().Trim("'", '"')
+    if ($ManifestCommit -ne $Head.Trim()) {
+        throw "Package source_commit $ManifestCommit does not match HEAD $Head; rebuild before publishing"
     }
     Assert-ArchiveHash $PackageArchive
     Assert-ArchiveHash $SourceArchive
