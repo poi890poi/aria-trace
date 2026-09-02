@@ -1,6 +1,8 @@
 package io.iris.phonetarget;
 
 import android.app.Activity;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -12,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Choreographer;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -38,6 +41,7 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
     private final ExecutorService poller = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean orientationRetryScheduled = new AtomicBoolean(false);
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
     private SurfaceView surface;
     private String baseUrl;
@@ -47,6 +51,7 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
     private Bitmap bitmap;
     private int imageWidth;
     private int imageHeight;
+    private int requestedCanonicalOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -59,6 +64,7 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
                     : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             window.setAttributes(attributes);
         }
+        lockToNaturalOrientation();
         surface = new SurfaceView(this);
         surface.setKeepScreenOn(true);
         surface.getHolder().addCallback(this);
@@ -74,6 +80,43 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
     @Override public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
         if (focused) hideSystemBars();
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        hideSystemBars();
+        scheduleOrientationRetry();
+    }
+
+    private int currentDisplayRotation() {
+        if (getDisplay() != null) return getDisplay().getRotation();
+        return getWindowManager().getDefaultDisplay().getRotation();
+    }
+
+    private void lockToNaturalOrientation() {
+        int rotation = currentDisplayRotation();
+        int orientation = getResources().getConfiguration().orientation;
+        boolean naturalLandscape =
+                ((rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180)
+                        && orientation == Configuration.ORIENTATION_LANDSCAPE)
+                || ((rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270)
+                        && orientation == Configuration.ORIENTATION_PORTRAIT);
+        requestedCanonicalOrientation = naturalLandscape
+                ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+        setRequestedOrientation(requestedCanonicalOrientation);
+    }
+
+    private boolean canonicalOrientationReady() {
+        return currentDisplayRotation() == Surface.ROTATION_0;
+    }
+
+    private void scheduleOrientationRetry() {
+        if (!running.get() || !orientationRetryScheduled.compareAndSet(false, true)) return;
+        main.postDelayed(() -> {
+            orientationRetryScheduled.set(false);
+            drawAndAcknowledge(revision >= 0);
+        }, 100L);
     }
 
     private void hideSystemBars() {
@@ -105,7 +148,7 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
 
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         postTelemetry();
-        drawAndAcknowledge(false);
+        drawAndAcknowledge(revision >= 0);
     }
 
     @Override public void surfaceDestroyed(SurfaceHolder holder) { running.set(false); }
@@ -153,11 +196,13 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
 
     private void drawAndAcknowledge(boolean acknowledge) {
         if (surface == null || !surface.getHolder().getSurface().isValid()) return;
+        boolean orientationReady = canonicalOrientationReady();
         Canvas canvas = null;
         try {
             canvas = surface.getHolder().lockCanvas();
             if (canvas == null) return;
-            if ("black".equals(mode)) canvas.drawColor(Color.BLACK);
+            if (!orientationReady) canvas.drawColor(Color.BLACK);
+            else if ("black".equals(mode)) canvas.drawColor(Color.BLACK);
             else if ("white".equals(mode)) canvas.drawColor(Color.WHITE);
             else if (bitmap != null) {
                 paint.setFilterBitmap(false);
@@ -167,7 +212,9 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
         } finally {
             if (canvas != null) surface.getHolder().unlockCanvasAndPost(canvas);
         }
-        if (acknowledge) {
+        if (!orientationReady) {
+            scheduleOrientationRetry();
+        } else if (acknowledge) {
             final int paintedRevision = revision;
             final String paintedToken = token;
             Choreographer.getInstance().postFrameCallback(
@@ -181,7 +228,7 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
             int width = surface == null ? 0 : surface.getWidth();
             int height = surface == null ? 0 : surface.getHeight();
             value.put("adapter_id", "android_native_surface");
-            value.put("target_contract_version", 1);
+            value.put("target_contract_version", 2);
             value.put("activity", getComponentName().flattenToShortString());
             value.put("canvas_width", width);
             value.put("canvas_height", height);
@@ -195,7 +242,9 @@ public final class PhoneTargetActivity extends Activity implements SurfaceHolder
             value.put("immersive_mode", true);
             value.put("keep_screen_on", true);
             value.put("native_surface", true);
-            value.put("display_rotation", getDisplay() == null ? 0 : getDisplay().getRotation());
+            value.put("display_rotation", currentDisplayRotation());
+            value.put("requested_orientation", requestedCanonicalOrientation);
+            value.put("canonical_orientation_ready", canonicalOrientationReady());
         } catch (Exception ignored) { }
         return value;
     }
