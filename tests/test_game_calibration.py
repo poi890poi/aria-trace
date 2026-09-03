@@ -19,7 +19,9 @@ from rig_runtime.workflows.game_calibration import (
     _available_cursor_acquisition_series,
     _touch_intervals,
     calibrate_game_session,
+    calibrate_game_sessions,
     format_game_calibration_report,
+    parser,
 )
 from rig_runtime.workflows.game_orientation_calibration import (
     calibrate_portable_game_orientation_session,
@@ -27,6 +29,84 @@ from rig_runtime.workflows.game_orientation_calibration import (
 
 
 class GameCalibrationTests(unittest.TestCase):
+    def test_cli_accepts_one_or_more_session_folders_and_named_output(self):
+        arguments = parser().parse_args(
+            ["zigzag-session", "micro-session", "--output", "evidence"]
+        )
+        self.assertEqual(
+            [Path("zigzag-session"), Path("micro-session")], arguments.sessions
+        )
+        self.assertEqual(Path("evidence"), arguments.output)
+
+    def test_multiple_sessions_are_classified_ordered_and_composed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            zigzag = root / "zigzag"
+            micro = root / "micro"
+            output = root / "output"
+            descriptors = {
+                zigzag.resolve(): {
+                    "path": zigzag.resolve(),
+                    "session_id": "zigzag-id",
+                    "game_id": "game",
+                    "acquisition_patterns": ["zigzag"],
+                    "order": 0,
+                },
+                micro.resolve(): {
+                    "path": micro.resolve(),
+                    "session_id": "micro-id",
+                    "game_id": "game",
+                    "acquisition_patterns": ["micro_movement"],
+                    "order": 1,
+                },
+            }
+            calls = []
+
+            def calibrate(session, child_output, **kwargs):
+                calls.append((session, child_output, kwargs.get("phone_game_revision")))
+                if session == zigzag.resolve():
+                    return {
+                        "status": "complete",
+                        "successful_capabilities": ["minimap_boundary"],
+                        "capabilities": {
+                            "minimap_boundary": {
+                                "profiles": {"phone_game": "boundary-revision"}
+                            }
+                        },
+                    }
+                self.assertEqual("boundary-revision", kwargs["phone_game_revision"])
+                return {
+                    "status": "complete",
+                    "successful_capabilities": ["cursor_pose"],
+                    "capabilities": {
+                        "cursor_pose": {
+                            "selected_profile_revision": "cursor-revision"
+                        }
+                    },
+                }
+
+            with mock.patch(
+                "rig_runtime.workflows.game_calibration._session_calibration_descriptor",
+                side_effect=lambda path: descriptors[Path(path).resolve()],
+            ), mock.patch(
+                "rig_runtime.workflows.game_calibration.calibrate_game_session",
+                side_effect=calibrate,
+            ):
+                result = calibrate_game_sessions(
+                    [micro, zigzag],
+                    output,
+                    profile_root=root / "profiles",
+                )
+
+            self.assertEqual([zigzag.resolve(), micro.resolve()], [item[0] for item in calls])
+            self.assertIsNone(calls[0][2])
+            self.assertEqual("boundary-revision", calls[1][2])
+            self.assertEqual("cursor-revision", result["selected_phone_game_revision"])
+            self.assertEqual(
+                ["cursor_pose", "minimap_boundary"], result["successful_capabilities"]
+            )
+            self.assertTrue((output / "game_calibration_summary.json").is_file())
+
     def test_final_report_separates_status_reason_and_evidence(self):
         report = format_game_calibration_report(
             {

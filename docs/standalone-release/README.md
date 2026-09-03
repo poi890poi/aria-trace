@@ -205,6 +205,17 @@ profile:
 game-calibration.bat sessions\calibration\SESSION --game-id GAME_ID
 ```
 
+For separate zigzag and micro-movement captures, pass both session folders.
+Their order does not matter: IRIS classifies the recorded input patterns and
+establishes mini-map geometry before composing cursor evidence.
+
+```bat
+game-calibration.bat sessions\calibration\ZIGZAG_SESSION sessions\calibration\MICRO_SESSION --game-id GAME_ID
+```
+
+The evidence output defaults under the configured profile root. Override it
+only when needed with `--output EVIDENCE_FOLDER`.
+
 After rig displacement, publishing the fresh rig centrally recomposes portable
 mini-map geometry and game orientation. Game-up is stored relative to the
 phone's rotation-0 panel space; recomposition derives a new adapter-relative

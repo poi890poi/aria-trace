@@ -112,11 +112,26 @@ If synchronized HIK evidence is required, add `--require-hik`. Use
 `--game-id GAME_ID` when the resulting calibration should be published under a
 stable game identity.
 
-Run the available calibration work from one captured session:
+Run the available calibration work by passing the captured session folder:
 
 ```powershell
 python -m iris_tools game-calibration SESSION --game-id GAME_ID
 ```
+
+When zigzag and micro-movement were captured as separate sessions, pass both
+folders in the same command. IRIS reads their manifests, identifies each
+acquisition pattern, runs zigzag first to establish the mini-map boundary, and
+then composes the cursor result from micro-movement. Their command-line order
+does not matter.
+
+```powershell
+python -m iris_tools game-calibration `
+  ZIGZAG_SESSION MICRO_MOVEMENT_SESSION `
+  --game-id GAME_ID
+```
+
+Evidence is written automatically under the configured profile root. Use
+`--output EVIDENCE_FOLDER` only when a specific evidence location is needed.
 
 The workflow uses the available, space-tagged Android evidence and skips
 calibration that cannot be supported by the session. Its phone-game result is

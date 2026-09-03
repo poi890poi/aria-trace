@@ -324,6 +324,53 @@ def _available_cursor_acquisition_series(
     return result
 
 
+def _session_calibration_descriptor(session: Path) -> Mapping[str, object]:
+    """Inspect one immutable session and describe how it should be ordered."""
+
+    path = Path(session).resolve()
+    reader = SessionReader(path)
+    if reader.manifest.get("status") != "complete":
+        raise ValueError(
+            "Game calibration requires a complete immutable session: {}".format(path)
+        )
+    patterns = [
+        str(item["acquisition_pattern"])
+        for item in _available_cursor_acquisition_series(reader)
+    ]
+    if not patterns:
+        patterns = ["uncontrolled"]
+    if "zigzag" in patterns:
+        order = 0
+    elif "micro_movement" in patterns:
+        order = 1
+    else:
+        order = 2
+    return {
+        "path": path,
+        "session_id": reader.manifest.get("session_id"),
+        "game_id": (reader.manifest.get("context") or {}).get("game_id"),
+        "acquisition_patterns": patterns,
+        "order": order,
+    }
+
+
+def _latest_phone_game_revision(result: Mapping[str, object]) -> Optional[str]:
+    """Return the newest portable profile emitted by one calibration pass."""
+
+    capabilities = dict(result.get("capabilities") or {})
+    orientation = dict(capabilities.get("screen_orientation") or {})
+    if orientation.get("profile_revision"):
+        return str(orientation["profile_revision"])
+    cursor = dict(capabilities.get("cursor_pose") or {})
+    if cursor.get("selected_profile_revision"):
+        return str(cursor["selected_profile_revision"])
+    minimap = dict(capabilities.get("minimap_boundary") or {})
+    profiles = dict(minimap.get("profiles") or {})
+    if profiles.get("phone_game"):
+        return str(profiles["phone_game"])
+    return None
+
+
 def _calibrate_available_cursor_series(
     reader: SessionReader,
     output: Path,
@@ -450,6 +497,7 @@ def calibrate_game_session(
     activate: bool = True,
     include_color: bool = False,
     activate_color: bool = False,
+    phone_game_revision: Optional[str] = None,
 ) -> Mapping[str, object]:
     """Run independent game capabilities, skipping only unavailable inputs."""
 
@@ -467,7 +515,7 @@ def calibrate_game_session(
     )
     output.mkdir(parents=True, exist_ok=False)
     capabilities = {}
-    current_phone_game_revision = None
+    current_phone_game_revision = phone_game_revision
     game_model = (
         resolve_game_model(registry, selected_game)
         if selected_game
@@ -719,15 +767,146 @@ def calibrate_game_session(
     return summary
 
 
+def calibrate_game_sessions(
+    sessions: Sequence[Path],
+    output: Path,
+    *,
+    profile_root: Optional[Path] = None,
+    game_id: Optional[str] = None,
+    maximum_pairs: int = 12,
+    discovery_config: Optional[Mapping[str, object]] = None,
+    activate: bool = True,
+    include_color: bool = False,
+    activate_color: bool = False,
+) -> Mapping[str, object]:
+    """Calibrate one game from independently captured acquisition sessions.
+
+    Session contents, rather than caller ordering, determine the processing order.
+    A zigzag session establishes the portable mini-map geometry before a separate
+    micro-movement session adds its modeled cursor evidence.
+    """
+
+    unique_sessions = []
+    seen = set()
+    for session in sessions:
+        path = Path(session).resolve()
+        key = str(path).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique_sessions.append(path)
+    if not unique_sessions:
+        raise ValueError("At least one game-acquisition session is required")
+    if len(unique_sessions) == 1:
+        return calibrate_game_session(
+            unique_sessions[0],
+            output,
+            profile_root=profile_root,
+            game_id=game_id,
+            maximum_pairs=maximum_pairs,
+            discovery_config=discovery_config,
+            activate=activate,
+            include_color=include_color,
+            activate_color=activate_color,
+        )
+
+    descriptors = [_session_calibration_descriptor(path) for path in unique_sessions]
+    descriptors.sort(key=lambda item: (int(item["order"]), str(item["path"])))
+    recorded_games = {
+        str(item["game_id"])
+        for item in descriptors
+        if item.get("game_id")
+    }
+    if game_id is None and len(recorded_games) > 1:
+        raise ValueError(
+            "Sessions identify different games ({}); pass --game-id only if this "
+            "combination is intentional".format(", ".join(sorted(recorded_games)))
+        )
+    selected_game = game_id or (next(iter(recorded_games)) if recorded_games else None)
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+
+    session_results = []
+    current_phone_game_revision = None
+    for index, descriptor in enumerate(descriptors, 1):
+        patterns = list(descriptor["acquisition_patterns"])
+        label = "-".join(pattern.replace("_", "-") for pattern in patterns)
+        session_output = output / "sessions" / "{:02d}-{}".format(index, label)
+        value = calibrate_game_session(
+            descriptor["path"],
+            session_output,
+            profile_root=profile_root,
+            game_id=selected_game,
+            maximum_pairs=maximum_pairs,
+            discovery_config=discovery_config,
+            activate=activate,
+            include_color=include_color,
+            activate_color=activate_color,
+            phone_game_revision=current_phone_game_revision,
+        )
+        current_phone_game_revision = (
+            _latest_phone_game_revision(value) or current_phone_game_revision
+        )
+        session_results.append(
+            {
+                "session": str(descriptor["path"]),
+                "session_id": descriptor.get("session_id"),
+                "acquisition_patterns": patterns,
+                "output": str(session_output),
+                "result": value,
+            }
+        )
+
+    successful = sorted(
+        {
+            name
+            for item in session_results
+            for name in item["result"].get("successful_capabilities", [])
+        }
+    )
+    child_statuses = [str(item["result"].get("status")) for item in session_results]
+    summary = {
+        "schema_version": "1.0",
+        "calibration_kind": "game_multi_session",
+        "status": (
+            "complete"
+            if successful and all(status == "complete" for status in child_statuses)
+            else "partial" if successful else "no_capabilities_calibrated"
+        ),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "sessions": [str(item["path"]) for item in descriptors],
+        "game_id": selected_game,
+        "profile_root": str(ProfileRegistry(profile_root).root),
+        "activation_policy": "accepted_capabilities_only" if activate else "candidate_only",
+        "session_results": session_results,
+        "successful_capabilities": successful,
+        "selected_phone_game_revision": current_phone_game_revision,
+    }
+    (output / "game_calibration_summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+    return summary
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
-            "Calibrate every game capability supported by one immutable session; "
-            "missing movement or image sources are reported and skipped"
+            "Calibrate every supported game capability from one or more immutable "
+            "session folders. Zigzag and micro-movement sessions are identified and "
+            "ordered automatically; missing inputs are reported and skipped."
         )
     )
-    value.add_argument("session", type=Path)
-    value.add_argument("output", type=Path, nargs="?")
+    value.add_argument(
+        "sessions",
+        type=Path,
+        nargs="+",
+        metavar="SESSION",
+        help="one or more captured session folders",
+    )
+    value.add_argument(
+        "--output",
+        type=Path,
+        help="evidence output folder; defaults under the configured profile root",
+    )
     value.add_argument("--profile-root", type=Path)
     value.add_argument("--game-id")
     value.add_argument("--maximum-pairs", type=int, default=12)
@@ -771,8 +950,29 @@ def format_game_calibration_report(
         "  Output:  {}".format(Path(output).resolve()),
         "  Game:    {}".format(result.get("game_id") or "unidentified"),
         "",
-        "Capabilities",
     ]
+    if result.get("session_results"):
+        lines.extend(["", "Input sessions (automatically classified)"])
+        for item in result["session_results"]:
+            patterns = ", ".join(item.get("acquisition_patterns") or ["uncontrolled"])
+            child = dict(item.get("result") or {})
+            lines.append("  [{}] {}".format(patterns, item.get("session")))
+            lines.append(
+                "                  Result: {}  Evidence: {}".format(
+                    str(child.get("status") or "unknown").upper(),
+                    item.get("output"),
+                )
+            )
+        if result.get("selected_phone_game_revision"):
+            lines.append(
+                "  Composed profile: {}".format(result["selected_phone_game_revision"])
+            )
+        lines.extend(
+            ["", "Review each session evidence folder above before accepting REVIEW results."]
+        )
+        return lines
+
+    lines.append("Capabilities")
     for name, outcome_value in (result.get("capabilities") or {}).items():
         outcome = dict(outcome_value or {})
         status = str(outcome.get("status") or "unknown")
@@ -814,8 +1014,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         json.loads(arguments.discovery_config.read_text(encoding="utf-8"))
         if arguments.discovery_config else None
     )
-    result = calibrate_game_session(
-        arguments.session,
+    result = calibrate_game_sessions(
+        arguments.sessions,
         output,
         profile_root=registry.root,
         game_id=game_id,
@@ -834,4 +1034,9 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["calibrate_game_session", "format_game_calibration_report", "main"]
+__all__ = [
+    "calibrate_game_session",
+    "calibrate_game_sessions",
+    "format_game_calibration_report",
+    "main",
+]
