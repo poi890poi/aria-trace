@@ -29,6 +29,7 @@ class ZigzagTouchPlan:
     vertical_amplitude_px: int
     move_count: int = 12
     step_seconds: float = 0.12
+    endpoint_hold_seconds: float = 0.10
     settle_seconds: float = 1.0
     reset_seconds: float = 0.10
     move_sample_hz: float = 22.0
@@ -50,6 +51,8 @@ class ZigzagTouchPlan:
             raise ValueError("Zigzag stroke count must be a multiple of four")
         if self.step_seconds < 0.03:
             raise ValueError("Zigzag stroke duration must be at least 30 ms")
+        if self.endpoint_hold_seconds < 0.0:
+            raise ValueError("Zigzag endpoint hold duration cannot be negative")
         if self.settle_seconds < 0.0:
             raise ValueError("Zigzag settle duration cannot be negative")
         if self.reset_seconds < 0.0:
@@ -127,7 +130,8 @@ class ZigzagTouchPlan:
         count = len(self.strokes())
         return (
             float(self.settle_seconds)
-            + count * float(self.step_seconds)
+            + count
+            * (float(self.step_seconds) + float(self.endpoint_hold_seconds))
             + max(0, count - 1) * float(self.reset_seconds)
         )
 
@@ -137,13 +141,27 @@ class ZigzagTouchPlan:
             "end_x": int(self.end_x),
             "vertical_amplitude_px": int(self.vertical_amplitude_px),
             "move_count": int(self.move_count),
+            "travel_seconds": float(self.step_seconds),
             "step_seconds": float(self.step_seconds),
+            "endpoint_hold_seconds": float(self.endpoint_hold_seconds),
             "settle_seconds": float(self.settle_seconds),
             "reset_seconds": float(self.reset_seconds),
             "move_sample_hz": float(self.move_sample_hz),
             "move_samples_per_stroke": int(self.move_samples_per_stroke),
-            "control_transport": "android_input_swipe",
+            "control_transport": (
+                "explicit_touch_gesture_with_endpoint_hold"
+                if self.endpoint_hold_seconds > 0.0
+                else "android_input_swipe"
+            ),
+            "logical_swipes_per_stroke": 1,
+            # Compatibility field: this counts the one logical swipe, not the
+            # internal DOWN/MOVE/UP transport messages.
             "commands_per_stroke": 1,
+            "touch_events_per_stroke": (
+                self.move_samples_per_stroke + 2
+                if self.endpoint_hold_seconds > 0.0
+                else None
+            ),
             "strokes": self.strokes(),
             "up_stroke_count": sum(
                 stroke["direction"] == "up" for stroke in self.strokes()
@@ -243,7 +261,22 @@ class AndroidZigzagInputSource(InputSource):
         index: int,
         started_ns: int,
         finished_ns: int,
+        endpoint_reached_ns: Optional[int] = None,
+        release_started_ns: Optional[int] = None,
     ) -> None:
+        endpoint_ns = int(
+            finished_ns if endpoint_reached_ns is None else endpoint_reached_ns
+        )
+        release_ns = int(
+            finished_ns if release_started_ns is None else release_started_ns
+        )
+        travel_ms = int(round(float(self.plan.step_seconds) * 1000.0))
+        hold_ms = int(
+            round(
+                float(getattr(self.plan, "endpoint_hold_seconds", 0.0))
+                * 1000.0
+            )
+        )
         self._events_issued += 1
         self._emit(
             InputPacket(
@@ -256,10 +289,20 @@ class AndroidZigzagInputSource(InputSource):
                     "end_xy": list(map(int, stroke["end_xy"])),
                     "point_xy": list(map(int, stroke["end_xy"])),
                     "point_index": int(index),
-                    "duration_ms": int(
-                        round(float(self.plan.step_seconds) * 1000.0)
-                    ),
+                    "duration_ms": travel_ms + hold_ms,
+                    "travel_duration_ms": travel_ms,
+                    "endpoint_hold_duration_ms": hold_ms,
+                    "actual_travel_duration_ms": (
+                        endpoint_ns - int(started_ns)
+                    )
+                    / 1.0e6,
+                    "actual_endpoint_hold_duration_ms": (
+                        release_ns - endpoint_ns
+                    )
+                    / 1.0e6,
                     "command_start_host_time_ns": int(started_ns),
+                    "endpoint_reached_host_time_ns": endpoint_ns,
+                    "touch_up_started_host_time_ns": release_ns,
                     "command_end_host_time_ns": int(finished_ns),
                     "plan": self.plan.as_dict() if index == 0 else None,
                 },
@@ -284,8 +327,11 @@ class AndroidZigzagInputSource(InputSource):
         )
 
     def _run(self) -> None:
-        if self.use_high_level_swipe:
+        if self.use_high_level_swipe and not self._holds_endpoint:
             self._run_high_level_swipes()
+            return
+        if self.use_high_level_swipe:
+            self._run_held_swipes()
             return
         down = False
         last = list(map(int, self.plan.start_xy))
@@ -349,6 +395,96 @@ class AndroidZigzagInputSource(InputSource):
             )
             self._completed.set()
 
+    @property
+    def _holds_endpoint(self) -> bool:
+        return float(getattr(self.plan, "endpoint_hold_seconds", 0.0)) > 0.0
+
+    @property
+    def _uses_explicit_motion_events(self) -> bool:
+        return not self.use_high_level_swipe or self._holds_endpoint
+
+    def _run_held_swipes(self) -> None:
+        """Travel, remain DOWN at the endpoint, then release once per stroke."""
+
+        completed_strokes = 0
+        down = False
+        last = list(map(int, self.plan.start_xy))
+        strokes = self.plan.sampled_strokes()
+        try:
+            if self.ready_event is not None:
+                while not self._stop.is_set() and not self.ready_event.wait(0.1):
+                    pass
+            if self._stop.wait(float(self.plan.settle_seconds)):
+                return
+            for index, stroke in enumerate(strokes):
+                if self._stop.is_set():
+                    break
+                started_ns = time.perf_counter_ns()
+                last = list(map(int, stroke["start_xy"]))
+                self._motion("DOWN", last[0], last[1])
+                down = True
+                stroke_complete = True
+                moves = stroke["move_points_xy"]
+                for sample_index, point in enumerate(moves):
+                    target_ns = started_ns + int(
+                        float(self.plan.step_seconds)
+                        * float(sample_index + 1)
+                        / float(len(moves))
+                        * 1.0e9
+                    )
+                    remaining_seconds = max(
+                        0.0, (target_ns - time.perf_counter_ns()) / 1.0e9
+                    )
+                    if self._stop.wait(remaining_seconds):
+                        stroke_complete = False
+                        break
+                    last = list(map(int, point))
+                    self._motion("MOVE", last[0], last[1])
+                if not stroke_complete:
+                    break
+                endpoint_reached_ns = time.perf_counter_ns()
+                if self._stop.wait(float(self.plan.endpoint_hold_seconds)):
+                    break
+                release_started_ns = time.perf_counter_ns()
+                self._motion("UP", last[0], last[1])
+                down = False
+                finished_ns = time.perf_counter_ns()
+                self._record_swipe(
+                    stroke,
+                    index,
+                    started_ns,
+                    finished_ns,
+                    endpoint_reached_ns,
+                    release_started_ns,
+                )
+                completed_strokes += 1
+                if index + 1 < len(strokes) and self._stop.wait(
+                    float(self.plan.reset_seconds)
+                ):
+                    break
+        except Exception as exc:
+            self._error = "{}: {}".format(type(exc).__name__, exc)
+            if self._emit is not None:
+                self._emit(
+                    InputPacket(
+                        self.source_id,
+                        self.error_kind,
+                        time.perf_counter_ns(),
+                        {"error": self._error},
+                    )
+                )
+        finally:
+            if down:
+                try:
+                    self._motion("UP", last[0], last[1])
+                except Exception as exc:
+                    if self._error is None:
+                        self._error = "{}: {}".format(type(exc).__name__, exc)
+            self._gesture_completed = (
+                self._error is None and completed_strokes == len(strokes)
+            )
+            self._completed.set()
+
     def _run_high_level_swipes(self) -> None:
         completed_strokes = 0
         strokes = self.plan.strokes()
@@ -390,11 +526,11 @@ class AndroidZigzagInputSource(InputSource):
             raise RuntimeError("Android zigzag control is already started")
         self._emit = emit
         # Validate every stroke before issuing the first input command.
-        if self.use_high_level_swipe:
+        if self.use_high_level_swipe and not self._holds_endpoint:
             self.plan.strokes()
         else:
             self.plan.sampled_strokes()
-        if self.controller is not None and not self.use_high_level_swipe:
+        if self.controller is not None and self._uses_explicit_motion_events:
             self.controller.open()
         self._thread = threading.Thread(
             target=self._run, name=self.thread_name, daemon=True
@@ -405,7 +541,7 @@ class AndroidZigzagInputSource(InputSource):
         self._stop.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=6)
-        if self.controller is not None and not self.use_high_level_swipe:
+        if self.controller is not None and self._uses_explicit_motion_events:
             self.controller.close()
 
     @property
@@ -439,6 +575,12 @@ class AndroidZigzagInputSource(InputSource):
             "serial": self.serial,
             "transport": (
                 "adb_shell_input_touchscreen_swipe"
+                if self.use_high_level_swipe and not self._holds_endpoint
+                else (
+                    "scrcpy_control_socket_held_swipe"
+                    if self.use_high_level_swipe and self.controller is not None
+                    else "adb_shell_input_touchscreen_motionevent_held_swipe"
+                )
                 if self.use_high_level_swipe
                 else (
                     "scrcpy_control_socket"

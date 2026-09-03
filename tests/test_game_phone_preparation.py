@@ -130,6 +130,17 @@ class GamePhonePreparationTests(unittest.TestCase):
         self.assertEqual(1488, plan.end_x)
         self.assertEqual(216, plan.vertical_amplitude_px)
         self.assertEqual(0.12, plan.step_seconds)
+        self.assertEqual(0.10, plan.endpoint_hold_seconds)
+
+    def test_swipe_travel_and_endpoint_hold_are_independently_configurable(self):
+        arguments = capture.parser().parse_args(
+            ["--travel-seconds", "0.24", "--endpoint-hold-seconds", "0.45"]
+        )
+        plan = capture._build_zigzag_plan(arguments, 2400, 1080)
+        self.assertEqual(0.24, plan.step_seconds)
+        self.assertEqual(0.45, plan.endpoint_hold_seconds)
+        self.assertEqual(0.24, plan.as_dict()["travel_seconds"])
+        self.assertEqual(0.45, plan.as_dict()["endpoint_hold_seconds"])
 
     def test_swipe_distances_can_be_overridden_in_pixels(self):
         arguments = capture.parser().parse_args(
@@ -316,6 +327,7 @@ class GamePhonePreparationTests(unittest.TestCase):
             vertical_amplitude_px=216,
             move_count=12,
             step_seconds=0.12,
+            endpoint_hold_seconds=0.10,
             settle_seconds=1.5,
             reset_seconds=0.10,
         )

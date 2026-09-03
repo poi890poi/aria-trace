@@ -283,10 +283,13 @@ zigzag-acquisition.bat --android-capture adb-screenshot --require-hik
 ```
 
 Swipe distances default to 10% of the current game-display width horizontally
-and 20% of its height vertically (240x216 px at 2400x1080). Each 120 ms swipe
-starts at `(72% width, 50% height)`. Use
+and 20% of its height vertically (240x216 px at 2400x1080). Each swipe starts
+at `(72% width, 50% height)`, travels for 120 ms, then remains pressed at its
+endpoint for 100 ms before `UP`. Use
 `--horizontal-swipe-distance-px PX` and `--vertical-swipe-distance-px PX` to
-override them independently.
+override the distances independently. Use `--travel-seconds SECONDS` and
+`--endpoint-hold-seconds SECONDS` for the two in-gesture durations. The later
+post-release image delay remains `--screenshot-settle-seconds`.
 
 One lossless ADB screenshot and one rig-normalized HIK frame are retained after
 each settled swipe. Omitting `--require-hik` permits an Android-only mini-map

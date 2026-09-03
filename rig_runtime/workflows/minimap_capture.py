@@ -360,10 +360,24 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     value.add_argument(
+        "--travel-seconds",
         "--step-seconds",
+        dest="step_seconds",
         type=float,
         default=0.12,
-        help="duration of each long diagonal swipe (default: 0.12)",
+        help=(
+            "time spent moving from the swipe start to its endpoint; "
+            "--step-seconds is retained as a compatibility alias (default: 0.12)"
+        ),
+    )
+    value.add_argument(
+        "--endpoint-hold-seconds",
+        type=float,
+        default=0.10,
+        help=(
+            "time to keep the finger DOWN at the swipe endpoint before UP "
+            "(default: 0.10)"
+        ),
     )
     value.add_argument("--reset-seconds", type=float, default=0.10)
     value.add_argument("--settle-seconds", type=float, default=1.5)
@@ -463,6 +477,7 @@ def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
         vertical_amplitude_px=vertical_distance,
         move_count=arguments.moves,
         step_seconds=arguments.step_seconds,
+        endpoint_hold_seconds=arguments.endpoint_hold_seconds,
         settle_seconds=arguments.settle_seconds,
         reset_seconds=arguments.reset_seconds,
     )

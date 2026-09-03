@@ -87,6 +87,13 @@ Capture a game-agnostic zigzag session from the prepared foreground game:
 python -m iris_tools zigzag-acquisition --android-capture adb-screenshot
 ```
 
+Each sample is one continuous swipe with two independent timings. The default
+travels for 0.12 seconds, keeps the finger down at the endpoint for 0.10
+seconds, and only then sends `UP`. Configure them with
+`--travel-seconds SECONDS` and `--endpoint-hold-seconds SECONDS`.
+`--reset-seconds` remains the separate delay after release and before the next
+swipe; `--screenshot-settle-seconds` remains the post-release image delay.
+
 Capture balanced short movement pulses when a separate character-motion series
 is useful:
 

@@ -1,5 +1,6 @@
 import struct
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -22,6 +23,7 @@ class FakeSocket:
 class FakeController:
     def __init__(self):
         self.actions = []
+        self.action_times = []
         self.opened = False
         self.closed = False
 
@@ -31,6 +33,7 @@ class FakeController:
 
     def inject_touch(self, action, point_xy):
         self.actions.append((action, list(point_xy)))
+        self.action_times.append((action, time.perf_counter()))
         return 1
 
     def close(self):
@@ -87,6 +90,7 @@ class ScrcpyControlTests(unittest.TestCase):
             vertical_amplitude_px=10,
             move_count=4,
             step_seconds=0.03,
+            endpoint_hold_seconds=0.0,
             settle_seconds=0.0,
             reset_seconds=0.0,
         )
@@ -117,6 +121,76 @@ class ScrcpyControlTests(unittest.TestCase):
         )
         self.assertFalse(controller.opened)
         self.assertFalse(controller.closed)
+
+    def test_zigzag_holds_finger_down_at_endpoint_before_one_logical_swipe(self):
+        controller = FakeController()
+        plan = ZigzagTouchPlan(
+            start_xy=[90, 50],
+            end_x=80,
+            vertical_amplitude_px=10,
+            move_count=4,
+            step_seconds=0.03,
+            endpoint_hold_seconds=0.04,
+            settle_seconds=0.0,
+            reset_seconds=0.0,
+            move_sample_hz=10.0,
+        )
+        source = AndroidZigzagInputSource(
+            "adb.exe", "serial", plan, controller=controller
+        )
+        packets = []
+        source.start(packets.append)
+        self.assertTrue(source.wait_completed(2.0))
+        source.stop()
+
+        self.assertTrue(source.completed)
+        self.assertTrue(controller.opened)
+        self.assertTrue(controller.closed)
+        self.assertEqual(4, len(packets))
+        self.assertEqual(["SWIPE"] * 4, [packet.payload["action"] for packet in packets])
+        self.assertEqual(4, source.events_issued)
+        self.assertEqual(4, source.expected_event_count)
+        for stroke_index in range(4):
+            actions = controller.actions[stroke_index * 4 : (stroke_index + 1) * 4]
+            self.assertEqual(["DOWN", "MOVE", "MOVE", "UP"], [row[0] for row in actions])
+            times = controller.action_times[stroke_index * 4 : (stroke_index + 1) * 4]
+            self.assertGreaterEqual(times[-1][1] - times[-2][1], 0.03)
+            payload = packets[stroke_index].payload
+            self.assertEqual(70, payload["duration_ms"])
+            self.assertEqual(30, payload["travel_duration_ms"])
+            self.assertEqual(40, payload["endpoint_hold_duration_ms"])
+            self.assertGreaterEqual(payload["actual_endpoint_hold_duration_ms"], 30.0)
+
+    def test_adb_only_held_swipe_uses_motion_events_and_one_summary_packet(self):
+        plan = ZigzagTouchPlan(
+            start_xy=[90, 50],
+            end_x=80,
+            vertical_amplitude_px=10,
+            move_count=4,
+            step_seconds=0.03,
+            endpoint_hold_seconds=0.01,
+            settle_seconds=0.0,
+            reset_seconds=0.0,
+            move_sample_hz=10.0,
+        )
+        source = AndroidZigzagInputSource("adb.exe", "serial", plan)
+        packets = []
+        with mock.patch(
+            "rig_runtime.adapters.android.zigzag.subprocess.check_call"
+        ) as command:
+            source.start(packets.append)
+            self.assertTrue(source.wait_completed(2.0))
+            source.stop()
+
+        self.assertTrue(source.completed)
+        self.assertEqual(4, len(packets))
+        self.assertEqual(16, command.call_count)
+        actions = [call[0][0][7] for call in command.call_args_list]
+        self.assertEqual(
+            ["DOWN", "MOVE", "MOVE", "UP"] * 4,
+            actions,
+        )
+        self.assertNotIn("swipe", [item for call in command.call_args_list for item in call[0][0]])
 
     def test_default_zigzag_splits_motion_into_twelve_balanced_strokes(self):
         plan = ZigzagTouchPlan(
@@ -152,6 +226,7 @@ class ScrcpyControlTests(unittest.TestCase):
             vertical_amplitude_px=486,
             move_count=12,
             step_seconds=0.35,
+            endpoint_hold_seconds=0.0,
             move_sample_hz=22.0,
         )
         stroke = plan.sampled_strokes()[0]
