@@ -6,12 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aria_trace.adapters.filesystem.profile_registry import (
+from rig_runtime.adapters.filesystem.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
 )
-from aria_trace.workflows.adapter_export import _literal, export_resolved_adapter
+from rig_runtime.workflows.adapter_export import _literal, export_resolved_adapter
 
 
 class AdapterExportTests(unittest.TestCase):

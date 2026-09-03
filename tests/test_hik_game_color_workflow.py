@@ -8,21 +8,21 @@ import cv2
 import numpy as np
 import yaml
 
-from aria_trace.adapters.filesystem.profile_registry import (
+from rig_runtime.adapters.filesystem.profile_registry import (
     ProfileContext,
     ProfileRegistry,
     context_from_rig_calibration,
 )
-from aria_trace.adapters.filesystem.session import SessionReader, SessionWriter
-from aria_trace.domain.packets import FramePacket
-from aria_trace.domain.spatial import bind_geometry, raster_space
-from aria_trace.workflows.hik_game_color_calibration import (
+from rig_runtime.adapters.filesystem.session import SessionReader, SessionWriter
+from rig_runtime.domain.packets import FramePacket
+from rig_runtime.domain.spatial import bind_geometry, raster_space
+from rig_runtime.workflows.hik_game_color_calibration import (
     _check_color_spatial_alignment,
     _decode_session_records,
     calibrate_game_color_session,
     main,
 )
-from aria_trace.workflows.profile_management import publish_rig_calibration
+from rig_runtime.workflows.profile_management import publish_rig_calibration
 
 
 class HikGameColorWorkflowTests(unittest.TestCase):
@@ -105,7 +105,7 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                 },
             }
             with patch(
-                "aria_trace.workflows.hik_game_color_calibration.calibrate_game_color_session",
+                "rig_runtime.workflows.hik_game_color_calibration.calibrate_game_color_session",
                 return_value=result,
             ) as calibrate:
                 self.assertEqual(
@@ -259,10 +259,10 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                 },
             }
             with patch(
-                "aria_trace.workflows.hik_game_color_calibration._decode_indices",
+                "rig_runtime.workflows.hik_game_color_calibration._decode_indices",
                 side_effect=[android_frames, hik_frames],
             ), patch(
-                "aria_trace.workflows.hik_game_color_calibration.optimize_mvs_bayer_conversion",
+                "rig_runtime.workflows.hik_game_color_calibration.optimize_mvs_bayer_conversion",
                 return_value=(conversion, {"review.png": hik_frames[0]}),
             ) as optimize:
                 result = calibrate_game_color_session(

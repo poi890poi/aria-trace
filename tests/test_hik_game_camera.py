@@ -12,8 +12,8 @@ from acquisition.rig_calibration.hik.game_camera import (
     ProfiledHikGameCamera,
     _source_crop_to_canonical_phone,
 )
-from aria_trace.adapters.hik.driver import RectifiedHikCamera
-from aria_trace.domain.spatial import bind_geometry, raster_space
+from rig_runtime.adapters.hik.driver import RectifiedHikCamera
+from rig_runtime.domain.spatial import bind_geometry, raster_space
 
 
 class FakeAdapter:
@@ -182,7 +182,7 @@ class HikGameCameraTests(unittest.TestCase):
         adapter = FakeAdapter()
         real_remap = __import__("cv2").remap
         with mock.patch(
-            "aria_trace.adapters.hik.game_camera.cv2.remap", wraps=real_remap
+            "rig_runtime.adapters.hik.game_camera.cv2.remap", wraps=real_remap
         ) as remap:
             camera = self.camera("minimap", True, adapter).open()
             frame_set = camera.read_streams()
@@ -251,7 +251,7 @@ class HikGameCameraTests(unittest.TestCase):
         ).open()
         real_remap = __import__("cv2").remap
         with mock.patch(
-            "aria_trace.adapters.hik.game_camera.cv2.remap", wraps=real_remap
+            "rig_runtime.adapters.hik.game_camera.cv2.remap", wraps=real_remap
         ) as remap:
             frame_set = camera.read_streams()
         frame = frame_set.streams["minimap"]
@@ -295,9 +295,9 @@ class HikGameCameraTests(unittest.TestCase):
         ).open()
         real_remap = __import__("cv2").remap
         with mock.patch(
-            "aria_trace.adapters.hik.driver.cv2.remap", wraps=real_remap
+            "rig_runtime.adapters.hik.driver.cv2.remap", wraps=real_remap
         ) as remap, mock.patch(
-            "aria_trace.adapters.hik.driver.rotate_quarter_turns_clockwise",
+            "rig_runtime.adapters.hik.driver.rotate_quarter_turns_clockwise",
             side_effect=AssertionError("streaming must not rotate after remap"),
         ):
             sample = camera.read_sample()
@@ -362,10 +362,10 @@ class HikGameCameraTests(unittest.TestCase):
         ).open()
         real_warp = __import__("cv2").warpPerspective
         with mock.patch(
-            "aria_trace.adapters.hik.game_camera.cv2.warpPerspective",
+            "rig_runtime.adapters.hik.game_camera.cv2.warpPerspective",
             wraps=real_warp,
         ) as warp, mock.patch(
-            "aria_trace.adapters.hik.game_camera.rotate_quarter_turns_clockwise",
+            "rig_runtime.adapters.hik.game_camera.rotate_quarter_turns_clockwise",
             side_effect=AssertionError("rectified streaming must not rotate"),
         ):
             frame_set = camera.read_streams()

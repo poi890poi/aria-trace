@@ -1,6 +1,6 @@
-"""Compatibility exports for :mod:`aria_trace.services.calibration.cursor.pose`."""
+"""Compatibility exports for :mod:`rig_runtime.services.calibration.cursor.pose`."""
 
-from aria_trace.services.calibration.cursor.pose import *  # noqa: F401,F403
+from rig_runtime.services.calibration.cursor.pose import *  # noqa: F401,F403
 
 
 if __name__ == "__main__":

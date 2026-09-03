@@ -6,8 +6,8 @@ import numpy as np
 
 from acquisition.frame_pump import LatestFramePump
 from acquisition.models import FramePacket
-from aria_trace.adapters.legacy_acquisition import LegacyFrameSourceAdapter
-from aria_trace.domain import ProducerRef, SpaceRef
+from rig_runtime.adapters.legacy_acquisition import LegacyFrameSourceAdapter
+from rig_runtime.domain import ProducerRef, SpaceRef
 
 
 class FastSource:

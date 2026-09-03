@@ -3,16 +3,16 @@ import unittest
 import cv2
 import numpy as np
 
-from aria_trace.services.calibration.rig.distortion import (
+from rig_runtime.services.calibration.rig.distortion import (
     combined_output_to_raw_maps,
     distorted_screen_region_roi,
     fit_evidence_gated_distortion,
     undistort_pixel_points,
 )
-from aria_trace.services.calibration.rig.image_quality import (
+from rig_runtime.services.calibration.rig.image_quality import (
     measure_slanted_edge_esfr,
 )
-from aria_trace.services.calibration.rig.image_quality import (
+from rig_runtime.services.calibration.rig.image_quality import (
     generate_slanted_edge_target,
 )
 

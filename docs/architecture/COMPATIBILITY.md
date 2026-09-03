@@ -8,18 +8,18 @@ must contain no independent implementation or alternate behavior.
 
 | Compatibility surface | Canonical owner |
 | --- | --- |
-| `acquisition.models` | `aria_trace.domain` and `aria_trace.domain.packets` |
-| `acquisition.session`, `annotations`, `video` | `aria_trace.adapters.filesystem` |
-| `acquisition.recorder` | `aria_trace.workflows.recording` |
-| `acquisition.android_capture`, `windows`, `hik_capture` | `aria_trace.adapters` |
-| `acquisition.minimap_*` | `aria_trace.services.calibration.minimap` |
-| `acquisition.cursor_*` | `aria_trace.services.calibration.cursor` |
-| `acquisition.scene_yaw_calibration` | `aria_trace.services.calibration.scene_yaw` |
+| `acquisition.models` | `rig_runtime.domain` and `rig_runtime.domain.packets` |
+| `acquisition.session`, `annotations`, `video` | `rig_runtime.adapters.filesystem` |
+| `acquisition.recorder` | `rig_runtime.workflows.recording` |
+| `acquisition.android_capture`, `hik_capture` | `rig_runtime.adapters`; Windows capture remains `aria_trace.adapters.windows` |
+| `acquisition.minimap_*` | `rig_runtime.services.calibration.minimap` |
+| `acquisition.cursor_*` | `rig_runtime.services.calibration.cursor` |
+| `acquisition.scene_yaw_calibration` | `rig_runtime.services.calibration.scene_yaw` |
 | `acquisition.map_*` | `aria_trace.services.mapping` |
 | `acquisition.live_tracker`, `tracking_profiles` | `aria_trace.services.tracking` |
 | `acquisition.route_*` | `aria_trace.services.localization.route` and route workflows |
-| `acquisition.teleport_*` | `aria_trace.domain`, localization service and teleport workflow |
-| `acquisition.rig_calibration` | `aria_trace.services.calibration.rig` |
+| `acquisition.teleport_*` | `rig_runtime.domain`, plus `aria_trace` localization and teleport workflow |
+| `acquisition.rig_calibration` | `rig_runtime.services.calibration.rig` |
 | `acquisition.rig_calibration.hik.*` | HIK/Android adapters, rig workflows, evidence and app entry points |
 | `acquisition.workbench` | `aria_trace.apps.workbench` |
 | selected `poc` promoted symbols | exact aliases in `aria_trace.services` |
@@ -32,7 +32,8 @@ helpers only where an existing test/integration requires identity compatibility.
 
 1. A facade imports and re-exports the canonical symbol. It does not wrap,
    reinterpret defaults, catch errors or select a different algorithm.
-2. New production code imports `aria_trace`, never `acquisition` or `poc`.
+2. New rig/acquisition code imports `rig_runtime`; integrated tracing code imports
+   `aria_trace` and may consume `rig_runtime`. Neither imports `acquisition` or `poc`.
 3. A behavior fix is made at the canonical owner and verified through both the
    canonical and facade entry points.
 4. Architecture tests compare important facade symbols by object identity.

@@ -1,6 +1,6 @@
 """Compatibility import for the promoted production yaw-estimation service."""
 
-from aria_trace.services.vision.yaw_estimation import (
+from rig_runtime.services.vision.yaw_estimation import (
     KltAngularYawEstimator,
     KltEssentialYawEstimator,
     KltTrackMeasurement,

@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
-from aria_trace.workflows.portable_profiles import (
+from rig_runtime.workflows.portable_profiles import (
     export_deployment_package,
     export_portable_profile,
     import_deployment_package,

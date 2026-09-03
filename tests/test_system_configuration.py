@@ -5,14 +5,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from aria_trace.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
-from aria_trace.adapters.filesystem.system_configuration import (
+from rig_runtime.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
+from rig_runtime.adapters.filesystem.system_configuration import (
     default_system_configuration,
     load_system_configuration,
     resolve_rig_repeatability_policy,
     save_system_configuration,
 )
-from aria_trace.workflows.system_setup import main as setup_main
+from rig_runtime.workflows.system_setup import main as setup_main
 
 
 class SystemConfigurationTests(unittest.TestCase):

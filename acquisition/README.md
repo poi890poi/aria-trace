@@ -352,7 +352,7 @@ The calibrated camera adapter exposes the same base-space conversion without
 opening hardware:
 
 ```python
-import aria_trace.adapters.hik.compat as hikcam
+import rig_runtime.adapters.hik.compat as hikcam
 
 camera = hikcam.HikCamera(config={"mode": "full", "rectify": True})
 adb_xy = camera.camera_adapter_to_adb_points(adapter_xy, surface_quarter_turns)
@@ -409,7 +409,7 @@ the two synchronized products in dual mode. Arbitrary calibration/profile paths
 are diagnostic-only; production selection is automatic:
 
 ```python
-import aria_trace.adapters.hik.compat as hikcam
+import rig_runtime.adapters.hik.compat as hikcam
 
 with hikcam.HikCamera(config={
     "game_id": "genshin-impact",

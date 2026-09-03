@@ -22,9 +22,9 @@ from acquisition.rig_calibration.hik.reuse_precheck import (
     main as reuse_precheck_main,
     parser as reuse_precheck_parser,
 )
-from aria_trace.workflows.rig_reuse_precheck import _wait_owned_target_fullscreen
+from rig_runtime.workflows.rig_reuse_precheck import _wait_owned_target_fullscreen
 from acquisition.profile_registry import ProfileContext, ProfileRegistry
-from aria_trace.apps.hik_rig_calibration import (
+from rig_runtime.apps.hik_rig_calibration import (
     _write_standalone_adapter,
     main as rig_calibration_main,
 )
@@ -122,21 +122,21 @@ class HikRigReuseTests(unittest.TestCase):
                 [[10, 10], [30, 10], [10, 30], [30, 30]], np.float64
             )
             with patch(
-                "aria_trace.workflows.rig_reuse_precheck.RectifiedHikCamera"
+                "rig_runtime.workflows.rig_reuse_precheck.RectifiedHikCamera"
             ) as validator_type, patch(
-                "aria_trace.workflows.rig_reuse_precheck.HikMvsCameraAdapter",
+                "rig_runtime.workflows.rig_reuse_precheck.HikMvsCameraAdapter",
                 return_value=adapter,
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.resolve_adb_executable",
+                "rig_runtime.workflows.rig_reuse_precheck.resolve_adb_executable",
                 return_value=Path("adb"),
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession",
+                "rig_runtime.workflows.rig_reuse_precheck.AdbPhoneSession",
                 return_value=phone,
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.NativeImmersivePhoneTarget",
+                "rig_runtime.workflows.rig_reuse_precheck.NativeImmersivePhoneTarget",
                 return_value=target,
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",
+                "rig_runtime.workflows.rig_reuse_precheck.detect_charuco_correspondences",
                 return_value={
                     "camera_points_xy": points,
                     "screen_points_xy": points,
@@ -225,17 +225,17 @@ class HikRigReuseTests(unittest.TestCase):
             }
             target.configure_surface_size.return_value.revision = 2
             with patch(
-                "aria_trace.workflows.rig_reuse_precheck.RectifiedHikCamera"
+                "rig_runtime.workflows.rig_reuse_precheck.RectifiedHikCamera"
             ) as validator_type, patch(
-                "aria_trace.workflows.rig_reuse_precheck.resolve_adb_executable",
+                "rig_runtime.workflows.rig_reuse_precheck.resolve_adb_executable",
                 return_value=Path("adb"),
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.AdbPhoneSession"
+                "rig_runtime.workflows.rig_reuse_precheck.AdbPhoneSession"
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.NativeImmersivePhoneTarget",
+                "rig_runtime.workflows.rig_reuse_precheck.NativeImmersivePhoneTarget",
                 return_value=target,
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.detect_charuco_correspondences",
+                "rig_runtime.workflows.rig_reuse_precheck.detect_charuco_correspondences",
                 side_effect=RuntimeError("no board"),
             ):
                 validator_type.return_value.is_calibrated.return_value = True
@@ -275,10 +275,10 @@ class HikRigReuseTests(unittest.TestCase):
             calibration = bundle / "hik_camera_calibration.json"
             calibration.write_text("{}", encoding="utf-8")
             with patch(
-                "aria_trace.adapters.filesystem.profile_registry.context_from_rig_calibration",
+                "rig_runtime.adapters.filesystem.profile_registry.context_from_rig_calibration",
                 return_value=Mock(),
             ), patch(
-                "aria_trace.workflows.adapter_export.export_resolved_adapter",
+                "rig_runtime.workflows.adapter_export.export_resolved_adapter",
                 return_value={"output": str(bundle / "hikcam_adapter.py")},
             ) as export:
                 _write_standalone_adapter(
@@ -295,7 +295,7 @@ class HikRigReuseTests(unittest.TestCase):
                 "devices": {"camera_id": "CAM-1", "phone_id": "PHONE-1"},
                 "rig_calibration": {"repeatability_policy": "relaxed"},
             }
-            from aria_trace.adapters.filesystem.system_configuration import (
+            from rig_runtime.adapters.filesystem.system_configuration import (
                 save_system_configuration,
             )
 
@@ -307,25 +307,25 @@ class HikRigReuseTests(unittest.TestCase):
             adapter = Mock()
             adapter.devices.return_value = [device]
             with patch.dict(os.environ, {"IRIS_PROFILE_ROOT": str(root)}), patch(
-                "aria_trace.apps.hik_rig_calibration.time.strftime",
+                "rig_runtime.apps.hik_rig_calibration.time.strftime",
                 return_value="test",
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.HikMvsCameraAdapter",
+                "rig_runtime.apps.hik_rig_calibration.HikMvsCameraAdapter",
                 return_value=adapter,
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.connected_adb_devices",
+                "rig_runtime.apps.hik_rig_calibration.connected_adb_devices",
                 return_value=["PHONE-1"],
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.resolve_adb_executable",
+                "rig_runtime.apps.hik_rig_calibration.resolve_adb_executable",
                 return_value=Path("adb"),
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.HikRigCalibrationSession",
+                "rig_runtime.apps.hik_rig_calibration.HikRigCalibrationSession",
                 return_value=session,
             ) as session_type, patch(
-                "aria_trace.workflows.profile_management.publish_rig_calibration",
+                "rig_runtime.workflows.profile_management.publish_rig_calibration",
                 return_value={"revision_id": "rig-1", "publication": "new_revision"},
             ), patch(
-                "aria_trace.apps.hik_rig_calibration._write_standalone_adapter"
+                "rig_runtime.apps.hik_rig_calibration._write_standalone_adapter"
             ) as exporter:
                 self.assertEqual(0, rig_calibration_main(["--headless", "--save"]))
             options = session_type.call_args[0][0]
@@ -360,16 +360,16 @@ class HikRigReuseTests(unittest.TestCase):
             adapter = Mock()
             adapter.devices.return_value = [device]
             with patch(
-                "aria_trace.apps.hik_rig_calibration.HikMvsCameraAdapter",
+                "rig_runtime.apps.hik_rig_calibration.HikMvsCameraAdapter",
                 return_value=adapter,
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.connected_adb_devices",
+                "rig_runtime.apps.hik_rig_calibration.connected_adb_devices",
                 return_value=["PHONE-1"],
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.resolve_adb_executable",
+                "rig_runtime.apps.hik_rig_calibration.resolve_adb_executable",
                 return_value=Path("adb"),
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.run_active_reuse_precheck",
+                "rig_runtime.workflows.rig_reuse_precheck.run_active_reuse_precheck",
                 return_value={
                     "status": "reusable",
                     "reusable": True,
@@ -378,9 +378,9 @@ class HikRigReuseTests(unittest.TestCase):
                     "comparison": {"p95_displacement_px": 1.0},
                 },
             ), patch(
-                "aria_trace.apps.hik_rig_calibration._write_standalone_adapter"
+                "rig_runtime.apps.hik_rig_calibration._write_standalone_adapter"
             ) as exporter, patch(
-                "aria_trace.apps.hik_rig_calibration.HikRigCalibrationSession"
+                "rig_runtime.apps.hik_rig_calibration.HikRigCalibrationSession"
             ) as session:
                 result = rig_calibration_main(
                     [
@@ -415,19 +415,19 @@ class HikRigReuseTests(unittest.TestCase):
             }
             output = io.StringIO()
             with patch(
-                "aria_trace.apps.hik_rig_calibration.HikMvsCameraAdapter",
+                "rig_runtime.apps.hik_rig_calibration.HikMvsCameraAdapter",
                 return_value=adapter,
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.connected_adb_devices",
+                "rig_runtime.apps.hik_rig_calibration.connected_adb_devices",
                 return_value=["PHONE-1"],
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.resolve_adb_executable",
+                "rig_runtime.apps.hik_rig_calibration.resolve_adb_executable",
                 return_value=Path("adb"),
             ), patch(
-                "aria_trace.workflows.rig_reuse_precheck.run_active_reuse_precheck",
+                "rig_runtime.workflows.rig_reuse_precheck.run_active_reuse_precheck",
                 return_value=precheck,
             ), patch(
-                "aria_trace.apps.hik_rig_calibration.HikRigCalibrationSession",
+                "rig_runtime.apps.hik_rig_calibration.HikRigCalibrationSession",
                 return_value=session,
             ) as session_type, contextlib.redirect_stdout(output):
                 self.assertEqual(

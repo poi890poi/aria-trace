@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aria_trace.adapters.jsonl_trace import JsonlInvocationSink
-from aria_trace.domain import (
+from rig_runtime.adapters.jsonl_trace import JsonlInvocationSink
+from rig_runtime.domain import (
     ComponentInvocation,
     ConfigurationRef,
     FailureRecord,
@@ -12,7 +12,7 @@ from aria_trace.domain import (
     ProducerRef,
     TimePoint,
 )
-from aria_trace.evidence import canonical_json_bytes
+from rig_runtime.evidence import canonical_json_bytes
 
 
 class InvocationTraceTests(unittest.TestCase):

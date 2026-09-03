@@ -19,43 +19,43 @@ def _invoke(module_name: str, argv: Optional[Sequence[str]]) -> int:
 
 
 def rig_calibration(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.apps.hik_rig_calibration", argv)
+    return _invoke("rig_runtime.apps.hik_rig_calibration", argv)
 
 
 def zigzag_acquisition(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.minimap_capture", argv)
+    return _invoke("rig_runtime.workflows.minimap_capture", argv)
 
 
 def minimap_calibration(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.minimap_profile_calibration", argv)
+    return _invoke("rig_runtime.workflows.minimap_profile_calibration", argv)
 
 
 def game_color_calibration(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.hik_game_color_calibration", argv)
+    return _invoke("rig_runtime.workflows.hik_game_color_calibration", argv)
 
 
 def game_calibration(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.game_calibration", argv)
+    return _invoke("rig_runtime.workflows.game_calibration", argv)
 
 
 def game_repeatability(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.game_repeatability", argv)
+    return _invoke("rig_runtime.workflows.game_repeatability", argv)
 
 
 def rig_evidence_review(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.rig_evidence_review", argv)
+    return _invoke("rig_runtime.workflows.rig_evidence_review", argv)
 
 
 def profile_management(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.profile_management", argv)
+    return _invoke("rig_runtime.workflows.profile_management", argv)
 
 
 def system_setup(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.workflows.system_setup", argv)
+    return _invoke("rig_runtime.workflows.system_setup", argv)
 
 
 def camera_adapter_demo(argv: Optional[Sequence[str]] = None) -> int:
-    return _invoke("aria_trace.apps.hik_stream", argv)
+    return _invoke("rig_runtime.apps.hik_stream", argv)
 
 
 COMMANDS = {

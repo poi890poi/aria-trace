@@ -5,9 +5,9 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 
-from aria_trace.evidence.features import OnlineSiftRecorder
-from aria_trace.workflows.recording import AcquisitionRecorder
-from aria_trace.adapters.sources import (
+from rig_runtime.evidence.features import OnlineSiftRecorder
+from rig_runtime.workflows.recording import AcquisitionRecorder
+from rig_runtime.adapters.sources import (
     AdbClockMapper,
     AdbGetEventSource,
     AdbScreenshotFrameSource,
@@ -15,14 +15,14 @@ from aria_trace.adapters.sources import (
     SyntheticInputSource,
     VideoFileFrameSource,
 )
-from aria_trace.adapters.android.capture import (
+from rig_runtime.adapters.android.capture import (
     AndroidRoiFrameSource,
     ScrcpyCaptureHub,
     find_scrcpy_server,
     parse_android_roi,
     push_session_archive_to_device,
 )
-from aria_trace.adapters.android.phone import probe_android_capture_surface
+from rig_runtime.adapters.android.phone import probe_android_capture_surface
 from aria_trace.adapters.windows import (
     WindowsKeyboardMouseSource,
     WindowsRawKeyboardMouseSource,

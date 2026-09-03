@@ -11,7 +11,7 @@ try:
     import qrcode  # noqa: F401
     from PySide6.QtWidgets import QApplication
 
-    from aria_trace.apps.rig_calibrator.application import RigCalibrationWindow
+    from rig_runtime.apps.rig_calibrator.application import RigCalibrationWindow
 
     GUI_AVAILABLE = True
 except ImportError:

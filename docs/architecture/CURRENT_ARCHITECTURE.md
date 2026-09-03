@@ -15,27 +15,30 @@ experiments/POC -> production packages (allowed)
 production packages -> experiments/POC (forbidden)
 ```
 
-The repository uses `aria_trace/` directly rather than a `src/` wrapper.
+The repository has two product boundaries: `rig_runtime/` owns the neutral IRIS
+acquisition/calibration runtime, while `aria_trace/` owns integrated gameplay
+tracing and tracking. Neither package is hidden behind a `src/` wrapper.
 
 ## Package ownership
 
 | Package | Owns | Must not own |
 | --- | --- | --- |
-| `aria_trace/domain` | Platform-neutral schemas for identity, time, space, provenance, quality, execution and portable records | OpenCV, NumPy, devices, files, UI, Workbench state |
-| `aria_trace/ports` | Component lifecycle and source/transform/estimator/sink/repository/control protocols | Implementations or workspace discovery |
-| `aria_trace/services` | Calibration, mapping, localization, tracking and vision mechanisms | Device discovery, HTTP/GUI state, session selection |
-| `aria_trace/adapters` | Android, Windows, HIK, rig-device and filesystem integrations | Product workflow policy or estimation algorithms |
-| `aria_trace/workflows` | Explicit composition of services, repositories and adapters | HTTP/GUI translation or new estimation math |
-| `aria_trace/evidence` | Deterministic evidence calculation, serialization and review records | Input selection or workflow decisions |
-| `aria_trace/apps` | Workbench, recorder, review, HIK CLI and rig-calibrator entry points | Calibration/localization algorithms |
+| `rig_runtime/domain` | Neutral schemas for identity, time, space, provenance, quality, execution and portable records | Trace-product state, devices, files or UI |
+| `rig_runtime/ports` | Replaceable source/transform/estimator/sink/repository/control protocols | Implementations or workspace discovery |
+| `rig_runtime/services` | Rig, mini-map, cursor and scene calibration plus reusable vision mechanisms | Workbench, mapping, localization or tracking policy |
+| `rig_runtime/adapters` | Android, HIK, rig-device and filesystem integrations | Integrated gameplay tracing or tracking |
+| `rig_runtime/workflows` | IRIS recording, calibration, profile and evidence orchestration | Workbench/route/teleport orchestration |
+| `rig_runtime/evidence` | Neutral calibration and space-aware media evidence | Trace-product workflow decisions |
+| `rig_runtime/apps` | IRIS HIK commands and the standalone rig calibrator | Workbench, review or tracker UI |
+| `aria_trace` | Workbench, recorder/review, Windows capture, mapping, localization, route/teleport and realtime tracking | IRIS runtime implementation |
 | `acquisition` | Compatibility import and CLI facades only | New implementation |
 | `poc` | Experiments and retained compatibility aliases to promoted production services | Dependencies from production code |
 
 ## Implemented capability clusters
 
 ```text
-aria_trace/
-  domain/                 universal contracts and gameplay records
+rig_runtime/
+  domain/                 neutral contracts and calibration records
   ports/                  replaceable component interfaces
   adapters/
     android/               capture, control, display and phone integration
@@ -48,15 +51,23 @@ aria_trace/
       cursor/              dynamics, rigid shape, pose and worker
       scene_yaw/           angular-scale calibration
       rig/                 device-independent geometry and measurements
+    vision/                reusable visual estimators
+  workflows/              recording, calibration and profile use cases
+  evidence/               calibration, feature and rig evidence builders
+  apps/
+    rig_calibrator/        standalone Windows GUI
+
+aria_trace/
+  adapters/windows.py      desktop gameplay capture
+  services/
     mapping/               stitching, layers and references
     localization/          route and teleport mechanisms
     tracking/              runtime, fusion and performance profiles
-    vision/                reusable visual estimators
-  workflows/              recording, calibration, route and teleport use cases
-  evidence/               trace, feature and rig evidence builders
+  workflows/              route, teleport and input-verification use cases
+  evidence/               tracking and integrated POC evidence
   apps/
     workbench/             API, jobs, state, catalog, capture and live tracking
-    rig_calibrator/        standalone Windows GUI
+    record/review          integrated trace acquisition and inspection
 ```
 
 ## Universal data flow
@@ -101,9 +112,9 @@ or use the one documented default for that data class.
 
 ```powershell
 python -m aria_trace.apps.workbench
-python -m aria_trace.apps.rig_calibrator
-python -m aria_trace.apps.hik_rig_calibration
-python -m aria_trace.apps.hik_stream
+python -m rig_runtime.apps.rig_calibrator
+python -m rig_runtime.apps.hik_rig_calibration
+python -m rig_runtime.apps.hik_stream
 python -m iris_tools setup show
 ```
 
@@ -115,7 +126,9 @@ canonical owners above.
 
 `tests/test_architecture_boundaries.py` verifies:
 
-- domain and ports do not depend on legacy/platform packages;
+- neutral domain and ports do not depend on legacy/platform packages;
+- `rig_runtime` never imports the `aria_trace` product;
+- the standalone IRIS release exports `rig_runtime` and no `aria_trace` code;
 - production does not import `poc`;
 - Workbench shell contains no calibration/mapping algorithms;
 - HIK calibration services do not import hardware adapters, workflows or apps;

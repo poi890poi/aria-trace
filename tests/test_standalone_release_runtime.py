@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from aria_trace.adapters.android.capture import find_scrcpy_server
-from aria_trace.adapters.filesystem.video import find_ffmpeg
-from aria_trace.adapters.runtime_tools import find_release_tool
+from rig_runtime.adapters.android.capture import find_scrcpy_server
+from rig_runtime.adapters.filesystem.video import find_ffmpeg
+from rig_runtime.adapters.runtime_tools import find_release_tool
 
 
 class StandaloneReleaseRuntimeTests(unittest.TestCase):

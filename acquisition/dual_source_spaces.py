@@ -1,4 +1,4 @@
 """Compatibility exports for canonical dual-source space calibration."""
 
-from aria_trace.services.calibration.rig.dual_source_spaces import *  # noqa: F401,F403
+from rig_runtime.services.calibration.rig.dual_source_spaces import *  # noqa: F401,F403
 

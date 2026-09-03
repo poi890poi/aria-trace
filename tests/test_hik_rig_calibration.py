@@ -26,8 +26,8 @@ from acquisition.rig_calibration.hik.algorithms import (
     temporal_black_statistics,
     temporal_white_statistics,
 )
-import aria_trace.adapters.hik.compat as hikcam
-import aria_trace.adapters.android.display as android_display
+import rig_runtime.adapters.hik.compat as hikcam
+import rig_runtime.adapters.android.display as android_display
 from acquisition.rig_calibration.hik.driver import (
     HikMvsCameraAdapter,
     MvsPythonBackend,
@@ -35,7 +35,7 @@ from acquisition.rig_calibration.hik.driver import (
     create_camera_adapter,
 )
 from acquisition.rig_calibration.hik.display import AdbDisplayTarget
-from aria_trace.adapters.android.display import (
+from rig_runtime.adapters.android.display import (
     LocalPhoneTargetServer,
     NativeImmersivePhoneTarget,
 )
@@ -68,7 +68,7 @@ from acquisition.rig_calibration.geometry import (
     charuco_board_metric_to_panel_pixels,
     estimate_screen_geometry,
 )
-from aria_trace.evidence.rig_alignment import cross_source_alignment_warning
+from rig_runtime.evidence.rig_alignment import cross_source_alignment_warning
 
 
 def rig_frame_sample(image, time_ns=1, roi_xywh=None):
@@ -125,7 +125,7 @@ class HikAlgorithmTests(unittest.TestCase):
             "corner_count": 2,
         }
         with mock.patch(
-            "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
+            "rig_runtime.workflows.hik_rig_calibration.detect_charuco_correspondences",
             return_value=detected,
         ):
             result = session._detect_charuco(np.zeros((8, 8, 3), np.uint8))
@@ -253,7 +253,7 @@ class HikAlgorithmTests(unittest.TestCase):
             return None if len(observed_prompts) == 1 else 32
 
         with mock.patch(
-            "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
+            "rig_runtime.workflows.hik_rig_calibration.detect_charuco_correspondences",
             return_value={"corner_count": 12},
         ), mock.patch.object(
             session, "_preview_update", side_effect=preview_update
@@ -314,7 +314,7 @@ class HikAlgorithmTests(unittest.TestCase):
         session._wait_painted = mock.Mock()
         session._preview_update = mock.Mock()
         with mock.patch(
-            "aria_trace.workflows.hik_rig_calibration.detect_charuco_correspondences",
+            "rig_runtime.workflows.hik_rig_calibration.detect_charuco_correspondences",
             return_value={
                 "camera_points_xy": points,
                 "screen_points_xy": points,
@@ -383,10 +383,10 @@ class HikAlgorithmTests(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             with mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.os.replace",
+                "rig_runtime.workflows.hik_rig_calibration.os.replace",
                 side_effect=PermissionError("directory locked"),
             ), mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.time.sleep"
+                "rig_runtime.workflows.hik_rig_calibration.time.sleep"
             ):
                 method = HikRigCalibrationSession._publish_calibration_directory(
                     temporary, output
@@ -404,13 +404,13 @@ class HikAlgorithmTests(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             with mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.os.replace",
+                "rig_runtime.workflows.hik_rig_calibration.os.replace",
                 side_effect=PermissionError("directory locked"),
             ), mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.shutil.copytree",
+                "rig_runtime.workflows.hik_rig_calibration.shutil.copytree",
                 side_effect=PermissionError("file locked"),
             ), mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.time.sleep"
+                "rig_runtime.workflows.hik_rig_calibration.time.sleep"
             ):
                 with self.assertRaisesRegex(PermissionError, "temporary bundle was retained"):
                     HikRigCalibrationSession._publish_calibration_directory(
@@ -574,7 +574,7 @@ class HikAlgorithmTests(unittest.TestCase):
             for index in range(8)
         ]
         with mock.patch(
-            "aria_trace.workflows.hik_rig_calibration.render_data_matrix_target",
+            "rig_runtime.workflows.hik_rig_calibration.render_data_matrix_target",
             side_effect=render,
         ):
             batch = session._compose_data_matrix_batch(
@@ -820,7 +820,7 @@ class HikAlgorithmTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "aria_trace.workflows.hik_rig_calibration.time.sleep"
+            "rig_runtime.workflows.hik_rig_calibration.time.sleep"
         ):
             observed = session._wait_native_canonical_surface(timeout_seconds=1.0)
 
@@ -1613,7 +1613,7 @@ class HikPhoneTests(unittest.TestCase):
         success = mock.Mock(returncode=0, stdout="devices", stderr="")
         recovery = mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch(
-            "aria_trace.adapters.android.phone.os.name", "nt"
+            "rig_runtime.adapters.android.phone.os.name", "nt"
         ), mock.patch(
             "subprocess.run",
             side_effect=[command_timeout, kill_timeout, recovery, recovery, success],
@@ -1636,7 +1636,7 @@ class HikPhoneTests(unittest.TestCase):
         success = mock.Mock(returncode=0, stdout="devices", stderr="")
         recovery = mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch(
-            "aria_trace.adapters.android.phone.os.name", "nt"
+            "rig_runtime.adapters.android.phone.os.name", "nt"
         ), mock.patch(
             "subprocess.run",
             side_effect=[
@@ -1671,7 +1671,7 @@ class HikPhoneTests(unittest.TestCase):
             returncode=1, stdout="", stderr="cannot start daemon"
         )
         with mock.patch(
-            "aria_trace.adapters.android.phone.os.name", "nt"
+            "rig_runtime.adapters.android.phone.os.name", "nt"
         ), mock.patch(
             "subprocess.run",
             side_effect=[
@@ -1714,7 +1714,7 @@ class HikPhoneTests(unittest.TestCase):
             self.assertEqual(resolve_adb_executable(str(adb)), str(adb.resolve()))
             output = "List of devices attached\nPHONE-1\tdevice\nPHONE-2\toffline\n"
             with mock.patch(
-                "aria_trace.adapters.android.phone._subprocess_runner",
+                "rig_runtime.adapters.android.phone._subprocess_runner",
                 return_value=output,
             ):
                 self.assertEqual(connected_adb_devices(str(adb)), ["PHONE-1"])
@@ -1999,7 +1999,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "exact_payload_decoded": False,
             }
             with mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.grade_data_matrix_decode",
+                "rig_runtime.workflows.hik_rig_calibration.grade_data_matrix_decode",
                 return_value=failed_grade,
             ):
                 result = session.grade_data_matrix()
@@ -2058,7 +2058,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "exact_payload_decoded": True,
             }
             with mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.grade_data_matrix_decode",
+                "rig_runtime.workflows.hik_rig_calibration.grade_data_matrix_decode",
                 return_value=decoded,
             ):
                 result = session.grade_data_matrix()
@@ -2104,7 +2104,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
             session._capture_data_matrix_frame = lambda: np.zeros((100, 100, 3), np.uint8)
             session._compose_data_matrix_batch = self._fake_data_matrix_batch
             with mock.patch(
-                "aria_trace.workflows.hik_rig_calibration.grade_data_matrix_decode",
+                "rig_runtime.workflows.hik_rig_calibration.grade_data_matrix_decode",
                 side_effect=RuntimeError("decoder unavailable"),
             ):
                 result = session.grade_data_matrix()
@@ -2509,7 +2509,7 @@ class HikCompatibleFacadeTests(unittest.TestCase):
             )
             camera.open()
             with mock.patch(
-                "aria_trace.services.calibration.rig.cross_source."
+                "rig_runtime.services.calibration.rig.cross_source."
                 "match_game_camera_orientation",
                 return_value=(
                     {
@@ -2549,7 +2549,7 @@ class HikCompatibleFacadeTests(unittest.TestCase):
             )
             camera.open()
             with mock.patch(
-                "aria_trace.services.calibration.rig.cross_source."
+                "rig_runtime.services.calibration.rig.cross_source."
                 "match_game_camera_orientation",
                 return_value=(
                     {

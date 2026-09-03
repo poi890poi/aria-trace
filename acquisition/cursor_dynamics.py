@@ -1,3 +1,3 @@
-"""Compatibility exports for :mod:`aria_trace.services.calibration.cursor.dynamics`."""
+"""Compatibility exports for :mod:`rig_runtime.services.calibration.cursor.dynamics`."""
 
-from aria_trace.services.calibration.cursor.dynamics import *  # noqa: F401,F403
+from rig_runtime.services.calibration.cursor.dynamics import *  # noqa: F401,F403

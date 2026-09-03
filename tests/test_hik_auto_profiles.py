@@ -12,8 +12,8 @@ from acquisition.profile_registry import (
     ProfileRegistry,
     ProfileResolutionError,
 )
-from aria_trace.adapters.hik import compat as hikcam
-from aria_trace.adapters.hik import game_camera
+from rig_runtime.adapters.hik import compat as hikcam
+from rig_runtime.adapters.hik import game_camera
 
 
 class HikAutoProfileTests(unittest.TestCase):

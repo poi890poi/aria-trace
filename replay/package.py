@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 
-from aria_trace.adapters.filesystem.session import SessionReader
+from rig_runtime.adapters.filesystem.session import SessionReader
 
 from . import SCHEMA_VERSION
 from .descriptors import describe, extract_many

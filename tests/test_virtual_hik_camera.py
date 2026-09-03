@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from aria_trace.adapters.rig.devices import CameraConfiguration, create_camera_adapter
+from rig_runtime.adapters.rig.devices import CameraConfiguration, create_camera_adapter
 from virtualhikcam.driver import VirtualHikCameraAdapter
 
 

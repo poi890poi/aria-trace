@@ -446,4 +446,4 @@ Automated tests should cover:
 
 The first implementation can use a directed graph and local matrix/covariance composition. Global graph optimization is optional later work and must not change the producer contracts.
 
-`aria_trace/services/calibration/rig/spatial_export.py` implements the rig producer's dependency-free fragment export and validation boundary. The central registry, transform-path resolver, other producer adapters, and optional graph optimization remain separate work.
+`rig_runtime/services/calibration/rig/spatial_export.py` implements the rig producer's dependency-free fragment export and validation boundary. The central registry, transform-path resolver, other producer adapters, and optional graph optimization remain separate work.

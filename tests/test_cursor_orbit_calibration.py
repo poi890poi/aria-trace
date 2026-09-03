@@ -6,14 +6,14 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from aria_trace.adapters.android.cursor_orbit import CursorOrbitTouchPlan
-from aria_trace.domain.spatial import bind_geometry, raster_space
-from aria_trace.services.calibration.minimap.calibration import (
+from rig_runtime.adapters.android.cursor_orbit import CursorOrbitTouchPlan
+from rig_runtime.domain.spatial import bind_geometry, raster_space
+from rig_runtime.services.calibration.minimap.calibration import (
     calibrate_cursor_orbit_frames,
     calibrate_cursor_static_frames,
 )
-from aria_trace.workflows.profile_management import cursor_behavior_by_acquisition
-from aria_trace.workflows.minimap_capture import _build_control_plan, parser
+from rig_runtime.workflows.profile_management import cursor_behavior_by_acquisition
+from rig_runtime.workflows.minimap_capture import _build_control_plan, parser
 
 
 class CursorOrbitCalibrationTests(unittest.TestCase):
@@ -145,7 +145,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             space,
         )
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
-            "aria_trace.services.calibration.minimap.calibration._cursor_shape",
+            "rig_runtime.services.calibration.minimap.calibration._cursor_shape",
             side_effect=RuntimeError("persistent contour is empty"),
         ):
             result = calibrate_cursor_orbit_frames(
@@ -173,7 +173,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
                 self.assertIn("rotation_center", model.files)
                 self.assertNotIn("cursor_polygon_relative_xy", model.files)
 
-    def test_component_gate_reports_thresholds_and_observations(self):
+    def test_non_hsv_cursor_preserves_color_agnostic_rotation_center(self):
         height, width = 180, 220
         space = raster_space("current_minimap_crop_pixels", [width, height])
         boundary = bind_geometry(
@@ -181,17 +181,50 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             "circle",
             space,
         )
-        frames = np.full((8, height, width, 3), 25, np.uint8)
-        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
-            RuntimeError,
-            r"accepted 0/8 frames.*HSV.*component area.*centroid distance.*Observed",
-        ):
-            calibrate_cursor_orbit_frames(
-                frames,
+        # Red is intentionally outside the legacy cyan HSV shape interval.
+        # Center geometry must still be recovered from temporal symmetry.
+        pivot = np.asarray([112.0, 86.0])
+        base = np.asarray([[-7.0, -5.0], [-7.0, 5.0], [10.0, 0.0]])
+        frames = []
+        for index in range(24):
+            angle = 2.0 * np.pi * index / 12.0
+            rotation = np.asarray(
+                [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+            )
+            polygon = np.round(base.dot(rotation.T) + pivot).astype(np.int32)
+            image = np.full((height, width, 3), 25, np.uint8)
+            cv2.fillConvexPoly(image, polygon, (20, 20, 240), cv2.LINE_AA)
+            frames.append(image)
+        with tempfile.TemporaryDirectory() as temporary:
+            result = calibrate_cursor_orbit_frames(
+                np.stack(frames),
                 Path(temporary),
                 outer_boundary=boundary,
                 frame_space=space,
             )
+            fitted = result["rotation_center"]
+            self.assertLess(
+                np.linalg.norm(np.asarray([fitted["x"], fitted["y"]]) - pivot),
+                1.5,
+            )
+            self.assertEqual(
+                "color_agnostic_temporal_centrosymmetry", fitted["method"]
+            )
+            self.assertEqual("rotation_center_only", result["result_level"])
+            self.assertEqual("partial", result["status"])
+            self.assertEqual(
+                "available", result["capabilities"]["rotation_center"]["status"]
+            )
+            self.assertEqual(
+                "unavailable", result["capabilities"]["cursor_shape"]["status"]
+            )
+            self.assertIn(
+                "shape component gate",
+                result["capabilities"]["cursor_shape"]["reason"],
+            )
+            declared = {item["name"] for item in result["evidence"]}
+            self.assertIn("cursor_center_heatmap.png", declared)
+            self.assertIn("cursor_center_symmetry.png", declared)
 
     def test_static_series_reports_shape_without_inventing_rotation_center(self):
         height, width = 180, 220

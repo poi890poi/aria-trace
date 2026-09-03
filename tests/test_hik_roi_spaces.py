@@ -66,6 +66,27 @@ class PersistentRoiBackend:
         raise AssertionError(node)
 
 
+class StrictPersistentRoiBackend(PersistentRoiBackend):
+    """Model GenICam nodes whose legal dimension depends on current offset."""
+
+    def set_int(self, node, value):
+        value = int(value)
+        if node == "Width" and value + self.values["OffsetX"] > 1440:
+            raise RuntimeError("Width exceeds residual sensor extent")
+        if node == "Height" and value + self.values["OffsetY"] > 1080:
+            raise RuntimeError("Height exceeds residual sensor extent")
+        super().set_int(node, value)
+
+
+class ResidualRangeOnlyBackend(StrictPersistentRoiBackend):
+    """Older plugins may expose residual ranges but no SensorWidth nodes."""
+
+    def get_int(self, node):
+        if node in ("SensorWidth", "SensorHeight"):
+            raise RuntimeError("node unavailable")
+        return super().get_int(node)
+
+
 class RuntimeAdapter:
     def __init__(self, image):
         self.image = image
@@ -107,6 +128,45 @@ class HikRoiSpaceTests(unittest.TestCase):
             [136, 132, 1304, 948],
             adapter.align_roi([136, 132, 1304, 948]),
         )
+        self.assertEqual(
+            [136, 132, 1304, 948],
+            adapter.set_roi([136, 132, 1304, 948]),
+        )
+
+    def test_roi_can_move_between_offsets_without_offset_dependent_shrinkage(self):
+        backend = StrictPersistentRoiBackend()
+        backend.values.update(
+            OffsetX=136, OffsetY=132, Width=1304, Height=948
+        )
+        adapter = HikMvsCameraAdapter(backend=backend)
+        adapter._opened = True
+
+        requested = (
+            [40, 20, 1360, 1040],
+            [200, 160, 1200, 880],
+            [0, 0, 1440, 1080],
+            [136, 132, 1304, 948],
+        )
+        for roi in requested:
+            with self.subTest(roi=roi):
+                self.assertEqual(roi, adapter.set_roi(roi))
+                self.assertEqual(roi, [
+                    backend.values["OffsetX"],
+                    backend.values["OffsetY"],
+                    backend.values["Width"],
+                    backend.values["Height"],
+                ])
+        self.assertEqual(len(requested), backend.stops)
+        self.assertEqual(len(requested), backend.starts)
+
+    def test_roi_alignment_recovers_absolute_extent_from_residual_ranges(self):
+        backend = ResidualRangeOnlyBackend()
+        backend.values.update(
+            OffsetX=136, OffsetY=132, Width=1304, Height=948
+        )
+        adapter = HikMvsCameraAdapter(backend=backend)
+        adapter._opened = True
+
         self.assertEqual(
             [136, 132, 1304, 948],
             adapter.set_roi([136, 132, 1304, 948]),
@@ -312,7 +372,7 @@ class HikRoiSpaceTests(unittest.TestCase):
             )
             real_remap = __import__("cv2").remap
             with mock.patch(
-                "aria_trace.adapters.hik.driver.cv2.remap", wraps=real_remap
+                "rig_runtime.adapters.hik.driver.cv2.remap", wraps=real_remap
             ) as remap:
                 camera = RectifiedHikCamera(path, adapter=adapter, rectify=True).open()
                 sample = camera.read_sample()

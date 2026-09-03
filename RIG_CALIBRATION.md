@@ -1,7 +1,7 @@
 # IRIS Camera-to-Phone Rig Calibration
 
 The standalone HIK MVS camera/Android-display workflow and rectified stream are
-documented in [`aria_trace/services/calibration/rig/hik/README.md`](aria_trace/services/calibration/rig/hik/README.md).
+documented in [`rig_runtime/services/calibration/rig/hik/README.md`](rig_runtime/services/calibration/rig/hik/README.md).
 
 ## 1. Purpose
 
@@ -368,7 +368,7 @@ The measurement library is image-in/grade-out and keeps its encoder and
 decoder replaceable:
 
 ```python
-from aria_trace.services.calibration.rig import grade_data_matrix_decode
+from rig_runtime.services.calibration.rig import grade_data_matrix_decode
 
 result = grade_data_matrix_decode(camera_patch, expected_payload="A7K2")
 print(result["grade"], result["grade_letter"])  # 4.0 A, or 0.0 F
@@ -1030,10 +1030,10 @@ Rig calibration remains separate from game-specific mini-map calibration. Rig ca
 
 ## 15. Current implementation
 
-The independent core is implemented under `aria_trace/services/calibration/rig/`; its API and dependency boundary are documented in `aria_trace/services/calibration/rig/README.md`. It includes exact-pixel Data Matrix target generation, alternating fixed-patch sequencing, image-in/Decode-grade-out evaluation, stale-payload rejection, and unaveraged sweep summaries. Synthetic verification is in `tests/test_rig_calibration.py`. The package includes spatial-fragment export but does not implement the external spatial registry/resolver.
+The independent core is implemented under `rig_runtime/services/calibration/rig/`; its API and dependency boundary are documented in `rig_runtime/services/calibration/rig/README.md`. It includes exact-pixel Data Matrix target generation, alternating fixed-patch sequencing, image-in/Decode-grade-out evaluation, stale-payload rejection, and unaveraged sweep summaries. Synthetic verification is in `tests/test_rig_calibration.py`. The package includes spatial-fragment export but does not implement the external spatial registry/resolver.
 
 The optional standalone Windows application is implemented under
-`aria_trace/apps/rig_calibrator/`. It provides a PySide6 guided UI, opt-in
+`rig_runtime/apps/rig_calibrator/`. It provides a PySide6 guided UI, opt-in
 OpenCV camera capture, a fullscreen phone target service, exact-pixel review,
 ChArUco-atlas IoU/coverage fitting, display-referred slanted-edge e-SFR/MTF,
 homography-ground-truth feature matching, alternating-signal camera latency,

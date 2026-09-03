@@ -11,7 +11,7 @@ from acquisition.rig_calibration.hik.media_trace import (
     build_hik_calibration_media_registry,
 )
 from acquisition.rig_calibration.contracts import FrameSample
-from aria_trace.evidence.rig_spatial import (
+from rig_runtime.evidence.rig_spatial import (
     SYNTHETIC_BACKGROUND_BGR,
     expanded_rig_camera_review,
     standardized_rig_comparison,

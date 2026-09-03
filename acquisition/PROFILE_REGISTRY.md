@@ -104,7 +104,7 @@ Production use does not accept arbitrary calibration paths. Supply observed
 context and let the registry select the active immutable revisions:
 
 ```python
-import aria_trace.adapters.hik.compat as hikcam
+import rig_runtime.adapters.hik.compat as hikcam
 
 camera = hikcam.HikCamera(config={
     "game_id": "genshin-impact",

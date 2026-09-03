@@ -10,7 +10,7 @@ from acquisition.profile_manager import (
     publish_rig_calibration,
 )
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
-from aria_trace.services.calibration.minimap.spatial import minimap_crop_space
+from rig_runtime.services.calibration.minimap.spatial import minimap_crop_space
 
 
 def write_rig(

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from acquisition.models import FramePacket
-from aria_trace.adapters.legacy_acquisition import (
+from rig_runtime.adapters.legacy_acquisition import (
     HOST_CLOCK_METADATA_KEY,
     SOURCE_CLOCK_METADATA_KEY,
     SPACE_METADATA_KEY,
@@ -11,7 +11,7 @@ from aria_trace.adapters.legacy_acquisition import (
     envelope_to_frame_packet,
     frame_packet_to_envelope,
 )
-from aria_trace.domain import ComponentError, ProducerRef, SourceRef, SpaceRef
+from rig_runtime.domain import ComponentError, ProducerRef, SourceRef, SpaceRef
 
 
 class _LegacySource:

@@ -10,9 +10,9 @@ import cv2
 import numpy as np
 import yaml
 
-from aria_trace.workflows import minimap_capture as capture
-from aria_trace.adapters.filesystem.session import SessionReader
-from aria_trace.domain.packets import FramePacket, InputPacket
+from rig_runtime.workflows import minimap_capture as capture
+from rig_runtime.adapters.filesystem.session import SessionReader
+from rig_runtime.domain.packets import FramePacket, InputPacket
 from acquisition.capture_game_minimap_zigzag import (
     _game_booster_lock_showing,
     _hik_fallback_allowed,
@@ -281,11 +281,13 @@ class GamePhonePreparationTests(unittest.TestCase):
 
         self.assertEqual(2, surface.call_count)
         constructor.assert_called_once_with(
-            start_xy=[1320, 540],
-            end_x=1104,
+            # The second, post-launch landscape probe owns control geometry.
+            # Defaults are anchor=(0.72, 0.5), horizontal=10%, vertical=20%.
+            start_xy=[1728, 540],
+            end_x=1488,
             vertical_amplitude_px=216,
             move_count=12,
-            step_seconds=0.35,
+            step_seconds=0.12,
             settle_seconds=1.5,
             reset_seconds=0.10,
         )
@@ -480,7 +482,7 @@ class GamePhonePreparationTests(unittest.TestCase):
         ), patch.object(
             capture, "ScrcpyTouchController"
         ) as scrcpy_control, patch(
-            "aria_trace.adapters.filesystem.video.find_ffmpeg"
+            "rig_runtime.adapters.filesystem.video.find_ffmpeg"
         ) as find_ffmpeg:
             pending = Path(directory) / "session.pending"
             manifest, control, hik = capture._record_adb_screenshot_zigzag(

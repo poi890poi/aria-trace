@@ -384,7 +384,7 @@ class AcquisitionTests(unittest.TestCase):
     def test_tool_discovery_has_no_machine_specific_fallback(self):
         with mock.patch("aria_trace.apps.record.shutil.which", return_value=None):
             self.assertIsNone(default_adb())
-        with mock.patch("aria_trace.adapters.filesystem.video.shutil.which", return_value=None):
+        with mock.patch("rig_runtime.adapters.filesystem.video.shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "Install it, pass --ffmpeg"):
                 find_ffmpeg()
 
@@ -402,7 +402,7 @@ class AcquisitionTests(unittest.TestCase):
             "external_ffmpeg_required": False,
         }
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
-            "aria_trace.adapters.filesystem.video.find_ffmpeg"
+            "rig_runtime.adapters.filesystem.video.find_ffmpeg"
         ) as find:
             writer = SessionWriter(Path(temporary) / "session", [source], [])
             now = time.perf_counter_ns()

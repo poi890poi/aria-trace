@@ -11,13 +11,13 @@ import cv2
 import numpy as np
 
 from aria_trace.services.tracking import FusionConfig, Pose2D, PoseFusionGate
-from aria_trace.services.vision import KltAngularYawEstimator, camera_matrix
+from rig_runtime.services.vision import KltAngularYawEstimator, camera_matrix
 
-from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
-from aria_trace.services.calibration.cursor.worker import CursorPoseProcessExecutor
-from aria_trace.services.calibration.minimap.transition import TransitionController
-from aria_trace.services.calibration.minimap.verification import estimate_masked_shift
-from aria_trace.services.calibration.minimap.spatial import (
+from rig_runtime.services.calibration.cursor.pose import CursorPoseEstimator
+from rig_runtime.services.calibration.cursor.worker import CursorPoseProcessExecutor
+from rig_runtime.services.calibration.minimap.transition import TransitionController
+from rig_runtime.services.calibration.minimap.verification import estimate_masked_shift
+from rig_runtime.services.calibration.minimap.spatial import (
     minimap_crop_space,
     normalize_minimap_geometry,
 )

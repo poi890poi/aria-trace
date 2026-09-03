@@ -9,8 +9,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from aria_trace.domain.packets import FramePacket, InputPacket
-from aria_trace.adapters.sources import FrameSource, InputSource
+from rig_runtime.domain.packets import FramePacket, InputPacket
+from rig_runtime.adapters.sources import FrameSource, InputSource
 
 
 _MOUSE_KEYS = {

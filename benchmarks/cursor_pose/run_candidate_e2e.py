@@ -21,11 +21,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from aria_trace.services.calibration.cursor.pose import (
+from rig_runtime.services.calibration.cursor.pose import (
     CursorPoseEstimator,
     circular_difference_degrees,
 )
-from aria_trace.services.calibration.cursor.shape import render_polygon
+from rig_runtime.services.calibration.cursor.shape import render_polygon
 from benchmarks.cursor_pose.run_e2e import (
     DEFAULT_DEVELOPMENT_SESSIONS,
     DEFAULT_SESSIONS,

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 from urllib.parse import urlencode
 
-from aria_trace.adapters.rig.devices import CameraConfiguration
+from rig_runtime.adapters.rig.devices import CameraConfiguration
 
 from .driver import VirtualHikCameraAdapter
 

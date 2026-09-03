@@ -1,1 +1,1 @@
-"""Application-independent orchestration of IRIS services and ports."""
+"""Integrated gameplay tracing and tracking workflows."""

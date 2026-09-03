@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from aria_trace.domain.spatial import (
+from rig_runtime.domain.spatial import (
     bind_geometry,
     normalize_legacy_geometry,
     raster_space,
@@ -10,7 +10,7 @@ from aria_trace.domain.spatial import (
     require_spatial_geometry,
     transform_circle_similarity,
 )
-from aria_trace.services.calibration.minimap.spatial import (
+from rig_runtime.services.calibration.minimap.spatial import (
     minimap_crop_space,
     normalize_minimap_geometry,
 )

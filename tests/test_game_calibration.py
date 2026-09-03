@@ -7,21 +7,21 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from aria_trace.adapters.filesystem.profile_registry import (
+from rig_runtime.adapters.filesystem.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
 )
-from aria_trace.services.calibration.minimap.discovery import (
+from rig_runtime.services.calibration.minimap.discovery import (
     discover_android_minimap_crop,
 )
-from aria_trace.workflows.game_calibration import (
+from rig_runtime.workflows.game_calibration import (
     _available_cursor_acquisition_series,
     _touch_intervals,
     calibrate_game_session,
     format_game_calibration_report,
 )
-from aria_trace.workflows.game_orientation_calibration import (
+from rig_runtime.workflows.game_orientation_calibration import (
     calibrate_portable_game_orientation_session,
 )
 
@@ -117,16 +117,16 @@ class GameCalibrationTests(unittest.TestCase):
                 "profiles": {"phone_game": "cursor-phone-revision"},
             }
             with mock.patch(
-                "aria_trace.workflows.game_calibration.SessionReader",
+                "rig_runtime.workflows.game_calibration.SessionReader",
                 return_value=Reader(),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.load_system_configuration",
+                "rig_runtime.workflows.game_calibration.load_system_configuration",
                 return_value={
                     "game": {"game_id": "game"},
                     "devices": {"phone_id": None, "camera_id": None},
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.resolve_game_model",
+                "rig_runtime.workflows.game_calibration.resolve_game_model",
                 return_value={
                     "cursor_follows": "camera",
                     "cursor_behavior_by_acquisition": {
@@ -135,16 +135,16 @@ class GameCalibrationTests(unittest.TestCase):
                     },
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_portable_game_orientation_session",
+                "rig_runtime.workflows.game_calibration.calibrate_portable_game_orientation_session",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
+                "rig_runtime.workflows.game_calibration._calibrate_available_minimap_boundary",
                 return_value={
                     "status": "review_required",
                     "profiles": {"phone_game": "boundary-phone-revision"},
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration._calibrate_available_cursor_series",
+                "rig_runtime.workflows.game_calibration._calibrate_available_cursor_series",
                 return_value=cursor_value,
             ) as cursor_calibration:
                 result = calibrate_game_session(
@@ -188,16 +188,16 @@ class GameCalibrationTests(unittest.TestCase):
                 "profile_revision": "rig-game-color-revision",
             }
             with mock.patch(
-                "aria_trace.workflows.game_calibration.SessionReader",
+                "rig_runtime.workflows.game_calibration.SessionReader",
                 return_value=Reader(),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.load_system_configuration",
+                "rig_runtime.workflows.game_calibration.load_system_configuration",
                 return_value={
                     "game": {"game_id": "game"},
                     "devices": {"phone_id": None, "camera_id": None},
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.resolve_game_model",
+                "rig_runtime.workflows.game_calibration.resolve_game_model",
                 return_value={
                     "cursor_follows": "character",
                     "cursor_behavior_by_acquisition": {
@@ -206,13 +206,13 @@ class GameCalibrationTests(unittest.TestCase):
                     },
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_portable_game_orientation_session",
+                "rig_runtime.workflows.game_calibration.calibrate_portable_game_orientation_session",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
+                "rig_runtime.workflows.game_calibration._calibrate_available_minimap_boundary",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_game_color_session",
+                "rig_runtime.workflows.game_calibration.calibrate_game_color_session",
                 return_value=color_result,
             ) as color_calibration:
                 result = calibrate_game_session(
@@ -257,16 +257,16 @@ class GameCalibrationTests(unittest.TestCase):
             session.mkdir()
             output = root / "output"
             with mock.patch(
-                "aria_trace.workflows.game_calibration.SessionReader",
+                "rig_runtime.workflows.game_calibration.SessionReader",
                 return_value=Reader(),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.load_system_configuration",
+                "rig_runtime.workflows.game_calibration.load_system_configuration",
                 return_value={
                     "game": {"game_id": "game"},
                     "devices": {"phone_id": None, "camera_id": None},
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.resolve_game_model",
+                "rig_runtime.workflows.game_calibration.resolve_game_model",
                 return_value={
                     "cursor_follows": "character",
                     "cursor_behavior_by_acquisition": {
@@ -275,13 +275,13 @@ class GameCalibrationTests(unittest.TestCase):
                     },
                 },
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_portable_game_orientation_session",
+                "rig_runtime.workflows.game_calibration.calibrate_portable_game_orientation_session",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration._calibrate_available_minimap_boundary",
+                "rig_runtime.workflows.game_calibration._calibrate_available_minimap_boundary",
                 side_effect=ValueError("not relevant"),
             ), mock.patch(
-                "aria_trace.workflows.game_calibration.calibrate_game_color_session"
+                "rig_runtime.workflows.game_calibration.calibrate_game_color_session"
             ) as color_calibration:
                 result = calibrate_game_session(
                     session,
@@ -330,10 +330,10 @@ class GameCalibrationTests(unittest.TestCase):
             session.mkdir()
             output = root / "orientation"
             with mock.patch(
-                "aria_trace.workflows.game_orientation_calibration.SessionReader",
+                "rig_runtime.workflows.game_orientation_calibration.SessionReader",
                 return_value=Reader(),
             ), mock.patch(
-                "aria_trace.workflows.game_orientation_calibration.decode_session_records",
+                "rig_runtime.workflows.game_orientation_calibration.decode_session_records",
                 return_value=np.zeros((1, 100, 200, 3), np.uint8),
             ):
                 result = calibrate_portable_game_orientation_session(

@@ -1,1 +1,1 @@
-"""Application composition layers for IRIS entry points."""
+"""Interactive applications for recording, review, and gameplay tracing."""

@@ -4,12 +4,12 @@ import re
 import unittest
 from unittest import mock
 
-from aria_trace.apps.rig_presentation import (
+from rig_runtime.apps.rig_presentation import (
     console_print,
     message_role,
     styled_console_text,
 )
-from aria_trace.workflows.hik_rig_calibration import (
+from rig_runtime.workflows.hik_rig_calibration import (
     HikCalibrationOptions,
     HikRigCalibrationSession,
     PANEL_TEXT_REFRESH_SECONDS,

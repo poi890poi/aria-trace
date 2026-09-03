@@ -95,7 +95,7 @@ class ScrcpyControlTests(unittest.TestCase):
         )
         packets = []
         with mock.patch(
-            "aria_trace.adapters.android.zigzag.subprocess.check_call"
+            "rig_runtime.adapters.android.zigzag.subprocess.check_call"
         ) as command:
             source.start(packets.append)
             self.assertTrue(source.wait_completed(2.0))

@@ -85,6 +85,11 @@ meaning:
 | `character` (default) | static cursor | rotating cursor |
 | `camera` | rotating cursor | static cursor |
 
+Rotation-center fitting uses the color-agnostic temporal symmetry of those
+balanced samples. It does not require a predefined cursor HSV range or a cursor
+shape fit; an unavailable shape is reported separately while the center remains
+usable.
+
 Configure the model before calibration when the default is wrong:
 
 ```powershell
@@ -176,7 +181,7 @@ not currently implemented.
 
 The Windows release ships the adapter as Python source rather than as a pip
 package. A third-party project can live anywhere, but its Python process must be
-able to import both `hikcam.py` and the bundled `aria_trace` package from the
+able to import both `hikcam.py` and the bundled `rig_runtime` package from the
 release's `python/` directory.
 
 The recommended arrangement is to keep IRIS in one stable location and launch
@@ -226,7 +231,7 @@ MVS remains user-managed and must be available to the same interpreter.
 
 When importing directly from an IRIS source checkout, use the checkout root in
 `PYTHONPATH` instead of the release's `python/` directory. The checkout root
-contains both `hikcam.py` and `aria_trace/`.
+contains both `hikcam.py` and `rig_runtime/`.
 
 The public adapter keeps the HIK-shaped import and common acquisition methods:
 

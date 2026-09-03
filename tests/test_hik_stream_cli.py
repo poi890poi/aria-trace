@@ -4,9 +4,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from aria_trace.adapters.rig.devices import CameraDevice
+from rig_runtime.adapters.rig.devices import CameraDevice
 
-from aria_trace.apps import hik_stream as stream
+from rig_runtime.apps import hik_stream as stream
 
 
 class HikStreamCliTests(unittest.TestCase):

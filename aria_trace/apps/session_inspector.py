@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from aria_trace.adapters.filesystem.session import SessionReader
+from rig_runtime.adapters.filesystem.session import SessionReader
 
 
 def main() -> None:

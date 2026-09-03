@@ -7,13 +7,13 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from aria_trace.domain.packets import FramePacket
-from aria_trace.domain.spatial import bind_geometry, raster_space
-from aria_trace.services.calibration.game_repeatability import (
+from rig_runtime.domain.packets import FramePacket
+from rig_runtime.domain.spatial import bind_geometry, raster_space
+from rig_runtime.services.calibration.game_repeatability import (
     compare_thresholded_app_geometry,
     evaluate_minimap_static_geometry,
 )
-from aria_trace.workflows import game_repeatability as workflow
+from rig_runtime.workflows import game_repeatability as workflow
 
 
 class GameRepeatabilityGeometryTests(unittest.TestCase):

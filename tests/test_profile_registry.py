@@ -4,12 +4,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import aria_trace.adapters.filesystem.profile_registry as profile_registry_module
+import rig_runtime.adapters.filesystem.profile_registry as profile_registry_module
 
 from acquisition.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
+    ProfileResolutionError,
     default_profile_root,
 )
 
@@ -144,6 +145,61 @@ class ProfileRegistryTests(unittest.TestCase):
             resolved["resolution"]["rank"]["policy"],
         )
 
+    def test_profile_ranking_is_lexicographic_not_majority_vote(self):
+        physical = context(refresh=120.0)
+        physical = ProfileContext(
+            game_id=physical.game_id,
+            camera_id=physical.camera_id,
+            platform="other-platform",
+            package="other.package",
+            game_version="old",
+            panel_display=physical.panel_display,
+            game_display={
+                **physical.game_display,
+                "rotation_quarter_turns": 3,
+                "ui_layout_id": "other-ui",
+            },
+        )
+        expected = self.publish_rig(physical)
+        software = context(refresh=60.0)
+        software = ProfileContext(
+            game_id=software.game_id,
+            camera_id=software.camera_id,
+            platform="android",
+            package="game.package",
+            game_version="new",
+            panel_display=software.panel_display,
+            game_display=software.game_display,
+        )
+        self.publish_rig(software)
+        requested = ProfileContext(
+            camera_id="CAM-1",
+            platform="android",
+            package="game.package",
+            game_version="new",
+            panel_display={
+                "natural_panel_px": [1080, 2400],
+                "density_dpi": 480,
+                "refresh_hz": 120.0,
+            },
+        )
+
+        resolved = self.registry.resolve("rig", requested)
+        rank = resolved["resolution"]["rank"]
+        self.assertEqual(expected["revision_id"], resolved["revision_id"])
+        self.assertEqual(
+            [
+                "camera_id",
+                "camera_adapter",
+                "panel.natural_panel_px",
+                "panel.density_dpi",
+                "panel.refresh_millihz",
+                "platform",
+            ],
+            [item["field"] for item in rank["ordered_fields"][:6]],
+        )
+        self.assertGreater(rank["mismatch_count"], 0)
+
     def test_candidate_listing_never_crosses_requested_camera_or_game(self):
         expected = self.publish_rig(context())
         self.publish_rig(
@@ -231,6 +287,155 @@ class ProfileRegistryTests(unittest.TestCase):
         compatibility = selected["resolution"]["compatibility"]
         self.assertEqual("incompatible_override", compatibility["status"])
         self.assertGreaterEqual(len(compatibility["warnings"]), 2)
+
+    def test_manual_revision_selection_rejects_kind_and_dependency_mixing(self):
+        rig = self.publish_rig()
+        replacement = self.registry.publish(
+            "rig",
+            context(),
+            {"kind": "rig", "generation": 2},
+            runtime_files={"hik_camera_calibration": self.calibration},
+            review_state="accepted",
+            activate=True,
+        )
+        phone_game = self.registry.publish(
+            "phone_game",
+            context(),
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            review_state="accepted",
+            activate=True,
+        )
+        rig_game = self.registry.publish(
+            "rig_game",
+            context(),
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            dependencies={
+                "rig": rig["revision_id"],
+                "phone_game": phone_game["revision_id"],
+            },
+            review_state="accepted",
+            activate=True,
+        )
+
+        with self.assertRaisesRegex(ProfileResolutionError, "expected rig"):
+            self.registry.resolve_adapter(
+                context(),
+                AdapterRequest(mode="full"),
+                profile_revisions={"rig": phone_game["revision_id"]},
+            )
+        with self.assertRaisesRegex(ProfileResolutionError, "conflicts"):
+            self.registry.resolve_adapter(
+                context(),
+                AdapterRequest(mode="dual", color_policy="rig_locked"),
+                profile_revisions={
+                    "rig_game": rig_game["revision_id"],
+                    "rig": replacement["revision_id"],
+                },
+            )
+
+    def test_inactive_manual_revision_is_selectable_without_becoming_active(self):
+        active = self.publish_rig()
+        inactive = self.registry.publish(
+            "rig",
+            context(),
+            {"kind": "rig", "generation": "candidate"},
+            runtime_files={"hik_camera_calibration": self.calibration},
+            review_state="accepted",
+            activate=False,
+        )
+
+        resolved = self.registry.resolve_adapter(
+            context(),
+            AdapterRequest(mode="full", color_policy="rig_locked"),
+            profile_revisions={"rig": inactive["revision_id"]},
+        )
+        self.assertEqual(inactive["revision_id"], resolved["profiles"]["rig"])
+        self.assertEqual(active["revision_id"], self.registry.resolve(
+            "rig", context()
+        )["revision_id"])
+
+    def test_manual_bundle_can_select_coherent_inactive_optional_layers(self):
+        old_rig = self.publish_rig()
+        old_orientation = self.registry.publish(
+            "rig_game_orientation",
+            context(),
+            {
+                "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 3
+            },
+            dependencies={"rig": old_rig["revision_id"]},
+            review_state="accepted",
+            activate=True,
+        )
+        old_color = self.registry.publish(
+            "rig_game_color",
+            context(),
+            {
+                "hik_bayer_conversion": {
+                    "status": "selected",
+                    "gamma": 0.8,
+                    "ccm_rgb_3x3": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                }
+            },
+            dependencies={"rig": old_rig["revision_id"]},
+            review_state="accepted",
+            activate=True,
+        )
+        new_rig = self.registry.publish(
+            "rig",
+            context(),
+            {"kind": "rig", "generation": 2},
+            runtime_files={"hik_camera_calibration": self.calibration},
+            review_state="accepted",
+            activate=True,
+        )
+        for kind, payload in (
+            (
+                "rig_game_orientation",
+                {
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 1
+                },
+            ),
+            (
+                "rig_game_color",
+                {
+                    "hik_bayer_conversion": {
+                        "status": "selected",
+                        "gamma": 1.1,
+                        "ccm_rgb_3x3": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                    }
+                },
+            ),
+        ):
+            self.registry.publish(
+                kind,
+                context(),
+                payload,
+                dependencies={"rig": new_rig["revision_id"]},
+                review_state="accepted",
+                activate=True,
+            )
+
+        resolved = self.registry.resolve_adapter(
+            context(),
+            AdapterRequest(mode="full", color_policy="game_matched"),
+            profile_revisions={
+                "rig": old_rig["revision_id"],
+                "rig_game_orientation": old_orientation["revision_id"],
+                "rig_game_color": old_color["revision_id"],
+            },
+        )
+        self.assertEqual(old_rig["revision_id"], resolved["profiles"]["rig"])
+        self.assertEqual(
+            old_orientation["revision_id"],
+            resolved["profiles"]["rig_game_orientation"],
+        )
+        self.assertEqual(
+            old_color["revision_id"], resolved["profiles"]["rig_game_color"]
+        )
+        self.assertEqual(
+            3, resolved["adapter_plan"]["game_upright_quarter_turns_clockwise"]
+        )
+        self.assertEqual("game_matched", resolved["adapter_plan"]["color_policy"])
 
     def test_adapter_mode_controls_dependencies_not_profile_identity(self):
         rig = self.publish_rig()

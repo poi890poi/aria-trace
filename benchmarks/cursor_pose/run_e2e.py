@@ -30,9 +30,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from aria_trace.adapters.filesystem.session import SessionReader
-from aria_trace.services.calibration.cursor.pose import CursorPoseEstimator
-from aria_trace.services.calibration.minimap.verification import estimate_masked_shift
+from rig_runtime.adapters.filesystem.session import SessionReader
+from rig_runtime.services.calibration.cursor.pose import CursorPoseEstimator
+from rig_runtime.services.calibration.minimap.verification import estimate_masked_shift
 from aria_trace.services.tracking.profiles import resolve_tracking_profile
 from benchmarks.cursor_pose.stateful import (
     FALLBACK_FACTORIES,

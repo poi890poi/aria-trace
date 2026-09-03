@@ -1,6 +1,6 @@
 import unittest
 
-from aria_trace.domain import (
+from rig_runtime.domain import (
     CheckStatus,
     ComponentError,
     DataEnvelope,
@@ -19,7 +19,7 @@ from aria_trace.domain import (
     TimePoint,
     TimingInfo,
 )
-from aria_trace.ports import CancellationToken, ComponentContext
+from rig_runtime.ports import CancellationToken, ComponentContext
 
 
 class _Cancelled(CancellationToken):

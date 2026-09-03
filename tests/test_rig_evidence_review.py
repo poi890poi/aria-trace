@@ -2,9 +2,9 @@ import unittest
 
 import numpy as np
 
-from aria_trace.adapters.rig.devices import CameraAdapter
-from aria_trace.services.calibration.rig.contracts import FrameSample
-from aria_trace.workflows.rig_evidence_review import capture_full_camera_sample
+from rig_runtime.adapters.rig.devices import CameraAdapter
+from rig_runtime.services.calibration.rig.contracts import FrameSample
+from rig_runtime.workflows.rig_evidence_review import capture_full_camera_sample
 
 
 class FakeHikAdapter(CameraAdapter):

@@ -22,16 +22,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from aria_trace.adapters.filesystem.session import SessionReader
-from aria_trace.services.calibration.cursor.pose import (
+from rig_runtime.adapters.filesystem.session import SessionReader
+from rig_runtime.services.calibration.cursor.pose import (
     CursorPoseEstimator,
     circular_difference_degrees,
 )
-from aria_trace.services.calibration.cursor.shape import (
+from rig_runtime.services.calibration.cursor.shape import (
     edge_distance_transform,
     polygon_edge,
 )
-from aria_trace.services.calibration.minimap.verification import (
+from rig_runtime.services.calibration.minimap.verification import (
     estimate_masked_shift,
 )
 

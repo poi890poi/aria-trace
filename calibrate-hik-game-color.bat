@@ -10,7 +10,7 @@ set "PYTHONPATH=%ARIA_COLOR_OPENCV%;%ARIA_COLOR_ROOT%.tools;%ARIA_COLOR_ROOT%"
 set "ARIA_COLOR_PYTHON=C:\Program Files\Python37\python.exe"
 if not exist "%ARIA_COLOR_PYTHON%" set "ARIA_COLOR_PYTHON=python"
 pushd "%ARIA_COLOR_ROOT%"
-"%ARIA_COLOR_PYTHON%" -B -m aria_trace.workflows.hik_game_color_calibration %*
+"%ARIA_COLOR_PYTHON%" -B -m rig_runtime.workflows.hik_game_color_calibration %*
 set "ARIA_COLOR_EXIT=%ERRORLEVEL%"
 popd
 exit /b %ARIA_COLOR_EXIT%

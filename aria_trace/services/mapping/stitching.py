@@ -9,12 +9,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from aria_trace.services.calibration.minimap.spatial import (
+from rig_runtime.services.calibration.minimap.spatial import (
     minimap_crop_space,
     normalize_minimap_geometry,
 )
 
-from aria_trace.adapters.filesystem.session import SessionReader
+from rig_runtime.adapters.filesystem.session import SessionReader
 
 
 MAP_ORIENTATION_MODEL = "fixed_north_up"

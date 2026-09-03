@@ -1,0 +1,884 @@
+"""Saved-rig displacement check using full-sensor ChArUco geometry."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from pathlib import Path
+from typing import Mapping, Optional, Sequence
+
+import cv2
+import numpy as np
+
+from rig_runtime.services.calibration.rig.geometry import (
+    CharucoLayout,
+    charuco_board_metric_to_panel_pixels,
+    detect_charuco_correspondences,
+)
+from rig_runtime.adapters.rig.devices import (
+    CameraAdapter,
+    CameraConfiguration,
+    create_camera_adapter as create_plugin_camera_adapter,
+)
+from rig_runtime.adapters.android.display import (
+    LocalPhoneTargetServer,
+    NativeImmersivePhoneTarget,
+)
+from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from rig_runtime.evidence.media_trace import validate_media_registry
+from rig_runtime.evidence.rig_spatial import (
+    expanded_review_media_record,
+    expanded_rig_camera_review,
+    rig_sample_media_record,
+    validated_rig_sample,
+)
+from rig_runtime.services.calibration.rig.distortion import distort_pixel_points
+from rig_runtime.services.calibration.rig.contracts import FrameSample
+from rig_runtime.adapters.android.phone import AdbPhoneSession, resolve_adb_executable
+from rig_runtime.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry, ProfileResolutionError
+from rig_runtime.adapters.filesystem.system_configuration import (
+    DEFAULT_RIG_REPEATABILITY_POLICY,
+    RIG_REPEATABILITY_POLICIES,
+)
+
+
+_DEFAULT_REPEATABILITY = RIG_REPEATABILITY_POLICIES[
+    DEFAULT_RIG_REPEATABILITY_POLICY
+]
+DEFAULT_MAXIMUM_DISPLACEMENT_PX = float(
+    _DEFAULT_REPEATABILITY["reuse_max_displacement_px"]
+)
+
+
+def resolve_calibration_file(path: Path) -> Path:
+    value = Path(path)
+    if value.is_dir():
+        value = value / "hik_camera_calibration.json"
+    return value.resolve()
+
+
+def discover_active_profile_calibration(
+    profile_root: Optional[Path],
+    *,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+) -> Optional[Path]:
+    """Resolve one exact active rig without inspecting calibration artifacts."""
+
+    registry = ProfileRegistry(profile_root)
+    try:
+        profile = registry.resolve(
+            "rig",
+            ProfileContext(camera_id=camera_id, phone_id=phone_serial),
+        )
+    except ProfileResolutionError as exc:
+        if str(exc).startswith("No active rig profile"):
+            return None
+        raise
+    return registry.runtime_file(profile, "hik_camera_calibration").resolve()
+
+
+def compare_charuco_alignment(
+    observations: Sequence[Mapping[str, object]],
+    screen_to_full_sensor_camera_3x3: Sequence[Sequence[float]],
+    *,
+    maximum_displacement_px: float = DEFAULT_MAXIMUM_DISPLACEMENT_PX,
+) -> Mapping[str, object]:
+    """Compare detected board corners with saved full-sensor coordinates.
+
+    Only ChArUco geometry participates. Pixel intensity, color, background,
+    and environmental lighting are intentionally absent from the gate.
+    """
+
+    matrix = np.asarray(screen_to_full_sensor_camera_3x3, dtype=np.float64)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        raise ValueError("Saved screen-to-camera matrix must be a finite 3x3 matrix")
+    if maximum_displacement_px <= 0:
+        raise ValueError("Maximum ChArUco displacement must be positive")
+    frame_metrics = []
+    all_errors = []
+    for frame_index, observation in enumerate(observations):
+        current = np.asarray(observation["camera_points_xy"], dtype=np.float64)
+        screen = np.asarray(observation["screen_points_xy"], dtype=np.float64)
+        if current.ndim != 2 or current.shape[1:] != (2,) or current.shape != screen.shape:
+            raise ValueError("ChArUco camera/screen points must be matching Nx2 arrays")
+        expected = cv2.perspectiveTransform(
+            screen.reshape((-1, 1, 2)), matrix
+        ).reshape((-1, 2))
+        errors = np.linalg.norm(current - expected, axis=1)
+        all_errors.append(errors)
+        frame_metrics.append(
+            {
+                "frame_index": int(frame_index),
+                "corner_count": int(len(errors)),
+                "median_displacement_px": float(np.median(errors)),
+                "p95_displacement_px": float(np.percentile(errors, 95)),
+                "maximum_displacement_px": float(np.max(errors)),
+            }
+        )
+    if not all_errors:
+        raise ValueError("At least one ChArUco observation is required")
+    errors = np.concatenate(all_errors)
+    # A median across frame-level p95 values rejects persistent displacement
+    # while tolerating one noisy detector frame in the relaxed default policy.
+    alignment_p95 = float(
+        np.median([row["p95_displacement_px"] for row in frame_metrics])
+    )
+    matches = bool(
+        np.isfinite(alignment_p95)
+        and alignment_p95 <= float(maximum_displacement_px)
+    )
+    return {
+        "matches": matches,
+        "reason": "within_alignment_limit" if matches else "charuco_board_displaced",
+        "frame_count": int(len(frame_metrics)),
+        "corner_observation_count": int(len(errors)),
+        "median_displacement_px": float(np.median(errors)),
+        "p95_displacement_px": alignment_p95,
+        "maximum_observed_displacement_px": float(np.max(errors)),
+        "maximum_allowed_displacement_px": float(maximum_displacement_px),
+        "frame_metrics": frame_metrics,
+        "method": "full_sensor_saved_projection_vs_detected_charuco_corners_no_pixel_matching",
+        "lighting_invariant": True,
+    }
+
+
+def format_reuse_precheck_failure(result: Mapping[str, object]) -> str:
+    """Explain why an active rig cannot be reused in operator-facing terms."""
+
+    status = str(result.get("status") or "unknown")
+    if status == "rig_moved":
+        comparison = dict(result.get("comparison") or {})
+        displacement = float(
+            comparison.get("p95_displacement_px", float("nan"))
+        )
+        maximum = float(
+            comparison.get(
+                "maximum_allowed_displacement_px",
+                DEFAULT_MAXIMUM_DISPLACEMENT_PX,
+            )
+        )
+        return (
+            "Rig reuse check detected ChArUco board displacement.\n"
+            "  Corner alignment p95: {:.3f} full-sensor px; allowed <= {:.3f} px [{}]\n"
+            "The camera or phone position may have changed. Lighting and pixel "
+            "brightness are not part of this check."
+        ).format(
+            displacement,
+            maximum,
+            "PASS" if displacement <= maximum else "FAIL",
+        )
+    if status == "no_previous_calibration":
+        return (
+            "Rig reuse was skipped: no active rig profile exists for the selected "
+            "camera and phone."
+        )
+    if status == "identity_mismatch":
+        mismatch = str(result.get("reason") or "device_identity_mismatch")
+        return (
+            "Rig reuse check failed: the selected device identity does not match "
+            "the saved calibration ({})."
+        ).format(mismatch)
+    if status == "incomplete_calibration":
+        return (
+            "Rig reuse check failed: the saved rig profile is incomplete; its "
+            "camera adapter or saved ChArUco geometry is missing."
+        )
+    if status == "unavailable":
+        return "Rig reuse check could not run: {}".format(
+            result.get("reason") or "no diagnostic reason was reported"
+        )
+    if status == "reusable" and not result.get("camera_adapter_is_calibrated"):
+        return (
+            "Rig reuse check passed ChArUco alignment, but the saved camera "
+            "adapter reports incomplete calibration data."
+        )
+    return "Rig reuse check did not pass (status: {}).".format(status)
+
+
+def _saved_layout(config: Mapping[str, object]) -> CharucoLayout:
+    phone = config["phone"]
+    layout = config["geometry"]["charuco_layout"]
+    return CharucoLayout(
+        tuple(map(int, phone["screen_size_px"])),
+        squares_x=int(layout["squares_x"]),
+        squares_y=int(layout["squares_y"]),
+        margin_px=tuple(map(int, layout.get("margin_px") or (0, 0))),
+    )
+
+
+def _write_result(output: Path, result: Mapping[str, object]) -> None:
+    output.mkdir(parents=True, exist_ok=False)
+    (output / "precheck.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+
+
+def _apply_saved_imaging(
+    adapter: HikMvsCameraAdapter, config: Mapping[str, object]
+) -> None:
+    imaging = config["imaging"]
+    if imaging.get("black_level") is not None:
+        adapter.set_black_level(int(imaging["black_level"]))
+    adapter.set_manual_imaging(imaging["exposure_us"], imaging["gain"])
+    white_balance = imaging["white_balance"]
+    adapter.set_white_balance(
+        white_balance["ratio_red"],
+        white_balance["ratio_green"],
+        white_balance["ratio_blue"],
+    )
+
+
+def _alignment_overlay(
+    frame: np.ndarray,
+    observation: Mapping[str, object],
+    screen_to_full_sensor_camera_3x3: Sequence[Sequence[float]],
+) -> np.ndarray:
+    """Draw saved expected and fresh detected corners in full-sensor space."""
+
+    result = frame.copy()
+    current = np.asarray(observation["camera_points_xy"], dtype=np.float64)
+    screen = np.asarray(observation["screen_points_xy"], dtype=np.float64)
+    matrix = np.asarray(screen_to_full_sensor_camera_3x3, dtype=np.float64)
+    expected = cv2.perspectiveTransform(
+        screen.reshape((-1, 1, 2)), matrix
+    ).reshape((-1, 2))
+    for saved_xy, fresh_xy in zip(expected, current):
+        saved = tuple(np.rint(saved_xy).astype(int))
+        fresh = tuple(np.rint(fresh_xy).astype(int))
+        cv2.line(result, saved, fresh, (0, 210, 255), 1, cv2.LINE_AA)
+        cv2.circle(result, saved, 4, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.drawMarker(
+            result,
+            fresh,
+            (255, 0, 255),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=7,
+            thickness=1,
+        )
+    cv2.putText(
+        result,
+        "green=saved  magenta=fresh",
+        (12, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return result
+
+
+def _expanded_precheck_review(
+    sample: FrameSample,
+    config: Mapping[str, object],
+    screen_to_camera: Sequence[Sequence[float]],
+    *,
+    title: str,
+    overlay: Optional[np.ndarray] = None,
+):
+    """Build one saved-geometry review without reassigning sample space."""
+
+    full_mode = config["camera"]["full_sensor_mode"]
+    full_size = [int(full_mode["width_px"]), int(full_mode["height_px"])]
+    phone_size = list(map(int, config["phone"]["screen_size_px"]))
+    phone_corners = np.asarray(
+        [
+            [0, 0],
+            [phone_size[0] - 1, 0],
+            [phone_size[0] - 1, phone_size[1] - 1],
+            [0, phone_size[1] - 1],
+        ],
+        dtype=np.float64,
+    )
+    ideal_phone_quad = cv2.perspectiveTransform(
+        phone_corners.reshape((-1, 1, 2)),
+        np.asarray(screen_to_camera, dtype=np.float64),
+    ).reshape((-1, 2))
+    lens_model = dict(((config.get("optics") or {}).get("lens_model") or {}))
+    raw_phone_quad = (
+        distort_pixel_points(ideal_phone_quad, lens_model)
+        if lens_model.get("source") == "measured"
+        else ideal_phone_quad
+    )
+    return expanded_rig_camera_review(
+        sample,
+        full_sensor_size_px=full_size,
+        phone_display_size_px=phone_size,
+        phone_display_to_full_sensor_3x3=(
+            screen_to_camera if lens_model.get("source") != "measured" else None
+        ),
+        phone_display_quadrilateral_full_sensor_xy=raw_phone_quad,
+        title=title,
+        overlay=overlay,
+    )
+
+
+def _wait_owned_target_fullscreen(
+    phone: AdbPhoneSession,
+    target: LocalPhoneTargetServer,
+    expected_size_px: Sequence[int],
+    timeout_seconds: float = 8.0,
+) -> Mapping[str, object]:
+    """Retry the trusted fullscreen tap until owned-target telemetry agrees."""
+
+    expected = list(map(int, expected_size_px))
+    deadline = time.monotonic() + float(timeout_seconds)
+    last_browser: Mapping[str, object] = {}
+    while time.monotonic() < deadline:
+        last_browser = dict((target.telemetry().get("browser") or {}))
+        canvas = [
+            int(last_browser.get("canvas_width", 0) or 0),
+            int(last_browser.get("canvas_height", 0) or 0),
+        ]
+        if bool(last_browser.get("fullscreen")) and canvas == expected:
+            return last_browser
+        if isinstance(target, NativeImmersivePhoneTarget):
+            time.sleep(0.05)
+            continue
+        # Keep this trusted-input coordinate calculation identical to fresh
+        # calibration.  The target canvas is reported in physical display
+        # pixels; Chrome's visual viewport is reported in CSS pixels and is
+        # therefore not a valid ADB input coordinate on scaled displays.
+        phone.request_fullscreen(
+            expected,
+            viewport_size_px=canvas if min(canvas) > 0 else None,
+        )
+        time.sleep(0.25)
+    raise RuntimeError(
+        "Owned ChArUco target did not enter fullscreen at {} px: {}"
+        .format(expected, dict(last_browser))
+    )
+
+
+def _wait_native_target_painted(
+    target: NativeImmersivePhoneTarget,
+    revision: int,
+    timeout_seconds: float = 5.0,
+) -> Mapping[str, object]:
+    deadline = time.monotonic() + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        for acknowledgement in reversed(
+            target.telemetry().get("acknowledgements", [])
+        ):
+            if (
+                int(acknowledgement.get("revision", -1)) == int(revision)
+                and bool(acknowledgement.get("painted"))
+                and int(acknowledgement.get("canvas_width", 0) or 0)
+                == int(acknowledgement.get("image_natural_width", -1) or -1)
+                and int(acknowledgement.get("canvas_height", 0) or 0)
+                == int(acknowledgement.get("image_natural_height", -1) or -1)
+            ):
+                return acknowledgement
+        time.sleep(0.04)
+    raise RuntimeError(
+        "Native ChArUco target revision {} was not painted 1:1".format(revision)
+    )
+
+
+def run_reuse_precheck(
+    calibration: Path,
+    output: Path,
+    *,
+    adb: Optional[str] = None,
+    mvs_python_path: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+    maximum_displacement_px: float = DEFAULT_MAXIMUM_DISPLACEMENT_PX,
+    sample_frames: int = 3,
+    adapter: Optional[CameraAdapter] = None,
+) -> Mapping[str, object]:
+    """Present the saved target and prove the camera/phone pose is unchanged."""
+
+    calibration_file = resolve_calibration_file(calibration)
+    config = json.loads(calibration_file.read_text(encoding="utf-8"))
+    saved_camera = str(config["camera"]["device_id"])
+    saved_phone = str(config["phone"]["serial"])
+    result = {
+        "schema_version": "1.0",
+        "status": "unavailable",
+        "reusable": False,
+        "calibration": str(calibration_file),
+        "camera_id": saved_camera,
+        "phone_serial": saved_phone,
+        "camera_adapter_is_calibrated": False,
+        "generated_unix_time": time.time(),
+    }
+    if camera_id and str(camera_id) != saved_camera:
+        result.update(status="identity_mismatch", reason="camera_id_mismatch")
+        _write_result(output, result)
+        return result
+    if phone_serial and str(phone_serial) != saved_phone:
+        result.update(status="identity_mismatch", reason="phone_serial_mismatch")
+        _write_result(output, result)
+        return result
+
+    validator = RectifiedHikCamera(calibration_file, rectify=False)
+    result["camera_adapter_is_calibrated"] = validator.is_calibrated()
+    geometry = config.get("geometry") or {}
+    screen_to_camera = geometry.get("screen_to_full_sensor_camera_3x3")
+    if not validator.is_calibrated() or screen_to_camera is None:
+        result.update(status="incomplete_calibration", reason="adapter_or_geometry_missing")
+        _write_result(output, result)
+        return result
+
+    adapter = adapter or HikMvsCameraAdapter(sdk_python_path=mvs_python_path)
+
+    adb_path = resolve_adb_executable(adb)
+    phone = AdbPhoneSession(saved_phone, adb_executable=adb_path)
+    target = NativeImmersivePhoneTarget(bind_host="127.0.0.1", port=0)
+    orientation = int(config["phone"].get("orientation_quarter_turns", 0))
+    full_mode = config["camera"]["full_sensor_mode"]
+    observations = []
+    evidence_frames = []
+    acquired_samples = []
+    detection_failures = []
+    cleanup_warnings = []
+    timing = {}
+    total_started = time.perf_counter_ns()
+    try:
+        stage_started = time.perf_counter_ns()
+        target.start(_saved_layout(config))
+        expected_panel_size = (
+            config["phone"].get("panel_scale_measurement", {}).get(
+                "effective_panel_size_px"
+            )
+            or config["phone"]["screen_size_px"]
+        )
+        target.activate_phone(
+            phone,
+            config["phone"]["screen_size_px"],
+            orientation,
+        )
+        _wait_owned_target_fullscreen(
+            phone, target, expected_panel_size
+        )
+        exact_target = target.configure_surface_size(expected_panel_size)
+        _wait_native_target_painted(target, exact_target.revision)
+        timing["target_prepare_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
+        adapter.open(
+            CameraConfiguration(
+                device_id=saved_camera,
+                width_px=int(full_mode["width_px"]),
+                height_px=int(full_mode["height_px"]),
+                fps=float(full_mode["fps"]),
+                backend="hik_mvs",
+            )
+        )
+        full_roi = list(adapter.reset_full_sensor_roi())
+        _apply_saved_imaging(adapter, config)
+        timing["camera_open_and_restore_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
+        for _ in range(3):
+            adapter.read()
+        timing["camera_warmup_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
+        saved_layout = _saved_layout(config)
+        panel_scale = config["phone"].get("panel_scale_measurement", {})
+        use_charuco_panel_scale = panel_scale.get("resolved_mode") == "hik_charuco"
+        for frame_index in range(max(1, int(sample_frames))):
+            sample = adapter.read()
+            checked_sample = validated_rig_sample(
+                sample,
+                parent_size_px=[
+                    int(full_mode["width_px"]),
+                    int(full_mode["height_px"]),
+                ],
+                copy_image=True,
+            )
+            acquired_samples.append(checked_sample)
+            try:
+                detected = detect_charuco_correspondences(
+                    checked_sample.image, saved_layout
+                )
+                if use_charuco_panel_scale:
+                    screen_points, metric = charuco_board_metric_to_panel_pixels(
+                        detected["board_points_square_xy"],
+                        saved_layout,
+                        panel_scale["effective_panel_size_px"],
+                    )
+                    detected["screen_points_xy"] = screen_points
+                    detected["precheck_panel_metric"] = metric
+            except RuntimeError as exc:
+                detection_failures.append(
+                    {"frame_index": int(frame_index), "error": str(exc)}
+                )
+                continue
+            observations.append(detected)
+            evidence_frames.append(checked_sample)
+        timing["capture_and_detect_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        if not observations:
+            raise RuntimeError(
+                "ChArUco board was not detected in any full-sensor precheck frame"
+            )
+        stage_started = time.perf_counter_ns()
+        comparison = dict(
+            compare_charuco_alignment(
+                observations,
+                screen_to_camera,
+                maximum_displacement_px=maximum_displacement_px,
+            )
+        )
+        timing["compare_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+        stage_started = time.perf_counter_ns()
+        output.mkdir(parents=True, exist_ok=False)
+        representative_index = int(
+            np.argsort(
+                [row["p95_displacement_px"] for row in comparison["frame_metrics"]]
+            )[len(observations) // 2]
+        )
+        fresh_sample = evidence_frames[representative_index]
+        fresh = fresh_sample.image
+        overlay = _alignment_overlay(
+            fresh, observations[representative_index], screen_to_camera
+        )
+        if not cv2.imwrite(str(output / "fresh_full_sensor_frame.png"), fresh):
+            raise OSError("Could not save full-sensor precheck frame")
+        if not cv2.imwrite(str(output / "charuco_alignment_overlay.png"), overlay):
+            raise OSError("Could not save ChArUco alignment overlay")
+        fresh_review = _expanded_precheck_review(
+            fresh_sample,
+            config,
+            screen_to_camera,
+            title="Rig reuse full-sensor acquisition",
+        )
+        alignment_review = _expanded_precheck_review(
+            fresh_sample,
+            config,
+            screen_to_camera,
+            title="Rig reuse ChArUco alignment: green=saved magenta=fresh",
+            overlay=overlay,
+        )
+        review_files = {
+            "fresh_full_sensor_expanded_review.png": fresh_review,
+            "charuco_alignment_expanded_review.png": alignment_review,
+        }
+        for name, review in review_files.items():
+            if not cv2.imwrite(str(output / name), review.image):
+                raise OSError("Could not save {}".format(name))
+        media = [
+            rig_sample_media_record(
+                "fresh_full_sensor_frame.png",
+                fresh_sample,
+                operation="rig_reuse_acquisition_frame_copy",
+                metadata_reference="precheck.json#media",
+                notes="Machine/source raster; use expanded review for human inspection.",
+            ),
+            rig_sample_media_record(
+                "charuco_alignment_overlay.png",
+                type(fresh_sample)(
+                    image=overlay,
+                    time_ns=fresh_sample.time_ns,
+                    clock_id=fresh_sample.clock_id,
+                    receive_time_ns=fresh_sample.receive_time_ns,
+                    source_id=fresh_sample.source_id,
+                    metadata=fresh_sample.metadata,
+                ),
+                operation="draw_saved_and_detected_charuco_alignment",
+                metadata_reference="precheck.json#media",
+                notes="Machine/source-space overlay; use expanded review for human inspection.",
+            ),
+        ]
+        media.extend(
+            expanded_review_media_record(
+                name, review, metadata_reference="precheck.json#media"
+            )
+            for name, review in review_files.items()
+        )
+        validate_media_registry(output, media)
+        result.update(
+            status="reusable" if comparison["matches"] else "rig_moved",
+            reusable=bool(comparison["matches"]),
+            comparison=comparison,
+            detection_failures=detection_failures,
+            image_space=fresh_sample.metadata.get("image_space"),
+            effective_full_sensor_roi_xywh=full_roi,
+            evidence={
+                "fresh_full_sensor_frame": "fresh_full_sensor_frame.png",
+                "charuco_alignment_overlay": "charuco_alignment_overlay.png",
+                "fresh_full_sensor_expanded_review": (
+                    "fresh_full_sensor_expanded_review.png"
+                ),
+                "charuco_alignment_expanded_review": (
+                    "charuco_alignment_expanded_review.png"
+                ),
+            },
+            media=media,
+        )
+        timing["evidence_write_ms"] = (
+            time.perf_counter_ns() - stage_started
+        ) / 1.0e6
+    except Exception as exc:
+        if not output.exists():
+            output.mkdir(parents=True)
+        result.update(
+            status="unavailable",
+            reusable=False,
+            reason="{}: {}".format(type(exc).__name__, exc),
+            detection_failures=detection_failures,
+        )
+        if acquired_samples:
+            try:
+                sample = acquired_samples[-1]
+                raw_name = "fresh_full_sensor_frame.png"
+                review_name = "fresh_full_sensor_expanded_review.png"
+                if not cv2.imwrite(str(output / raw_name), sample.image):
+                    raise OSError("Could not save failed precheck camera frame")
+                review = _expanded_precheck_review(
+                    sample,
+                    config,
+                    screen_to_camera,
+                    title="Rig reuse acquisition before precheck failure",
+                )
+                if not cv2.imwrite(str(output / review_name), review.image):
+                    raise OSError("Could not save failed precheck expanded review")
+                media = [
+                    rig_sample_media_record(
+                        raw_name,
+                        sample,
+                        operation="failed_rig_reuse_acquisition_frame_copy",
+                        metadata_reference="precheck.json#media",
+                        notes=(
+                            "Machine/source raster; use expanded review for human inspection."
+                        ),
+                    ),
+                    expanded_review_media_record(
+                        review_name,
+                        review,
+                        metadata_reference="precheck.json#media",
+                    ),
+                ]
+                validate_media_registry(output, media)
+                result.update(
+                    image_space=sample.metadata.get("image_space"),
+                    evidence={
+                        "fresh_full_sensor_frame": raw_name,
+                        "fresh_full_sensor_expanded_review": review_name,
+                    },
+                    media=media,
+                )
+            except Exception as evidence_exc:
+                result["evidence_error"] = "{}: {}".format(
+                    type(evidence_exc).__name__, evidence_exc
+                )
+    finally:
+        try:
+            adapter.close()
+        except Exception as exc:
+            cleanup_warnings.append(str(exc))
+        try:
+            target.stop()
+        except Exception as exc:
+            cleanup_warnings.append(str(exc))
+        try:
+            phone.cleanup(turn_display_off=True)
+        except Exception as exc:
+            cleanup_warnings.append(str(exc))
+    timing["total_ms"] = (time.perf_counter_ns() - total_started) / 1.0e6
+    result["timing"] = timing
+    if cleanup_warnings:
+        result["cleanup_warnings"] = cleanup_warnings
+    (output / "precheck.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+    return result
+
+
+def run_active_reuse_precheck(
+    output: Path,
+    *,
+    profile_root: Optional[Path] = None,
+    adb: Optional[str] = None,
+    mvs_python_path: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    phone_serial: Optional[str] = None,
+    maximum_displacement_px: float = DEFAULT_MAXIMUM_DISPLACEMENT_PX,
+    sample_frames: int = 3,
+    adapter: Optional[CameraAdapter] = None,
+) -> Mapping[str, object]:
+    """Resolve and check the active rig profile without accepting artifact paths.
+
+    This is the shared product boundary used by both the standalone precheck
+    command and the rig calibration application's reuse option.  An unavailable
+    check is deliberately non-gating: callers can continue with full
+    calibration using the returned status and retained evidence.
+    """
+
+    calibration = discover_active_profile_calibration(
+        profile_root,
+        camera_id=camera_id,
+        phone_serial=phone_serial,
+    )
+    if calibration is None:
+        result = {
+            "schema_version": "1.0",
+            "status": "no_previous_calibration",
+            "reusable": False,
+            "camera_adapter_is_calibrated": False,
+            "calibration_selection": "active_profile_registry",
+        }
+        _write_result(output, result)
+        return result
+    try:
+        result = dict(
+            run_reuse_precheck(
+                calibration,
+                output,
+                adb=adb,
+                mvs_python_path=mvs_python_path,
+                camera_id=camera_id,
+                phone_serial=phone_serial,
+                maximum_displacement_px=maximum_displacement_px,
+                sample_frames=sample_frames,
+                adapter=adapter,
+            )
+        )
+    except Exception as exc:
+        result = {
+            "schema_version": "1.0",
+            "status": "unavailable",
+            "reusable": False,
+            "camera_adapter_is_calibrated": False,
+            "calibration": str(calibration),
+            "reason": "{}: {}".format(type(exc).__name__, exc),
+        }
+        if output.exists():
+            (output / "precheck.json").write_text(
+                json.dumps(result, indent=2), encoding="utf-8"
+            )
+        else:
+            _write_result(output, result)
+    result["calibration_selection"] = "active_profile_registry"
+    (output / "precheck.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+    return result
+
+
+def parser() -> argparse.ArgumentParser:
+    value = argparse.ArgumentParser(
+        description="Reuse a saved HIK rig only when full-sensor ChArUco alignment is unchanged"
+    )
+    value.add_argument(
+        "--diagnostic-calibration-override",
+        type=Path,
+        help="explicit diagnostic override; production reuse uses the registry",
+    )
+    value.add_argument("--profile-root", type=Path)
+    value.add_argument("--output", type=Path, required=True)
+    value.add_argument("--camera-id")
+    value.add_argument("--phone-serial")
+    value.add_argument("--adb")
+    value.add_argument("--mvs-python-path")
+    value.add_argument(
+        "--camera-adapter",
+        help="HIK-compatible module:factory; omission uses physical HIK MVS",
+    )
+    return value
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    arguments = parser().parse_args(argv)
+    from rig_runtime.adapters.filesystem.system_configuration import (
+        load_system_configuration,
+        resolve_rig_repeatability_policy,
+    )
+
+    repeatability = resolve_rig_repeatability_policy(
+        load_system_configuration(arguments.profile_root)
+    )
+    adapter = (
+        create_plugin_camera_adapter(arguments.camera_adapter)
+        if arguments.camera_adapter
+        else None
+    )
+    if arguments.diagnostic_calibration_override:
+        calibration = resolve_calibration_file(
+            arguments.diagnostic_calibration_override
+        )
+        try:
+            result = dict(
+                run_reuse_precheck(
+                    calibration,
+                    arguments.output,
+                    adb=arguments.adb,
+                    mvs_python_path=arguments.mvs_python_path,
+                    camera_id=arguments.camera_id,
+                    phone_serial=arguments.phone_serial,
+                    maximum_displacement_px=repeatability[
+                        "reuse_max_displacement_px"
+                    ],
+                    sample_frames=repeatability["reuse_sample_frames"],
+                    adapter=adapter,
+                )
+            )
+            result["calibration_selection"] = "diagnostic_explicit_path"
+            (arguments.output / "precheck.json").write_text(
+                json.dumps(result, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            _write_result(
+                arguments.output,
+                {
+                    "schema_version": "1.0",
+                    "status": "unavailable",
+                    "reusable": False,
+                    "calibration": str(calibration),
+                    "reason": "{}: {}".format(type(exc).__name__, exc),
+                },
+            )
+            print("Rig precheck unavailable: {}".format(exc))
+            return 0
+    else:
+        result = run_active_reuse_precheck(
+            arguments.output,
+            profile_root=arguments.profile_root,
+            adb=arguments.adb,
+            mvs_python_path=arguments.mvs_python_path,
+            camera_id=arguments.camera_id,
+            phone_serial=arguments.phone_serial,
+            maximum_displacement_px=repeatability["reuse_max_displacement_px"],
+            sample_frames=repeatability["reuse_sample_frames"],
+            adapter=adapter,
+        )
+        if result["status"] == "no_previous_calibration":
+            print(format_reuse_precheck_failure(result))
+            print(
+                "Precheck evidence: {}".format(
+                    (arguments.output / "precheck.json").resolve()
+                )
+            )
+            return 0
+    comparison = result.get("comparison") or {}
+    if result.get("reusable") and result.get("camera_adapter_is_calibrated"):
+        print(
+            "Rig precheck: reusable (ChArUco alignment p95 {:.3f} px; "
+            "allowed {:.3f} px)".format(
+                float(comparison["p95_displacement_px"]),
+                float(comparison["maximum_allowed_displacement_px"]),
+            )
+        )
+    else:
+        print(format_reuse_precheck_failure(result))
+    print(
+        "Precheck evidence: {}".format(
+            (arguments.output / "precheck.json").resolve()
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

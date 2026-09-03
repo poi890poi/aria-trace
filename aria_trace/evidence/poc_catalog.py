@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from aria_trace.adapters.filesystem.annotations import AnnotationStore
-from aria_trace.adapters.filesystem.session import SessionReader, input_capture_health
+from rig_runtime.adapters.filesystem.annotations import AnnotationStore
+from rig_runtime.adapters.filesystem.session import SessionReader, input_capture_health
 
 
 READY_MARKERS = {

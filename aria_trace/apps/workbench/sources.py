@@ -11,19 +11,19 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from aria_trace.adapters.android.capture import (
+from rig_runtime.adapters.android.capture import (
     AndroidRoiFrameSource,
     AndroidRoiSpec,
     ScrcpyCaptureHub,
     find_scrcpy_server,
 )
-from aria_trace.adapters.android.phone import probe_android_capture_surface
-from aria_trace.adapters.hik.capture import CalibratedHikFrameSource, NativeHikFrameSource
-from aria_trace.adapters.rig.dual_capture import (
+from rig_runtime.adapters.android.phone import probe_android_capture_surface
+from rig_runtime.adapters.hik.capture import CalibratedHikFrameSource, NativeHikFrameSource
+from rig_runtime.adapters.rig.dual_capture import (
     build_calibrated_rig_recording_bundle,
     single_source_recording_bundle,
 )
-from aria_trace.adapters.sources import (
+from rig_runtime.adapters.sources import (
     AdbClockMapper,
     AdbGetEventSource,
     AdbScreenshotFrameSource,
@@ -162,7 +162,7 @@ class SourceFactory:
     def hik_devices(self) -> List[dict]:
         """Enumerate HIK devices without opening or changing camera state."""
         if self.hik_adapter_factory is None:
-            from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
+            from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter
 
             adapter = HikMvsCameraAdapter()
         else:

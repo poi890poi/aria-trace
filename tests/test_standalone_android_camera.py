@@ -12,7 +12,7 @@ class AndroidCameraTests(unittest.TestCase):
     def test_camera_server_command_selects_camera_source(self):
         clock = Mock()
         with patch(
-            "aria_trace.adapters.android.capture.find_ffmpeg",
+            "rig_runtime.adapters.android.capture.find_ffmpeg",
             return_value=Path("ffmpeg.exe"),
         ):
             hub = driver.ScrcpyCameraHub(

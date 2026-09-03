@@ -1,1 +1,1 @@
-"""Platform-independent IRIS algorithms and state services."""
+"""Gameplay localization, mapping, and tracking services."""

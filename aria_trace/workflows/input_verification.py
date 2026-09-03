@@ -11,9 +11,9 @@ from pathlib import Path
 
 import numpy as np
 
-from aria_trace.domain.packets import FramePacket
-from aria_trace.workflows.recording import AcquisitionRecorder
-from aria_trace.adapters.filesystem.session import SessionReader
+from rig_runtime.domain.packets import FramePacket
+from rig_runtime.workflows.recording import AcquisitionRecorder
+from rig_runtime.adapters.filesystem.session import SessionReader
 from aria_trace.adapters.windows import WindowsRawKeyboardMouseSource
 
 

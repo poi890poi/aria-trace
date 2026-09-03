@@ -22,7 +22,7 @@ from aria_trace.apps.workbench.jobs import AnalysisJobManager
 from aria_trace.apps.workbench.catalog import (
     SessionCatalog,
 )
-from aria_trace.adapters.filesystem.profiles import ProfileCatalog
+from rig_runtime.adapters.filesystem.profiles import ProfileCatalog
 
 
 

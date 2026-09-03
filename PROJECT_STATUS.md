@@ -59,9 +59,9 @@ The supplied Genshin orientation columns were rejected as ground truth: their qu
 
 ### Independent camera-to-phone rig calibration package
 
-`aria_trace/services/calibration/rig/` implements the independent core specified by `RIG_CALIBRATION.md` and exports producer-independent spatial fragments compatible with `SPATIAL_UNIFICATION.md`. Its package-owned `FrameSample`, `ControlEvent`, and `SignalObservation` contracts prevent camera, ADB, Workbench, game-profile, map, route, and dataset implementations from leaking into calibration algorithms. Hardware is owned by `aria_trace/adapters/`; orchestration is owned by `aria_trace/workflows/`.
+`rig_runtime/services/calibration/rig/` implements the independent core specified by `RIG_CALIBRATION.md` and exports producer-independent spatial fragments compatible with `SPATIAL_UNIFICATION.md`. Its package-owned `FrameSample`, `ControlEvent`, and `SignalObservation` contracts prevent camera, ADB, Workbench, game-profile, map, route, and dataset implementations from leaking into calibration algorithms. Neutral hardware integration is owned by `rig_runtime/adapters/`; IRIS orchestration is owned by `rig_runtime/workflows/`. Integrated mapping, localization, and tracking remain under `aria_trace/`.
 
-`aria_trace/apps/rig_calibrator/` provides the standalone PySide6 Windows operator
+`rig_runtime/apps/rig_calibrator/` provides the standalone PySide6 Windows operator
 workflow without changing that core boundary. USB camera, phone target service,
 and ADB reference capture are explicit actions, not startup side effects.
 Developers can replace each through a public adapter or `module:function`

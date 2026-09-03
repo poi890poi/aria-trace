@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from aria_trace.workflows.minimap_profile_calibration import main
+from rig_runtime.workflows.minimap_profile_calibration import main
 
 
 class MinimapProfileCalibrationTests(unittest.TestCase):
@@ -16,9 +16,9 @@ class MinimapProfileCalibrationTests(unittest.TestCase):
                 "rig_game": None,
             }
             with patch(
-                "aria_trace.workflows.minimap_profile_calibration.calibrate_session"
+                "rig_runtime.workflows.minimap_profile_calibration.calibrate_session"
             ) as calibrate, patch(
-                "aria_trace.workflows.minimap_profile_calibration.publish_minimap_profiles",
+                "rig_runtime.workflows.minimap_profile_calibration.publish_minimap_profiles",
                 return_value=published,
             ) as publish:
                 self.assertEqual(

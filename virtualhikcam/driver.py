@@ -23,12 +23,12 @@ import cv2
 import numpy as np
 
 from androidcam.driver import AndroidCamera
-from aria_trace.adapters.rig.devices import (
+from rig_runtime.adapters.rig.devices import (
     CameraAdapter,
     CameraConfiguration,
     CameraDevice,
 )
-from aria_trace.services.calibration.rig.contracts import FrameSample
+from rig_runtime.services.calibration.rig.contracts import FrameSample
 
 
 STATE_SCHEMA_VERSION = 2

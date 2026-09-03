@@ -1,1 +1,1 @@
-"""Compatibility adapters at the edge of the universal component contracts."""
+"""Platform adapters used only by integrated gameplay tracing."""

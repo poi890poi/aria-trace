@@ -10,7 +10,7 @@ set "PYTHONPATH=%ARIA_GAME_CHECK_OPENCV%;%ARIA_GAME_CHECK_ROOT%.tools;%ARIA_GAME
 set "ARIA_GAME_CHECK_PYTHON=C:\Program Files\Python37\python.exe"
 if not exist "%ARIA_GAME_CHECK_PYTHON%" set "ARIA_GAME_CHECK_PYTHON=python"
 pushd "%ARIA_GAME_CHECK_ROOT%"
-"%ARIA_GAME_CHECK_PYTHON%" -B -m aria_trace.workflows.game_repeatability %*
+"%ARIA_GAME_CHECK_PYTHON%" -B -m rig_runtime.workflows.game_repeatability %*
 set "ARIA_GAME_CHECK_EXIT=%ERRORLEVEL%"
 popd
 exit /b %ARIA_GAME_CHECK_EXIT%

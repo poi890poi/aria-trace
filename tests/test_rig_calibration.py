@@ -43,8 +43,8 @@ from acquisition.rig_calibration import (
     write_calibration_bundle,
 )
 from acquisition.rig_calibration.geometry import transform_points
-from aria_trace.adapters.android.display import Presentation
-from aria_trace.services.calibration.rig.presentation import (
+from rig_runtime.adapters.android.display import Presentation
+from rig_runtime.services.calibration.rig.presentation import (
     matching_paint_acknowledgement,
     presentation_freshness_boundary_ns,
     sample_host_time_ns,
@@ -352,7 +352,7 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
                 return LegacyBarcode()
 
         with mock.patch(
-            "aria_trace.services.calibration.rig.data_matrix_readability._zxing_module",
+            "rig_runtime.services.calibration.rig.data_matrix_readability._zxing_module",
             return_value=LegacyZxing,
         ):
             modules = encode_data_matrix_modules("A7K2")
@@ -380,7 +380,7 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
                 return [Result()]
 
         with mock.patch(
-            "aria_trace.services.calibration.rig.data_matrix_readability._zxing_module",
+            "rig_runtime.services.calibration.rig.data_matrix_readability._zxing_module",
             return_value=LegacyZxing,
         ):
             decoded = decode_data_matrix_payloads(np.zeros((12, 12), np.uint8))
@@ -413,7 +413,7 @@ class RigDataMatrixDecodeTests(unittest.TestCase):
         gradient = np.tile(np.arange(32, dtype=np.uint8), (32, 1)) * 8
         image = cv2.cvtColor(gradient, cv2.COLOR_GRAY2BGR)
         with mock.patch(
-            "aria_trace.services.calibration.rig.data_matrix_readability._zxing_module",
+            "rig_runtime.services.calibration.rig.data_matrix_readability._zxing_module",
             return_value=Zxing,
         ):
             decoded = decode_data_matrix_payloads(image)

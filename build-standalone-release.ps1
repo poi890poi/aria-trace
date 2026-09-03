@@ -248,33 +248,15 @@ Copy-Item -LiteralPath $PhoneTargetApk -Destination (Join-Path $PhoneTargetRelea
 
 $PythonSource = Join-Path $ReleaseRoot "python"
 New-Item -ItemType Directory -Force -Path $PythonSource | Out-Null
-$IrisExcludedSourcePaths = @(
-    "aria_trace\adapters\windows.py",
-    "aria_trace\apps\workbench",
-    "aria_trace\apps\record.py",
-    "aria_trace\apps\review.py",
-    "aria_trace\apps\session_inspector.py",
-    "aria_trace\evidence\poc_catalog.py",
-    "aria_trace\evidence\tracking.py",
-    "aria_trace\services\localization",
-    "aria_trace\services\mapping",
-    "aria_trace\services\tracking",
-    "aria_trace\workflows\input_verification.py",
-    "aria_trace\workflows\portal_initialization.py",
-    "aria_trace\workflows\route.py",
-    "aria_trace\workflows\teleport.py"
-)
-Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "aria_trace") -Recurse -File -Filter "*.py" | ForEach-Object {
+$RigRuntimeSource = Join-Path $ProjectRoot "rig_runtime"
+if (-not (Test-Path -LiteralPath $RigRuntimeSource -PathType Container)) {
+    throw "Neutral IRIS runtime package is missing: $RigRuntimeSource"
+}
+Get-ChildItem -LiteralPath $RigRuntimeSource -Recurse -File -Filter "*.py" | ForEach-Object {
     $Relative = $_.FullName.Substring($ProjectRoot.Length + 1)
-    $Excluded = $IrisExcludedSourcePaths | Where-Object {
-        $Relative.Equals($_, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $Relative.StartsWith($_ + "\", [System.StringComparison]::OrdinalIgnoreCase)
-    }
-    if (-not $Excluded) {
-        $Destination = Join-Path $PythonSource $Relative
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $Destination
-    }
+    $Destination = Join-Path $PythonSource $Relative
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+    Copy-Item -LiteralPath $_.FullName -Destination $Destination
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $PythonSource "android") | Out-Null
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "android\phone-target") -Destination (Join-Path $PythonSource "android\phone-target") -Recurse

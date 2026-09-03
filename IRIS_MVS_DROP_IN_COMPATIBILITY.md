@@ -35,7 +35,7 @@ is launched normally from source and does not override its import search path.
 third-party-app/
 |-- app.py
 |-- MvCameraControl_class.py       # IRIS MVS compatibility shim
-|-- aria_trace/                    # IRIS Python runtime
+|-- rig_runtime/                    # IRIS Python runtime
 |-- iris_tools.py
 |-- profiles/                      # optional local profile registry
 `-- run-app.bat

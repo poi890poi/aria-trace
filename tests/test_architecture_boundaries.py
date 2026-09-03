@@ -38,8 +38,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.android_capture import ScrcpyCaptureHub as legacy_android
         from acquisition.hik_capture import CalibratedHikFrameSource as legacy_hik
         from acquisition.windows import WindowsWindowFrameSource as legacy_windows
-        from aria_trace.adapters.android.capture import ScrcpyCaptureHub
-        from aria_trace.adapters.hik.capture import CalibratedHikFrameSource
+        from rig_runtime.adapters.android.capture import ScrcpyCaptureHub
+        from rig_runtime.adapters.hik.capture import CalibratedHikFrameSource
         from aria_trace.adapters.windows import WindowsWindowFrameSource
 
         self.assertIs(legacy_android, ScrcpyCaptureHub)
@@ -51,10 +51,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.recorder import AcquisitionRecorder as legacy_recorder
         from acquisition.session import SessionReader as legacy_session
         from acquisition.video import create_video_sink as legacy_video
-        from aria_trace.adapters.filesystem.annotations import AnnotationStore
-        from aria_trace.adapters.filesystem.session import SessionReader
-        from aria_trace.adapters.filesystem.video import create_video_sink
-        from aria_trace.workflows.recording import AcquisitionRecorder
+        from rig_runtime.adapters.filesystem.annotations import AnnotationStore
+        from rig_runtime.adapters.filesystem.session import SessionReader
+        from rig_runtime.adapters.filesystem.video import create_video_sink
+        from rig_runtime.workflows.recording import AcquisitionRecorder
 
         self.assertIs(legacy_annotations, AnnotationStore)
         self.assertIs(legacy_recorder, AcquisitionRecorder)
@@ -65,9 +65,9 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.profile_manager import publish_rig_calibration as legacy_publish
         from acquisition.profile_registry import ProfileRegistry as legacy_registry
         from acquisition.profiles import ProfileCatalog as legacy_catalog
-        from aria_trace.adapters.filesystem.profile_registry import ProfileRegistry
-        from aria_trace.adapters.filesystem.profiles import ProfileCatalog
-        from aria_trace.workflows.profile_management import publish_rig_calibration
+        from rig_runtime.adapters.filesystem.profile_registry import ProfileRegistry
+        from rig_runtime.adapters.filesystem.profiles import ProfileCatalog
+        from rig_runtime.workflows.profile_management import publish_rig_calibration
 
         self.assertIs(legacy_registry, ProfileRegistry)
         self.assertIs(legacy_catalog, ProfileCatalog)
@@ -76,7 +76,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_legacy_packet_exports_are_exact_domain_aliases(self):
         from acquisition.models import FramePacket as legacy_frame
         from acquisition.models import InputPacket as legacy_input
-        from aria_trace.domain.packets import FramePacket, InputPacket
+        from rig_runtime.domain.packets import FramePacket, InputPacket
 
         self.assertIs(legacy_frame, FramePacket)
         self.assertIs(legacy_input, InputPacket)
@@ -89,8 +89,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.review import ReviewState as legacy_review
         from aria_trace.apps.review import ReviewState
         from aria_trace.apps.workbench.hud import _UrlStatusProvider
-        from aria_trace.evidence.features import OnlineSiftRecorder
-        from aria_trace.evidence.media_trace import raster_record
+        from rig_runtime.evidence.features import OnlineSiftRecorder
+        from rig_runtime.evidence.media_trace import raster_record
         from aria_trace.evidence.poc_catalog import build_poc_evidence_index
 
         self.assertIs(legacy_features, OnlineSiftRecorder)
@@ -102,7 +102,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.capture_game_minimap_zigzag import main as legacy_capture
         from acquisition.record import main as legacy_record
         from aria_trace.apps.record import main as record_main
-        from aria_trace.workflows.minimap_capture import main as capture_main
+        from rig_runtime.workflows.minimap_capture import main as capture_main
 
         self.assertIs(legacy_capture, capture_main)
         self.assertIs(legacy_record, record_main)
@@ -110,8 +110,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_legacy_rig_exports_are_exact_service_aliases(self):
         from acquisition.rig_calibration import FrameSample as legacy_result
         from acquisition.rig_calibration.hik.driver import HikMvsCameraAdapter as legacy_hik
-        from aria_trace.services.calibration.rig import FrameSample
-        from aria_trace.adapters.hik.driver import HikMvsCameraAdapter
+        from rig_runtime.services.calibration.rig import FrameSample
+        from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter
 
         self.assertIs(legacy_result, FrameSample)
         self.assertIs(legacy_hik, HikMvsCameraAdapter)
@@ -119,9 +119,9 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.dual_source_spaces import write_dual_source_space_yaml as legacy_spaces
         from acquisition.game_cross_source_check import GameCrossSourceEvidenceRecorder as legacy_cross
         from acquisition.hik_bayer_color_match import optimize_mvs_bayer_conversion as legacy_color
-        from aria_trace.services.calibration.rig.cross_source import GameCrossSourceEvidenceRecorder
-        from aria_trace.services.calibration.rig.dual_source_spaces import write_dual_source_space_yaml
-        from aria_trace.services.calibration.rig.hik.color_match import optimize_mvs_bayer_conversion
+        from rig_runtime.services.calibration.rig.cross_source import GameCrossSourceEvidenceRecorder
+        from rig_runtime.services.calibration.rig.dual_source_spaces import write_dual_source_space_yaml
+        from rig_runtime.services.calibration.rig.hik.color_match import optimize_mvs_bayer_conversion
 
         self.assertIs(legacy_spaces, write_dual_source_space_yaml)
         self.assertIs(legacy_cross, GameCrossSourceEvidenceRecorder)
@@ -131,7 +131,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         forbidden = ("acquisition", "replay", "poc", "cv2", "numpy", "PySide6")
         violations = []
         for layer in ("domain", "ports"):
-            for path in (ROOT / "aria_trace" / layer).rglob("*.py"):
+            for path in (ROOT / "rig_runtime" / layer).rglob("*.py"):
                 for imported in imports_in(path):
                     if imported.startswith(forbidden):
                         violations.append((str(path.relative_to(ROOT)), imported))
@@ -140,12 +140,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_rig_hik_service_has_no_hardware_or_application_dependencies(self):
         forbidden = (
             "acquisition",
-            "aria_trace.adapters",
-            "aria_trace.apps",
-            "aria_trace.workflows",
+            "rig_runtime.adapters",
+            "rig_runtime.apps",
+            "rig_runtime.workflows",
         )
         violations = []
-        root = ROOT / "aria_trace" / "services" / "calibration" / "rig" / "hik"
+        root = ROOT / "rig_runtime" / "services" / "calibration" / "rig" / "hik"
         for path in root.rglob("*.py"):
             for imported in imports_in(path):
                 if imported.startswith(forbidden):
@@ -154,16 +154,24 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
     def test_no_new_production_imports_from_poc_are_added(self):
         violations = set()
-        for package in ("acquisition", "replay", "aria_trace"):
+        for package in ("acquisition", "replay", "rig_runtime", "aria_trace"):
             for path in (ROOT / package).rglob("*.py"):
                 for imported in imports_in(path):
                     if imported == "poc" or imported.startswith("poc."):
                         violations.add((path.relative_to(ROOT).as_posix(), imported))
         self.assertEqual(set(), violations)
 
+    def test_neutral_rig_runtime_does_not_import_trace_product(self):
+        violations = []
+        for path in (ROOT / "rig_runtime").rglob("*.py"):
+            for imported in imports_in(path):
+                if imported == "aria_trace" or imported.startswith("aria_trace."):
+                    violations.append((str(path.relative_to(ROOT)), imported))
+        self.assertEqual([], violations)
+
     def test_poc_imports_are_compatibility_aliases_for_promoted_services(self):
         from aria_trace.services.tracking import PoseFusionGate as production_fusion
-        from aria_trace.services.vision import KltAngularYawEstimator as production_yaw
+        from rig_runtime.services.vision import KltAngularYawEstimator as production_yaw
         from poc.pose_fusion import PoseFusionGate as compatibility_fusion
         from poc.yaw_estimation import KltAngularYawEstimator as compatibility_yaw
 
@@ -205,7 +213,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_workbench_shell_contains_no_algorithm_or_transport_implementation(self):
         path = ROOT / "aria_trace" / "apps" / "workbench" / "application.py"
         imported = imports_in(path)
-        forbidden = ("cv2", "aria_trace.services.calibration", "aria_trace.services.mapping")
+        forbidden = ("cv2", "rig_runtime.services.calibration", "aria_trace.services.mapping")
         self.assertEqual(
             [],
             [value for value in imported if value.startswith(forbidden)],
@@ -231,7 +239,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_cursor_legacy_exports_are_exact_service_aliases(self):
         from acquisition.cursor_pose import CursorPoseEstimator as legacy_pose
         from acquisition.cursor_worker import CursorPoseProcessExecutor as legacy_worker
-        from aria_trace.services.calibration.cursor import (
+        from rig_runtime.services.calibration.cursor import (
             CursorPoseEstimator,
             CursorPoseProcessExecutor,
         )
@@ -244,7 +252,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             calibrate_minimap_boundary_frames as legacy_boundary,
         )
         from acquisition.minimap_transition import TransitionController as legacy_transition
-        from aria_trace.services.calibration.minimap import (
+        from rig_runtime.services.calibration.minimap import (
             TransitionController,
             calibrate_minimap_boundary_frames,
         )
@@ -264,7 +272,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         from acquisition.frame_pump import LatestFramePump as legacy_pump
         from acquisition.live_tracker import TwoRateRealtimeTracker as legacy_tracker
         from acquisition.route_tracker import RouteVisualTracker as legacy_route
-        from aria_trace.services.capture import LatestFramePump
+        from rig_runtime.services.capture import LatestFramePump
         from aria_trace.services.localization.route import RouteVisualTracker
         from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker
 
@@ -275,7 +283,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_teleport_record_and_legacy_exports_have_domain_owners(self):
         from acquisition.models import TeleportBehaviorSample as legacy_record
         from acquisition.teleport_behavior import make_teleport_behavior_sample as legacy_make
-        from aria_trace.domain import TeleportBehaviorSample
+        from rig_runtime.domain import TeleportBehaviorSample
         from aria_trace.services.localization.teleport import make_teleport_behavior_sample
 
         self.assertIs(TeleportBehaviorSample, legacy_record)
@@ -283,7 +291,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
     def test_scene_yaw_legacy_export_is_exact_service_alias(self):
         from acquisition.scene_yaw_calibration import calibrate_scene_yaw_session as legacy
-        from aria_trace.services.calibration.scene_yaw import calibrate_scene_yaw_session
+        from rig_runtime.services.calibration.scene_yaw import calibrate_scene_yaw_session
 
         self.assertIs(calibrate_scene_yaw_session, legacy)
 

@@ -6,8 +6,8 @@ from typing import List, Optional, Tuple
 
 import cv2
 
-from aria_trace.adapters.filesystem.annotations import AnnotationStore
-from aria_trace.adapters.filesystem.session import SessionReader
+from rig_runtime.adapters.filesystem.annotations import AnnotationStore
+from rig_runtime.adapters.filesystem.session import SessionReader
 
 
 def sha256_file(path: Path) -> Optional[str]:

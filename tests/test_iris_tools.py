@@ -13,7 +13,7 @@ class IrisToolsTests(unittest.TestCase):
         ) as importer:
             result = iris_tools.zigzag_acquisition(["--moves", "4"])
         importer.assert_called_once_with(
-            "aria_trace.workflows.minimap_capture"
+            "rig_runtime.workflows.minimap_capture"
         )
         module.main.assert_called_once_with(["--moves", "4"])
         self.assertEqual(7, result)

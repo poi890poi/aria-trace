@@ -16,7 +16,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
-from aria_trace.adapters.android.capture import (
+from rig_runtime.adapters.android.capture import (
     SCRCPY_SERVER_VERSION,
     ScrcpyCaptureHub,
     _read_exact,

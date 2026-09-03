@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
-from aria_trace.domain import TeleportBehaviorSample
+from rig_runtime.domain import TeleportBehaviorSample
 
 
 def _xy(name: str, value: Optional[Sequence[float]], required: bool):
