@@ -228,9 +228,12 @@ The evidence output defaults under the configured profile root. Override it
 only when needed with `--output EVIDENCE_FOLDER`.
 
 After rig displacement, publishing the fresh rig centrally recomposes portable
-mini-map geometry and game orientation. Game-up is stored relative to the
-phone's rotation-0 panel space; recomposition derives a new adapter-relative
-quarter-turn from the fresh rig's ChArUco calibration-display orientation. It
+mini-map geometry and game orientation. The circular boundary carries directed
+game-up and game-right axes in the phone's rotation-0 panel space, so the circle's
+symmetry cannot hide a sideways result. Recomposition transforms the geometry and
+axes together and derives a new adapter-relative quarter-turn from the fresh rig's
+authoritative optical transform. Surface metadata remains a compatibility fallback
+for legacy profiles and a non-gating consistency check for current profiles. It
 does not copy the old rig-relative turn. An older rig-specific color fit is
 reported as requiring fresh evidence; the adapter safely falls back to
 rig-locked color—even when `game_matched` was requested—instead of failing to

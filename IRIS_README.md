@@ -71,12 +71,13 @@ adapter plan and is applied only after calibration and space conversion.
 ChArUco determines the coarse phone pose. IRIS then measures broad horizontal and
 vertical target edges as the standard high-precision panel-axis refinement. It runs
 automatically in headless calibration and appears as a temporally stabilized metric
-during GUI focusing. Corrections are accepted only below 30 degrees, then folded
-into the existing dense rectification map with no additional streaming pass. If the
-measurement is unavailable or disagrees with ChArUco, calibration continues with
-the ChArUco result and records the reason and review evidence. In `--no-rectify`
-mode, the adapter's frame metadata exposes the saved full-sensor panel-up vector as
-the reference for aligning downstream mini-map axes to Android display space.
+during GUI focusing. Corrections are accepted only below 5 degrees, then folded
+into the authoritative camera-to-phone homography and existing dense rectification
+map with no additional streaming pass or coordinate convention. If the measurement
+is unavailable or disagrees with ChArUco, calibration continues with the ChArUco
+result and records the reason and review evidence. In `--no-rectify` mode, the
+adapter's frame metadata exposes the saved full-sensor panel-up vector as the
+reference for aligning downstream mini-map axes to Android display space.
 
 ## Game acquisition and calibration
 
@@ -111,6 +112,15 @@ physical USB-edge orientation, and the observed Android surface turn. The same
 facts are summarized in `manifest.json` under `context.game_facts`. Consumers
 must not infer either identity from a filename, image dimensions, or the app
 that happens to be foreground later.
+
+The calibrated mini-map circle also carries directed canonical game-up and
+game-right unit vectors. This keeps orientation observable even though a circle
+alone is rotationally symmetric. When a fresh rig is published, IRIS transforms
+the portable circle and its axes together, then chooses the one quarter-turn that
+puts those axes upright. A conflicting Android Surface hint is retained as
+non-gating diagnostic evidence; it cannot override the image-space geometry.
+Legacy profiles without directed axes continue through the prior Surface/game
+orientation fallback instead of blocking unattended operation.
 
 Rotation-center fitting uses the color-agnostic temporal symmetry of those
 balanced samples. It does not require a predefined cursor HSV range or a cursor

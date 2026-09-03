@@ -359,6 +359,25 @@ class HikGameCameraTests(unittest.TestCase):
         )
 
     def test_dual_rectified_rotation_is_composed_before_stream_crop(self):
+        space = raster_space("android_phone_natural_display_pixels", [100, 80])
+        self.minimap_path.write_text(
+            json.dumps(
+                {
+                    "canonical_phone_crop_xywh": [10, 20, 30, 20],
+                    "outer_boundary": oriented_circle(
+                        bind_geometry(
+                            {"center_x": 25.0, "center_y": 30.0, "radius": 6.0},
+                            "circle",
+                            space,
+                        ),
+                        up_unit_xy=[-1.0, 0.0],
+                        right_unit_xy=[0.0, -1.0],
+                        source="annotated_landscape_adb_axes",
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
         adapter = FakeAdapter()
         camera = ProfiledHikGameCamera(
             self.rig_path,
@@ -387,6 +406,15 @@ class HikGameCameraTests(unittest.TestCase):
             "precomposed_rectification_lookup",
             frame_set.metadata["game_upright_runtime_operation"],
         )
+        for stream_name in ("full", "minimap"):
+            boundary = camera.get_minimap_geometry(stream_name)
+            np.testing.assert_allclose(
+                [0.0, -1.0], boundary["orientation_frame"]["up_unit_xy"]
+            )
+            np.testing.assert_allclose(
+                [1.0, 0.0], boundary["orientation_frame"]["right_unit_xy"]
+            )
+            self.assertAlmostEqual(0.0, boundary["orientation_error_degrees"])
 
     def test_dual_derives_game_upright_turn_from_saved_surface_coordinates(self):
         self.minimap_path.write_text(

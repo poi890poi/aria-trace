@@ -14,6 +14,7 @@ from acquisition.profile_manager import (
 )
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
 from rig_runtime.services.calibration.minimap.spatial import minimap_crop_space
+from rig_runtime.domain.spatial import bind_geometry, oriented_circle, raster_space
 
 
 def write_rig(
@@ -571,6 +572,110 @@ class ProfileManagerTests(unittest.TestCase):
             self.assertEqual(
                 "stored_portable_game_surface_orientation",
                 recomposed["provenance"]["portable_orientation_basis"],
+            )
+
+    def test_oriented_minimap_recomposition_survives_new_rig_and_bad_surface_hint(self):
+        """Regression: a correct circle must not permit a sideways game output.
+
+        Ground truth is a landscape ADB raster whose up/right axes, expressed in
+        the rotation-0 portrait panel, are left/up.  The stored Surface hint is
+        deliberately the opposite landscape side.  The directed mini-map frame
+        is the image evidence and must remain authoritative after rig replacement.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProfileRegistry(root / "profiles")
+            publish_rig_calibration(
+                write_rig(root / "rig-1", calibration_display_turns=0),
+                registry=registry,
+            )
+            phone_context = ProfileContext(
+                game_id="game-1",
+                platform="android",
+                camera_id="CAM-1",
+                phone_id="PHONE-1",
+                panel_display={
+                    "natural_panel_px": [100, 200],
+                    "logical_frame_px": [100, 200],
+                    "density_dpi": 400,
+                    "refresh_millihz": 120000,
+                },
+                game_display={
+                    "natural_panel_px": [100, 200],
+                    "logical_frame_px": [200, 100],
+                    "game_viewport_xywh": [0, 0, 200, 100],
+                    "rotation_quarter_turns": 3,
+                    "ui_layout_id": "landscape-test-layout",
+                },
+            )
+            phone_space = raster_space(
+                "android_phone_natural_display_pixels", [100, 200]
+            )
+            boundary = oriented_circle(
+                bind_geometry(
+                    {"center_x": 25.0, "center_y": 170.0, "radius": 18.0},
+                    "circle",
+                    phone_space,
+                ),
+                up_unit_xy=[-1.0, 0.0],
+                right_unit_xy=[0.0, -1.0],
+                source="annotated_adb_landscape_axes",
+            )
+            phone = registry.publish(
+                "phone_game",
+                phone_context,
+                {
+                    "profile_kind": "phone_game",
+                    "canonical_phone_crop_xywh": [5, 150, 40, 40],
+                    "outer_boundary": boundary,
+                    # Conflicting hint models the unreliable Surface/rotation
+                    # telemetry seen with force-rotation applications.
+                    "game_surface_quarter_turns_clockwise_from_phone_natural": 3,
+                    "orientation_source": "synthetic_conflicting_surface_hint",
+                    "game_orientation": "landscape",
+                },
+                review_state="accepted",
+                activate=True,
+            )
+
+            second_rig = publish_rig_calibration(
+                write_rig(root / "rig-2", calibration_display_turns=0),
+                registry=registry,
+            )
+
+            recomposed_geometry = second_rig["recomposed_rig_game_profiles"][0]
+            recomposed_orientation = second_rig[
+                "recomposed_rig_game_orientation_profiles"
+            ][0]
+            self.assertEqual(
+                phone["revision_id"],
+                recomposed_geometry["dependencies"]["phone_game"],
+            )
+            self.assertEqual(
+                second_rig["revision_id"],
+                recomposed_orientation["dependencies"]["rig"],
+            )
+            self.assertEqual(
+                1,
+                recomposed_orientation["payload"][
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                ],
+            )
+            self.assertEqual(
+                "surface_metadata_disagrees_with_canonical_minimap_frame",
+                recomposed_orientation["payload"]["orientation_consistency"]["status"],
+            )
+            resolved = registry.resolve_adapter(
+                ProfileContext.from_dict(recomposed_orientation["context"]),
+                AdapterRequest(mode="dual", orientation_behavior="projection"),
+            )
+            self.assertEqual(
+                second_rig["revision_id"], resolved["profiles"]["rig"]
+            )
+            self.assertEqual(
+                1,
+                resolved["adapter_plan"]["game_upright_quarter_turns_clockwise"],
             )
 
     def test_localization_publishes_display_variant_candidates_then_resolves_when_activated(self):
