@@ -586,12 +586,7 @@ def _canonical_game_facts(
     logical_size = [int(value) for value in surface.get("logical_size_px") or []]
     natural_size = [int(value) for value in surface.get("natural_size_px") or []]
     turns = int(surface.get("quarter_turns_clockwise_from_natural", 0)) % 4
-    physical_orientations = (
-        "portrait_usb_bottom",
-        "landscape_usb_right",
-        "portrait_usb_top",
-        "landscape_usb_left",
-    )
+    usb_edges = ("bottom", "right", "top", "left")
     package = (
         game_launch.get("foreground_package_at_capture")
         or game_launch.get("package")
@@ -602,12 +597,12 @@ def _canonical_game_facts(
         "foreground_component_at_capture": game_launch.get(
             "foreground_at_capture"
         ),
-        "display_orientation": (
+        "game_orientation": (
             "landscape"
             if len(logical_size) == 2 and logical_size[0] > logical_size[1]
             else "portrait"
         ),
-        "physical_display_orientation": physical_orientations[turns],
+        "phone_pose_at_capture": {"usb_edge": usb_edges[turns]},
         "surface_quarter_turns_clockwise_from_phone_natural": turns,
         "logical_size_px": logical_size,
         "natural_size_px": natural_size,

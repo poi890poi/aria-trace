@@ -27,6 +27,9 @@ from rig_runtime.workflows.hik_game_color_calibration import (
     session_game_context,
     sha256_file,
 )
+from rig_runtime.workflows.profile_management import (
+    game_orientation_from_frame_size,
+)
 
 
 def _portable_game_context(
@@ -150,6 +153,7 @@ def calibrate_portable_game_orientation_session(
     context = _portable_game_context(
         reader, game_id, natural_size, logical_size, selected_turns
     )
+    game_orientation = game_orientation_from_frame_size(logical_size)
     registry = ProfileRegistry(profile_root)
     source_profile = None
     if phone_game_revision:
@@ -178,6 +182,7 @@ def calibrate_portable_game_orientation_session(
     payload.update(
         profile_kind="phone_game",
         coordinate_space="phone_natural_display_pixels",
+        game_orientation=game_orientation,
         game_surface_quarter_turns_clockwise_from_phone_natural=int(
             selected_turns
         ),
@@ -211,6 +216,7 @@ def calibrate_portable_game_orientation_session(
         ),
         "session": str(session),
         "profile_context": context.as_dict(),
+        "game_orientation": game_orientation,
         "game_surface_quarter_turns_clockwise_from_phone_natural": int(
             selected_turns
         ),
@@ -428,6 +434,9 @@ def calibrate_game_orientation_session(
         )
     ) % 4
     game_surface_turns = (selected_turns + rig_display_turns) % 4
+    game_orientation = game_orientation_from_frame_size(
+        context.game_display.get("logical_frame_px") or []
+    )
     eligible_pairs = [item for item in pair_results if item["eligible"]]
     consensus = float(
         np.mean(
@@ -469,6 +478,7 @@ def calibrate_game_orientation_session(
         "rig_calibration": str(rig_calibration),
         "rig_revision": active_rig["revision_id"],
         "profile_context": context.as_dict(),
+        "game_orientation": game_orientation,
         "game_surface_quarter_turns_clockwise_from_phone_natural": game_surface_turns,
         "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": selected_turns,
         "orientation_space_contract": {
@@ -505,6 +515,7 @@ def calibrate_game_orientation_session(
         context,
         {
             "profile_kind": "rig_game_orientation",
+            "game_orientation": game_orientation,
             "game_surface_quarter_turns_clockwise_from_phone_natural": (
                 game_surface_turns
             ),

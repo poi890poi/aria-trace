@@ -1422,10 +1422,23 @@ class ProfileRegistry:
             else {
                 "cursor_follows": "character",
                 "minimap_orientation": "unspecified",
-                "game_display_orientation": "landscape_usb_right",
-                "game_surface_quarter_turns_clockwise_from_phone_natural": 1,
+                "game_orientation": "landscape",
                 "source": "iris_default",
             }
+        )
+        legacy_game_orientation = game_model_plan.pop(
+            "game_display_orientation", None
+        )
+        game_model_plan.pop(
+            "game_surface_quarter_turns_clockwise_from_phone_natural", None
+        )
+        selected_game_orientation = game_model_plan.get(
+            "game_orientation", legacy_game_orientation or "landscape"
+        )
+        game_model_plan["game_orientation"] = (
+            "portrait"
+            if str(selected_game_orientation).startswith("portrait")
+            else "landscape"
         )
         if "cursor_behavior_by_acquisition" not in game_model_plan:
             game_model_plan["cursor_behavior_by_acquisition"] = (

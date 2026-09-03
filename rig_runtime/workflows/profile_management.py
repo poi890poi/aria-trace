@@ -30,49 +30,63 @@ from rig_runtime.domain.spatial import (
 
 
 DEFAULT_GAME_MODEL = {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "cursor_follows": "character",
     "cursor_behavior_by_acquisition": {
         "zigzag": "static",
         "micro_movement": "rotating",
     },
     "minimap_orientation": "unspecified",
-    "game_display_orientation": "landscape_usb_right",
-    "game_surface_quarter_turns_clockwise_from_phone_natural": 1,
+    "game_orientation": "landscape",
     "source": "iris_default",
 }
 CURSOR_FOLLOWS_VALUES = ("character", "camera")
 MINIMAP_ORIENTATION_VALUES = ("unspecified", "rotating", "north_up")
-GAME_DISPLAY_ORIENTATION_VALUES = (
-    "portrait_usb_bottom",
-    "landscape_usb_right",
-    "portrait_usb_top",
-    "landscape_usb_left",
-)
+GAME_ORIENTATION_VALUES = ("landscape", "portrait")
+_LEGACY_GAME_ORIENTATION_CLASSES = {
+    "portrait_usb_bottom": "portrait",
+    "landscape_usb_right": "landscape",
+    "portrait_usb_top": "portrait",
+    "landscape_usb_left": "landscape",
+}
 
 
-def game_display_orientation_turns(value: str) -> int:
-    """Map a physical game-up declaration to Android Surface rotation.
+def normalize_game_orientation(value: str) -> str:
+    """Return the pose-independent landscape/portrait game fact.
 
-    Android defines the reported display rotation as the clockwise rotation of
-    drawn graphics that compensates physical device rotation. On a naturally
-    portrait phone, rotating the phone counter-clockwise puts the USB edge on
-    the right and produces Surface.ROTATION_90.
+    Four-way values from the short-lived 1.1 schema are accepted only as a
+    migration input. Their USB-edge component is intentionally discarded
+    because it described phone pose, not game behavior.
     """
 
     selected = str(value)
-    try:
-        return GAME_DISPLAY_ORIENTATION_VALUES.index(selected)
-    except ValueError:
+    selected = _LEGACY_GAME_ORIENTATION_CLASSES.get(selected, selected)
+    if selected not in GAME_ORIENTATION_VALUES:
         raise ValueError(
-            "game_display_orientation must be one of {}".format(
-                ", ".join(GAME_DISPLAY_ORIENTATION_VALUES)
+            "game_orientation must be one of {}".format(
+                ", ".join(GAME_ORIENTATION_VALUES)
             )
         )
+    return selected
 
 
-def game_display_orientation_from_turns(turns: int) -> str:
-    return GAME_DISPLAY_ORIENTATION_VALUES[int(turns) % 4]
+def default_surface_turns_for_game_orientation(value: str) -> int:
+    """Choose a placement fallback when no observed Surface turn exists."""
+
+    # Placement policy, not a game fact: portrait assumes USB-bottom and
+    # landscape assumes USB-right.
+    return 1 if normalize_game_orientation(value) == "landscape" else 0
+
+
+def game_orientation_from_frame_size(
+    frame_size_px: Sequence[int], *, fallback: str = "landscape"
+) -> str:
+    """Classify a game raster without coupling it to phone pose."""
+
+    size = list(map(int, frame_size_px or []))
+    if len(size) != 2 or size[0] == size[1]:
+        return normalize_game_orientation(fallback)
+    return "landscape" if size[0] > size[1] else "portrait"
 
 
 def cursor_behavior_by_acquisition(cursor_follows: str) -> Dict[str, str]:
@@ -110,12 +124,15 @@ def resolve_game_model(
         profile = registry.resolve("game_model", context)
     except ProfileResolutionError:
         return {**DEFAULT_GAME_MODEL, "game_id": context.game_id, "revision_id": None}
-    payload = {**DEFAULT_GAME_MODEL, **dict(profile.get("payload") or {})}
+    stored = dict(profile.get("payload") or {})
+    legacy_orientation = stored.pop("game_display_orientation", None)
+    stored.pop("game_surface_quarter_turns_clockwise_from_phone_natural", None)
+    payload = {**DEFAULT_GAME_MODEL, **stored}
+    payload["game_orientation"] = normalize_game_orientation(
+        stored.get("game_orientation", legacy_orientation or "landscape")
+    )
     payload["cursor_behavior_by_acquisition"] = cursor_behavior_by_acquisition(
         str(payload["cursor_follows"])
-    )
-    payload["game_surface_quarter_turns_clockwise_from_phone_natural"] = (
-        game_display_orientation_turns(payload["game_display_orientation"])
     )
     payload.update(
         game_id=context.game_id,
@@ -131,7 +148,7 @@ def publish_game_model(
     *,
     cursor_follows: Optional[str] = None,
     minimap_orientation: Optional[str] = None,
-    game_display_orientation: Optional[str] = None,
+    game_orientation: Optional[str] = None,
     platform: str = "android",
     package: Optional[str] = None,
     game_version: Optional[str] = None,
@@ -147,8 +164,8 @@ def publish_game_model(
     )
     selected_cursor = str(cursor_follows or current["cursor_follows"])
     selected_map = str(minimap_orientation or current["minimap_orientation"])
-    selected_display = str(
-        game_display_orientation or current["game_display_orientation"]
+    selected_orientation = normalize_game_orientation(
+        game_orientation or current["game_orientation"]
     )
     if selected_cursor not in CURSOR_FOLLOWS_VALUES:
         raise ValueError("cursor_follows must be character or camera")
@@ -156,7 +173,6 @@ def publish_game_model(
         raise ValueError(
             "minimap_orientation must be unspecified, rotating, or north_up"
         )
-    selected_display_turns = game_display_orientation_turns(selected_display)
     context = ProfileContext(
         game_id=game_id,
         platform=platform,
@@ -167,14 +183,11 @@ def publish_game_model(
         "game_model",
         context,
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "profile_kind": "game_model",
             "cursor_follows": selected_cursor,
             "minimap_orientation": selected_map,
-            "game_display_orientation": selected_display,
-            "game_surface_quarter_turns_clockwise_from_phone_natural": (
-                selected_display_turns
-            ),
+            "game_orientation": selected_orientation,
             "cursor_behavior_by_acquisition": cursor_behavior_by_acquisition(
                 selected_cursor
             ),
@@ -383,6 +396,19 @@ def _compose_rig_game_orientation_profile(
         )
     )
     phone_payload = dict((phone_profile or {}).get("payload") or {})
+    if phone_payload.get("game_orientation") is not None:
+        game_orientation = normalize_game_orientation(
+            phone_payload["game_orientation"]
+        )
+    elif phone_context is not None:
+        game_orientation = game_orientation_from_frame_size(
+            phone_context.game_display.get("logical_frame_px") or [],
+            fallback=model.get("game_orientation", "landscape"),
+        )
+    else:
+        game_orientation = normalize_game_orientation(
+            model.get("game_orientation", "landscape")
+        )
     portable_turns = phone_payload.get(
         "game_surface_quarter_turns_clockwise_from_phone_natural"
     )
@@ -401,9 +427,7 @@ def _compose_rig_game_orientation_profile(
         ) % 4
         basis = "phone_game_capture_surface_metadata"
     else:
-        portable_turns = game_display_orientation_turns(
-            model.get("game_display_orientation", "landscape_usb_right")
-        )
+        portable_turns = default_surface_turns_for_game_orientation(game_orientation)
         basis = (
             "configured_game_model_assumption"
             if model.get("revision_id")
@@ -451,9 +475,7 @@ def _compose_rig_game_orientation_profile(
         context,
         {
             "profile_kind": "rig_game_orientation",
-            "game_display_orientation": game_display_orientation_from_turns(
-                portable_turns
-            ),
+            "game_orientation": game_orientation,
             "game_surface_quarter_turns_clockwise_from_phone_natural": int(
                 portable_turns
             ),
@@ -1179,19 +1201,23 @@ def publish_minimap_profiles(
         if not isinstance(value, Mapping) or value.get("name")
     ]
     observed_surface_turns = surface.get("quarter_turns_clockwise_from_natural")
+    model = resolve_game_model(
+        store,
+        str(context.game_id),
+        platform=context.platform,
+        package=context.package,
+        game_version=context.game_version,
+    )
+    game_orientation = game_orientation_from_frame_size(
+        context.game_display.get("logical_frame_px") or [],
+        fallback=model["game_orientation"],
+    )
     if observed_surface_turns is not None:
         game_surface_turns = int(observed_surface_turns) % 4
         game_orientation_source = "acquisition_phone_surface_metadata"
     else:
-        model = resolve_game_model(
-            store,
-            str(context.game_id),
-            platform=context.platform,
-            package=context.package,
-            game_version=context.game_version,
-        )
-        game_surface_turns = game_display_orientation_turns(
-            model["game_display_orientation"]
+        game_surface_turns = default_surface_turns_for_game_orientation(
+            game_orientation
         )
         game_orientation_source = (
             "configured_game_model_assumption"
@@ -1204,9 +1230,7 @@ def publish_minimap_profiles(
         "canonical_phone_crop_xywh": canonical_crop,
         "android_logical_crop_xywh": logical_crop,
         "phone_surface_orientation": surface,
-        "game_display_orientation": game_display_orientation_from_turns(
-            game_surface_turns
-        ),
+        "game_orientation": game_orientation,
         "game_surface_quarter_turns_clockwise_from_phone_natural": (
             game_surface_turns
         ),
@@ -1359,11 +1383,10 @@ def parser() -> argparse.ArgumentParser:
         "--minimap-orientation", choices=MINIMAP_ORIENTATION_VALUES
     )
     configure_game.add_argument(
-        "--game-display-orientation",
-        choices=GAME_DISPLAY_ORIENTATION_VALUES,
+        "--game-orientation",
+        choices=GAME_ORIENTATION_VALUES,
         help=(
-            "canonical game-up direction relative to a naturally portrait "
-            "phone (default: landscape_usb_right)"
+            "pose-independent game layout: landscape (default) or portrait"
         ),
     )
     configure_game.add_argument("--platform", default="android")
@@ -1536,7 +1559,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.game_id,
             cursor_follows=arguments.cursor_follows,
             minimap_orientation=arguments.minimap_orientation,
-            game_display_orientation=arguments.game_display_orientation,
+            game_orientation=arguments.game_orientation,
             platform=arguments.platform,
             package=arguments.package_id,
             game_version=arguments.game_version,

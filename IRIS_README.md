@@ -113,15 +113,16 @@ Configure the model before calibration when the default is wrong:
 python -m iris_tools profiles configure-game GAME_ID `
   --cursor-follows camera `
   --minimap-orientation rotating `
-  --game-display-orientation landscape_usb_right
+  --game-orientation landscape
 python -m iris_tools profiles show-game GAME_ID
 ```
 
-`game-display-orientation` describes game-up in the phone's physical
-rotation-0 space: `portrait_usb_bottom`, `landscape_usb_right` (default),
-`portrait_usb_top`, or `landscape_usb_left`. Acquisition also records the
-foreground package and observed Android surface orientation, so measured facts
-override this fallback when available.
+`game-orientation` is a phone-pose-independent game fact with only two values:
+`landscape` (default) or `portrait`. Acquisition separately records the
+foreground package, exact Android surface turn, and phone pose. Profile
+composition uses that observed placement when available; otherwise it assumes
+USB-right for landscape or USB-bottom for portrait without storing that
+placement assumption as a property of the game.
 
 If synchronized HIK evidence is required, add `--require-hik`. Use
 `--game-id GAME_ID` when the resulting calibration should be published under a

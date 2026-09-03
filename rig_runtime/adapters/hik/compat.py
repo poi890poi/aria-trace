@@ -256,8 +256,7 @@ class HikCamera:
                             "micro_movement": "rotating",
                         },
                         "minimap_orientation": "unspecified",
-                        "game_display_orientation": "landscape_usb_right",
-                        "game_surface_quarter_turns_clockwise_from_phone_natural": 1,
+                        "game_orientation": "landscape",
                         "source": "iris_default",
                     },
                     "registry_reads_per_frame": 0,
@@ -1397,8 +1396,7 @@ class HikCamera:
                         "micro_movement": "rotating",
                     },
                     "minimap_orientation": "unspecified",
-                    "game_display_orientation": "landscape_usb_right",
-                    "game_surface_quarter_turns_clockwise_from_phone_natural": 1,
+                    "game_orientation": "landscape",
                     "source": "iris_default",
                 }
             )

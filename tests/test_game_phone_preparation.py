@@ -59,6 +59,34 @@ class ForegroundCaptureMetadataTests(unittest.TestCase):
         )
         self.assertEqual("adb_foreground_at_capture", result["package_source"])
 
+    def test_game_orientation_does_not_change_with_phone_pose(self):
+        launch = {
+            "game_id": "game",
+            "package": "org.example.game",
+            "foreground_at_capture": "org.example.game/.MainActivity",
+        }
+        usb_right = capture._canonical_game_facts(
+            launch,
+            {
+                "logical_size_px": [2400, 1080],
+                "natural_size_px": [1080, 2400],
+                "quarter_turns_clockwise_from_natural": 1,
+            },
+        )
+        usb_left = capture._canonical_game_facts(
+            launch,
+            {
+                "logical_size_px": [2400, 1080],
+                "natural_size_px": [1080, 2400],
+                "quarter_turns_clockwise_from_natural": 3,
+            },
+        )
+
+        self.assertEqual("landscape", usb_right["game_orientation"])
+        self.assertEqual("landscape", usb_left["game_orientation"])
+        self.assertEqual({"usb_edge": "right"}, usb_right["phone_pose_at_capture"])
+        self.assertEqual({"usb_edge": "left"}, usb_left["phone_pose_at_capture"])
+
 
 class GamePhonePreparationTests(unittest.TestCase):
     def test_hik_fallback_is_limited_to_absence_or_ownership_failures(self):
@@ -529,10 +557,10 @@ class GamePhonePreparationTests(unittest.TestCase):
                 reader.manifest["context"]["capture_schedule"],
             )
             game_facts = reader.manifest["context"]["game_facts"]
-            self.assertEqual("landscape", game_facts["display_orientation"])
+            self.assertEqual("landscape", game_facts["game_orientation"])
             self.assertEqual(
-                "landscape_usb_right",
-                game_facts["physical_display_orientation"],
+                {"usb_edge": "right"},
+                game_facts["phone_pose_at_capture"],
             )
             self.assertEqual(
                 1,
@@ -583,9 +611,9 @@ class GamePhonePreparationTests(unittest.TestCase):
                     "test-game", record["metadata"]["game_context"]["game_id"]
                 )
                 self.assertEqual(
-                    "landscape_usb_right",
+                    {"usb_edge": "right"},
                     record["metadata"]["game_context"][
-                        "physical_display_orientation"
+                        "phone_pose_at_capture"
                     ],
                 )
                 self.assertEqual(

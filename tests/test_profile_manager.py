@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from acquisition.profile_manager import (
-    game_display_orientation_turns,
+    default_surface_turns_for_game_orientation,
     publish_game_model,
     publish_minimap_profiles,
     publish_rig_calibration,
@@ -77,19 +77,18 @@ def write_rig(
 
 
 class ProfileManagerTests(unittest.TestCase):
-    def test_game_model_defaults_to_landscape_with_usb_on_right(self):
+    def test_game_model_orientation_is_pose_independent(self):
         with tempfile.TemporaryDirectory() as directory:
             registry = ProfileRegistry(Path(directory) / "profiles")
             model = resolve_game_model(registry, "game-1")
 
-            self.assertEqual("landscape_usb_right", model["game_display_orientation"])
-            self.assertEqual(
-                1,
-                model[
-                    "game_surface_quarter_turns_clockwise_from_phone_natural"
-                ],
+            self.assertEqual("landscape", model["game_orientation"])
+            self.assertNotIn(
+                "game_surface_quarter_turns_clockwise_from_phone_natural", model
             )
-            self.assertEqual(1, game_display_orientation_turns("landscape_usb_right"))
+            self.assertEqual(
+                1, default_surface_turns_for_game_orientation("landscape")
+            )
 
     def test_configured_game_orientation_composes_against_active_rig(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -103,20 +102,46 @@ class ProfileManagerTests(unittest.TestCase):
             model = publish_game_model(
                 registry,
                 "game-1",
-                game_display_orientation="landscape_usb_left",
+                game_orientation="portrait",
             )
 
-            self.assertEqual("landscape_usb_left", model["payload"]["game_display_orientation"])
-            self.assertEqual(3, model["payload"]["game_surface_quarter_turns_clockwise_from_phone_natural"])
+            self.assertEqual("portrait", model["payload"]["game_orientation"])
+            self.assertNotIn(
+                "game_surface_quarter_turns_clockwise_from_phone_natural",
+                model["payload"],
+            )
             self.assertEqual(1, len(model["recomposed_rig_game_orientation_profiles"]))
             orientation = model["recomposed_rig_game_orientation_profiles"][0]
             self.assertEqual(rig["revision_id"], orientation["dependencies"]["rig"])
             self.assertEqual(model["revision_id"], orientation["dependencies"]["game_model"])
             self.assertEqual(
-                2,
+                3,
                 orientation["payload"][
                     "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
                 ],
+            )
+
+    def test_legacy_four_way_game_orientation_migrates_to_orientation_class(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ProfileRegistry(Path(directory) / "profiles")
+            registry.publish(
+                "game_model",
+                ProfileContext(game_id="game-1", platform="android"),
+                {
+                    "schema_version": "1.1",
+                    "game_display_orientation": "landscape_usb_left",
+                    "game_surface_quarter_turns_clockwise_from_phone_natural": 3,
+                },
+                review_state="accepted",
+                activate=True,
+            )
+
+            model = resolve_game_model(registry, "game-1")
+
+            self.assertEqual("landscape", model["game_orientation"])
+            self.assertNotIn("game_display_orientation", model)
+            self.assertNotIn(
+                "game_surface_quarter_turns_clockwise_from_phone_natural", model
             )
 
     def test_partial_result_without_usable_cursor_geometry_is_rejected(self):
