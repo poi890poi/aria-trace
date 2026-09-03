@@ -528,6 +528,21 @@ class GamePhonePreparationTests(unittest.TestCase):
                 "settled_swipe_endpoint_screenshots",
                 reader.manifest["context"]["capture_schedule"],
             )
+            game_facts = reader.manifest["context"]["game_facts"]
+            self.assertEqual("landscape", game_facts["display_orientation"])
+            self.assertEqual(
+                "landscape_usb_right",
+                game_facts["physical_display_orientation"],
+            )
+            self.assertEqual(
+                1,
+                game_facts[
+                    "surface_quarter_turns_clockwise_from_phone_natural"
+                ],
+            )
+            self.assertEqual(
+                "phone_natural_rotation_0", game_facts["canonical_space"]
+            )
             self.assertFalse(
                 reader.manifest["context"]["android_capture"]["scrcpy_used"]
             )

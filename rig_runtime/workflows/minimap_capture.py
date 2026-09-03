@@ -578,6 +578,41 @@ def _record_foreground_at_capture(
     return result
 
 
+def _canonical_game_facts(game_launch: dict, surface: dict) -> dict:
+    """Persist the foreground game and Android rotation-0 relation explicitly."""
+
+    logical_size = [int(value) for value in surface.get("logical_size_px") or []]
+    natural_size = [int(value) for value in surface.get("natural_size_px") or []]
+    turns = int(surface.get("quarter_turns_clockwise_from_natural", 0)) % 4
+    physical_orientations = (
+        "portrait_usb_bottom",
+        "landscape_usb_right",
+        "portrait_usb_top",
+        "landscape_usb_left",
+    )
+    package = (
+        game_launch.get("foreground_package_at_capture")
+        or game_launch.get("package")
+    )
+    return {
+        "package": package,
+        "foreground_component_at_capture": game_launch.get(
+            "foreground_at_capture"
+        ),
+        "display_orientation": (
+            "landscape"
+            if len(logical_size) == 2 and logical_size[0] > logical_size[1]
+            else "portrait"
+        ),
+        "physical_display_orientation": physical_orientations[turns],
+        "surface_quarter_turns_clockwise_from_phone_natural": turns,
+        "logical_size_px": logical_size,
+        "natural_size_px": natural_size,
+        "canonical_space": "phone_natural_rotation_0",
+        "source": "adb_foreground_and_surface_at_capture",
+    }
+
+
 def _session_game_label(game_id: Optional[str], android_package: Optional[str]) -> str:
     value = game_id or android_package or "unidentified-game"
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value).strip()).strip("-.")
@@ -1080,6 +1115,7 @@ def _record_adb_screenshot_zigzag(
         + (["hik_mvs_rig_rectified"] if hik is not None else []),
         "hik_capture": hik_context,
         "phone_surface_orientation": aligned_surface,
+        "game_facts": _canonical_game_facts(game_launch, aligned_surface),
         "phone_preparation": preparation,
         "game_launch": game_launch,
         (
@@ -1556,6 +1592,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "image_sources": image_sources,
             "hik_capture": hik_context,
             "phone_surface_orientation": aligned_surface,
+            "game_facts": _canonical_game_facts(game_launch, aligned_surface),
             "phone_preparation": preparation,
             "game_launch": game_launch,
             (
