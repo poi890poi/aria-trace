@@ -90,7 +90,13 @@ HIK_CONFIG_COMMENTS = {
         "display pixel plus coverage_margin_px; safe_xywh is the inset, fully "
         "visible rectangle used only for calibration targets and metrics."
     ),
-    "normalization": "Runtime mapping from HIK sensor pixels to the normalized visible-phone image.",
+    "normalization": (
+        "Runtime mapping from HIK sensor pixels to the normalized visible-phone image. "
+        "panel_axis_alignment is the calibration-only broad-edge residual measured "
+        "after ChArUco geometry. Accepted corrections are left-composed into the "
+        "single dense map and add no runtime resampling pass. The saved full-sensor "
+        "panel-up vector is the north/up reference for callers that disable rectification."
+    ),
     "coordinate_spaces": (
         "Two HIK acquisition spaces are intentional.\n"
         "full_sensor_image is used only to fit rig calibration after resetting "

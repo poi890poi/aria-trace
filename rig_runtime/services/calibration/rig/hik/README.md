@@ -255,6 +255,23 @@ Saving is atomic and creates `calibration.yaml`, `valid_screen_mask.png`,
 `rectification_maps.npz`, evidence, and `hik_camera_calibration.json`. The JSON
 records exact IDs and modes, exposure/gain/WB, hardware ROI, camera-visible phone
 `(x,y,w,h)`, phone/viewer orientation, full-sensor homographies, and output geometry.
+
+After ChArUco establishes the coarse phone orientation, calibration measures the
+residual panel-axis angle from broad horizontal and vertical target edges. Headless
+calibration performs this automatically. During GUI focusing the same measurement
+is refreshed in the preview text, using a short temporal aggregate rather than a
+single frame. Only a residual strictly smaller than 30 degrees is accepted, so the
+edge fit cannot contradict ChArUco's coarse orientation. Missing or rejected edge
+evidence is non-gating and falls back to ChArUco.
+
+An accepted residual is precomposed into `rectification_maps.npz`; it does not add
+a second runtime transform. `panel_axis_raw_hik.png` and
+`panel_axis_rectified_evidence.png` preserve the acquisition and annotated fit.
+When rectification is disabled, query
+`normalization.orientation.panel_up_reference_when_rectification_disabled` (also
+copied into frame-space metadata) for the measured panel-up vector in full-sensor
+camera coordinates.
+
 It also records which WB path was retained, every attempted WB measurement, and
 non-fatal imaging-quality warnings.
 The hardware ROI and normalized output cover the raster bounding box of every

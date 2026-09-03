@@ -68,6 +68,16 @@ latency trials. Use `--final-benchmark full` for the complete benchmark,
 Rig calibration uses full-sensor frames. Hardware ROI belongs to the runtime
 adapter plan and is applied only after calibration and space conversion.
 
+ChArUco determines the coarse phone pose. IRIS then measures broad horizontal and
+vertical target edges as the standard high-precision panel-axis refinement. It runs
+automatically in headless calibration and appears as a temporally stabilized metric
+during GUI focusing. Corrections are accepted only below 30 degrees, then folded
+into the existing dense rectification map with no additional streaming pass. If the
+measurement is unavailable or disagrees with ChArUco, calibration continues with
+the ChArUco result and records the reason and review evidence. In `--no-rectify`
+mode, the adapter's frame metadata exposes the saved full-sensor panel-up vector as
+the reference for aligning downstream mini-map axes to Android display space.
+
 ## Game acquisition and calibration
 
 Capture a game-agnostic zigzag session from the prepared foreground game:

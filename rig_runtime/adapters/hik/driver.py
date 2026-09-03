@@ -1442,6 +1442,9 @@ class RectifiedHikCamera:
                 "color_order": "BGR",
             }
         else:
+            panel_up_reference = self.orientation.get(
+                "panel_up_reference_when_rectification_disabled"
+            )
             image_space = {
                 "schema_version": "1.0",
                 "space_id": (
@@ -1470,6 +1473,10 @@ class RectifiedHikCamera:
                 "game_upright_runtime_operation": (
                     "discrete_quarter_turn_no_interpolation"
                     if self._output_quarter_turns else "none"
+                ),
+                "panel_up_reference": (
+                    copy.deepcopy(panel_up_reference)
+                    if panel_up_reference is not None else None
                 ),
                 "color_order": "BGR",
             }

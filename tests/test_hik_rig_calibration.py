@@ -69,6 +69,9 @@ from acquisition.rig_calibration.geometry import (
     estimate_screen_geometry,
 )
 from rig_runtime.evidence.rig_alignment import cross_source_alignment_warning
+from rig_runtime.services.calibration.rig.hik.panel_axis import (
+    panel_axis_correction_matrix,
+)
 
 
 def rig_frame_sample(image, time_ns=1, roi_xywh=None):
@@ -100,6 +103,64 @@ def rig_frame_sample(image, time_ns=1, roi_xywh=None):
 
 
 class HikAlgorithmTests(unittest.TestCase):
+    def test_headless_run_includes_standard_panel_axis_measurement(self):
+        options = HikCalibrationOptions(
+            "fake", "phone", Path("unused"), headless=True, save_without_prompt=True
+        )
+        session = HikRigCalibrationSession(
+            options, camera=mock.Mock(), phone=mock.Mock(), target=mock.Mock()
+        )
+        stage_names = [
+            "open",
+            "calibrate_lens_distortion",
+            "wait_for_positioning_confirmation",
+            "calibrate_geometry",
+            "calibrate_black_level",
+            "calibrate_once_auto_imaging",
+            "calibrate_exposure",
+            "calibrate_white_balance",
+            "verify_final_imaging",
+            "calibrate_panel_axis",
+            "save",
+            "close",
+        ]
+        patches = [mock.patch.object(session, name) for name in stage_names]
+        mocked = {
+            name: patch.start() for name, patch in zip(stage_names, patches)
+        }
+        try:
+            mocked["wait_for_positioning_confirmation"].return_value = True
+            mocked["save"].return_value = Path("saved")
+            result = session.run()
+        finally:
+            for patch in reversed(patches):
+                patch.stop()
+        self.assertEqual(Path("saved"), result)
+        mocked["calibrate_panel_axis"].assert_called_once_with()
+        mocked["close"].assert_called_once_with()
+
+    def test_panel_axis_presentation_failure_is_non_gating(self):
+        target = mock.Mock()
+        target.present_image.side_effect = RuntimeError("presenter unavailable")
+        session = HikRigCalibrationSession(
+            HikCalibrationOptions("fake", "phone", Path("unused")),
+            camera=mock.Mock(),
+            phone=mock.Mock(),
+            target=target,
+            progress=lambda _message: None,
+        )
+        session.visible_region = {"safe_xywh": [10, 10, 100, 100]}
+        session.phone_metrics = PhoneMetrics(
+            "phone", "Example", "Phone", "14", [120, 120], 420, 60.0
+        )
+
+        result = session.calibrate_panel_axis()
+
+        self.assertEqual("unavailable", result["status"])
+        self.assertFalse(result["applied"])
+        self.assertTrue(result["non_gating"])
+        self.assertIn("target_presentation_failed", result["reason"])
+
     def test_charuco_board_metric_uses_anisotropic_native_surface_scale(self):
         layout = CharucoLayout((1000, 2000), 10, 20, (0, 0))
         points, metadata = charuco_board_metric_to_panel_pixels(
@@ -2201,6 +2262,14 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 "normalization": {
                     "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
                     "output_size_px": [3, 3],
+                    "orientation": {
+                        "panel_up_reference_when_rectification_disabled": {
+                            "source": "broad_orthogonal_panel_edges",
+                            "space_id": "hik_full_sensor_camera_pixels",
+                            "panel_up_unit_vector_xy": [0.01, -0.99995],
+                            "camera_up_to_panel_up_clockwise_degrees": 0.573,
+                        }
+                    },
                 },
             }
             path.write_text(json.dumps(config), encoding="utf-8")
@@ -2223,6 +2292,12 @@ class HikRectifiedStreamTests(unittest.TestCase):
             self.assertFalse(sample.metadata["rectified"])
             self.assertTrue(sample.metadata["hardware_roi_output"])
             self.assertTrue(sample.source_id.endswith(":hardware-roi"))
+            self.assertEqual(
+                [0.01, -0.99995],
+                sample.metadata["image_space"]["panel_up_reference"][
+                    "panel_up_unit_vector_xy"
+                ],
+            )
             camera.release()
 
     def test_production_reader_trusts_effective_roi_and_saved_orientation(self):
@@ -2290,6 +2365,30 @@ class HikRectifiedStreamTests(unittest.TestCase):
             session.exposure = ExposureObservation(1, 16666.7, 0.0, (229, 229, 229), (0, 0, 0))
             session.black_level = 240
             session.white_balance = {"ratio_red": 1000, "ratio_green": 1000, "ratio_blue": 1000}
+            session.panel_axis_measurement = {
+                "schema_version": "1.0",
+                "status": "accepted",
+                "applied": True,
+                "non_gating": True,
+                "residual_clockwise_degrees": 1.5,
+                "correction_counterclockwise_degrees": 1.5,
+                "temporal_p95_deviation_degrees": 0.04,
+                "panel_up_unit_vector_full_sensor_camera_xy": [0.02, -0.9998],
+                "camera_up_to_panel_up_clockwise_degrees": 1.15,
+                "representative_lines": [],
+            }
+            session.panel_axis_sample = rig_frame_sample(
+                np.full((100, 100, 3), 48, np.uint8)
+            )
+            session.panel_axis_evidence_image = np.full(
+                (
+                    session.visible_region["xywh"][3],
+                    session.visible_region["xywh"][2],
+                    3,
+                ),
+                72,
+                np.uint8,
+            )
             saved = session.save()
             self.assertEqual(saved, output.resolve())
             self.assertTrue((saved / "calibration.yaml").is_file())
@@ -2303,6 +2402,33 @@ class HikRectifiedStreamTests(unittest.TestCase):
             )
             self.assertEqual(
                 config["normalization"]["orientation"]["adapter_output_up"], "app_up"
+            )
+            axis = config["normalization"]["orientation"]["panel_axis_alignment"]
+            self.assertTrue(axis["applied"])
+            self.assertEqual(
+                0,
+                axis["rectification_composition"][
+                    "runtime_resampling_passes_added"
+                ],
+            )
+            self.assertEqual(
+                [0.02, -0.9998],
+                config["normalization"]["orientation"][
+                    "panel_up_reference_when_rectification_disabled"
+                ]["panel_up_unit_vector_xy"],
+            )
+            base = np.asarray(
+                axis["rectification_composition"][
+                    "base_full_sensor_camera_to_output_3x3"
+                ]
+            )
+            expected = panel_axis_correction_matrix(
+                config["normalization"]["output_size_px"], 1.5
+            ).dot(base)
+            expected /= expected[2, 2]
+            np.testing.assert_allclose(
+                expected,
+                config["normalization"]["full_sensor_camera_to_output_3x3"],
             )
             self.assertEqual(config["camera"]["controls"]["gain"]["maximum"], 24.0)
             self.assertEqual(config["imaging"]["black_level"], 240)
@@ -2322,12 +2448,17 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 (saved / "cross_source_check" / "cross_source_check.yaml").is_file()
             )
             self.assertEqual(
-                {"valid_screen_mask.png"},
+                {
+                    "valid_screen_mask.png",
+                    "panel_axis_raw_hik.png",
+                    "panel_axis_rectified_evidence.png",
+                },
                 {row["file"] for row in config["media"]},
             )
+            media_by_file = {row["file"]: row for row in config["media"]}
             self.assertEqual(
                 "hik_rig_rectified_visible_phone_pixels",
-                config["media"][0]["space"]["id"],
+                media_by_file["valid_screen_mask.png"]["space"]["id"],
             )
 
 

@@ -107,6 +107,159 @@ def focus_pattern(
     return canvas
 
 
+def panel_axis_pattern(
+    screen_size_px: Sequence[int], region_xywh: Sequence[int]
+) -> np.ndarray:
+    """Render isolated broad orthogonal edges for residual panel-axis fitting."""
+
+    sw, sh, _x, _y, _width, _height = _sizes(screen_size_px, region_xywh)
+    canvas = np.full((sh, sw, 3), 24, dtype=np.uint8)
+    _draw_panel_axis_bars(canvas, region_xywh)
+    return canvas
+
+
+def _panel_axis_bar_geometry(region_xywh: Sequence[int]) -> Dict[str, int]:
+    x, y, width, height = map(int, region_xywh)
+    if min(width, height) < 96:
+        raise ValueError("Panel-axis region is too small")
+    inset_x = max(12, int(round(width * 0.10)))
+    inset_y = max(12, int(round(height * 0.10)))
+    thickness = max(8, int(round(min(width, height) * 0.035)))
+    center_x = x + width // 2
+    center_y = y + height // 2
+    vertical_left = center_x - thickness // 2
+    vertical_right = vertical_left + thickness
+    horizontal_top = center_y - thickness // 2
+    horizontal_bottom = horizontal_top + thickness
+    return {
+        "left": x + inset_x,
+        "right": x + width - inset_x,
+        "top": y + inset_y,
+        "bottom": y + height - inset_y,
+        "vertical_left": vertical_left,
+        "vertical_right": vertical_right,
+        "horizontal_top": horizontal_top,
+        "horizontal_bottom": horizontal_bottom,
+        "thickness": thickness,
+    }
+
+
+def _draw_panel_axis_bars(
+    canvas: np.ndarray, region_xywh: Sequence[int]
+) -> None:
+    geometry = _panel_axis_bar_geometry(region_xywh)
+    color = np.asarray([232, 232, 232], dtype=np.uint8)
+    canvas[
+        geometry["top"] : geometry["bottom"],
+        geometry["vertical_left"] : geometry["vertical_right"],
+    ] = color
+    canvas[
+        geometry["horizontal_top"] : geometry["horizontal_bottom"],
+        geometry["left"] : geometry["right"],
+    ] = color
+
+
+def panel_axis_edges(region_xywh: Sequence[int]) -> List[Dict[str, Any]]:
+    """Describe the four broad-bar edges in canonical screen coordinates."""
+
+    value = _panel_axis_bar_geometry(region_xywh)
+    clearance = max(4, value["thickness"])
+    vertical_segments = [
+        [value["top"], value["horizontal_top"] - clearance],
+        [value["horizontal_bottom"] + clearance, value["bottom"]],
+    ]
+    horizontal_segments = [
+        [value["left"], value["vertical_left"] - clearance],
+        [value["vertical_right"] + clearance, value["right"]],
+    ]
+    search = max(10, int(round(value["thickness"] * 1.75)))
+    return [
+        {
+            "id": "vertical_left",
+            "axis": "vertical",
+            "coordinate_screen_px": float(value["vertical_left"]) - 0.5,
+            "segments_screen_px": vertical_segments,
+            "polarity": 1,
+            "search_half_width_px": search,
+        },
+        {
+            "id": "vertical_right",
+            "axis": "vertical",
+            "coordinate_screen_px": float(value["vertical_right"]) - 0.5,
+            "segments_screen_px": vertical_segments,
+            "polarity": -1,
+            "search_half_width_px": search,
+        },
+        {
+            "id": "horizontal_top",
+            "axis": "horizontal",
+            "coordinate_screen_px": float(value["horizontal_top"]) - 0.5,
+            "segments_screen_px": horizontal_segments,
+            "polarity": 1,
+            "search_half_width_px": search,
+        },
+        {
+            "id": "horizontal_bottom",
+            "axis": "horizontal",
+            "coordinate_screen_px": float(value["horizontal_bottom"]) - 0.5,
+            "segments_screen_px": horizontal_segments,
+            "polarity": -1,
+            "search_half_width_px": search,
+        },
+    ]
+
+
+def focus_panel_axis_edges(region_xywh: Sequence[int]) -> List[Dict[str, Any]]:
+    """Describe the broad outer edges of the existing GUI focus frame."""
+
+    x, y, width, height = focus_frame_rect(region_xywh)
+    thickness = max(4, int(round(min(width, height) * 0.012)))
+    corner_clearance = max(12, thickness * 3)
+    search = max(8, thickness * 2)
+    return [
+        {
+            "id": "focus_frame_left",
+            "axis": "vertical",
+            "coordinate_screen_px": float(x) - 0.5,
+            "segments_screen_px": [
+                [y + corner_clearance, y + height - corner_clearance]
+            ],
+            "polarity": 1,
+            "search_half_width_px": search,
+        },
+        {
+            "id": "focus_frame_right",
+            "axis": "vertical",
+            "coordinate_screen_px": float(x + width) - 0.5,
+            "segments_screen_px": [
+                [y + corner_clearance, y + height - corner_clearance]
+            ],
+            "polarity": -1,
+            "search_half_width_px": search,
+        },
+        {
+            "id": "focus_frame_top",
+            "axis": "horizontal",
+            "coordinate_screen_px": float(y) - 0.5,
+            "segments_screen_px": [
+                [x + corner_clearance, x + width - corner_clearance]
+            ],
+            "polarity": 1,
+            "search_half_width_px": search,
+        },
+        {
+            "id": "focus_frame_bottom",
+            "axis": "horizontal",
+            "coordinate_screen_px": float(y + height) - 0.5,
+            "segments_screen_px": [
+                [x + corner_clearance, x + width - corner_clearance]
+            ],
+            "polarity": -1,
+            "search_half_width_px": search,
+        },
+    ]
+
+
 def focus_frame_rect(region_xywh: Sequence[int]) -> List[int]:
     """Return a centered pose rectangle with acquisition margin for rig movement."""
 

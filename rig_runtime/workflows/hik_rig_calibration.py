@@ -68,6 +68,12 @@ from rig_runtime.services.calibration.rig.hik.algorithms import (
     temporal_black_statistics,
     white_statistics,
 )
+from rig_runtime.services.calibration.rig.hik.panel_axis import (
+    aggregate_panel_axis_measurements,
+    measure_panel_axis_edges,
+    panel_axis_correction_matrix,
+    render_panel_axis_evidence,
+)
 from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter
 from rig_runtime.adapters.android.hik_display import AdbDisplayTarget
 from rig_runtime.evidence.rig_media import (
@@ -90,7 +96,10 @@ from rig_runtime.services.calibration.rig.hik.patterns import (
     camera_white_mask,
     focus_edge_regions,
     focus_frame_rect,
+    focus_panel_axis_edges,
     focus_pattern,
+    panel_axis_edges,
+    panel_axis_pattern,
     tinted,
     white_patch,
 )
@@ -378,6 +387,18 @@ class HikRigCalibrationSession:
         self.hardware_roi: Optional[List[int]] = None
         self.focus_history: List[Dict[str, Any]] = []
         self.focus_pose_history: List[Dict[str, Any]] = []
+        self.panel_axis_history: List[Dict[str, Any]] = []
+        self.panel_axis_measurement: Dict[str, Any] = {
+            "schema_version": "1.0",
+            "status": "unavailable",
+            "applied": False,
+            "non_gating": True,
+            "reason": "not_measured",
+        }
+        self.panel_axis_sample: Optional[FrameSample] = None
+        self.panel_axis_rectified_image: Optional[np.ndarray] = None
+        self.panel_axis_evidence_image: Optional[np.ndarray] = None
+        self._panel_axis_base_maps = None
         self._focus_focal_length_px: Optional[float] = None
         self._focus_focal_candidates_px: List[float] = []
         self._focus_geometry_changed = False
@@ -2086,6 +2107,15 @@ class HikRigCalibrationSession:
             calibration_screen_size,
         )
         self._raw_roi_cache.clear()
+        self._panel_axis_base_maps = None
+        self.panel_axis_history = []
+        self.panel_axis_measurement = {
+            "schema_version": "1.0",
+            "status": "unavailable",
+            "applied": False,
+            "non_gating": True,
+            "reason": "geometry_recalibrated",
+        }
         viewport_polygon = (
             raw_sensor_viewport_in_screen(
                 camera_size, self.geometry.matrix_3x3, self.lens_model
@@ -3094,6 +3124,202 @@ class HikRigCalibrationSession:
             )
         )
 
+    def _base_normalization_matrix(self) -> tuple[np.ndarray, List[int]]:
+        """Return the ChArUco camera-to-visible-phone mapping before axis refinement."""
+
+        geometry = self._required(self.geometry, "screen geometry")
+        visible_region = self._required(
+            self.visible_region, "camera-visible screen region"
+        )
+        x, y, width, height = map(int, visible_region["xywh"])
+        screen_to_output = np.asarray(
+            [[1.0, 0.0, -float(x)], [0.0, 1.0, -float(y)], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        matrix = screen_to_output.dot(
+            np.asarray(geometry.matrix_3x3, dtype=np.float64)
+        )
+        return matrix / matrix[2, 2], [width, height]
+
+    def _panel_axis_maps(self):
+        if self._panel_axis_base_maps is None:
+            matrix, output_size = self._base_normalization_matrix()
+            self._panel_axis_base_maps = self._rectification_maps(
+                matrix, output_size
+            )
+        return self._panel_axis_base_maps
+
+    def _measure_panel_axis_frame(
+        self,
+        frame: np.ndarray,
+        edge_specs: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> tuple[Dict[str, Any], np.ndarray]:
+        visible_region = self._required(
+            self.visible_region, "camera-visible screen region"
+        )
+        map_x, map_y = self._panel_axis_maps()
+        rectified = cv2.remap(
+            frame,
+            map_x,
+            map_y,
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(24, 24, 24),
+        )
+        measurement = measure_panel_axis_edges(
+            rectified,
+            list(edge_specs or panel_axis_edges(visible_region["safe_xywh"])),
+            visible_region["xywh"][:2],
+            output_to_raw_maps=(map_x, map_y),
+            maximum_correction_degrees=30.0,
+        )
+        return measurement, rectified
+
+    @staticmethod
+    def _panel_axis_config_result(
+        measurement: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Drop display-only point clouds while retaining auditable fit metrics."""
+
+        result = dict(measurement)
+        lines = []
+        for source in result.pop("representative_lines", result.pop("lines", [])):
+            row = dict(source)
+            row.pop("detected_points_output_xy", None)
+            lines.append(row)
+        if lines:
+            result["representative_lines"] = lines
+        failures = []
+        for source in result.get("frame_failures") or []:
+            row = dict(source)
+            row.pop("lines", None)
+            row.pop("failures", None)
+            failures.append(row)
+        if failures:
+            result["frame_failures"] = failures
+        return result
+
+    def calibrate_panel_axis(self) -> Dict[str, Any]:
+        """Measure broad target edges automatically without gating calibration."""
+
+        visible_region = self._required(
+            self.visible_region, "camera-visible screen region"
+        )
+        try:
+            presentation = self.target.present_image(
+                panel_axis_pattern(
+                    self._calibration_screen_size_px(),
+                    visible_region["safe_xywh"],
+                ),
+                "Broad orthogonal panel-axis edges",
+            )
+            self._wait_painted(presentation)
+        except (ValueError, RuntimeError) as exc:
+            aggregate = {
+                "schema_version": "1.0",
+                "status": "unavailable",
+                "applied": False,
+                "non_gating": True,
+                "reason": "target_presentation_failed: {}".format(exc),
+                "attempted_frames": 0,
+                "maximum_correction_degrees": 30.0,
+            }
+            self.panel_axis_measurement = aggregate
+            warning = (
+                "Panel-axis target could not be presented; retaining the "
+                "ChArUco rectification. {}".format(exc)
+            )
+            self.calibration_warnings.append(warning)
+            self.progress("Warning: " + warning)
+            return aggregate
+        rows = []
+        samples = []
+        rectified_frames = []
+        count = max(3, min(8, int(self.options.settle_frames) + 2))
+        for _ in range(count):
+            sample = self._read_camera()
+            self.last_frame = sample.image.copy()
+            try:
+                measurement, rectified = self._measure_panel_axis_frame(
+                    sample.image
+                )
+            except (ValueError, RuntimeError) as exc:
+                measurement = {
+                    "schema_version": "1.0",
+                    "status": "unavailable",
+                    "applied": False,
+                    "non_gating": True,
+                    "reason": str(exc),
+                }
+                rectified = None
+            rows.append(measurement)
+            samples.append(sample)
+            rectified_frames.append(rectified)
+        aggregate = aggregate_panel_axis_measurements(
+            rows, maximum_correction_degrees=30.0
+        )
+        self.panel_axis_history = rows
+        self.panel_axis_measurement = aggregate
+        usable = [
+            index for index, row in enumerate(rows)
+            if row.get("status") == "accepted"
+        ]
+        if usable:
+            residual = float(aggregate["residual_clockwise_degrees"])
+            selected = min(
+                usable,
+                key=lambda index: abs(
+                    float(rows[index]["residual_clockwise_degrees"]) - residual
+                ),
+            )
+            self.panel_axis_sample = samples[selected]
+            self.panel_axis_rectified_image = rectified_frames[selected]
+            self.panel_axis_evidence_image = render_panel_axis_evidence(
+                self.panel_axis_rectified_image, aggregate
+            )
+            self.progress(
+                "Panel-axis refinement: residual {:+.4f} deg clockwise; "
+                "temporal p95 {:.4f} deg; correction {}.".format(
+                    residual,
+                    float(aggregate["temporal_p95_deviation_degrees"]),
+                    "accepted into rectification"
+                    if aggregate.get("applied")
+                    else "rejected by the 30 degree ChArUco guard",
+                )
+            )
+        else:
+            warning = (
+                "Panel-axis edge measurement was unavailable; retaining the "
+                "ChArUco rectification without a residual correction."
+            )
+            self.calibration_warnings.append(warning)
+            self.progress("Warning: " + warning)
+        return aggregate
+
+    def _update_focus_panel_axis(
+        self, sample: FrameSample
+    ) -> Dict[str, Any]:
+        visible_region = self._required(
+            self.visible_region, "camera-visible screen region"
+        )
+        measurement, rectified = self._measure_panel_axis_frame(
+            sample.image,
+            focus_panel_axis_edges(visible_region["safe_xywh"]),
+        )
+        self.panel_axis_history.append(measurement)
+        self.panel_axis_history = self.panel_axis_history[-30:]
+        aggregate = aggregate_panel_axis_measurements(
+            self.panel_axis_history[-15:], maximum_correction_degrees=30.0
+        )
+        self.panel_axis_measurement = aggregate
+        if measurement.get("status") == "accepted":
+            self.panel_axis_sample = sample
+            self.panel_axis_rectified_image = rectified
+            self.panel_axis_evidence_image = render_panel_axis_evidence(
+                rectified, aggregate
+            )
+        return aggregate
+
     def _focus_measurement(self, frame: np.ndarray) -> Dict[str, Any]:
         visible_region = self._required(self.visible_region, "camera-visible screen region")
         geometry = self._required(self.geometry, "screen geometry")
@@ -3218,10 +3444,21 @@ class HikRigCalibrationSession:
             cv2.namedWindow(window, cv2.WINDOW_NORMAL)
             window_created = True
             while True:
-                frame = self._read_camera().image
+                sample = self._read_camera()
+                frame = sample.image
                 self.last_frame = frame.copy()
                 measurement = self._focus_measurement(frame)
                 self.focus_history.append(measurement)
+                try:
+                    panel_axis = self._update_focus_panel_axis(sample)
+                except (ValueError, RuntimeError) as exc:
+                    panel_axis = {
+                        "schema_version": "1.0",
+                        "status": "unavailable",
+                        "applied": False,
+                        "non_gating": True,
+                        "reason": str(exc),
+                    }
                 pose = None
                 pose_error = None
                 frame_displacement_px = None
@@ -3305,6 +3542,27 @@ class HikRigCalibrationSession:
                         self._format_metric(maxima.get("mtf10"), 4),
                     ),
                 ]
+                if panel_axis.get("residual_clockwise_degrees") is not None:
+                    lines.append(
+                        "Panel axis: {:+.4f} deg CW residual; temporal p95 {} deg; {}".format(
+                            float(panel_axis["residual_clockwise_degrees"]),
+                            self._format_metric(
+                                panel_axis.get("temporal_p95_deviation_degrees"),
+                                4,
+                            ),
+                            (
+                                "will be folded into rectification"
+                                if panel_axis.get("applied")
+                                else "not applied"
+                            ),
+                        )
+                    )
+                else:
+                    lines.append(
+                        "Panel axis: measuring broad horizontal/vertical edges ({})".format(
+                            panel_axis.get("reason", "waiting for stable evidence")
+                        )
+                    )
                 if pose is not None:
                     lines.extend(
                         [
@@ -4133,12 +4391,63 @@ class HikRigCalibrationSession:
                 if self.lens_model.get("source") == "measured"
                 else "hik_full_sensor_bgr_pixels"
             )
-            calibration["normalization"]["orientation"] = {
-                **dict(orientation_evidence),
-                "output_x_axis": "app_right",
-                "output_y_axis": "app_down",
+            panel_axis = self._panel_axis_config_result(
+                self.panel_axis_measurement
+            )
+            normalization_matrix = np.asarray(
+                calibration["normalization"]["matrix_3x3"], dtype=np.float64
+            )
+            correction_matrix = np.eye(3, dtype=np.float64)
+            if panel_axis.get("applied"):
+                correction_matrix = panel_axis_correction_matrix(
+                    [width, height],
+                    float(panel_axis["correction_counterclockwise_degrees"]),
+                )
+                normalization_matrix = correction_matrix.dot(
+                    normalization_matrix
+                )
+                normalization_matrix /= normalization_matrix[2, 2]
+            panel_axis["rectification_composition"] = {
+                "applied": bool(panel_axis.get("applied")),
+                "operation": "left_compose_output_space_rotation",
+                "base_full_sensor_camera_to_output_3x3": (
+                    calibration["normalization"]["matrix_3x3"]
+                ),
+                "correction_matrix_output_3x3": correction_matrix.tolist(),
+                "runtime_resampling_passes_added": 0,
             }
-            normalization_matrix = np.asarray(calibration["normalization"]["matrix_3x3"], dtype=np.float64)
+            panel_up = panel_axis.get(
+                "panel_up_unit_vector_full_sensor_camera_xy",
+                orientation_evidence.get("app_up_unit_vector_camera_xy"),
+            )
+            camera_up_to_panel_up = panel_axis.get(
+                "camera_up_to_panel_up_clockwise_degrees",
+                orientation_evidence.get(
+                    "camera_up_to_app_up_clockwise_degrees"
+                ),
+            )
+            orientation_value = {
+                **dict(orientation_evidence),
+                "panel_axis_alignment": panel_axis,
+                "panel_up_reference_when_rectification_disabled": {
+                    "source": (
+                        "broad_orthogonal_panel_edges"
+                        if panel_axis.get("applied")
+                        else "charuco_fallback"
+                    ),
+                    "space_id": "hik_full_sensor_camera_pixels",
+                    "panel_up_unit_vector_xy": panel_up,
+                    "camera_up_to_panel_up_clockwise_degrees": (
+                        camera_up_to_panel_up
+                    ),
+                },
+                "output_x_axis": "adb_panel_right",
+                "output_y_axis": "adb_panel_down",
+            }
+            calibration["normalization"]["matrix_3x3"] = (
+                normalization_matrix.tolist()
+            )
+            calibration["normalization"]["orientation"] = orientation_value
             coordinate_spaces = hik_image_space_conversions(
                 geometry.matrix_3x3,
                 geometry.inverse_matrix_3x3,
@@ -4154,16 +4463,15 @@ class HikRigCalibrationSession:
                 lens_model=self.lens_model,
             )
             maps = self._rectification_maps(normalization_matrix, [width, height])
-            if self.lens_model.get("source") == "measured":
-                map_x, map_y = maps
-                valid_mask = (
-                    np.isfinite(map_x)
-                    & np.isfinite(map_y)
-                    & (map_x >= 0)
-                    & (map_y >= 0)
-                    & (map_x <= full_size[0] - 1)
-                    & (map_y <= full_size[1] - 1)
-                ).astype(np.uint8) * 255
+            map_x, map_y = maps
+            valid_mask = (
+                np.isfinite(map_x)
+                & np.isfinite(map_y)
+                & (map_x >= 0)
+                & (map_y >= 0)
+                & (map_x <= full_size[0] - 1)
+                & (map_y <= full_size[1] - 1)
+            ).astype(np.uint8) * 255
             try:
                 cross_source_check = self._save_cross_source_check(
                     temporary, maps, valid_mask, visible_region
@@ -4260,9 +4568,7 @@ class HikRigCalibrationSession:
                         self.lens_model.get("source") == "measured"
                     ),
                     "orientation": {
-                        **dict(orientation_evidence),
-                        "output_x_axis": "app_right",
-                        "output_y_axis": "app_down",
+                        **orientation_value,
                     },
                 },
                 "coordinate_spaces": coordinate_spaces,
@@ -4283,6 +4589,7 @@ class HikRigCalibrationSession:
                     "cross_source_check": cross_source_check,
                     "focus_history": self.focus_history,
                     "focus_pose_history": self.focus_pose_history,
+                    "panel_axis_alignment": panel_axis,
                     "focus_save_gate": {
                         "repeatability_policy": self.options.repeatability_policy,
                         "base_max_displacement_camera_px": float(
@@ -4303,6 +4610,91 @@ class HikRigCalibrationSession:
                 validate_hik_coordinate_contract(config, camera_roi)
             )
             additional_media = []
+            config["evidence"] = {
+                "panel_axis_alignment": {
+                    "status": panel_axis.get("status"),
+                    "applied": bool(panel_axis.get("applied")),
+                    "raw_camera_file": (
+                        "panel_axis_raw_hik.png"
+                        if self.panel_axis_sample is not None else None
+                    ),
+                    "rectified_review_file": (
+                        "panel_axis_rectified_evidence.png"
+                        if self.panel_axis_evidence_image is not None else None
+                    ),
+                    "metadata_reference": (
+                        "hik_camera_calibration.yaml#normalization.orientation."
+                        "panel_axis_alignment"
+                    ),
+                }
+            }
+            if self.panel_axis_sample is not None:
+                axis_raw_name = "panel_axis_raw_hik.png"
+                if not cv2.imwrite(
+                    str(temporary / axis_raw_name),
+                    self.panel_axis_sample.image,
+                ):
+                    raise OSError("Could not save {}".format(axis_raw_name))
+                additional_media.append(
+                    rig_sample_media_record(
+                        axis_raw_name,
+                        self.panel_axis_sample,
+                        operation="broad_panel_axis_target_hik_acquisition",
+                        metadata_reference=(
+                            "hik_camera_calibration.yaml#results."
+                            "panel_axis_alignment"
+                        ),
+                    )
+                )
+            if self.panel_axis_evidence_image is not None:
+                axis_review_name = "panel_axis_rectified_evidence.png"
+                if not cv2.imwrite(
+                    str(temporary / axis_review_name),
+                    self.panel_axis_evidence_image,
+                ):
+                    raise OSError("Could not save {}".format(axis_review_name))
+                additional_media.append(
+                    raster_record(
+                        axis_review_name,
+                        media_type="image",
+                        stored_size_px=[
+                            int(self.panel_axis_evidence_image.shape[1]),
+                            int(self.panel_axis_evidence_image.shape[0]),
+                        ],
+                        space_id=(
+                            "hik_rig_rectified_visible_phone_pixels_"
+                            "before_panel_axis_correction_review"
+                        ),
+                        operation=(
+                            "broad_panel_axis_fit_overlay_on_initial_"
+                            "charuco_rectification"
+                        ),
+                        source_space_id="hik_full_sensor_camera_pixels",
+                        source_region={
+                            "kind": "full_frame",
+                            "xywh": [0, 0] + full_size,
+                        },
+                        orientation={
+                            "value": "adb_panel_axes_with_measured_residual"
+                        },
+                        transform={
+                            "matrix_reference": (
+                                "hik_camera_calibration.yaml#normalization."
+                                "orientation.panel_axis_alignment."
+                                "rectification_composition."
+                                "base_full_sensor_camera_to_output_3x3"
+                            )
+                        },
+                        metadata_reference=(
+                            "hik_camera_calibration.yaml#normalization."
+                            "orientation.panel_axis_alignment"
+                        ),
+                        notes=(
+                            "Review overlay; colored points and fitted lines "
+                            "are annotations in the declared rectified space."
+                        ),
+                    )
+                )
             evidence_sample = self.final_verification_sample or self.last_sample
             if evidence_sample is not None:
                 if not cv2.imwrite(
@@ -4324,11 +4716,9 @@ class HikRigCalibrationSession:
                         ),
                     )
                 )
-                config["evidence"] = {
-                    "expanded_review": {
-                        "file": review_name,
-                        "geometry": dict(review.geometry),
-                    }
+                config["evidence"]["expanded_review"] = {
+                    "file": review_name,
+                    "geometry": dict(review.geometry),
                 }
             config["media"] = build_hik_calibration_media_registry(
                 temporary,
@@ -4378,6 +4768,10 @@ class HikRigCalibrationSession:
                 self._timed_stage(
                     "final_imaging_verification", self.verify_final_imaging
                 )
+                if self.options.headless:
+                    self._timed_stage(
+                        "panel_axis_alignment", self.calibrate_panel_axis
+                    )
                 if self.options.grade_data_matrix:
                     self._timed_stage("data_matrix", self.grade_data_matrix)
                 if self.options.headless:
