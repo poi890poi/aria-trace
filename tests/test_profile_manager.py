@@ -6,8 +6,11 @@ from pathlib import Path
 import numpy as np
 
 from acquisition.profile_manager import (
+    game_display_orientation_turns,
+    publish_game_model,
     publish_minimap_profiles,
     publish_rig_calibration,
+    resolve_game_model,
 )
 from acquisition.profile_registry import AdapterRequest, ProfileContext, ProfileRegistry
 from rig_runtime.services.calibration.minimap.spatial import minimap_crop_space
@@ -74,6 +77,48 @@ def write_rig(
 
 
 class ProfileManagerTests(unittest.TestCase):
+    def test_game_model_defaults_to_landscape_with_usb_on_right(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ProfileRegistry(Path(directory) / "profiles")
+            model = resolve_game_model(registry, "game-1")
+
+            self.assertEqual("landscape_usb_right", model["game_display_orientation"])
+            self.assertEqual(
+                1,
+                model[
+                    "game_surface_quarter_turns_clockwise_from_phone_natural"
+                ],
+            )
+            self.assertEqual(1, game_display_orientation_turns("landscape_usb_right"))
+
+    def test_configured_game_orientation_composes_against_active_rig(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProfileRegistry(root / "profiles")
+            rig = publish_rig_calibration(
+                write_rig(root / "rig", calibration_display_turns=1),
+                registry=registry,
+            )
+
+            model = publish_game_model(
+                registry,
+                "game-1",
+                game_display_orientation="landscape_usb_left",
+            )
+
+            self.assertEqual("landscape_usb_left", model["payload"]["game_display_orientation"])
+            self.assertEqual(3, model["payload"]["game_surface_quarter_turns_clockwise_from_phone_natural"])
+            self.assertEqual(1, len(model["recomposed_rig_game_orientation_profiles"]))
+            orientation = model["recomposed_rig_game_orientation_profiles"][0]
+            self.assertEqual(rig["revision_id"], orientation["dependencies"]["rig"])
+            self.assertEqual(model["revision_id"], orientation["dependencies"]["game_model"])
+            self.assertEqual(
+                2,
+                orientation["payload"][
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                ],
+            )
+
     def test_partial_result_without_usable_cursor_geometry_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "calibration.json"
@@ -365,7 +410,7 @@ class ProfileManagerTests(unittest.TestCase):
                     AdapterRequest(mode="minimap", color_policy="game_matched"),
                 )
             self.assertEqual(
-                3,
+                0,
                 resolved["adapter_plan"][
                     "game_upright_quarter_turns_clockwise"
                 ],

@@ -30,17 +30,49 @@ from rig_runtime.domain.spatial import (
 
 
 DEFAULT_GAME_MODEL = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "cursor_follows": "character",
     "cursor_behavior_by_acquisition": {
         "zigzag": "static",
         "micro_movement": "rotating",
     },
     "minimap_orientation": "unspecified",
+    "game_display_orientation": "landscape_usb_right",
+    "game_surface_quarter_turns_clockwise_from_phone_natural": 1,
     "source": "iris_default",
 }
 CURSOR_FOLLOWS_VALUES = ("character", "camera")
 MINIMAP_ORIENTATION_VALUES = ("unspecified", "rotating", "north_up")
+GAME_DISPLAY_ORIENTATION_VALUES = (
+    "portrait_usb_bottom",
+    "landscape_usb_right",
+    "portrait_usb_top",
+    "landscape_usb_left",
+)
+
+
+def game_display_orientation_turns(value: str) -> int:
+    """Map a physical game-up declaration to Android Surface rotation.
+
+    Android defines the reported display rotation as the clockwise rotation of
+    drawn graphics that compensates physical device rotation. On a naturally
+    portrait phone, rotating the phone counter-clockwise puts the USB edge on
+    the right and produces Surface.ROTATION_90.
+    """
+
+    selected = str(value)
+    try:
+        return GAME_DISPLAY_ORIENTATION_VALUES.index(selected)
+    except ValueError:
+        raise ValueError(
+            "game_display_orientation must be one of {}".format(
+                ", ".join(GAME_DISPLAY_ORIENTATION_VALUES)
+            )
+        )
+
+
+def game_display_orientation_from_turns(turns: int) -> str:
+    return GAME_DISPLAY_ORIENTATION_VALUES[int(turns) % 4]
 
 
 def cursor_behavior_by_acquisition(cursor_follows: str) -> Dict[str, str]:
@@ -82,6 +114,9 @@ def resolve_game_model(
     payload["cursor_behavior_by_acquisition"] = cursor_behavior_by_acquisition(
         str(payload["cursor_follows"])
     )
+    payload["game_surface_quarter_turns_clockwise_from_phone_natural"] = (
+        game_display_orientation_turns(payload["game_display_orientation"])
+    )
     payload.update(
         game_id=context.game_id,
         revision_id=profile["revision_id"],
@@ -96,6 +131,7 @@ def publish_game_model(
     *,
     cursor_follows: Optional[str] = None,
     minimap_orientation: Optional[str] = None,
+    game_display_orientation: Optional[str] = None,
     platform: str = "android",
     package: Optional[str] = None,
     game_version: Optional[str] = None,
@@ -111,26 +147,34 @@ def publish_game_model(
     )
     selected_cursor = str(cursor_follows or current["cursor_follows"])
     selected_map = str(minimap_orientation or current["minimap_orientation"])
+    selected_display = str(
+        game_display_orientation or current["game_display_orientation"]
+    )
     if selected_cursor not in CURSOR_FOLLOWS_VALUES:
         raise ValueError("cursor_follows must be character or camera")
     if selected_map not in MINIMAP_ORIENTATION_VALUES:
         raise ValueError(
             "minimap_orientation must be unspecified, rotating, or north_up"
         )
+    selected_display_turns = game_display_orientation_turns(selected_display)
     context = ProfileContext(
         game_id=game_id,
         platform=platform,
         package=package,
         game_version=game_version,
     )
-    return registry.publish(
+    profile = registry.publish(
         "game_model",
         context,
         {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "profile_kind": "game_model",
             "cursor_follows": selected_cursor,
             "minimap_orientation": selected_map,
+            "game_display_orientation": selected_display,
+            "game_surface_quarter_turns_clockwise_from_phone_natural": (
+                selected_display_turns
+            ),
             "cursor_behavior_by_acquisition": cursor_behavior_by_acquisition(
                 selected_cursor
             ),
@@ -139,6 +183,22 @@ def publish_game_model(
         review_state="accepted",
         activate=True,
     )
+    recomposed = []
+    for item in registry.list_revisions(kind="rig", active_only=True):
+        rig_profile = registry.revision(str(item["revision_id"]))
+        rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+        if rig_context.platform != context.platform:
+            continue
+        recomposed.extend(
+            recompose_active_rig_game_orientation_profiles(
+                rig_profile,
+                registry=registry,
+                activate=True,
+                only_game_id=game_id,
+            )
+        )
+    profile["recomposed_rig_game_orientation_profiles"] = recomposed
+    return profile
 
 
 def _rig_calibration_file(path: Path) -> Path:
@@ -295,6 +355,134 @@ def _rig_calibration_display_turns(
     ) % 4
 
 
+def _compose_rig_game_orientation_profile(
+    rig_profile: Mapping[str, Any],
+    *,
+    registry: ProfileRegistry,
+    game_id: str,
+    phone_profile: Optional[Mapping[str, Any]] = None,
+    game_model: Optional[Mapping[str, Any]] = None,
+    activate: bool = True,
+) -> Dict[str, Any]:
+    """Build one rig-dependent turn from portable game facts or assumptions."""
+
+    rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
+    phone_context = (
+        ProfileContext.from_dict(phone_profile.get("context") or {})
+        if phone_profile is not None
+        else None
+    )
+    package = phone_context.package if phone_context is not None else None
+    model = dict(
+        game_model
+        or resolve_game_model(
+            registry,
+            game_id,
+            platform=rig_context.platform,
+            package=package,
+        )
+    )
+    phone_payload = dict((phone_profile or {}).get("payload") or {})
+    portable_turns = phone_payload.get(
+        "game_surface_quarter_turns_clockwise_from_phone_natural"
+    )
+    if portable_turns is not None:
+        portable_turns = int(portable_turns) % 4
+        basis = str(
+            phone_payload.get("orientation_source")
+            or "phone_game_portable_orientation"
+        )
+    elif (
+        phone_context is not None
+        and phone_context.game_display.get("rotation_quarter_turns") is not None
+    ):
+        portable_turns = int(
+            phone_context.game_display["rotation_quarter_turns"]
+        ) % 4
+        basis = "phone_game_capture_surface_metadata"
+    else:
+        portable_turns = game_display_orientation_turns(
+            model.get("game_display_orientation", "landscape_usb_right")
+        )
+        basis = (
+            "configured_game_model_assumption"
+            if model.get("revision_id")
+            else "default_landscape_usb_right_assumption"
+        )
+
+    display_turns = _rig_calibration_display_turns(rig_profile, registry)
+    adapter_turns = (int(portable_turns) - int(display_turns)) % 4
+    if phone_context is not None:
+        context = _rig_phone_game_context(rig_context, phone_context)
+    else:
+        natural = list(
+            map(int, rig_context.panel_display.get("natural_panel_px") or [])
+        )
+        logical = (
+            [natural[1], natural[0]]
+            if len(natural) == 2 and portable_turns % 2
+            else natural
+        )
+        model_context = dict(model.get("context") or {})
+        context = ProfileContext(
+            game_id=game_id,
+            platform=rig_context.platform,
+            package=package or model_context.get("package"),
+            camera_adapter=rig_context.camera_adapter,
+            camera_id=rig_context.camera_id,
+            phone_id=rig_context.phone_id,
+            phone_model=rig_context.phone_model,
+            panel_display=dict(rig_context.panel_display),
+            game_display={
+                "natural_panel_px": natural,
+                "logical_frame_px": logical,
+                "game_viewport_xywh": [0, 0] + logical,
+                "rotation_quarter_turns": int(portable_turns),
+                "ui_layout_id": "orientation_assumption",
+            },
+        )
+    dependencies = {"rig": str(rig_profile["revision_id"])}
+    if phone_profile is not None:
+        dependencies["phone_game"] = str(phone_profile["revision_id"])
+    if model.get("revision_id"):
+        dependencies["game_model"] = str(model["revision_id"])
+    return registry.publish(
+        "rig_game_orientation",
+        context,
+        {
+            "profile_kind": "rig_game_orientation",
+            "game_display_orientation": game_display_orientation_from_turns(
+                portable_turns
+            ),
+            "game_surface_quarter_turns_clockwise_from_phone_natural": int(
+                portable_turns
+            ),
+            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
+                adapter_turns
+            ),
+            "orientation_source": basis,
+            "orientation_space_contract": {
+                "portable_source_space": "phone_natural_rotation_0",
+                "adapter_base_space": "rig_calibration_display",
+                "composition": (
+                    "adapter_turn = game_surface_turn - "
+                    "rig_calibration_display_turn (mod 4)"
+                ),
+            },
+        },
+        dependencies=dependencies,
+        provenance={
+            "composition": "portable_game_orientation_plus_rig",
+            "portable_orientation_basis": basis,
+            "portable_game_surface_turns": int(portable_turns),
+            "rig_calibration_display_turns": int(display_turns),
+            "adapter_output_turns": int(adapter_turns),
+        },
+        review_state="accepted" if activate else "review_required",
+        activate=activate,
+    )
+
+
 def recompose_active_rig_game_profiles(
     rig_profile: Mapping[str, Any],
     *,
@@ -354,18 +542,56 @@ def recompose_active_rig_game_orientation_profiles(
     *,
     registry: ProfileRegistry,
     activate: bool = True,
+    only_game_id: Optional[str] = None,
 ) -> list[Dict[str, Any]]:
-    """Re-express portable game-up orientation against one new rig revision."""
+    """Build game-up from portable facts, falling back to game assumptions."""
 
     rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
     target_display_turns = _rig_calibration_display_turns(rig_profile, registry)
     recomposed = []
     composed_variants = set()
+    composed_games = set()
+    for item in registry.list_revisions(kind="phone_game", active_only=True):
+        phone_profile = registry.revision(str(item["revision_id"]))
+        phone_context = ProfileContext.from_dict(
+            phone_profile.get("context") or {}
+        )
+        if only_game_id and phone_context.game_id != only_game_id:
+            continue
+        if phone_context.platform != rig_context.platform:
+            continue
+        if not _portable_panel_geometry_matches(rig_context, phone_context):
+            continue
+        target_variant = (
+            phone_context.platform,
+            phone_context.game_id,
+            phone_context.game_display_signature,
+        )
+        if target_variant in composed_variants:
+            continue
+        composed_variants.add(target_variant)
+        composed_games.add(phone_context.game_id)
+        recomposed.append(
+            _compose_rig_game_orientation_profile(
+                rig_profile,
+                registry=registry,
+                game_id=str(phone_context.game_id),
+                phone_profile=phone_profile,
+                activate=activate,
+            )
+        )
+
+    # Legacy orientation-only profiles remain a migration source when no
+    # portable phone-game profile exists for that game.
     for item in registry.list_revisions(
         kind="rig_game_orientation", active_only=True
     ):
         source = registry.revision(str(item["revision_id"]))
         source_context = ProfileContext.from_dict(source.get("context") or {})
+        if only_game_id and source_context.game_id != only_game_id:
+            continue
+        if source_context.game_id in composed_games:
+            continue
         if source_context.platform != rig_context.platform:
             continue
         if not _portable_panel_geometry_matches(rig_context, source_context):
@@ -458,6 +684,38 @@ def recompose_active_rig_game_orientation_profiles(
             activate=activate,
         )
         recomposed.append(result)
+        composed_games.add(source_context.game_id)
+
+    # A configured game can be composed before any acquisition exists. The
+    # default model is landscape with the USB edge on the right, but there is
+    # no unknown game ID to invent when neither profile nor model exists.
+    for item in registry.list_revisions(kind="game_model", active_only=True):
+        model_profile = registry.revision(str(item["revision_id"]))
+        model_context = ProfileContext.from_dict(
+            model_profile.get("context") or {}
+        )
+        if only_game_id and model_context.game_id != only_game_id:
+            continue
+        if model_context.platform != rig_context.platform:
+            continue
+        if model_context.game_id in composed_games:
+            continue
+        model = {
+            **DEFAULT_GAME_MODEL,
+            **dict(model_profile.get("payload") or {}),
+            "revision_id": model_profile["revision_id"],
+            "context": {"package": model_context.package},
+        }
+        recomposed.append(
+            _compose_rig_game_orientation_profile(
+                rig_profile,
+                registry=registry,
+                game_id=str(model_context.game_id),
+                game_model=model,
+                activate=activate,
+            )
+        )
+        composed_games.add(model_context.game_id)
     return recomposed
 
 
@@ -920,12 +1178,39 @@ def publish_minimap_profiles(
         for value in evidence
         if not isinstance(value, Mapping) or value.get("name")
     ]
+    observed_surface_turns = surface.get("quarter_turns_clockwise_from_natural")
+    if observed_surface_turns is not None:
+        game_surface_turns = int(observed_surface_turns) % 4
+        game_orientation_source = "acquisition_phone_surface_metadata"
+    else:
+        model = resolve_game_model(
+            store,
+            str(context.game_id),
+            platform=context.platform,
+            package=context.package,
+            game_version=context.game_version,
+        )
+        game_surface_turns = game_display_orientation_turns(
+            model["game_display_orientation"]
+        )
+        game_orientation_source = (
+            "configured_game_model_assumption"
+            if model.get("revision_id")
+            else "default_landscape_usb_right_assumption"
+        )
     phone_payload = {
         "profile_kind": "phone_game",
         "coordinate_space": "phone_natural_display_pixels",
         "canonical_phone_crop_xywh": canonical_crop,
         "android_logical_crop_xywh": logical_crop,
         "phone_surface_orientation": surface,
+        "game_display_orientation": game_display_orientation_from_turns(
+            game_surface_turns
+        ),
+        "game_surface_quarter_turns_clockwise_from_phone_natural": (
+            game_surface_turns
+        ),
+        "orientation_source": game_orientation_source,
         "outer_boundary": canonical_boundary,
         "rotation_center": canonical_rotation_center,
         "cursor_geometry": cursor_geometry,
@@ -989,6 +1274,7 @@ def publish_minimap_profiles(
         "phone_game": phone_profile,
         "rig_game": None,
         "rig_game_color": None,
+        "rig_game_orientation": None,
     }
     if rig_profile is not None:
         rig_game_payload = _rig_game_payload_from_phone_game(phone_profile)
@@ -1009,6 +1295,13 @@ def publish_minimap_profiles(
                 "cross_source_registration": summary.get("cross_source_registration"),
             },
             review_state="accepted" if activate else "review_required",
+            activate=activate,
+        )
+        result["rig_game_orientation"] = _compose_rig_game_orientation_profile(
+            rig_profile,
+            registry=store,
+            game_id=str(context.game_id),
+            phone_profile=phone_profile,
             activate=activate,
         )
         conversion = summary.get("hik_bayer_conversion")
@@ -1064,6 +1357,14 @@ def parser() -> argparse.ArgumentParser:
     )
     configure_game.add_argument(
         "--minimap-orientation", choices=MINIMAP_ORIENTATION_VALUES
+    )
+    configure_game.add_argument(
+        "--game-display-orientation",
+        choices=GAME_DISPLAY_ORIENTATION_VALUES,
+        help=(
+            "canonical game-up direction relative to a naturally portrait "
+            "phone (default: landscape_usb_right)"
+        ),
     )
     configure_game.add_argument("--platform", default="android")
     configure_game.add_argument("--package-id")
@@ -1235,6 +1536,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.game_id,
             cursor_follows=arguments.cursor_follows,
             minimap_orientation=arguments.minimap_orientation,
+            game_display_orientation=arguments.game_display_orientation,
             platform=arguments.platform,
             package=arguments.package_id,
             game_version=arguments.game_version,
