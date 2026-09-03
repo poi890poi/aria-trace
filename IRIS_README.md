@@ -32,6 +32,15 @@ python -m iris_tools setup show
 ```
 
 When `IRIS_PROFILE_ROOT` is unset, the local `profiles/` directory is used.
+Set it to an absolute path when IRIS is imported by another application. This
+keeps profile selection independent of that application's working directory.
+
+The profile root is relocatable. Move or copy the complete directory, update
+`IRIS_PROFILE_ROOT`, and start the application normally. Immutable revisions
+store runtime files by relative path. If a copy tool omits the `.registry`
+directory, IRIS reconstructs its SQLite index and active selections from the
+portable `profile.json` and `active.json` files. Absolute paths under
+`provenance` are audit history only and are never used to open the adapter.
 
 ## Initial rig calibration
 
@@ -223,6 +232,11 @@ Verify the selected adapter before starting the camera:
 ```powershell
 & $projectPython -c "import hikcam; print(hikcam.__file__)"
 ```
+
+After construction, the adapter exposes the effective migrated registry root
+and any automatic index recovery in
+`camera.resolved_config["profile_registry"]`. This is resolved once during
+initialization; frame streaming does not consult the registry.
 
 The printed path should be inside `IRIS-Windows-x64\python`. Do not copy only
 `hikcam.py`, and do not add an executable directory under `apps/` to

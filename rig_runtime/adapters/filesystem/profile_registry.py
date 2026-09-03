@@ -95,7 +95,26 @@ def default_profile_root(explicit: Optional[Path] = None) -> Path:
         return Path(explicit).resolve()
     configured = os.environ.get("IRIS_PROFILE_ROOT")
     if configured:
-        return Path(configured).resolve()
+        # ``set IRIS_PROFILE_ROOT="C:\\path with spaces"`` retains the quote
+        # characters in cmd.exe. Accept that common spelling so an external
+        # application does not silently open a new registry under its cwd.
+        configured = os.path.expandvars(str(configured).strip())
+        if (
+            len(configured) >= 2
+            and configured[0] == configured[-1]
+            and configured[0] in ("'", '"')
+        ):
+            configured = configured[1:-1].strip()
+        if not configured:
+            raise ValueError("IRIS_PROFILE_ROOT cannot be empty")
+        configured_path = Path(configured).expanduser()
+        if not configured_path.is_absolute():
+            raise ValueError(
+                "IRIS_PROFILE_ROOT must be an absolute path so profile selection "
+                "does not depend on the calling application's working directory: "
+                "{}".format(configured)
+            )
+        return configured_path.resolve()
     return (Path.cwd() / "profiles").resolve()
 
 
@@ -519,8 +538,12 @@ class ProfileRegistry:
         self.root = default_profile_root(root)
         self.registry_directory = self.root / ".registry"
         self.database = self.registry_directory / "profiles.sqlite3"
+        database_existed = self.database.is_file()
         self.registry_directory.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.migration_report = self._recover_portable_registry(
+            database_existed=database_existed
+        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -571,6 +594,205 @@ class ProfileRegistry:
                 );
                 """
             )
+
+    def _recover_portable_registry(self, *, database_existed: bool) -> Dict[str, Any]:
+        """Repair the derived SQLite index from relocatable profile files.
+
+        Immutable ``profile.json`` documents and per-variant ``active.json``
+        pointers are the portable representation. SQLite is an acceleration
+        and activation index. A directory move can therefore omit ``.registry``
+        (common with dot-file-excluding copy tools) without losing profiles or
+        their active selections.
+        """
+
+        active_paths = list(self.root.rglob("active.json"))
+        with self._connect() as connection:
+            revision_count = int(
+                connection.execute("SELECT COUNT(*) FROM revisions").fetchone()[0]
+            )
+            active_rows = {
+                str(row[0]): str(row[1])
+                for row in connection.execute(
+                    "SELECT revision_id, activated_utc FROM active_profiles"
+                ).fetchall()
+            }
+
+        pointer_documents = []
+        stale_authority = False
+        for path in active_paths:
+            try:
+                pointer = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            revision_id = str(pointer.get("active_revision_id") or "")
+            if not revision_id:
+                continue
+            pointer_documents.append((path, pointer, revision_id))
+            authority = pointer.get("registry_authority")
+            if authority:
+                try:
+                    stale_authority = (
+                        Path(str(authority)).resolve() != self.database.resolve()
+                    ) or stale_authority
+                except OSError:
+                    stale_authority = True
+
+        active_ids = {item[2] for item in pointer_documents}
+        index_incomplete = (
+            not database_existed
+            or revision_count == 0
+            or not active_ids.issubset(set(active_rows))
+            or stale_authority
+        )
+        report = {
+            "status": "not_needed",
+            "profile_root": str(self.root),
+            "database_existed": bool(database_existed),
+            "revisions_recovered": 0,
+            "activations_recovered": 0,
+            "active_pointers_rebound": 0,
+        }
+        if not index_incomplete:
+            return report
+
+        manifest_paths = [
+            path
+            for path in self.root.rglob("profile.json")
+            if path.parent.parent.name == "revisions"
+        ]
+        manifests = {}
+        for path in manifest_paths:
+            try:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            revision_id = str(manifest.get("revision_id") or "")
+            identity = dict(manifest.get("identity") or {})
+            context = ProfileContext.from_dict(manifest.get("context") or {})
+            kind = str(identity.get("kind") or "")
+            if not revision_id or kind not in PROFILE_KINDS:
+                continue
+            try:
+                relative_directory = str(path.parent.relative_to(self.root))
+            except ValueError:
+                continue
+            manifests[revision_id] = (
+                path, manifest, identity, context, relative_directory
+            )
+
+        recovered_revisions = 0
+        recovered_activations = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for revision_id, item in manifests.items():
+                path, manifest, identity, context, relative_directory = item
+                before = connection.total_changes
+                connection.execute(
+                    """INSERT OR IGNORE INTO revisions
+                       (revision_id, kind, owner_id, game_id, panel_signature,
+                        game_signature, variant_id, review_state, created_utc,
+                        relative_directory, content_sha256, camera_id, phone_id,
+                        context_json, dependencies_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        revision_id,
+                        str(identity.get("kind") or ""),
+                        str(identity.get("owner_id") or ""),
+                        str(identity.get("game_id") or "_"),
+                        str(identity.get("panel_signature") or "_"),
+                        str(
+                            identity.get("game_display_signature")
+                            or identity.get("game_signature")
+                            or "_"
+                        ),
+                        str(identity.get("variant_id") or "_"),
+                        str(manifest.get("review_state") or "review_required"),
+                        str(manifest.get("created_utc") or ""),
+                        relative_directory,
+                        str(
+                            manifest.get("content_sha256")
+                            or hashlib.sha256(path.read_bytes()).hexdigest()
+                        ),
+                        context.camera_id,
+                        context.phone_id,
+                        _canonical_json(manifest.get("context") or {}),
+                        _canonical_json(manifest.get("dependencies") or {}),
+                    ),
+                )
+                if connection.total_changes > before:
+                    recovered_revisions += 1
+
+            for _path, pointer, revision_id in pointer_documents:
+                row = connection.execute(
+                    "SELECT * FROM revisions WHERE revision_id=?", (revision_id,)
+                ).fetchone()
+                if row is None:
+                    continue
+                previous = connection.execute(
+                    """SELECT revision_id FROM active_profiles
+                       WHERE kind=? AND owner_id=? AND game_id=?
+                         AND panel_signature=? AND game_signature=?""",
+                    (
+                        row["kind"], row["owner_id"], row["game_id"],
+                        row["panel_signature"], row["game_signature"],
+                    ),
+                ).fetchone()
+                connection.execute(
+                    """INSERT INTO active_profiles
+                       (kind, owner_id, game_id, panel_signature, game_signature,
+                        revision_id, activated_utc)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(kind, owner_id, game_id, panel_signature, game_signature)
+                       DO UPDATE SET revision_id=excluded.revision_id,
+                                     activated_utc=excluded.activated_utc""",
+                    (
+                        row["kind"], row["owner_id"], row["game_id"],
+                        row["panel_signature"], row["game_signature"],
+                        revision_id,
+                        str(pointer.get("activated_utc") or row["created_utc"]),
+                    ),
+                )
+                connection.execute(
+                    "UPDATE revisions SET review_state='accepted' WHERE revision_id=?",
+                    (revision_id,),
+                )
+                if previous is None or str(previous["revision_id"]) != revision_id:
+                    recovered_activations += 1
+
+        rebound = 0
+        for path, pointer, revision_id in pointer_documents:
+            if revision_id not in manifests:
+                continue
+            authority = str(self.database.resolve())
+            if str(pointer.get("registry_authority") or "") == authority:
+                continue
+            rebound_pointer = dict(pointer)
+            rebound_pointer["registry_authority"] = authority
+            _atomic_json(path, rebound_pointer)
+            yaml_path = path.with_suffix(".yaml")
+            write_commented_yaml(
+                yaml_path,
+                rebound_pointer,
+                header="# Human-readable mirror; the SQLite registry is authoritative.",
+                section_comments={"identity": "Display-specific active profile key."},
+            )
+            rebound += 1
+
+        report.update(
+            status="recovered_from_portable_manifests",
+            revisions_recovered=recovered_revisions,
+            activations_recovered=recovered_activations,
+            active_pointers_rebound=rebound,
+        )
+        if recovered_revisions or recovered_activations:
+            warnings.warn(
+                "Recovered IRIS profile registry at {} from portable profile "
+                "manifests ({} revisions, {} active selections).".format(
+                    self.root, recovered_revisions, recovered_activations
+                ),
+                RuntimeWarning,
+            )
+        return report
 
     def _profile_directory(self, key: ProfileKey) -> Path:
         game = key.game_id if key.game_id != "_" else "_"
@@ -874,9 +1096,11 @@ class ProfileRegistry:
         if not candidates:
             raise ProfileResolutionError(
                 "No active {} profile matches camera={!r}, phone={!r}, game={!r}, "
-                "panel={!r}, game_display={!r}".format(
+                "panel={!r}, game_display={!r} under IRIS profile root {!s} "
+                "(registry migration status: {}).".format(
                     kind, context.camera_id, context.phone_id, context.game_id,
                     context.panel_signature, context.game_display_signature,
+                    self.root, self.migration_report.get("status"),
                 )
             )
         result = candidates[0]

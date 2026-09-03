@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +76,84 @@ class ProfileRegistryTests(unittest.TestCase):
         configured = self.root / "configured-profiles"
         with mock.patch.dict("os.environ", {"IRIS_PROFILE_ROOT": str(configured)}):
             self.assertEqual(explicit.resolve(), default_profile_root(explicit))
+
+    def test_moved_profile_tree_recovers_registry_from_portable_manifests(self):
+        published = self.publish_rig()
+        original = self.root / "profiles"
+        moved = self.root / "moved-profiles"
+        shutil.move(str(original), str(moved))
+        shutil.rmtree(str(moved / ".registry"))
+
+        external_application = self.root / "external-application"
+        external_application.mkdir()
+        with mock.patch.dict(
+            "os.environ", {"IRIS_PROFILE_ROOT": str(moved)}, clear=True
+        ):
+            with mock.patch.object(
+                profile_registry_module.Path,
+                "cwd",
+                return_value=external_application,
+            ):
+                migrated = ProfileRegistry()
+
+        resolved = migrated.resolve("rig", context())
+        self.assertEqual(published["revision_id"], resolved["revision_id"])
+        self.assertTrue(
+            migrated.runtime_file(resolved, "hik_camera_calibration").is_file()
+        )
+        self.assertEqual(moved.resolve(), migrated.root)
+        self.assertGreaterEqual(migrated.migration_report["revisions_recovered"], 1)
+        self.assertEqual(1, migrated.migration_report["activations_recovered"])
+
+    def test_migration_preserves_active_cross_profile_dependencies(self):
+        rig = self.publish_rig()
+        phone_game = self.registry.publish(
+            "phone_game",
+            context(),
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            review_state="accepted",
+            activate=True,
+        )
+        rig_game = self.registry.publish(
+            "rig_game",
+            context(),
+            {"canonical_phone_crop_xywh": [10, 20, 30, 30]},
+            dependencies={
+                "rig": rig["revision_id"],
+                "phone_game": phone_game["revision_id"],
+            },
+            review_state="accepted",
+            activate=True,
+        )
+        original = self.root / "profiles"
+        moved = self.root / "moved-profile-graph"
+        shutil.move(str(original), str(moved))
+        shutil.rmtree(str(moved / ".registry"))
+
+        migrated = ProfileRegistry(moved)
+        resolved = migrated.resolve_adapter(
+            context(), AdapterRequest(mode="dual", color_policy="rig_locked")
+        )
+
+        self.assertEqual(rig["revision_id"], resolved["profiles"]["rig"])
+        self.assertEqual(
+            phone_game["revision_id"], resolved["profiles"]["phone_game"]
+        )
+        self.assertEqual(rig_game["revision_id"], resolved["profiles"]["rig_game"])
+        self.assertTrue(Path(resolved["paths"]["rig_calibration"]).is_file())
+        self.assertEqual(3, migrated.migration_report["activations_recovered"])
+
+    def test_quoted_profile_root_environment_is_accepted(self):
+        configured = self.root / "configured profiles"
+        with mock.patch.dict(
+            "os.environ", {"IRIS_PROFILE_ROOT": '"{}"'.format(configured)}
+        ):
+            self.assertEqual(configured.resolve(), default_profile_root())
+
+    def test_relative_profile_root_environment_is_rejected_for_external_callers(self):
+        with mock.patch.dict("os.environ", {"IRIS_PROFILE_ROOT": "profiles"}):
+            with self.assertRaisesRegex(ValueError, "must be an absolute path"):
+                default_profile_root()
 
     def test_display_dimensions_and_refresh_are_compatibility_dimensions(self):
         base = context()

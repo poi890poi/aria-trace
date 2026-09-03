@@ -90,7 +90,7 @@ def _registry_configuration(
         load_system_configuration,
     )
 
-    profile_root = Path(config["profile_root"]) if config.get("profile_root") else None
+    profile_root = config.get("profile_root") or None
     settings = load_system_configuration(profile_root)
     configured = dict(config)
     for name, value in (
@@ -151,8 +151,14 @@ def _registry_configuration(
         request,
         profile_revisions=profile_revisions,
     )
+    resolved["profile_registry"] = {
+        "root": str(registry.root),
+        "root_source": settings.get("profile_root_source"),
+        "migration": dict(registry.migration_report),
+    }
     effective = dict(configured)
     effective.update(
+        profile_root=str(registry.root),
         calibration=resolved["paths"]["rig_calibration"],
         mode=resolved["adapter_plan"]["mode"],
         rectify=bool(resolved["adapter_plan"]["rectify"]),
@@ -403,11 +409,7 @@ class HikCamera:
         )
 
         configured = dict(config or {})
-        profile_root = (
-            Path(configured["profile_root"])
-            if configured.get("profile_root")
-            else None
-        )
+        profile_root = configured.get("profile_root") or None
         settings = load_system_configuration(profile_root)
         for name, value in (
             ("camera_id", settings["devices"].get("camera_id")),

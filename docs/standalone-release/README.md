@@ -327,6 +327,17 @@ it uses `profiles/` below the current working directory. The release helper
 scripts start from the extracted release directory, so the executables and
 `import hikcam` share the same local registry. Applications launched from a
 different directory should set `IRIS_PROFILE_ROOT` to the shared registry.
+Use an absolute path, especially when `hikcam` is imported from a third-party
+application whose working directory is not the IRIS release directory. A
+profile tree may be moved as a unit: runtime-file paths are relative, and IRIS
+can rebuild a missing `.registry` index from the revision manifests and active
+pointers stored in the tree.
+
+The recovery restores profiles and active selections. Operator defaults in
+`.registry/settings.json` are separate machine-local configuration; preserve
+that file during a complete move or rerun
+`python-tools.bat setup configure ...` after a copy that intentionally omits
+`.registry`.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams and
 [REFERENCE_BENCHMARKS.md](REFERENCE_BENCHMARKS.md) for measured reference data.

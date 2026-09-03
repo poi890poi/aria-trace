@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,6 +81,46 @@ class HikAutoProfileTests(unittest.TestCase):
         self.assertEqual(self.rig["revision_id"], camera.resolved_config["profiles"]["rig"])
         self.assertEqual("none", camera.resolved_config["adapter_plan"]["phone_operations"])
         self.assertEqual(0, camera.resolved_config["adapter_plan"]["registry_reads_per_frame"])
+
+    def test_external_caller_resolves_moved_profiles_from_environment(self):
+        original = self.root / "profiles"
+        moved = self.root / "portable profiles"
+        shutil.move(str(original), str(moved))
+        shutil.rmtree(str(moved / ".registry"))
+        external_application = self.root / "third-party-application"
+        external_application.mkdir()
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(str(external_application))
+            with patch.dict(
+                os.environ, {"IRIS_PROFILE_ROOT": str(moved)}, clear=True
+            ):
+                camera = hikcam.HikCamera(
+                    config={
+                        "camera_id": "CAM-1",
+                        "phone_id": "PHONE-1",
+                        "panel_display": self.context.panel_display,
+                        "mode": "full",
+                    }
+                )
+        finally:
+            os.chdir(str(previous_cwd))
+
+        self.assertEqual(
+            self.rig["revision_id"], camera.resolved_config["profiles"]["rig"]
+        )
+        self.assertTrue(
+            Path(camera.resolved_config["paths"]["rig_calibration"]).is_file()
+        )
+        self.assertTrue(
+            str(camera.resolved_config["paths"]["rig_calibration"]).startswith(
+                str(moved.resolve())
+            )
+        )
+        self.assertEqual(
+            str(moved.resolve()), camera.resolved_config["profile_registry"]["root"]
+        )
+        self.assertEqual(str(moved.resolve()), camera.config["profile_root"])
 
     def test_caller_can_list_and_select_an_explicit_rig_revision(self):
         replacement = self.registry.publish(
