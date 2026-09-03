@@ -104,9 +104,16 @@ Configure the model before calibration when the default is wrong:
 ```powershell
 python -m iris_tools profiles configure-game GAME_ID `
   --cursor-follows camera `
-  --minimap-orientation rotating
+  --minimap-orientation rotating `
+  --game-display-orientation landscape_usb_right
 python -m iris_tools profiles show-game GAME_ID
 ```
+
+`game-display-orientation` describes game-up in the phone's physical
+rotation-0 space: `portrait_usb_bottom`, `landscape_usb_right` (default),
+`portrait_usb_top`, or `landscape_usb_left`. Acquisition also records the
+foreground package and observed Android surface orientation, so measured facts
+override this fallback when available.
 
 If synchronized HIK evidence is required, add `--require-hik`. Use
 `--game-id GAME_ID` when the resulting calibration should be published under a
@@ -274,6 +281,8 @@ with hikcam.HikCamera(config={
     "color_order": "BGR",
     "color_policy": "rig_locked",
     "mask_policy": "minimap_circle",  # or "none"
+    "orientation_behavior": "projection",  # as_is, projection, or image
+    "rotate": 0,                      # 0, 90, 180, or 270 clockwise
 }) as camera:
     frames = camera.get_frames()
     phone_frame = frames["full"]
@@ -321,16 +330,30 @@ the prebuilt mini-map remap, and therefore retains one `cv2.remap` call per
 frame. In dual mode only the mini-map product is masked; the full phone stream
 is unchanged.
 
-Rectification is enabled by default. A rectified game profile folds game-upright
-orientation into the existing transformation map, so it does not add a second
-per-frame rotation pass. With rectification disabled, the adapter returns the
-documented native ROI space and applies only the required discrete orientation.
+Rectification is enabled by default. Orientation behavior is explicit and has
+no per-frame registry lookup:
+
+- `as_is` (default) preserves the rig output, plus the optional explicit
+  `rotate` value.
+- `projection` applies the game-up turn already composed by the profile builder
+  from portable game/surface facts and the current rig, plus `rotate`.
+- `image` acquires one full rig-normalized HIK frame and one ADB screenshot at
+  initialization, tests all four turns, then opens the requested stream. A
+  failed or ambiguous match falls back to `as_is`; it does not mutate a
+  portable profile.
+
+With rectification, the selected turn is folded into the existing map. Without
+rectification, it is a discrete quarter-turn. `rotate` always means an
+additional clockwise 0, 90, 180, or 270 degrees.
 
 Run the GUI demo against calibrated or native HIK acquisition:
 
 ```powershell
 python -m iris_tools camera-adapter-demo `
-  --game-id GAME_ID --mode dual --color-policy game_matched --gui
+  --game-id GAME_ID --mode dual --orientation-behavior projection --gui
+
+python -m iris_tools camera-adapter-demo `
+  --game-id GAME_ID --mode dual --orientation-behavior image --gui
 
 python -m iris_tools camera-adapter-demo `
   --game-id GAME_ID --mode dual --mask-policy minimap_circle --gui

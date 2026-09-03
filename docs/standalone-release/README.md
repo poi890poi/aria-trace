@@ -127,6 +127,8 @@ with hikcam.HikCamera(config={
     "mode": "dual",          # full, minimap, or dual
     "rectify": True,
     "color_order": "BGR",
+    "orientation_behavior": "projection",
+    "rotate": 0,
 }) as camera:
     frames = camera.get_frames()
     phone = frames["full"]
@@ -151,6 +153,15 @@ These HIK-compatible image return values are unchanged. IRIS consumers
 can separately call `camera.get_iris_frame_metadata()` (or pass `"full"` /
 `"minimap"` after `get_frames()`) to obtain the last image's declared space,
 ROI, orientation, and provenance.
+
+Orientation is explicit. `orientation_behavior="as_is"` is the default and
+preserves rig output. `"projection"` applies the game-up turn already composed
+by profile management. `"image"` obtains one full rig-normalized HIK frame and
+one ADB screenshot during initialization, checks all four turns, then opens the
+requested stream. `rotate=0|90|180|270` adds a manual clockwise turn. The
+selected turn is folded into rectification maps, or applied as one discrete
+quarter-turn when rectification is disabled; there is no per-frame profile or
+matching work.
 
 The adapter deliberately locks the calibrated exposure, gain, white balance,
 ROI, and optional MVS Bayer gamma/color matrix for the session.

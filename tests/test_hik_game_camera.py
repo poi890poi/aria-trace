@@ -379,6 +379,41 @@ class HikGameCameraTests(unittest.TestCase):
             frame_set.metadata["game_upright_runtime_operation"],
         )
 
+    def test_dual_derives_game_upright_turn_from_saved_surface_coordinates(self):
+        self.minimap_path.write_text(
+            json.dumps(
+                {
+                    "canonical_phone_crop_xywh": [10, 20, 30, 20],
+                    "phone_surface_orientation": {
+                        "quarter_turns_clockwise_from_natural": 1,
+                        "natural_size_px": [100, 80],
+                        "logical_size_px": [80, 100],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        camera = ProfiledHikGameCamera(
+            self.rig_path,
+            self.minimap_path,
+            mode="dual",
+            rectify_minimap=True,
+            minimap_margin_px=0,
+            output_quarter_turns_clockwise=0,
+            best_effort_initialization=True,
+            adapter=FakeAdapter(),
+        ).open()
+        frame_set = camera.read_streams()
+        selection = camera.initialization_orientation_recovery()
+
+        self.assertEqual(1, camera.output_quarter_turns_clockwise)
+        self.assertEqual(1, selection["selected_output_quarter_turns"])
+        self.assertTrue(selection["orientation_recovered"])
+        self.assertEqual((100, 80, 3), frame_set.streams["full"].shape)
+        self.assertEqual((30, 20, 3), frame_set.streams["minimap"].shape)
+        self.assertEqual(10, int(frame_set.streams["minimap"][0, 0, 0]))
+        self.assertEqual(39, int(frame_set.streams["minimap"][0, 0, 1]))
+
     def test_dual_mode_can_disable_all_geometric_rectification(self):
         adapter = FakeAdapter()
         camera = self.camera("dual", False, adapter).open()
@@ -407,6 +442,46 @@ class HikGameCameraTests(unittest.TestCase):
         frame_set = camera.read_streams()
         self.assertEqual(["full"], list(frame_set.streams))
         self.assertEqual([0, 0, 100, 80], adapter.roi)
+
+    def test_full_and_dual_use_the_same_saved_surface_orientation(self):
+        self.minimap_path.write_text(
+            json.dumps(
+                {
+                    "canonical_phone_crop_xywh": [10, 20, 30, 20],
+                    "phone_surface_orientation": {
+                        "quarter_turns_clockwise_from_natural": 1,
+                        "natural_size_px": [100, 80],
+                        "logical_size_px": [80, 100],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        full = ProfiledHikGameCamera(
+            self.rig_path,
+            self.minimap_path,
+            mode="full",
+            rectify_minimap=True,
+            output_quarter_turns_clockwise=0,
+            best_effort_initialization=True,
+            adapter=FakeAdapter(),
+        ).open()
+        dual = ProfiledHikGameCamera(
+            self.rig_path,
+            self.minimap_path,
+            mode="dual",
+            rectify_minimap=True,
+            minimap_margin_px=0,
+            output_quarter_turns_clockwise=0,
+            best_effort_initialization=True,
+            adapter=FakeAdapter(),
+        ).open()
+
+        full_image = full.read_streams().streams["full"]
+        dual_image = dual.read_streams().streams["full"]
+        self.assertEqual(1, full.output_quarter_turns_clockwise)
+        self.assertEqual(1, dual.output_quarter_turns_clockwise)
+        np.testing.assert_array_equal(full_image, dual_image)
 
     def test_full_mode_never_gates_on_unprojectable_minimap_crop(self):
         document = rig_document()
@@ -441,6 +516,7 @@ class HikGameCameraTests(unittest.TestCase):
             rectify_minimap=False,
             minimap_margin_px=0,
             runtime_surface_quarter_turns_clockwise_from_natural=0,
+            best_effort_initialization=True,
             adapter=adapter,
         ).open()
         frame_set = camera.read_streams()

@@ -246,6 +246,8 @@ class AdapterRequest:
     roi_policy: str = "auto"
     mask_policy: str = "none"
     minimap_margin_px: int = 6
+    orientation_behavior: str = "as_is"
+    rotate: int = 0
     frame_rate_policy: str = "calibrated"
     frame_rate: Optional[float] = None
 
@@ -270,6 +272,12 @@ class AdapterRequest:
             raise ValueError("Mini-map masking requires rectification")
         if int(self.minimap_margin_px) < 0:
             raise ValueError("Mini-map margin cannot be negative")
+        if self.orientation_behavior not in ("as_is", "projection", "image"):
+            raise ValueError(
+                "Orientation behavior must be as_is, projection, or image"
+            )
+        if int(self.rotate) not in (0, 90, 180, 270):
+            raise ValueError("Adapter rotation must be 0, 90, 180, or 270")
         if self.frame_rate_policy not in ("calibrated", "exact"):
             raise ValueError("Frame-rate policy must be calibrated or exact")
         if self.frame_rate_policy == "exact" and self.frame_rate is None:
@@ -299,6 +307,8 @@ class AdapterRequest:
             "roi_policy": self.roi_policy,
             "mask_policy": self.mask_policy,
             "minimap_margin_px": int(self.minimap_margin_px),
+            "orientation_behavior": self.orientation_behavior,
+            "rotate": int(self.rotate),
             "frame_rate": {
                 "policy": self.frame_rate_policy,
                 "value": self.frame_rate,
@@ -1329,7 +1339,7 @@ class ProfileRegistry:
             candidate, stale_orientation_ids = selected_for_resolved_rig(
                 "rig_game_orientation"
             )
-            if candidate is None:
+            if candidate is None and request.orientation_behavior == "projection":
                 resolution_warnings.append(
                     "No active game-orientation profile matches game {!r} and "
                     "resolved rig {}{}; "
@@ -1487,6 +1497,8 @@ class ProfileRegistry:
                 "roi_policy": request.roi_policy,
                 "mask_policy": request.mask_policy,
                 "minimap_margin_px": int(request.minimap_margin_px),
+                "orientation_behavior": request.orientation_behavior,
+                "manual_rotate_degrees_clockwise": int(request.rotate),
                 "game_upright_quarter_turns_clockwise": int(
                     (orientation_payload.get(
                         "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",

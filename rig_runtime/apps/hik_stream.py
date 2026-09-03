@@ -478,6 +478,22 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--minimap-margin-px", type=int, default=6)
     value.add_argument(
+        "--orientation-behavior",
+        choices=("as_is", "projection", "image"),
+        default="as_is",
+        help=(
+            "Adapter initialization policy: preserve rig output, use the "
+            "profile-built game projection, or match one full ADB/HIK pair"
+        ),
+    )
+    value.add_argument(
+        "--rotate",
+        type=int,
+        choices=(0, 90, 180, 270),
+        default=0,
+        help="Additional clockwise output rotation applied by the adapter",
+    )
+    value.add_argument(
         "--mask-policy",
         choices=("none", "minimap_circle"),
         default="none",
@@ -526,6 +542,9 @@ def open_camera(
     color_policy: str = "auto",
     minimap_margin_px: int = 6,
     mask_policy: str = "none",
+    orientation_behavior: str = "as_is",
+    rotate: int = 0,
+    adb: str = "adb",
 ):
     """Public UVC-like constructor for application code (read/release/isOpened)."""
 
@@ -546,6 +565,9 @@ def open_camera(
                 "color_policy": color_policy,
                 "minimap_margin_px": minimap_margin_px,
                 "mask_policy": mask_policy,
+                "orientation_behavior": orientation_behavior,
+                "rotate": rotate,
+                "adb": adb,
                 "mvs_python_path": mvs_python_path,
             }
         ).open()
@@ -563,6 +585,7 @@ def open_camera(
             rectify_minimap=rectify,
             adapter=adapter,
             mask_policy=mask_policy,
+            output_quarter_turns_clockwise=(int(rotate) // 90),
         ).open()
     return RectifiedHikCamera(
         diagnostic_calibration_override, adapter=adapter, rectify=rectify
@@ -650,6 +673,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "color_policy": arguments.color_policy,
                     "minimap_margin_px": arguments.minimap_margin_px,
                     "mask_policy": arguments.mask_policy,
+                    "orientation_behavior": arguments.orientation_behavior,
+                    "rotate": arguments.rotate,
+                    "adb": arguments.adb,
                     "mvs_python_path": arguments.mvs_python_path,
                 }
             )
@@ -785,6 +811,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     color_policy=arguments.color_policy,
                     minimap_margin_px=arguments.minimap_margin_px,
                     mask_policy=arguments.mask_policy,
+                    orientation_behavior=arguments.orientation_behavior,
+                    rotate=arguments.rotate,
+                    adb=arguments.adb,
                 )
             except MinimapRoiUnavailableError as exc:
                 if arguments.mode == "full" or arguments.camera_library != "adapter":
@@ -808,6 +837,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     color_policy=arguments.color_policy,
                     minimap_margin_px=arguments.minimap_margin_px,
                     mask_policy="none",
+                    orientation_behavior=arguments.orientation_behavior,
+                    rotate=arguments.rotate,
+                    adb=arguments.adb,
                 )
                 effective_mode = "full"
         elif arguments.camera_library == "adapter" and not camera.is_open:

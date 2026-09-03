@@ -208,9 +208,72 @@ class HikAutoProfileTests(unittest.TestCase):
                 apply_game_color=False,
                 output_quarter_turns_clockwise=0,
                 runtime_surface_quarter_turns_clockwise_from_natural=None,
-                best_effort_initialization=True,
+                best_effort_initialization=False,
                 mask_policy="none",
             )
+
+    def test_orientation_policy_defaults_as_is_and_rotate_is_explicit(self):
+        as_is = hikcam.HikCamera(
+            config={
+                "diagnostic_calibration_override": self.calibration,
+                "game_upright_quarter_turns_clockwise": 2,
+                "rotate": 90,
+            }
+        )
+        projection = hikcam.HikCamera(
+            config={
+                "diagnostic_calibration_override": self.calibration,
+                "game_upright_quarter_turns_clockwise": 2,
+                "orientation_behavior": "projection",
+                "rotate": 90,
+            }
+        )
+
+        self.assertEqual(1, as_is._game_upright_turns)
+        self.assertEqual("as_is", as_is._orientation_behavior)
+        self.assertEqual(3, projection._game_upright_turns)
+        self.assertEqual("projection", projection._orientation_behavior)
+
+    def test_image_orientation_uses_one_full_pair_before_requested_reader(self):
+        final_reader = Mock()
+        final_reader.open.return_value = final_reader
+        final_reader.geometry_postmortem.return_value = {}
+        final_reader.initialization_orientation_recovery.return_value = {}
+        temporary = Mock()
+        temporary.open.return_value = temporary
+        temporary.read_sample.return_value = Mock(
+            image=np.zeros((8, 8, 3), np.uint8)
+        )
+        adb = np.ones((8, 8, 3), np.uint8)
+        selected = {
+            "status": "selected",
+            "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 2,
+        }
+        with patch.object(
+            hikcam, "RectifiedHikCamera", return_value=temporary
+        ), patch(
+            "rig_runtime.services.calibration.rig.cross_source.match_game_camera_orientation",
+            return_value=(selected, {}),
+        ) as match:
+            camera = hikcam.HikCamera(
+                config={
+                    "diagnostic_calibration_override": self.calibration,
+                    "orientation_behavior": "image",
+                    "rotate": 90,
+                    "orientation_image_provider": lambda: adb,
+                    "reader_factory": lambda _path: final_reader,
+                }
+            ).open()
+
+        self.assertEqual(3, camera._game_upright_turns)
+        self.assertEqual(
+            "selected",
+            camera.resolved_config["initialization_image_orientation"]["status"],
+        )
+        self.assertEqual(1, match.call_count)
+        temporary.read_sample.assert_called_once_with()
+        temporary.release.assert_called_once_with()
+        final_reader.open.assert_called_once_with()
 
     def test_initialization_recovery_updates_only_rig_orientation_profile(self):
         phone_game_payload = {"canonical_phone_crop_xywh": [10, 20, 30, 30]}
@@ -276,6 +339,8 @@ class HikAutoProfileTests(unittest.TestCase):
                 "mode": "dual",
                 "color_policy": "rig_locked",
                 "reader_factory": lambda _path: reader,
+                "best_effort_initialization": True,
+                "persist_initialization_recovery": True,
             }
         ).open()
 
@@ -318,6 +383,21 @@ class HikAutoProfileTests(unittest.TestCase):
             rig_game["revision_id"],
             self.registry.resolve("rig_game", self.context)["revision_id"],
         )
+        reopened = hikcam.HikCamera(
+            config={
+                "profile_root": self.root / "profiles",
+                "game_id": "game-1",
+                "camera_id": "CAM-1",
+                "phone_id": "PHONE-1",
+                "panel_display": self.context.panel_display,
+                "game_display": self.context.game_display,
+                "mode": "dual",
+                "color_policy": "rig_locked",
+                "orientation_behavior": "projection",
+            }
+        )
+        self.assertEqual(2, reopened._game_upright_turns)
+        self.assertEqual(3, reopened._runtime_surface_turns)
         self.assertEqual(2, camera.resolved_config["adapter_plan"][
             "game_upright_quarter_turns_clockwise"
         ])
@@ -395,6 +475,8 @@ class HikAutoProfileTests(unittest.TestCase):
             config={
                 "diagnostic_calibration_override": self.calibration,
                 "reader_factory": lambda _path: reader,
+                "best_effort_initialization": True,
+                "persist_initialization_recovery": True,
             }
         )
         with patch.object(

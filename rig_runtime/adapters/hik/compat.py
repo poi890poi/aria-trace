@@ -135,6 +135,10 @@ def _registry_configuration(
         roi_policy=str(configured.get("roi_policy", "auto")),
         mask_policy=str(configured.get("mask_policy", "none")),
         minimap_margin_px=int(configured.get("minimap_margin_px", 6)),
+        orientation_behavior=str(
+            configured.get("orientation_behavior", "as_is")
+        ),
+        rotate=int(configured.get("rotate", 0)),
         frame_rate_policy=str(configured.get("frame_rate_policy", "calibrated")),
         frame_rate=(
             float(configured["frame_rate"])
@@ -188,11 +192,11 @@ class HikCamera:
 
     The supported compatibility surface is deliberately high-level. It does not
     impersonate the vendor's ctypes structures or status-code based ``MV_CC_*``
-    ABI. Methods raise Python exceptions on failure. For mini-map and dual
-    streams, ``config['best_effort_initialization']`` defaults to true and tests
-    the saved orientation, then 180, 90, and 270 degrees only while opening.
-    ``config['persist_initialization_recovery']`` controls the default-on,
-    rig-orientation-only profile write-back.
+    ABI. Methods raise Python exceptions on failure.
+    ``config['orientation_behavior']`` selects ``as_is`` (default),
+    ``projection``, or ``image`` initialization. ``config['rotate']`` adds an
+    explicit 0/90/180/270-degree clockwise output turn. These decisions are
+    resolved before streaming and add no per-frame work.
     """
 
     TIMEOUT_MS = 40000
@@ -239,6 +243,12 @@ class HikCamera:
                     "rectify": bool(self.config.get("rectify", True)),
                     "color_order": str(self.config.get("color_order", "RGB")).upper(),
                     "mask_policy": str(self.config.get("mask_policy", "none")),
+                    "orientation_behavior": str(
+                        self.config.get("orientation_behavior", "as_is")
+                    ),
+                    "manual_rotate_degrees_clockwise": int(
+                        self.config.get("rotate", 0)
+                    ),
                     "game_model": {
                         "cursor_follows": "character",
                         "cursor_behavior_by_acquisition": {
@@ -277,9 +287,44 @@ class HikCamera:
         self._orientation_job_thread: Optional[threading.Thread] = None
         self._color_order = str(self.config.get("color_order", "RGB")).upper()
         self._rectify_enabled = bool(self.config.get("rectify", True))
-        self._game_upright_turns = int(
+        self._profile_game_upright_turns = int(
             self.config.get("game_upright_quarter_turns_clockwise", 0)
         ) % 4
+        self._orientation_behavior = str(
+            self.config.get("orientation_behavior", "as_is")
+        ).lower().replace("-", "_")
+        if self._orientation_behavior not in ("as_is", "projection", "image"):
+            raise ValueError(
+                "config['orientation_behavior'] must be as_is, projection, or image"
+            )
+        rotate_degrees = int(self.config.get("rotate", 0))
+        if rotate_degrees not in (0, 90, 180, 270):
+            raise ValueError("config['rotate'] must be 0, 90, 180, or 270")
+        self._manual_rotate_turns = rotate_degrees // 90
+        self._game_upright_turns = self._manual_rotate_turns
+        if self._orientation_behavior == "projection":
+            self._game_upright_turns = (
+                self._profile_game_upright_turns + self._manual_rotate_turns
+            ) % 4
+        self.config["orientation_behavior"] = self._orientation_behavior
+        self.config["rotate"] = rotate_degrees
+        self.config["game_upright_quarter_turns_clockwise"] = (
+            self._game_upright_turns
+        )
+        adapter_plan = self.resolved_config.setdefault("adapter_plan", {})
+        adapter_plan["orientation_behavior"] = self._orientation_behavior
+        adapter_plan["profile_game_upright_quarter_turns_clockwise"] = (
+            self._profile_game_upright_turns
+        )
+        adapter_plan["manual_rotate_degrees_clockwise"] = rotate_degrees
+        adapter_plan["game_upright_quarter_turns_clockwise"] = (
+            self._game_upright_turns
+        )
+        adapter_plan["phone_operations"] = (
+            "one_initialization_adb_screenshot"
+            if self._orientation_behavior == "image"
+            else "none"
+        )
         runtime_surface_turns = self.config.get(
             "runtime_surface_quarter_turns_clockwise_from_natural"
         )
@@ -289,11 +334,12 @@ class HikCamera:
             else None
         )
         self._best_effort_initialization = bool(
-            self.config.get("best_effort_initialization", True)
+            self.config.get("best_effort_initialization", False)
         )
         self._persist_initialization_recovery = bool(
-            self.config.get("persist_initialization_recovery", True)
+            self.config.get("persist_initialization_recovery", False)
         )
+        self._image_orientation_initialized = False
         if self._color_order not in ("RGB", "BGR"):
             raise ValueError("config['color_order'] must be RGB or BGR")
         imaging = self.calibration["imaging"]
@@ -503,6 +549,11 @@ class HikCamera:
     def open(self) -> "HikCamera":
         if self.is_open:
             return self
+        if (
+            self._orientation_behavior == "image"
+            and not self._image_orientation_initialized
+        ):
+            self._initialize_image_orientation()
         reader = self._new_reader()
         try:
             opened = reader.open()
@@ -520,6 +571,124 @@ class HikCamera:
             self.is_open = False
             raise
         return self
+
+    def _initialize_image_orientation(self) -> None:
+        """Choose game-up once from a full rig-normalized HIK/ADB pair."""
+
+        self._image_orientation_initialized = True
+        result: Dict[str, Any] = {
+            "schema_version": "1.0",
+            "behavior": "image",
+            "runtime_cost": "initialization_only",
+            "profile_writeback": "none",
+            "status": "fallback_as_is",
+        }
+        temporary = None
+        adb_source = None
+        try:
+            provider = self.config.get("orientation_image_provider")
+            if provider is not None:
+                if not callable(provider):
+                    raise TypeError(
+                        "config['orientation_image_provider'] must be callable"
+                    )
+                adb_image = provider()
+            else:
+                from rig_runtime.adapters.android.phone import (
+                    resolve_adb_executable,
+                )
+                from rig_runtime.adapters.sources import AdbScreenshotFrameSource
+
+                serial = str(
+                    self.config.get("phone_id")
+                    or self.config.get("phone_serial")
+                    or (self.calibration.get("phone") or {}).get("serial")
+                    or ""
+                ).strip()
+                if not serial:
+                    raise RuntimeError(
+                        "image orientation needs phone_id/phone_serial or a "
+                        "calibrated phone serial"
+                    )
+                adb_source = AdbScreenshotFrameSource(
+                    resolve_adb_executable(self.config.get("adb", "adb")),
+                    serial=serial,
+                    fps=1.0,
+                )
+                adb_source.start()
+                packet = adb_source.read()
+                if packet is None:
+                    raise RuntimeError("ADB returned no orientation reference image")
+                adb_image = packet.image
+            if not isinstance(adb_image, np.ndarray) or adb_image.size == 0:
+                raise ValueError("orientation reference provider returned no image")
+
+            temporary = RectifiedHikCamera(
+                self.calibration_path,
+                rectify=True,
+                output_quarter_turns_clockwise=0,
+            ).open()
+            sample = temporary.read_sample()
+            from rig_runtime.services.calibration.rig.cross_source import (
+                match_game_camera_orientation,
+            )
+
+            summary, _evidence = match_game_camera_orientation(
+                adb_image,
+                sample.image,
+                self.calibration_path,
+                preferred_confidence=float(
+                    self.config.get("orientation_preferred_confidence", 0.50)
+                ),
+                preferred_margin=float(
+                    self.config.get("orientation_preferred_margin", 0.08)
+                ),
+            )
+            result.update(summary)
+            if summary.get("status") == "selected":
+                selected = int(
+                    summary[
+                        "selected_camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                    ]
+                ) % 4
+                previous_turns = self._game_upright_turns
+                self._game_upright_turns = (
+                    selected + self._manual_rotate_turns
+                ) % 4
+                self.config["game_upright_quarter_turns_clockwise"] = (
+                    self._game_upright_turns
+                )
+                result["status"] = "selected"
+                result["selected_output_quarter_turns"] = (
+                    self._game_upright_turns
+                )
+                if (previous_turns - self._game_upright_turns) % 2:
+                    self.shape = (self.shape[1], self.shape[0]) + tuple(
+                        self.shape[2:]
+                    )
+                self.resolved_config["adapter_plan"][
+                    "game_upright_quarter_turns_clockwise"
+                ] = self._game_upright_turns
+            else:
+                result["status"] = "fallback_as_is_ambiguous_image_evidence"
+        except Exception as exc:
+            result.update(
+                status="fallback_as_is_error",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            warnings.warn(
+                "IRIS image orientation initialization failed; continuing "
+                "as-is: {}: {}".format(type(exc).__name__, exc),
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        finally:
+            if temporary is not None:
+                temporary.release()
+            if adb_source is not None:
+                adb_source.stop()
+        self.resolved_config["initialization_image_orientation"] = result
 
     def _capture_geometry_postmortem(self) -> None:
         reader = self._reader

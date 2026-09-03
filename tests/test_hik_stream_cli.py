@@ -171,6 +171,7 @@ class HikStreamCliTests(unittest.TestCase):
             rectify_minimap=True,
             adapter=adapter,
             mask_policy="none",
+            output_quarter_turns_clockwise=0,
         )
         profiled.open.assert_called_once_with()
 
@@ -193,11 +194,27 @@ class HikStreamCliTests(unittest.TestCase):
             ]
         )
         self.assertEqual("dual", arguments.mode)
+        self.assertEqual("as_is", arguments.orientation_behavior)
+        self.assertEqual(0, arguments.rotate)
         self.assertEqual("none", arguments.mask_policy)
         self.assertEqual(
             Path("profile.json"),
             arguments.diagnostic_rig_game_profile_override,
         )
+
+    def test_parser_accepts_adapter_orientation_policy_and_manual_rotation(self):
+        arguments = stream.parser().parse_args(
+            [
+                "--mode",
+                "dual",
+                "--orientation-behavior",
+                "image",
+                "--rotate",
+                "270",
+            ]
+        )
+        self.assertEqual("image", arguments.orientation_behavior)
+        self.assertEqual(270, arguments.rotate)
 
     def test_parser_accepts_automatic_game_launch_orientation(self):
         arguments = stream.parser().parse_args(

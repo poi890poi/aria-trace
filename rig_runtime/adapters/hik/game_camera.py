@@ -217,7 +217,7 @@ class ProfiledHikGameCamera:
         bayer_conversion: Optional[Mapping[str, object]] = None,
         output_quarter_turns_clockwise: int = 0,
         runtime_surface_quarter_turns_clockwise_from_natural: Optional[int] = None,
-        best_effort_initialization: bool = True,
+        best_effort_initialization: bool = False,
         mask_policy: str = "none",
     ) -> None:
         if mode not in self.MODES:
@@ -321,6 +321,27 @@ class ProfiledHikGameCamera:
         if phone_size is None:
             phone_size = self.rig.get("normalization", {}).get("phone_size_px")
         return list(map(int, phone_size)) if phone_size is not None else None
+
+    def _surface_orientation_is_known(self) -> bool:
+        surface = self.minimap.get("phone_surface_orientation") or {}
+        return bool(
+            self.runtime_surface_quarter_turns_clockwise_from_natural is not None
+            or (
+                isinstance(surface, Mapping)
+                and "quarter_turns_clockwise_from_natural" in surface
+            )
+        )
+
+    def _output_turns_for_surface(self, surface_turns: int) -> int:
+        phone = self.rig.get("phone") or {}
+        viewer = phone.get("viewer") or {}
+        calibration_display_turns = int(
+            phone.get(
+                "orientation_quarter_turns",
+                viewer.get("canonical_orientation_quarter_turns", 0),
+            )
+        ) % 4
+        return (int(surface_turns) - calibration_display_turns) % 4
 
     def _screen_crop_candidates(self) -> list[dict]:
         """Express the saved game crop at each possible Android surface turn.
@@ -665,6 +686,7 @@ class ProfiledHikGameCamera:
             lens_model = (self.rig.get("optics") or {}).get("lens_model") or {}
             candidates = self._screen_crop_candidates()
             screen_crop = list(candidates[0]["xywh"])
+            previous_output_turns = self.output_quarter_turns_clockwise
             if self.mode != "full":
                 valid_candidates = []
                 failures = []
@@ -742,22 +764,16 @@ class ProfiledHikGameCamera:
                     valid_candidates[0],
                 )
                 screen_crop = list(selected["xywh"])
-                previous_output_turns = self.output_quarter_turns_clockwise
                 recovered_output_turns = previous_output_turns
-                if not selected.get("preferred"):
-                    phone = self.rig.get("phone") or {}
-                    viewer = phone.get("viewer") or {}
-                    calibration_display_turns = int(
-                        phone.get(
-                            "orientation_quarter_turns",
-                            viewer.get("canonical_orientation_quarter_turns", 0),
-                        )
-                    ) % 4
-                    recovered_output_turns = (
+                if (
+                    self.best_effort_initialization
+                    and self._surface_orientation_is_known()
+                    and selected.get("surface_quarter_turns") is not None
+                ):
+                    recovered_output_turns = self._output_turns_for_surface(
                         int(selected["surface_quarter_turns"])
-                        - calibration_display_turns
-                    ) % 4
-                    self.output_quarter_turns_clockwise = recovered_output_turns
+                    )
+                self.output_quarter_turns_clockwise = recovered_output_turns
                 self._minimap_sensor_roi = list(
                     self.adapter.align_roi(requested_minimap_roi)
                 )
@@ -772,7 +788,14 @@ class ProfiledHikGameCamera:
                     ],
                     "previous_output_quarter_turns": previous_output_turns,
                     "selected_output_quarter_turns": recovered_output_turns,
-                    "orientation_recovered": not bool(selected.get("preferred")),
+                    "orientation_recovered": (
+                        recovered_output_turns != previous_output_turns
+                    ),
+                    "selection_basis": (
+                        "saved_game_surface_coordinates"
+                        if selected.get("preferred")
+                        else "visible_projected_minimap_coordinates"
+                    ),
                     "runtime_cost": "initialization_only",
                     "evaluated_candidates": len(candidates),
                     "valid_candidates": len(valid_candidates),
@@ -780,9 +803,32 @@ class ProfiledHikGameCamera:
                 }
             else:
                 self._minimap_sensor_roi = None
+                preferred_surface_turns = candidates[0].get("surface_quarter_turns")
+                recovered_output_turns = previous_output_turns
+                if (
+                    self.best_effort_initialization
+                    and self._surface_orientation_is_known()
+                    and preferred_surface_turns is not None
+                ):
+                    recovered_output_turns = self._output_turns_for_surface(
+                        int(preferred_surface_turns)
+                    )
+                self.output_quarter_turns_clockwise = recovered_output_turns
                 self._screen_crop_selection = {
-                    "status": "not_required_for_full_stream",
+                    "status": (
+                        "coordinate_projected_game_orientation"
+                        if self._surface_orientation_is_known()
+                        else "not_required_for_full_stream"
+                    ),
                     "evaluated_candidates": 0,
+                    "selected_surface_quarter_turns": preferred_surface_turns,
+                    "previous_output_quarter_turns": previous_output_turns,
+                    "selected_output_quarter_turns": recovered_output_turns,
+                    "orientation_recovered": (
+                        recovered_output_turns != previous_output_turns
+                    ),
+                    "selection_basis": "saved_game_surface_coordinates",
+                    "runtime_cost": "initialization_only",
                 }
             self._screen_crop_xywh = list(screen_crop)
             requested_roi = (
