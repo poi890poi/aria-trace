@@ -89,10 +89,10 @@ class PanelAxisCalibrationTests(unittest.TestCase):
             np.linalg.inv(refined).dot(refined), np.eye(3), atol=1.0e-10
         )
 
-    def test_thirty_degree_disagreement_is_not_applied(self):
+    def test_five_degree_disagreement_is_not_applied(self):
         measurement = {
             "status": "accepted",
-            "residual_clockwise_degrees": 30.0,
+            "residual_clockwise_degrees": 5.0,
             "confidence": 0.9,
             "lines": [],
             "failures": [],
@@ -102,6 +102,22 @@ class PanelAxisCalibrationTests(unittest.TestCase):
 
         self.assertEqual("rejected_charuco_disagreement", aggregate["status"])
         self.assertFalse(aggregate["applied"])
+        self.assertTrue(aggregate["non_gating"])
+
+    def test_sub_five_degree_refinement_is_applied(self):
+        measurement = {
+            "status": "accepted",
+            "residual_clockwise_degrees": 4.999,
+            "confidence": 0.9,
+            "lines": [],
+            "failures": [],
+        }
+
+        aggregate = aggregate_panel_axis_measurements([measurement])
+
+        self.assertEqual("accepted", aggregate["status"])
+        self.assertTrue(aggregate["applied"])
+        self.assertTrue(aggregate["non_gating"])
 
     def test_large_axis_disagreement_is_not_aliased_to_small_rotation(self):
         measurement = {

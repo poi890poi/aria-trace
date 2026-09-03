@@ -9,6 +9,12 @@ import cv2
 import numpy as np
 
 
+# The broad-edge fit is only a fine refinement of the authoritative ChArUco
+# pose.  Larger disagreement is evidence of a bad edge observation, not a new
+# orientation estimate, and therefore remains recorded but non-gating.
+PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES = 5.0
+
+
 def _axial_degrees(value: float) -> float:
     """Resolve only the 180-degree ambiguity of an undirected fitted line."""
 
@@ -174,7 +180,7 @@ def measure_panel_axis_edges(
     output_origin_screen_xy: Sequence[float],
     *,
     output_to_raw_maps: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-    maximum_correction_degrees: float = 30.0,
+    maximum_correction_degrees: float = PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
 ) -> Dict[str, Any]:
     """Measure residual clockwise panel rotation after coarse rectification."""
 
@@ -285,7 +291,7 @@ def measure_panel_axis_edges(
 def aggregate_panel_axis_measurements(
     measurements: Sequence[Mapping[str, Any]],
     *,
-    maximum_correction_degrees: float = 30.0,
+    maximum_correction_degrees: float = PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
 ) -> Dict[str, Any]:
     """Aggregate independent frames without turning failure into a rig gate."""
 

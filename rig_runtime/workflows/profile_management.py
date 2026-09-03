@@ -439,6 +439,7 @@ def _compose_rig_game_orientation_profile(
     surface_adapter_turns = (int(portable_turns) - int(display_turns)) % 4
     portable_boundary = phone_payload.get("outer_boundary")
     oriented_adapter_turns = None
+    oriented_frame_error = None
     if (
         isinstance(portable_boundary, Mapping)
         and isinstance(portable_boundary.get("orientation_frame"), Mapping)
@@ -447,11 +448,17 @@ def _compose_rig_game_orientation_profile(
             map(int, rig_context.panel_display.get("natural_panel_px") or [])
         )
         if len(natural_size) == 2:
-            oriented_adapter_turns = _quarter_turns_for_oriented_minimap(
-                portable_boundary,
-                phone_natural_size_px=natural_size,
-                calibration_display_turns=display_turns,
-            )
+            try:
+                oriented_adapter_turns = _quarter_turns_for_oriented_minimap(
+                    portable_boundary,
+                    phone_natural_size_px=natural_size,
+                    calibration_display_turns=display_turns,
+                )
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                # Migrated/hand-edited profiles must not break unattended rig
+                # recomposition.  Keep the invalid evidence visible and use the
+                # pre-existing surface/game-orientation fallback.
+                oriented_frame_error = str(exc)
     adapter_turns = (
         int(oriented_adapter_turns)
         if oriented_adapter_turns is not None
@@ -459,9 +466,12 @@ def _compose_rig_game_orientation_profile(
     )
     orientation_consistency = {
         "status": (
-            "verified"
+            "invalid_canonical_frame_surface_fallback"
+            if oriented_frame_error is not None
+            else "legacy_surface_fallback"
             if oriented_adapter_turns is None
-            or int(oriented_adapter_turns) == int(surface_adapter_turns)
+            else "verified"
+            if int(oriented_adapter_turns) == int(surface_adapter_turns)
             else "surface_metadata_disagrees_with_canonical_minimap_frame"
         ),
         "non_gating": True,
@@ -472,6 +482,7 @@ def _compose_rig_game_orientation_profile(
             else None
         ),
         "selected_adapter_turns": int(adapter_turns),
+        "canonical_frame_error": oriented_frame_error,
         "selection_authority": (
             "canonical_minimap_game_axes"
             if oriented_adapter_turns is not None

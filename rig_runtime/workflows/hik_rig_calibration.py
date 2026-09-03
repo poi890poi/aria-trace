@@ -69,6 +69,7 @@ from rig_runtime.services.calibration.rig.hik.algorithms import (
     white_statistics,
 )
 from rig_runtime.services.calibration.rig.hik.panel_axis import (
+    PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
     aggregate_panel_axis_measurements,
     measure_panel_axis_edges,
     panel_axis_correction_matrix,
@@ -3172,7 +3173,7 @@ class HikRigCalibrationSession:
             list(edge_specs or panel_axis_edges(visible_region["safe_xywh"])),
             visible_region["xywh"][:2],
             output_to_raw_maps=(map_x, map_y),
-            maximum_correction_degrees=30.0,
+            maximum_correction_degrees=PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
         )
         return measurement, rectified
 
@@ -3223,7 +3224,7 @@ class HikRigCalibrationSession:
                 "non_gating": True,
                 "reason": "target_presentation_failed: {}".format(exc),
                 "attempted_frames": 0,
-                "maximum_correction_degrees": 30.0,
+                "maximum_correction_degrees": PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
             }
             self.panel_axis_measurement = aggregate
             warning = (
@@ -3257,7 +3258,8 @@ class HikRigCalibrationSession:
             samples.append(sample)
             rectified_frames.append(rectified)
         aggregate = aggregate_panel_axis_measurements(
-            rows, maximum_correction_degrees=30.0
+            rows,
+            maximum_correction_degrees=PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
         )
         self.panel_axis_history = rows
         self.panel_axis_measurement = aggregate
@@ -3285,7 +3287,10 @@ class HikRigCalibrationSession:
                     float(aggregate["temporal_p95_deviation_degrees"]),
                     "accepted into rectification"
                     if aggregate.get("applied")
-                    else "rejected by the 30 degree ChArUco guard",
+                    else "retained as evidence only because it differs from "
+                    "ChArUco by at least {:.1f} degrees".format(
+                        PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES
+                    ),
                 )
             )
         else:
@@ -3310,7 +3315,8 @@ class HikRigCalibrationSession:
         self.panel_axis_history.append(measurement)
         self.panel_axis_history = self.panel_axis_history[-30:]
         aggregate = aggregate_panel_axis_measurements(
-            self.panel_axis_history[-15:], maximum_correction_degrees=30.0
+            self.panel_axis_history[-15:],
+            maximum_correction_degrees=PANEL_AXIS_MAXIMUM_CORRECTION_DEGREES,
         )
         self.panel_axis_measurement = aggregate
         if measurement.get("status") == "accepted":
