@@ -578,7 +578,9 @@ def _record_foreground_at_capture(
     return result
 
 
-def _canonical_game_facts(game_launch: dict, surface: dict) -> dict:
+def _canonical_game_facts(
+    game_launch: dict, surface: dict, game_id: Optional[str] = None
+) -> dict:
     """Persist the foreground game and Android rotation-0 relation explicitly."""
 
     logical_size = [int(value) for value in surface.get("logical_size_px") or []]
@@ -595,6 +597,7 @@ def _canonical_game_facts(game_launch: dict, surface: dict) -> dict:
         or game_launch.get("package")
     )
     return {
+        "game_id": game_id or game_launch.get("game_id"),
         "package": package,
         "foreground_component_at_capture": game_launch.get(
             "foreground_at_capture"
@@ -1002,6 +1005,12 @@ def _record_adb_screenshot_zigzag(
             hik_packet.metadata["paired_adb_capture_time_ns"] = int(
                 adb_packet.host_capture_time_ns
             )
+        game_context = _canonical_game_facts(
+            game_launch, aligned_surface, game_id
+        )
+        adb_packet.metadata["game_context"] = game_context
+        if hik_packet is not None:
+            hik_packet.metadata["game_context"] = dict(game_context)
         adb_packet.metadata["paired_hik_capture_time_ns"] = (
             int(hik_packet.host_capture_time_ns)
             if hik_packet is not None
@@ -1115,7 +1124,9 @@ def _record_adb_screenshot_zigzag(
         + (["hik_mvs_rig_rectified"] if hik is not None else []),
         "hik_capture": hik_context,
         "phone_surface_orientation": aligned_surface,
-        "game_facts": _canonical_game_facts(game_launch, aligned_surface),
+        "game_facts": _canonical_game_facts(
+            game_launch, aligned_surface, game_id
+        ),
         "phone_preparation": preparation,
         "game_launch": game_launch,
         (
@@ -1536,6 +1547,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             )
     controller = ScrcpyTouchController(adb, server, serial, [width, height])
+    game_context = _canonical_game_facts(
+        game_launch, aligned_surface, arguments.game_id
+    )
+    android.set_game_context(game_context)
+    if hik is not None:
+        hik.set_game_context(game_context)
     control = _input_source(arguments, adb, serial, plan, controller=controller)
     frame_sources = [android] + ([hik] if hik is not None else [])
     image_sources = ["android_scrcpy"] + (
@@ -1592,7 +1609,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "image_sources": image_sources,
             "hik_capture": hik_context,
             "phone_surface_orientation": aligned_surface,
-            "game_facts": _canonical_game_facts(game_launch, aligned_surface),
+            "game_facts": _canonical_game_facts(
+                game_launch, aligned_surface, arguments.game_id
+            ),
             "phone_preparation": preparation,
             "game_launch": game_launch,
             (

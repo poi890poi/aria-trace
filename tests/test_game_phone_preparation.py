@@ -580,6 +580,15 @@ class GamePhonePreparationTests(unittest.TestCase):
                 self.assertEqual("image_series", record["storage"]["kind"])
                 self.assertTrue((pending / record["image_file"]).is_file())
                 self.assertEqual(
+                    "test-game", record["metadata"]["game_context"]["game_id"]
+                )
+                self.assertEqual(
+                    "landscape_usb_right",
+                    record["metadata"]["game_context"][
+                        "physical_display_orientation"
+                    ],
+                )
+                self.assertEqual(
                     "android_phone_natural_display_pixels",
                     record["metadata"]["image_space"]["canonical_space_id"],
                 )

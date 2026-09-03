@@ -42,6 +42,7 @@ class CalibratedHikFrameSource(FrameSource):
         rectify: bool = True,
         output_quarter_turns_clockwise: int = 0,
         reader: Optional[RectifiedHikCamera] = None,
+        game_context: Optional[Mapping[str, object]] = None,
     ) -> None:
         self.calibration_file = Path(calibration_file)
         self.stream_id = str(stream_id)
@@ -55,6 +56,12 @@ class CalibratedHikFrameSource(FrameSource):
         self._orientation_lock = threading.Lock()
         self._orientation_evidence = None
         self._space_converters = {}
+        self.game_context = (
+            dict(game_context) if game_context is not None else None
+        )
+
+    def set_game_context(self, value: Mapping[str, object]) -> None:
+        self.game_context = dict(value)
 
     def _canonical_space_mapping(self, output_turns: int) -> dict:
         if not self.rectify:
@@ -227,6 +234,8 @@ class CalibratedHikFrameSource(FrameSource):
                 "image_space": image_space,
             }
         )
+        if self.game_context is not None:
+            metadata["game_context"] = dict(self.game_context)
         return FramePacket(
             self.stream_id,
             image,
@@ -251,7 +260,7 @@ class CalibratedHikFrameSource(FrameSource):
                 if self._orientation_evidence is not None
                 else None
             )
-        return {
+        result = {
             "type": type(self).__name__,
             "stream_id": self.stream_id,
             "calibration": str(self.calibration_file.resolve()),
@@ -274,6 +283,9 @@ class CalibratedHikFrameSource(FrameSource):
             "device_timestamp": "raw_hik_counter_in_frame_metadata",
             "video_encoding_padding": "replicate at right/bottom only when a dimension is odd",
         }
+        if self.game_context is not None:
+            result["game_context"] = dict(self.game_context)
+        return result
 
 
 class NativeHikFrameSource(FrameSource):

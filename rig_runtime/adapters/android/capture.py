@@ -492,15 +492,22 @@ class AndroidRoiFrameSource(FrameSource):
         hub: ScrcpyCaptureHub,
         spec: AndroidRoiSpec,
         image_space_context: Optional[Mapping[str, object]] = None,
+        game_context: Optional[Mapping[str, object]] = None,
     ) -> None:
         self.hub = hub
         self.spec = spec
         self.image_space_context = (
             dict(image_space_context) if image_space_context is not None else None
         )
+        self.game_context = (
+            dict(game_context) if game_context is not None else None
+        )
         self.stream_id = spec.stream_id
         self._queue = hub.register(self.stream_id)
         self._started = False
+
+    def set_game_context(self, value: Mapping[str, object]) -> None:
+        self.game_context = dict(value)
 
     def start(self) -> None:
         if not self._started:
@@ -569,6 +576,8 @@ class AndroidRoiFrameSource(FrameSource):
                 roi_xywh=[self.spec.x, self.spec.y, width, height],
                 stored_size_px=[cropped.shape[1], cropped.shape[0]],
             )
+        if self.game_context is not None:
+            packet_metadata["game_context"] = dict(self.game_context)
         return FramePacket(
             self.stream_id,
             cropped,
@@ -610,6 +619,8 @@ class AndroidRoiFrameSource(FrameSource):
                 ),
                 "per_frame_metadata": "frames.jsonl#metadata.image_space",
             }
+        if self.game_context is not None:
+            result["game_context"] = dict(self.game_context)
         return result
 
 

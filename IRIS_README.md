@@ -94,6 +94,14 @@ meaning:
 | `character` (default) | static cursor | rotating cursor |
 | `camera` | rotating cursor | static cursor |
 
+Every game capture carries two independent identities. `metadata.image_space`
+declares raster, ROI, orientation, and transforms; `metadata.game_context`
+declares game ID, foreground package/component, landscape/portrait state,
+physical USB-edge orientation, and the observed Android surface turn. The same
+facts are summarized in `manifest.json` under `context.game_facts`. Consumers
+must not infer either identity from a filename, image dimensions, or the app
+that happens to be foreground later.
+
 Rotation-center fitting uses the color-agnostic temporal symmetry of those
 balanced samples. It does not require a predefined cursor HSV range or a cursor
 shape fit; an unavailable shape is reported separately while the center remains

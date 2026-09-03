@@ -294,6 +294,13 @@ executes external FFmpeg. Every retained PNG is referenced from a `frames.jsonl`
 record carrying its `metadata.image_space`; filenames or dimensions never imply
 coordinate space.
 
+Each retained game frame also has `metadata.game_context`: game ID, foreground
+package/component, logical landscape/portrait state, physical USB-edge
+orientation, observed Android surface turn, and canonical phone rotation-0
+basis. This content identity complements rather than replaces
+`metadata.image_space`. The session-level copy is
+`manifest.json#context.game_facts`.
+
 The color command's `SESSION` is immutable measurement provenance. Automatic
 configuration selects the game context, active rig revision, evidence directory,
 and publication root. An explicit output path is diagnostic-only. Requiring the

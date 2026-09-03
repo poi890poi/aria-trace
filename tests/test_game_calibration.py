@@ -568,7 +568,8 @@ class GameCalibrationTests(unittest.TestCase):
                 RuntimeWarning, "ignored stale active revisions"
             ):
                 resolved = registry.resolve_adapter(
-                    context, AdapterRequest(mode="full")
+                context,
+                AdapterRequest(mode="full", orientation_behavior="projection"),
                 )
             self.assertIsNone(resolved["profiles"]["rig_game_orientation"])
             self.assertEqual(0, resolved["adapter_plan"][
