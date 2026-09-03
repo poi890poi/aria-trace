@@ -5,6 +5,7 @@ import numpy as np
 from rig_runtime.domain.spatial import (
     bind_geometry,
     normalize_legacy_geometry,
+    oriented_circle,
     raster_space,
     require_same_space,
     require_spatial_geometry,
@@ -59,6 +60,51 @@ class SpatialGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ellipse"):
             transform_circle_similarity(
                 circle, [[2, 0, 0], [0, 1, 0], [0, 0, 1]], target
+            )
+
+    def test_oriented_circle_preserves_directed_game_axes_across_rotation(self):
+        source = raster_space("adb-landscape", [200, 100])
+        target = raster_space("phone-natural", [100, 200])
+        circle = oriented_circle(
+            bind_geometry(
+                {"center_x": 20, "center_y": 18, "radius": 12},
+                "circle",
+                source,
+            )
+        )
+
+        converted = transform_circle_similarity(
+            circle,
+            [[0, 1, 0], [-1, 0, 199], [0, 0, 1]],
+            target,
+        )
+
+        np.testing.assert_allclose(
+            [-1.0, 0.0],
+            converted["orientation_frame"]["up_unit_xy"],
+            atol=1.0e-9,
+        )
+        np.testing.assert_allclose(
+            [0.0, -1.0],
+            converted["orientation_frame"]["right_unit_xy"],
+            atol=1.0e-9,
+        )
+
+    def test_oriented_circle_rejects_reflected_handedness(self):
+        with self.assertRaisesRegex(ValueError, "handedness"):
+            bind_geometry(
+                {
+                    "center_x": 10,
+                    "center_y": 12,
+                    "radius": 8,
+                    "orientation_frame": {
+                        "schema_version": 1,
+                        "up_unit_xy": [0, -1],
+                        "right_unit_xy": [-1, 0],
+                    },
+                },
+                "circle",
+                raster_space("source", [100, 80]),
             )
 
     def test_legacy_geometry_requires_explicit_fallback_space(self):

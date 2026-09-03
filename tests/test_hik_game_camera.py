@@ -13,7 +13,7 @@ from acquisition.rig_calibration.hik.game_camera import (
     _source_crop_to_canonical_phone,
 )
 from rig_runtime.adapters.hik.driver import RectifiedHikCamera
-from rig_runtime.domain.spatial import bind_geometry, raster_space
+from rig_runtime.domain.spatial import bind_geometry, oriented_circle, raster_space
 
 
 class FakeAdapter:
@@ -222,10 +222,12 @@ class HikGameCameraTests(unittest.TestCase):
         space = raster_space("android_phone_natural_display_pixels", [100, 80])
         minimap = {
             "canonical_phone_crop_xywh": [10, 20, 30, 20],
-            "outer_boundary": bind_geometry(
-                {"center_x": 25.0, "center_y": 30.0, "radius": 6.0},
-                "circle",
-                space,
+            "outer_boundary": oriented_circle(
+                bind_geometry(
+                    {"center_x": 25.0, "center_y": 30.0, "radius": 6.0},
+                    "circle",
+                    space,
+                )
             ),
             "rotation_center": bind_geometry(
                 {"x": 25.0, "y": 30.0}, "point", space
@@ -271,6 +273,13 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(
             [30, 20], boundary["image_space"]["stored_size_px"]
         )
+        np.testing.assert_allclose(
+            [0.0, -1.0], boundary["orientation_frame"]["up_unit_xy"]
+        )
+        np.testing.assert_allclose(
+            [1.0, 0.0], boundary["orientation_frame"]["right_unit_xy"]
+        )
+        self.assertAlmostEqual(0.0, boundary["orientation_error_degrees"])
 
     def test_rectified_full_rotation_is_precomposed_into_dense_remap(self):
         document = rig_document()

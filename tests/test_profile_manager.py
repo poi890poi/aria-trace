@@ -254,6 +254,22 @@ class ProfileManagerTests(unittest.TestCase):
                 phone["payload"]["rotation_center"],
                 phone["payload"]["cursor_geometry"]["rotation_center"],
             )
+            frame = phone["payload"]["outer_boundary"]["orientation_frame"]
+            np.testing.assert_allclose([-1.0, 0.0], frame["up_unit_xy"])
+            np.testing.assert_allclose([0.0, -1.0], frame["right_unit_xy"])
+            orientation = published["rig_game_orientation"]["payload"]
+            self.assertEqual(
+                "canonical_minimap_game_axes", orientation["orientation_source"]
+            )
+            self.assertEqual(
+                1,
+                orientation[
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"
+                ],
+            )
+            self.assertEqual(
+                "verified", orientation["orientation_consistency"]["status"]
+            )
 
     def test_rig_publication_copies_runtime_files_and_activates(self):
         with tempfile.TemporaryDirectory() as directory:

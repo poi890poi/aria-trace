@@ -22,6 +22,7 @@ from rig_runtime.adapters.hik.game_camera import _source_crop_to_canonical_phone
 from rig_runtime.adapters.android.spaces import natural_to_logical_matrix
 from rig_runtime.domain.spatial import (
     normalize_legacy_geometry,
+    oriented_circle,
     raster_space,
     require_spatial_geometry,
     transform_circle_similarity,
@@ -435,7 +436,53 @@ def _compose_rig_game_orientation_profile(
         )
 
     display_turns = _rig_calibration_display_turns(rig_profile, registry)
-    adapter_turns = (int(portable_turns) - int(display_turns)) % 4
+    surface_adapter_turns = (int(portable_turns) - int(display_turns)) % 4
+    portable_boundary = phone_payload.get("outer_boundary")
+    oriented_adapter_turns = None
+    if (
+        isinstance(portable_boundary, Mapping)
+        and isinstance(portable_boundary.get("orientation_frame"), Mapping)
+    ):
+        natural_size = list(
+            map(int, rig_context.panel_display.get("natural_panel_px") or [])
+        )
+        if len(natural_size) == 2:
+            oriented_adapter_turns = _quarter_turns_for_oriented_minimap(
+                portable_boundary,
+                phone_natural_size_px=natural_size,
+                calibration_display_turns=display_turns,
+            )
+    adapter_turns = (
+        int(oriented_adapter_turns)
+        if oriented_adapter_turns is not None
+        else int(surface_adapter_turns)
+    )
+    orientation_consistency = {
+        "status": (
+            "verified"
+            if oriented_adapter_turns is None
+            or int(oriented_adapter_turns) == int(surface_adapter_turns)
+            else "surface_metadata_disagrees_with_canonical_minimap_frame"
+        ),
+        "non_gating": True,
+        "surface_metadata_adapter_turns": int(surface_adapter_turns),
+        "oriented_minimap_adapter_turns": (
+            int(oriented_adapter_turns)
+            if oriented_adapter_turns is not None
+            else None
+        ),
+        "selected_adapter_turns": int(adapter_turns),
+        "selection_authority": (
+            "canonical_minimap_game_axes"
+            if oriented_adapter_turns is not None
+            else "portable_surface_metadata_or_game_assumption"
+        ),
+    }
+    selected_orientation_basis = (
+        "canonical_minimap_game_axes"
+        if oriented_adapter_turns is not None
+        else basis
+    )
     if phone_context is not None:
         context = _rig_phone_game_context(rig_context, phone_context)
     else:
@@ -482,23 +529,31 @@ def _compose_rig_game_orientation_profile(
             "camera_adapter_image_quarter_turns_clockwise_from_calibration_display": (
                 adapter_turns
             ),
-            "orientation_source": basis,
+            "orientation_source": selected_orientation_basis,
+            "canonical_minimap_orientation_frame": (
+                dict(portable_boundary["orientation_frame"])
+                if isinstance(portable_boundary, Mapping)
+                and isinstance(portable_boundary.get("orientation_frame"), Mapping)
+                else None
+            ),
+            "orientation_consistency": orientation_consistency,
             "orientation_space_contract": {
                 "portable_source_space": "phone_natural_rotation_0",
                 "adapter_base_space": "rig_calibration_display",
                 "composition": (
-                    "adapter_turn = game_surface_turn - "
-                    "rig_calibration_display_turn (mod 4)"
+                    "canonical mini-map game-up/right is mapped to output-up/right; "
+                    "surface turns are the compatibility fallback"
                 ),
             },
         },
         dependencies=dependencies,
         provenance={
             "composition": "portable_game_orientation_plus_rig",
-            "portable_orientation_basis": basis,
+            "portable_orientation_basis": selected_orientation_basis,
             "portable_game_surface_turns": int(portable_turns),
             "rig_calibration_display_turns": int(display_turns),
             "adapter_output_turns": int(adapter_turns),
+            "orientation_consistency": orientation_consistency,
         },
         review_state="accepted" if activate else "review_required",
         activate=activate,
@@ -885,6 +940,19 @@ def _geometry_to_canonical_phone(
     source_space = source["space"]
     source_id = source_space["space_id"]
     source_size = list(map(int, source_space["size_px"]))
+    source_is_game_raster = source_id in (
+        logical_space["space_id"],
+        "profile_android_logical_display_pixels",
+    ) or source_size == crop[2:]
+    if (
+        geometry_type == "circle"
+        and source_is_game_raster
+        and source.get("orientation_frame") is None
+    ):
+        source = oriented_circle(
+            source,
+            source="adb_game_image_axes",
+        )
     logical_to_natural = np.linalg.inv(
         natural_to_logical_matrix(
             natural_size, int(quarter_turns_clockwise_from_natural) % 4
@@ -921,6 +989,45 @@ def _geometry_to_canonical_phone(
     else:
         raise ValueError("Unsupported profile geometry {}".format(geometry_type))
     return source, canonical
+
+
+def _quarter_turns_for_oriented_minimap(
+    boundary: Mapping[str, Any],
+    *,
+    phone_natural_size_px: Sequence[int],
+    calibration_display_turns: int,
+) -> Optional[int]:
+    """Choose the adapter turn that maps portable game-up to output-up."""
+
+    circle = require_spatial_geometry(boundary, "circle")
+    frame = circle.get("orientation_frame")
+    if not isinstance(frame, Mapping):
+        return None
+    natural_to_display = natural_to_logical_matrix(
+        phone_natural_size_px, int(calibration_display_turns) % 4
+    )
+    up = np.asarray(frame["up_unit_xy"], dtype=np.float64)
+    right = np.asarray(frame["right_unit_xy"], dtype=np.float64)
+    base_up = natural_to_display[:2, :2].dot(up)
+    base_right = natural_to_display[:2, :2].dot(right)
+    candidates = []
+    for turns in range(4):
+        rotation = natural_to_logical_matrix([2, 3], turns)[:2, :2]
+        output_up = rotation.dot(base_up)
+        output_right = rotation.dot(base_right)
+        output_up /= np.linalg.norm(output_up)
+        output_right /= np.linalg.norm(output_right)
+        error = float(
+            np.linalg.norm(output_up - [0.0, -1.0])
+            + np.linalg.norm(output_right - [1.0, 0.0])
+        )
+        candidates.append((error, turns))
+    error, selected = min(candidates)
+    if error > 1.0e-6:
+        raise ValueError(
+            "Canonical mini-map orientation cannot be represented by a quarter turn"
+        )
+    return int(selected)
 
 
 def _profile_context_from_localization(

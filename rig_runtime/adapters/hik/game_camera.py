@@ -488,6 +488,24 @@ class ProfiledHikGameCamera:
         )
         return self._transform_xy(np.linalg.inv(self._upright_to_base_full), base)
 
+    def _canonical_phone_vector_to_upright_full_xy(
+        self, anchor_xy: Sequence[float], vector_xy: Sequence[float]
+    ) -> np.ndarray:
+        """Transform a direction as an anchored ray through the actual output map."""
+
+        first = self._canonical_phone_to_upright_full_xy(anchor_xy)
+        second = self._canonical_phone_to_upright_full_xy(
+            [
+                float(anchor_xy[0]) + float(vector_xy[0]),
+                float(anchor_xy[1]) + float(vector_xy[1]),
+            ]
+        )
+        result = second - first
+        norm = float(np.linalg.norm(result))
+        if norm <= 1.0e-9:
+            raise ValueError("Canonical mini-map orientation collapsed in output space")
+        return result / norm
+
     def _cursor_envelope_size_xy(self) -> Optional[list[float]]:
         geometry = dict(self.minimap.get("cursor_geometry") or {})
         value = geometry.get("rotating_cursor_envelope_diameter_px")
@@ -662,6 +680,28 @@ class ProfiledHikGameCamera:
             radius_px=float(max(diameter_xy) / 2.0),
             image_space=copy.deepcopy(dict(metadata.get("image_space") or {})),
         )
+        orientation_frame = boundary.get("orientation_frame")
+        if isinstance(orientation_frame, Mapping):
+            runtime_frame = {
+                **copy.deepcopy(dict(orientation_frame)),
+                "up_unit_xy": self._canonical_phone_vector_to_upright_full_xy(
+                    [boundary["center_x"], boundary["center_y"]],
+                    orientation_frame["up_unit_xy"],
+                ).tolist(),
+                "right_unit_xy": self._canonical_phone_vector_to_upright_full_xy(
+                    [boundary["center_x"], boundary["center_y"]],
+                    orientation_frame["right_unit_xy"],
+                ).tolist(),
+            }
+            result["orientation_frame"] = runtime_frame
+            result["orientation_error_degrees"] = float(
+                np.degrees(
+                    np.arctan2(
+                        runtime_frame["up_unit_xy"][0],
+                        -runtime_frame["up_unit_xy"][1],
+                    )
+                )
+            )
         return result
 
     def open(self) -> "ProfiledHikGameCamera":

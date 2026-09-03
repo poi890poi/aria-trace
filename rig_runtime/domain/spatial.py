@@ -128,6 +128,10 @@ def require_spatial_geometry(
             raise ValueError("Circle requires finite center_x, center_y, and radius")
         if float(result["radius"]) <= 0.0:
             raise ValueError("Circle radius must be positive")
+        if result.get("orientation_frame") is not None:
+            result["orientation_frame"] = validate_orientation_frame(
+                result["orientation_frame"]
+            )
     elif actual_type == "point":
         numeric = [result.get("x"), result.get("y")]
         if not all(item is not None and math.isfinite(float(item)) for item in numeric):
@@ -280,6 +284,12 @@ def transform_circle_similarity(
         center_y=float(transformed["y"]),
         radius=float(circle["radius"]) * math.sqrt(scale_squared),
     )
+    if circle.get("orientation_frame") is not None:
+        metrics["orientation_frame"] = transform_orientation_frame(
+            circle["orientation_frame"],
+            matrix,
+            [float(circle["center_x"]), float(circle["center_y"])],
+        )
     metrics["spatial_provenance"] = {
         "operation": "explicit_circle_similarity_transform",
         "source_space": copy.deepcopy(circle["space"]),
@@ -287,6 +297,111 @@ def transform_circle_similarity(
         "previous": copy.deepcopy(circle.get("spatial_provenance")),
     }
     return bind_geometry(metrics, "circle", target_space)
+
+
+def validate_orientation_frame(value: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate directed game-screen axes attached to symmetric geometry."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("Orientation frame must be a mapping")
+    result = copy.deepcopy(dict(value))
+    if int(result.get("schema_version") or 0) != 1:
+        raise ValueError("Orientation frame requires schema_version 1")
+
+    def unit(name: str) -> list[float]:
+        raw = result.get(name)
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            raise ValueError("Orientation frame {} must be an XY vector".format(name))
+        vector = [float(raw[0]), float(raw[1])]
+        if not all(math.isfinite(item) for item in vector):
+            raise ValueError("Orientation frame vectors must be finite")
+        norm = math.hypot(vector[0], vector[1])
+        if norm <= 1.0e-9:
+            raise ValueError("Orientation frame vectors must be non-zero")
+        return [vector[0] / norm, vector[1] / norm]
+
+    up = unit("up_unit_xy")
+    right = unit("right_unit_xy")
+    dot = up[0] * right[0] + up[1] * right[1]
+    if abs(dot) > 1.0e-4:
+        raise ValueError("Orientation frame up and right must be orthogonal")
+    # Raster coordinates are X-right/Y-down, so down=-up and [right, down]
+    # must retain positive handedness.
+    handedness = right[0] * (-up[1]) - (-up[0]) * right[1]
+    if handedness <= 0.0:
+        raise ValueError("Orientation frame must preserve X-right/Y-down handedness")
+    result["up_unit_xy"] = up
+    result["right_unit_xy"] = right
+    result.setdefault("semantics", "canonical_game_screen_axes_at_circle_center")
+    result.setdefault("axis_directions", "x_right_y_down")
+    return result
+
+
+def oriented_circle(
+    value: Mapping[str, Any],
+    *,
+    up_unit_xy: Sequence[float] = (0.0, -1.0),
+    right_unit_xy: Sequence[float] = (1.0, 0.0),
+    source: str = "adb_image_axes",
+) -> Dict[str, Any]:
+    """Attach a directed game-screen frame while preserving circle compatibility."""
+
+    circle = require_spatial_geometry(value, "circle")
+    circle["orientation_frame"] = validate_orientation_frame(
+        {
+            "schema_version": 1,
+            "semantics": "canonical_game_screen_axes_at_circle_center",
+            "axis_directions": "x_right_y_down",
+            "up_unit_xy": list(up_unit_xy),
+            "right_unit_xy": list(right_unit_xy),
+            "source": str(source),
+        }
+    )
+    return require_spatial_geometry(circle, "circle")
+
+
+def transform_orientation_frame(
+    value: Mapping[str, Any],
+    matrix_3x3: Sequence[Sequence[float]],
+    anchor_xy: Sequence[float],
+) -> Dict[str, Any]:
+    """Transform directed axes as anchored rays under a projective mapping."""
+
+    frame = validate_orientation_frame(value)
+    matrix = _finite_transform(matrix_3x3)
+    anchor = [float(anchor_xy[0]), float(anchor_xy[1])]
+
+    def projected(vector: Sequence[float]) -> list[float]:
+        points = []
+        for x, y in (
+            anchor,
+            [anchor[0] + float(vector[0]), anchor[1] + float(vector[1])],
+        ):
+            homogeneous = [
+                matrix[0][0] * x + matrix[0][1] * y + matrix[0][2],
+                matrix[1][0] * x + matrix[1][1] * y + matrix[1][2],
+                matrix[2][0] * x + matrix[2][1] * y + matrix[2][2],
+            ]
+            if abs(homogeneous[2]) < 1.0e-12:
+                raise ValueError("Orientation-frame transform has invalid projective scale")
+            points.append(
+                [homogeneous[0] / homogeneous[2], homogeneous[1] / homogeneous[2]]
+            )
+        dx = points[1][0] - points[0][0]
+        dy = points[1][1] - points[0][1]
+        norm = math.hypot(dx, dy)
+        if norm <= 1.0e-9:
+            raise ValueError("Orientation-frame transform collapsed an axis")
+        return [dx / norm, dy / norm]
+
+    transformed = {
+        **frame,
+        "up_unit_xy": projected(frame["up_unit_xy"]),
+        "right_unit_xy": projected(frame["right_unit_xy"]),
+    }
+    # Similarity transforms retain orthogonality; revalidation also catches a
+    # reflection before the orientation reaches a profile or adapter.
+    return validate_orientation_frame(transformed)
 
 
 def _finite_transform(value: Sequence[Sequence[float]]) -> list:
@@ -327,9 +442,12 @@ __all__ = [
     "bind_geometry",
     "raster_space",
     "normalize_legacy_geometry",
+    "oriented_circle",
     "require_same_space",
     "require_spatial_geometry",
     "transform_circle_similarity",
+    "transform_orientation_frame",
     "transform_point",
     "validate_raster_space",
+    "validate_orientation_frame",
 ]

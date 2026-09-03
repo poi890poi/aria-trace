@@ -286,6 +286,28 @@ def overlay_stream_geometry(
                 1,
                 cv2.LINE_AA,
             )
+            orientation_frame = geometry.get("orientation_frame")
+            if isinstance(orientation_frame, Mapping):
+                arm = max(12, int(round(min(axes) * 0.75)))
+                for name, color in (
+                    ("up_unit_xy", (80, 255, 80)),
+                    ("right_unit_xy", (80, 160, 255)),
+                ):
+                    vector = orientation_frame.get(name)
+                    if isinstance(vector, Sequence) and len(vector) == 2:
+                        endpoint = (
+                            int(round(center[0] + arm * float(vector[0]))),
+                            int(round(center[1] + arm * float(vector[1]))),
+                        )
+                        cv2.arrowedLine(
+                            rendered,
+                            center,
+                            endpoint,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                            tipLength=0.22,
+                        )
     if state.cursor:
         geometry = _runtime_geometry(camera, "get_cursor_geometry", stream_name)
         if (
