@@ -72,6 +72,7 @@ from rig_runtime.services.calibration.rig.hik.panel_axis import (
     aggregate_panel_axis_measurements,
     measure_panel_axis_edges,
     panel_axis_correction_matrix,
+    refine_camera_to_screen_matrix,
     render_panel_axis_evidence,
 )
 from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter
@@ -4358,11 +4359,6 @@ class HikRigCalibrationSession:
             }
             x, y, width, height = visible_region["xywh"]
             full_size = [int(self.camera_metadata["width_px"]), int(self.camera_metadata["height_px"])]
-            camera_roi = self.hardware_roi or self.camera.align_roi(
-                self._raw_roi_for_screen_region(
-                    visible_region["xywh"], full_size
-                )
-            )
             calibration, _, valid_mask = build_calibration(
                 calibration_id="hik-{}".format(uuid.uuid4().hex),
                 camera_points_xy=correspondences["camera_points_xy"],
@@ -4397,21 +4393,68 @@ class HikRigCalibrationSession:
             normalization_matrix = np.asarray(
                 calibration["normalization"]["matrix_3x3"], dtype=np.float64
             )
+            camera_to_screen_matrix = np.asarray(
+                geometry.matrix_3x3, dtype=np.float64
+            )
             correction_matrix = np.eye(3, dtype=np.float64)
             if panel_axis.get("applied"):
                 correction_matrix = panel_axis_correction_matrix(
                     [width, height],
                     float(panel_axis["correction_counterclockwise_degrees"]),
                 )
-                normalization_matrix = correction_matrix.dot(
-                    normalization_matrix
+                camera_to_screen_matrix = refine_camera_to_screen_matrix(
+                    camera_to_screen_matrix,
+                    [x, y],
+                    calibration["normalization"].get(
+                        "screen_units_per_output_pixel_xy", [1.0, 1.0]
+                    ),
+                    correction_matrix,
+                )
+                scale_x, scale_y = map(
+                    float,
+                    calibration["normalization"].get(
+                        "screen_units_per_output_pixel_xy", [1.0, 1.0]
+                    ),
+                )
+                screen_to_output = np.asarray(
+                    [
+                        [1.0 / scale_x, 0.0, -float(x) / scale_x],
+                        [0.0, 1.0 / scale_y, -float(y) / scale_y],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=np.float64,
+                )
+                normalization_matrix = screen_to_output.dot(
+                    camera_to_screen_matrix
                 )
                 normalization_matrix /= normalization_matrix[2, 2]
+            screen_to_camera_matrix = np.linalg.inv(camera_to_screen_matrix)
+            screen_to_camera_matrix /= screen_to_camera_matrix[2, 2]
+            if self._uses_measured_distortion():
+                requested_camera_roi = distorted_screen_region_roi(
+                    full_size,
+                    visible_region["xywh"],
+                    screen_to_camera_matrix,
+                    self.lens_model,
+                )
+            else:
+                requested_camera_roi = camera_roi_for_screen_region(
+                    visible_region["xywh"],
+                    screen_to_camera_matrix,
+                    full_size,
+                )
+            camera_roi = self.camera.align_roi(requested_camera_roi)
             panel_axis["rectification_composition"] = {
                 "applied": bool(panel_axis.get("applied")),
-                "operation": "left_compose_output_space_rotation",
+                "operation": "refine_authoritative_camera_to_phone_transform",
                 "base_full_sensor_camera_to_output_3x3": (
                     calibration["normalization"]["matrix_3x3"]
+                ),
+                "base_full_sensor_camera_to_screen_3x3": (
+                    geometry.matrix_3x3.tolist()
+                ),
+                "refined_full_sensor_camera_to_screen_3x3": (
+                    camera_to_screen_matrix.tolist()
                 ),
                 "correction_matrix_output_3x3": correction_matrix.tolist(),
                 "runtime_resampling_passes_added": 0,
@@ -4447,10 +4490,16 @@ class HikRigCalibrationSession:
             calibration["normalization"]["matrix_3x3"] = (
                 normalization_matrix.tolist()
             )
+            calibration["geometry"]["matrix_3x3"] = (
+                camera_to_screen_matrix.tolist()
+            )
+            calibration["geometry"]["inverse_matrix_3x3"] = (
+                screen_to_camera_matrix.tolist()
+            )
             calibration["normalization"]["orientation"] = orientation_value
             coordinate_spaces = hik_image_space_conversions(
-                geometry.matrix_3x3,
-                geometry.inverse_matrix_3x3,
+                camera_to_screen_matrix,
+                screen_to_camera_matrix,
                 normalization_matrix,
                 full_size,
                 camera_roi,
@@ -4547,8 +4596,8 @@ class HikRigCalibrationSession:
                         "margin_px": list(self.charuco_layout.margin_px),
                         "board_size_px": list(self.charuco_layout.board_size_px),
                     },
-                    "full_sensor_camera_to_screen_3x3": geometry.matrix_3x3.tolist(),
-                    "screen_to_full_sensor_camera_3x3": geometry.inverse_matrix_3x3.tolist(),
+                    "full_sensor_camera_to_screen_3x3": camera_to_screen_matrix.tolist(),
+                    "screen_to_full_sensor_camera_3x3": screen_to_camera_matrix.tolist(),
                     "panel_scale_measurement": dict(self.panel_scale_measurement),
                     "camera_visible_screen_region": dict(visible_region),
                 },

@@ -2430,6 +2430,20 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 expected,
                 config["normalization"]["full_sensor_camera_to_output_3x3"],
             )
+            refined_screen = np.asarray(
+                config["geometry"]["full_sensor_camera_to_screen_3x3"]
+            )
+            self.assertFalse(np.allclose(refined_screen, np.eye(3)))
+            np.testing.assert_allclose(
+                np.linalg.inv(refined_screen),
+                config["geometry"]["screen_to_full_sensor_camera_3x3"],
+            )
+            np.testing.assert_allclose(
+                refined_screen,
+                config["coordinate_spaces"]["conversions"][
+                    "full_sensor_image_to_phone_display_3x3"
+                ],
+            )
             self.assertEqual(config["camera"]["controls"]["gain"]["maximum"], 24.0)
             self.assertEqual(config["imaging"]["black_level"], 240)
             self.assertEqual(

@@ -7,6 +7,7 @@ from rig_runtime.services.calibration.rig.hik.panel_axis import (
     aggregate_panel_axis_measurements,
     measure_panel_axis_edges,
     panel_axis_correction_matrix,
+    refine_camera_to_screen_matrix,
 )
 from rig_runtime.services.calibration.rig.hik.patterns import (
     focus_panel_axis_edges,
@@ -58,6 +59,35 @@ class PanelAxisCalibrationTests(unittest.TestCase):
         verified = measure_panel_axis_edges(corrected, self.edges, [0, 0])
 
         self.assertLess(abs(verified["residual_clockwise_degrees"]), 0.15)
+
+    def test_output_correction_refines_the_authoritative_screen_mapping(self):
+        camera_to_screen = np.asarray(
+            [[1.2, 0.03, 14.0], [-0.02, 0.9, 8.0], [0.0001, 0.0002, 1.0]],
+            dtype=np.float64,
+        )
+        origin = [30.0, 24.0]
+        scale = [1.25, 0.8]
+        correction = panel_axis_correction_matrix(self.size, 1.5)
+        refined = refine_camera_to_screen_matrix(
+            camera_to_screen, origin, scale, correction
+        )
+        screen_to_output = np.asarray(
+            [
+                [1.0 / scale[0], 0.0, -origin[0] / scale[0]],
+                [0.0, 1.0 / scale[1], -origin[1] / scale[1]],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+
+        expected_output = correction.dot(screen_to_output).dot(camera_to_screen)
+        expected_output /= expected_output[2, 2]
+        actual_output = screen_to_output.dot(refined)
+        actual_output /= actual_output[2, 2]
+
+        np.testing.assert_allclose(expected_output, actual_output, atol=1.0e-10)
+        np.testing.assert_allclose(
+            np.linalg.inv(refined).dot(refined), np.eye(3), atol=1.0e-10
+        )
 
     def test_thirty_degree_disagreement_is_not_applied(self):
         measurement = {

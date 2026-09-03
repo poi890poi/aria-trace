@@ -353,6 +353,48 @@ def panel_axis_correction_matrix(
     return np.vstack([affine, [0.0, 0.0, 1.0]]).astype(np.float64)
 
 
+def refine_camera_to_screen_matrix(
+    camera_to_screen_3x3: Sequence[Sequence[float]],
+    output_origin_screen_xy: Sequence[float],
+    screen_units_per_output_pixel_xy: Sequence[float],
+    correction_output_3x3: Sequence[Sequence[float]],
+) -> np.ndarray:
+    """Fold an output-space axis observation into camera-to-screen geometry.
+
+    The broad-edge observation is measured after the ChArUco mapping has been
+    normalized into the adapter output raster.  Conjugating that correction
+    through the screen-to-output mapping makes it part of the single
+    authoritative camera-to-phone transform.  Consumers therefore do not
+    need a second panel-axis coordinate convention.
+    """
+
+    origin_x, origin_y = map(float, output_origin_screen_xy)
+    scale_x, scale_y = map(float, screen_units_per_output_pixel_xy)
+    if min(scale_x, scale_y) <= 0.0:
+        raise ValueError("Screen units per output pixel must be positive")
+    camera_to_screen = np.asarray(camera_to_screen_3x3, dtype=np.float64)
+    correction = np.asarray(correction_output_3x3, dtype=np.float64)
+    if camera_to_screen.shape != (3, 3) or correction.shape != (3, 3):
+        raise ValueError("Panel-axis refinement requires finite 3x3 transforms")
+    if not np.isfinite(camera_to_screen).all() or not np.isfinite(correction).all():
+        raise ValueError("Panel-axis refinement requires finite 3x3 transforms")
+    screen_to_output = np.asarray(
+        [
+            [1.0 / scale_x, 0.0, -origin_x / scale_x],
+            [0.0, 1.0 / scale_y, -origin_y / scale_y],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    refined = (
+        np.linalg.inv(screen_to_output)
+        .dot(correction)
+        .dot(screen_to_output)
+        .dot(camera_to_screen)
+    )
+    return refined / refined[2, 2]
+
+
 def render_panel_axis_evidence(
     rectified_bgr: np.ndarray, measurement: Mapping[str, Any]
 ) -> np.ndarray:
