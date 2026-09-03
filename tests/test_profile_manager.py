@@ -74,6 +74,16 @@ def write_rig(
 
 
 class ProfileManagerTests(unittest.TestCase):
+    def test_partial_result_without_usable_cursor_geometry_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "calibration.json"
+            summary.write_text(
+                json.dumps({"status": "partial", "result_level": "unavailable"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not publishable: partial"):
+                publish_minimap_profiles(summary)
+
     def test_verified_calibration_document_publishes_through_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -115,7 +125,8 @@ class ProfileManagerTests(unittest.TestCase):
             )
             calibration = {
                 "schema_version": "2.0",
-                "status": "review_required",
+                "status": "partial",
+                "result_level": "rotation_center_only",
                 "provenance": {"session_path": str(session)},
                 "config": {"crop_xywh": [10, 5, 40, 40]},
                 "outer_boundary": {

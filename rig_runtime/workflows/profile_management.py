@@ -719,8 +719,18 @@ def publish_minimap_profiles(
         )
     summary_path = summary_path.resolve()
     summary = _load_json(summary_path)
-    if summary.get("status") not in ("review_required", "accepted", "complete"):
-        raise ValueError("Localization result is not publishable: {}".format(summary.get("status")))
+    status = str(summary.get("status") or "")
+    partial_center_result = (
+        status == "partial"
+        and summary.get("result_level") == "rotation_center_only"
+        and isinstance(summary.get("rotation_center"), Mapping)
+    )
+    if status not in ("review_required", "accepted", "complete") and not partial_center_result:
+        raise ValueError(
+            "Localization result is not publishable: {}".format(
+                summary.get("status")
+            )
+        )
     session_path, manifest, capture_context = _session_context(summary)
     selected_rig = rig_calibration if compose_rig else None
     if compose_rig and selected_rig is None:

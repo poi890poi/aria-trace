@@ -242,7 +242,10 @@ rotating-envelope diameter to the active phone-game profile, which callers can
 query with `camera.get_cursor_geometry()`. Cursor calibration reports evidence
 levels independently: `shape_only`, `rotation_center_only`, or
 `rotation_center_and_shape`. A valid rotation center is retained and published
-even if the later persistent-contour or polar-shape fit is unavailable.
+even if the later persistent-contour or polar-shape fit is unavailable. Pivot
+fitting is color agnostic: it searches the temporal cursor envelope for its
+center of rotation and does not require a predefined HSV interval or a fitted
+cursor shape.
 
 Its JSON summary distinguishes `accepted`, `review_required`,
 `skipped_missing_or_ineligible_data`, and `failed`. Screen-upright orientation
@@ -253,12 +256,11 @@ lookup map and retain one remap per frame; an unrectified mode performs the
 zero-interpolation quarter-turn while preserving
 the complete image-space parent transform. This is not game-world north.
 
-For a skipped cursor series, the console and JSON report the acquisition
-pattern, expected cursor behavior, failing stage, and measured gate details.
-The cursor-color gate includes its HSV interval, component-area interval,
-center-distance limit, accepted frame count, and observed rejection counts.
-Mini-map boundary heatmaps are useful review evidence, but they do not by
-themselves prove that a cursor-colored component passed this separate gate.
+For a skipped or partial cursor series, the console and JSON report the
+acquisition pattern, expected cursor behavior, failing stage, and measured
+details. `cursor_center_heatmap.png` and `cursor_center_symmetry.png` expose the
+color-independent pivot evidence. The optional shape stage reports its own
+component and contour failures without invalidating the fitted center.
 
 To collect the session without running scrcpy, use:
 
