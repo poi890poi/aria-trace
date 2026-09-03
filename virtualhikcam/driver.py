@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import os
+import random
 import subprocess
 import time
 from pathlib import Path
@@ -30,8 +31,9 @@ from aria_trace.adapters.rig.devices import (
 from aria_trace.services.calibration.rig.contracts import FrameSample
 
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 ADAPTER_ID = "virtual_hik_android_camera"
+DISPLACEMENT_BORDER_BGR = (255, 0, 255)
 
 
 def _state_root(explicit: Optional[Path] = None) -> Path:
@@ -180,6 +182,12 @@ class VirtualHikCameraAdapter(CameraAdapter):
         self._lease: Optional[_DeviceLease] = None
         self._last_frame_metadata: dict[str, Any] = {}
         self._once_frames_remaining = 0
+        self._displacement_map_x: Optional[np.ndarray] = None
+        self._displacement_map_y: Optional[np.ndarray] = None
+        self._displacement_forward_3x3 = np.eye(3, dtype=np.float64)
+        self._displacement_inverse_3x3 = np.eye(3, dtype=np.float64)
+        self._displacement_map_build_ms = 0.0
+        self._displacement_map_generation = 0
 
     def devices(self, probe: bool = False) -> Sequence[CameraDevice]:
         # Camera2 enumeration is intentionally not performed implicitly.  A
@@ -227,6 +235,32 @@ class VirtualHikCameraAdapter(CameraAdapter):
             },
             "auto_limits": {"maximum_exposure_us": 33333.0, "maximum_gain": 24.0},
             "auto_function_roi_xywh": [0, 0, width, height],
+            "simulated_displacement": {
+                "x_px": 0.0,
+                "y_px": 0.0,
+                "rotation_deg_clockwise": 0.0,
+                "mode": "canonical",
+                "seed": None,
+            },
+        }
+
+    @staticmethod
+    def _validated_displacement(value: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+        value = dict(value or {})
+        x_px = float(value.get("x_px", 0.0))
+        y_px = float(value.get("y_px", 0.0))
+        rotation = float(value.get("rotation_deg_clockwise", 0.0))
+        if not np.all(np.isfinite([x_px, y_px, rotation])):
+            raise ValueError("Virtual displacement must contain finite values")
+        return {
+            "x_px": x_px,
+            "y_px": y_px,
+            "rotation_deg_clockwise": rotation,
+            "mode": str(value.get("mode") or (
+                "canonical" if max(abs(x_px), abs(y_px), abs(rotation)) <= 1.0e-12
+                else "explicit"
+            )),
+            "seed": value.get("seed"),
         }
 
     def _load_state(self, model_id: str, full_size: Sequence[int]) -> dict[str, Any]:
@@ -235,7 +269,8 @@ class VirtualHikCameraAdapter(CameraAdapter):
             return default
         try:
             value = json.loads(self._state_path.read_text(encoding="utf-8"))
-            if int(value.get("schema_version", -1)) != STATE_SCHEMA_VERSION:
+            schema_version = int(value.get("schema_version", -1))
+            if schema_version not in (1, STATE_SCHEMA_VERSION):
                 raise ValueError("unsupported state schema")
             if str(value.get("camera_model_id")) != str(model_id):
                 raise ValueError("camera model identity changed")
@@ -243,6 +278,10 @@ class VirtualHikCameraAdapter(CameraAdapter):
                 raise ValueError("effective sensor mode changed")
             roi = self._align_roi(value.get("effective_roi_xywh"), full_size)
             value["effective_roi_xywh"] = roi
+            value["simulated_displacement"] = self._validated_displacement(
+                value.get("simulated_displacement")
+            )
+            value["schema_version"] = STATE_SCHEMA_VERSION
             return value
         except Exception as exc:
             default["state_recovery_warning"] = "{}: {}".format(type(exc).__name__, exc)
@@ -263,6 +302,136 @@ class VirtualHikCameraAdapter(CameraAdapter):
         update(self._state)
         self._state["state_generation"] = int(self._state.get("state_generation", 0)) + 1
         self._persist()
+
+    def _rebuild_displacement_map(self) -> None:
+        """Precompute the inverse dense map for the persistent virtual pose."""
+
+        width, height = self.full_size
+        displacement = self._validated_displacement(
+            self._state.get("simulated_displacement")
+        )
+        x_px = float(displacement["x_px"])
+        y_px = float(displacement["y_px"])
+        angle = np.deg2rad(float(displacement["rotation_deg_clockwise"]))
+        center_x = (float(width) - 1.0) / 2.0
+        center_y = (float(height) - 1.0) / 2.0
+        cosine = float(np.cos(angle))
+        sine = float(np.sin(angle))
+        rotation = np.asarray(
+            [[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        to_origin = np.asarray(
+            [[1.0, 0.0, -center_x], [0.0, 1.0, -center_y], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        from_origin = np.asarray(
+            [
+                [1.0, 0.0, center_x + x_px],
+                [0.0, 1.0, center_y + y_px],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        forward = from_origin.dot(rotation).dot(to_origin)
+        inverse = np.linalg.inv(forward)
+        started = time.perf_counter_ns()
+        grid_y, grid_x = np.indices((height, width), dtype=np.float32)
+        map_x = (
+            inverse[0, 0] * grid_x
+            + inverse[0, 1] * grid_y
+            + inverse[0, 2]
+        ).astype(np.float32)
+        map_y = (
+            inverse[1, 0] * grid_x
+            + inverse[1, 1] * grid_y
+            + inverse[1, 2]
+        ).astype(np.float32)
+        completed = time.perf_counter_ns()
+        self._state["simulated_displacement"] = displacement
+        self._displacement_forward_3x3 = forward
+        self._displacement_inverse_3x3 = inverse
+        self._displacement_map_x = map_x
+        self._displacement_map_y = map_y
+        self._displacement_map_build_ms = (completed - started) / 1.0e6
+        self._displacement_map_generation += 1
+
+    def simulated_displacement(self) -> Mapping[str, Any]:
+        if not self._state:
+            raise RuntimeError("Virtual camera is not open")
+        return copy.deepcopy(self._state["simulated_displacement"])
+
+    def set_simulated_displacement(
+        self,
+        x_px: float,
+        y_px: float,
+        rotation_deg_clockwise: float,
+        *,
+        mode: str = "explicit",
+        seed: Optional[int] = None,
+    ) -> Mapping[str, Any]:
+        """Persist one physical-pose simulation in full-sensor coordinates.
+
+        Positive X moves scene content right, positive Y moves it down, and a
+        positive angle rotates it clockwise around the sensor center.
+        """
+
+        displacement = self._validated_displacement(
+            {
+                "x_px": x_px,
+                "y_px": y_px,
+                "rotation_deg_clockwise": rotation_deg_clockwise,
+                "mode": mode,
+                "seed": seed,
+            }
+        )
+        width, height = self.full_size
+        if abs(displacement["x_px"]) > width * 0.1:
+            raise ValueError("Virtual X displacement is limited to 10% of sensor width")
+        if abs(displacement["y_px"]) > height * 0.1:
+            raise ValueError("Virtual Y displacement is limited to 10% of sensor height")
+        if abs(displacement["rotation_deg_clockwise"]) > 10.0:
+            raise ValueError("Virtual rotation displacement is limited to 10 degrees")
+        self._mutate(
+            lambda state: state.update(simulated_displacement=copy.deepcopy(displacement))
+        )
+        self._rebuild_displacement_map()
+        self.metadata["state_generation"] = int(self._state["state_generation"])
+        self.metadata["simulated_displacement"] = self.simulated_displacement()
+        self.metadata["displacement_map_build_ms"] = self._displacement_map_build_ms
+        return self.simulated_displacement()
+
+    def randomize_simulated_displacement(
+        self,
+        *,
+        max_x_px: Optional[float] = None,
+        max_y_px: Optional[float] = None,
+        max_rotation_deg: float = 2.0,
+        seed: Optional[int] = None,
+    ) -> Mapping[str, Any]:
+        """Generate and persist a small repeatable random physical displacement."""
+
+        width, height = self.full_size
+        max_x = float(max_x_px if max_x_px is not None else width * 0.02)
+        max_y = float(max_y_px if max_y_px is not None else height * 0.02)
+        max_rotation = float(max_rotation_deg)
+        if min(max_x, max_y, max_rotation) < 0.0:
+            raise ValueError("Random displacement limits must be non-negative")
+        generator = random.Random(seed)
+        return self.set_simulated_displacement(
+            generator.uniform(-max_x, max_x),
+            generator.uniform(-max_y, max_y),
+            generator.uniform(-max_rotation, max_rotation),
+            mode="random",
+            seed=seed,
+        )
+
+    def reset_simulated_displacement(self) -> Mapping[str, Any]:
+        """Return content to canonical pose without changing ROI or imaging state."""
+
+        return self.set_simulated_displacement(
+            0.0, 0.0, 0.0, mode="canonical", seed=None
+        )
 
     def open(self, configuration: CameraConfiguration) -> Mapping[str, Any]:
         self.close()
@@ -295,6 +464,7 @@ class VirtualHikCameraAdapter(CameraAdapter):
             self._spec = spec
             self._full_size = full_size
             self.configuration = configuration
+            self._rebuild_displacement_map()
             self.metadata = {
                 "adapter_id": self.adapter_id,
                 "device_id": spec["canonical_device_id"],
@@ -319,6 +489,8 @@ class VirtualHikCameraAdapter(CameraAdapter):
                 ),
                 "state_file": str(self._state_path),
                 "state_generation": int(self._state["state_generation"]),
+                "simulated_displacement": self.simulated_displacement(),
+                "displacement_map_build_ms": self._displacement_map_build_ms,
                 "physical_hik_claims": "none",
             }
             return copy.deepcopy(self.metadata)
@@ -353,6 +525,25 @@ class VirtualHikCameraAdapter(CameraAdapter):
         full = self._zoom(source.image, float(self._spec["zoom"]))
         if [int(full.shape[1]), int(full.shape[0])] != self.full_size:
             raise RuntimeError("Virtual camera full raster changed during acquisition")
+        displacement_started = time.perf_counter_ns()
+        displacement = self.simulated_displacement()
+        displacement_active = max(
+            abs(float(displacement["x_px"])),
+            abs(float(displacement["y_px"])),
+            abs(float(displacement["rotation_deg_clockwise"])),
+        ) > 1.0e-12
+        if displacement_active:
+            if self._displacement_map_x is None or self._displacement_map_y is None:
+                raise RuntimeError("Virtual displacement map is unavailable")
+            full = cv2.remap(
+                full,
+                self._displacement_map_x,
+                self._displacement_map_y,
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=DISPLACEMENT_BORDER_BGR,
+            )
+        displacement_completed = time.perf_counter_ns()
         x, y, width, height = self.active_roi
         image = full[y : y + height, x : x + width].copy()
         if image.shape[:2] != (height, width):
@@ -379,6 +570,8 @@ class VirtualHikCameraAdapter(CameraAdapter):
             "orientation": "scrcpy_camera_locked_initial_as_delivered",
             "mirroring": "as_delivered_by_android_camera_transport",
             "color_order": "BGR",
+            "content_from_canonical_parent_3x3": self._displacement_forward_3x3.tolist(),
+            "canonical_parent_from_content_3x3": self._displacement_inverse_3x3.tolist(),
         }
         metadata = {
             **dict(source.metadata),
@@ -388,6 +581,15 @@ class VirtualHikCameraAdapter(CameraAdapter):
             "state_generation": int(self._state["state_generation"]),
             "effective_roi_xywh": [x, y, width, height],
             "zoom": float(self._spec["zoom"]),
+            "simulated_displacement": displacement,
+            "simulated_displacement_active": displacement_active,
+            "simulated_displacement_border_bgr": list(DISPLACEMENT_BORDER_BGR),
+            "displacement_map_precomputed": True,
+            "displacement_map_generation": self._displacement_map_generation,
+            "displacement_map_build_ms": self._displacement_map_build_ms,
+            "displacement_remap_ms": (
+                displacement_completed - displacement_started
+            ) / 1.0e6,
             "roi_implementation": "software_crop_after_full_frame_decode",
             "virtual_processing_ms": (completed - started) / 1.0e6,
             "image_space": image_space,
@@ -601,6 +803,12 @@ class VirtualHikCameraAdapter(CameraAdapter):
             self._state_path = None
             self._last_frame_metadata = {}
             self._once_frames_remaining = 0
+            self._displacement_map_x = None
+            self._displacement_map_y = None
+            self._displacement_forward_3x3 = np.eye(3, dtype=np.float64)
+            self._displacement_inverse_3x3 = np.eye(3, dtype=np.float64)
+            self._displacement_map_build_ms = 0.0
+            self._displacement_map_generation = 0
 
 
 HikMvsCameraAdapter = VirtualHikCameraAdapter

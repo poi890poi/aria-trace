@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -142,6 +143,114 @@ class VirtualHikCameraTests(unittest.TestCase):
             "virtualhikcam.driver:create_camera_adapter"
         )
         self.assertIsInstance(adapter, VirtualHikCameraAdapter)
+
+    def test_explicit_displacement_is_applied_before_roi_and_declared(self):
+        adapter = self.adapter()
+        adapter.open(configuration(self.device))
+        adapter.set_simulated_displacement(7.0, 5.0, 0.0)
+        self.assertEqual(7.0, adapter.metadata["simulated_displacement"]["x_px"])
+        adapter.set_roi([3, 2, 300, 200])
+        sample = adapter.read()
+
+        # ROI-local (9, 10) is full-sensor (12, 12), which samples canonical
+        # (5, 7) after a +7 X, +5 Y content displacement.
+        expected = np.asarray([5 % 251, 7 % 251, 12 % 251], dtype=np.uint8)
+        np.testing.assert_array_equal(expected, sample.image[10, 9])
+        self.assertEqual(
+            [3, 2, 300, 200], sample.metadata["image_space"]["roi_in_parent_xywh"]
+        )
+        self.assertEqual(
+            7.0,
+            sample.metadata["image_space"]["content_from_canonical_parent_3x3"][0][2],
+        )
+        self.assertEqual(
+            5.0,
+            sample.metadata["image_space"]["content_from_canonical_parent_3x3"][1][2],
+        )
+        self.assertTrue(sample.metadata["simulated_displacement_active"])
+        adapter.close()
+
+    def test_seeded_random_displacement_persists_and_reset_preserves_other_state(self):
+        first = self.adapter()
+        first.open(configuration(self.device))
+        first.set_roi([30, 40, 500, 400])
+        first.set_manual_imaging(12000.0, 4.5)
+        displaced = dict(first.randomize_simulated_displacement(seed=1729))
+        self.assertEqual("random", displaced["mode"])
+        self.assertEqual(1729, displaced["seed"])
+        first.close()
+
+        second = self.adapter()
+        second.open(configuration(self.device))
+        self.assertEqual(displaced, dict(second.simulated_displacement()))
+        self.assertEqual([30, 40, 500, 400], second.active_roi)
+        self.assertEqual({"exposure_us": 12000.0, "gain": 4.5}, second.imaging_state())
+        reset = dict(second.reset_simulated_displacement())
+        self.assertEqual(
+            {
+                "x_px": 0.0,
+                "y_px": 0.0,
+                "rotation_deg_clockwise": 0.0,
+                "mode": "canonical",
+                "seed": None,
+            },
+            reset,
+        )
+        self.assertEqual([30, 40, 500, 400], second.active_roi)
+        self.assertEqual({"exposure_us": 12000.0, "gain": 4.5}, second.imaging_state())
+        second.close()
+
+        third = self.adapter()
+        third.open(configuration(self.device))
+        self.assertEqual(reset, dict(third.simulated_displacement()))
+        third.close()
+
+    def test_displacement_map_is_reused_until_pose_changes(self):
+        adapter = self.adapter()
+        adapter.open(configuration(self.device))
+        opened_generation = adapter._displacement_map_generation
+        opened_map = adapter._displacement_map_x
+        adapter.read()
+        adapter.read()
+        self.assertEqual(opened_generation, adapter._displacement_map_generation)
+        self.assertIs(opened_map, adapter._displacement_map_x)
+
+        adapter.set_simulated_displacement(4.0, -3.0, 0.5)
+        changed_generation = adapter._displacement_map_generation
+        changed_map = adapter._displacement_map_x
+        self.assertEqual(opened_generation + 1, changed_generation)
+        self.assertIsNot(opened_map, changed_map)
+        first = adapter.read()
+        second = adapter.read()
+        self.assertEqual(changed_generation, adapter._displacement_map_generation)
+        self.assertIs(changed_map, adapter._displacement_map_x)
+        self.assertEqual(
+            changed_generation, first.metadata["displacement_map_generation"]
+        )
+        self.assertEqual(
+            changed_generation, second.metadata["displacement_map_generation"]
+        )
+        adapter.close()
+
+    def test_schema_one_state_migrates_to_canonical_displacement(self):
+        first = self.adapter()
+        first.open(configuration(self.device))
+        first.set_roi([10, 20, 500, 400])
+        state_path = Path(first.metadata["state_file"])
+        first.close()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["schema_version"] = 1
+        state.pop("simulated_displacement", None)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        second = self.adapter()
+        second.open(configuration(self.device))
+        self.assertEqual([10, 20, 500, 400], second.active_roi)
+        self.assertEqual("canonical", second.simulated_displacement()["mode"])
+        migrated = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(2, migrated["schema_version"])
+        self.assertIn("simulated_displacement", migrated)
+        second.close()
 
 
 if __name__ == "__main__":
