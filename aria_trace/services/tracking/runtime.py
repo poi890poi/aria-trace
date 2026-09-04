@@ -1460,9 +1460,27 @@ class TwoRateRealtimeTracker:
             yaw_sigma = state.yaw_sigma_deg
             self.trail.append((state.pose.x, state.pose.y))
             self.trail = self.trail[-300:]
+        control_ready_host_time_ns = time.perf_counter_ns()
+        capture_to_control_ready_ms = max(
+            0.0,
+            (control_ready_host_time_ns - timestamp_ns) / 1.0e6,
+        )
+        xy_measurement_fresh_accepted = bool(
+            (
+                route_tracking_fresh
+                and self._last_route_tracking
+                and self._last_route_tracking.get("measurement_accepted")
+            )
+            if self.route_visual_tracker is not None
+            else local_accepted
+        )
         return {
             "sequence": self.sequence,
             "host_time_ns": timestamp_ns,
+            "control_ready_host_time_ns": control_ready_host_time_ns,
+            "capture_to_control_ready_ms": capture_to_control_ready_ms,
+            "xy_measurement_fresh_accepted": xy_measurement_fresh_accepted,
+            "control_output_available": pose is not None,
             "mode": mode,
             "pose": pose,
             "position_sigma_map_px": position_sigma,

@@ -409,6 +409,11 @@ class WorkbenchLiveTrackingMixin:
                 "cursor_deadline_33_3ms_rate": 0.0,
                 "cursor_deadline_66_7ms_rate": 0.0,
                 "cursor_capture_to_publish_p95_ms": None,
+                "control_capture_to_publish_p95_ms": None,
+                "control_deadline_33_3ms_rate": 0.0,
+                "control_deadline_66_7ms_rate": 0.0,
+                "fresh_xy_fps": 0.0,
+                "fresh_xy_frame_rate": 0.0,
                 "processed_frames": 0,
                 "error": None,
                 "route_similarity": None,
@@ -460,6 +465,7 @@ class WorkbenchLiveTrackingMixin:
         def work() -> None:
             recent_times = []
             recent_pose_samples = []
+            recent_control_samples = []
             frame_pump = LatestFramePump(frame_source)
             run_error = None
             try:
@@ -494,9 +500,6 @@ class WorkbenchLiveTrackingMixin:
                             latest,
                             route_points=self._live_tracker_route_points,
                         )
-                    evidence_recorder.record(
-                        packet.image, minimap, latest, diagnostics
-                    )
                     now = time.perf_counter()
                     recent_times.append(now)
                     recent_times = [item for item in recent_times if now - item <= 2.0]
@@ -559,6 +562,61 @@ class WorkbenchLiveTrackingMixin:
                         if latencies
                         else None
                     )
+                    published_host_time_ns = time.perf_counter_ns()
+                    control_latency_ms = max(
+                        0.0,
+                        (
+                            published_host_time_ns
+                            - int(packet.host_capture_time_ns)
+                        )
+                        / 1.0e6,
+                    )
+                    latest["control_published_host_time_ns"] = (
+                        published_host_time_ns
+                    )
+                    latest["capture_to_control_publish_ms"] = control_latency_ms
+                    latest["control_deadline_33_3ms_met"] = bool(
+                        control_latency_ms <= (1000.0 / 30.0)
+                    )
+                    latest["control_deadline_66_7ms_met"] = bool(
+                        control_latency_ms <= (1000.0 / 15.0)
+                    )
+                    recent_control_samples.append(
+                        {
+                            "time": now,
+                            "latency_ms": control_latency_ms,
+                            "fresh_xy": bool(
+                                latest.get("xy_measurement_fresh_accepted")
+                            ),
+                            "deadline_33": latest["control_deadline_33_3ms_met"],
+                            "deadline_66": latest["control_deadline_66_7ms_met"],
+                        }
+                    )
+                    recent_control_samples = [
+                        item
+                        for item in recent_control_samples
+                        if now - item["time"] <= 2.0
+                    ]
+                    control_latencies = sorted(
+                        item["latency_ms"] for item in recent_control_samples
+                    )
+                    control_p95_latency = (
+                        control_latencies[
+                            min(
+                                len(control_latencies) - 1,
+                                max(
+                                    0,
+                                    math.ceil(0.95 * len(control_latencies)) - 1,
+                                ),
+                            )
+                        ]
+                        if control_latencies
+                        else None
+                    )
+                    control_sample_count = len(recent_control_samples)
+                    fresh_xy_count = sum(
+                        item["fresh_xy"] for item in recent_control_samples
+                    )
                     with self._lock:
                         runtime["latest"] = latest
                         runtime["processed_frames"] = latest["sequence"]
@@ -591,6 +649,37 @@ class WorkbenchLiveTrackingMixin:
                             else 0.0
                         )
                         runtime["cursor_capture_to_publish_p95_ms"] = p95_latency
+                        runtime["control_capture_to_publish_p95_ms"] = (
+                            control_p95_latency
+                        )
+                        runtime["control_deadline_33_3ms_rate"] = (
+                            sum(
+                                item["deadline_33"]
+                                for item in recent_control_samples
+                            )
+                            / control_sample_count
+                            if control_sample_count
+                            else 0.0
+                        )
+                        runtime["control_deadline_66_7ms_rate"] = (
+                            sum(
+                                item["deadline_66"]
+                                for item in recent_control_samples
+                            )
+                            / control_sample_count
+                            if control_sample_count
+                            else 0.0
+                        )
+                        runtime["fresh_xy_fps"] = (
+                            fresh_xy_count / pose_window_s
+                            if pose_window_s > 0.0
+                            else 0.0
+                        )
+                        runtime["fresh_xy_frame_rate"] = (
+                            fresh_xy_count / control_sample_count
+                            if control_sample_count
+                            else 0.0
+                        )
                         runtime["capture_dropped_before_processing"] = (
                             frame_pump.dropped_before_processing
                         )
@@ -600,6 +689,9 @@ class WorkbenchLiveTrackingMixin:
                         ]
                         if latest["sequence"] % 30 == 0:
                             runtime["evidence"] = evidence_recorder.summary
+                    evidence_recorder.record(
+                        packet.image, minimap, latest, diagnostics
+                    )
             except Exception as exc:
                 error = "{}: {}".format(type(exc).__name__, exc)
                 run_error = error

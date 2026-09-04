@@ -720,6 +720,8 @@ class TwoRateTrackerTests(unittest.TestCase):
             self.assertEqual(cursor_pose_estimator.last_frame_shape, (80, 80, 3))
             self.assertTrue(result["cursor_pose_fresh"])
             self.assertTrue(result["cursor_pose_measurement_fresh_accepted"])
+            self.assertTrue(result["control_output_available"])
+            self.assertGreaterEqual(result["capture_to_control_ready_ms"], 0.0)
             self.assertGreaterEqual(
                 result["cursor_pose"]["capture_to_publish_ms"], 0.0
             )
@@ -1146,6 +1148,9 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     self.assertEqual(process_config["opencv_threads"], 1)
                     self.assertEqual(runtime["latest"]["mode"], "TRACK")
                     self.assertIn("capture_dropped_before_processing", runtime)
+                    self.assertIn("control_capture_to_publish_p95_ms", runtime)
+                    self.assertIn("control_deadline_33_3ms_rate", runtime)
+                    self.assertIn("fresh_xy_fps", runtime)
                     json.dumps(descriptor)
                     overlay = cv2.imdecode(
                         np.frombuffer(state.live_tracker_overlay_image(), np.uint8),
