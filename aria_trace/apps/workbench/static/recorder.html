@@ -133,7 +133,7 @@ Checking connected phones, HIK cameras, and rig calibrations…</div><button id=
     <div class="analysis-actions"><button id="runRouteCompile" class="primary">Compile selected route</button></div>
     <div id="routeCompileStatus" class="message"></div><div id="routeCompileMetrics" class="metrics"></div>
     <h4>2. Trace the compiled route</h4>
-    <div class="analysis-grid"><label>Execution profile<select id="routeTrackingProfile"><option value="real-time">Real-time · adaptive low latency</option><option value="fast">Fast · maximum throughput</option><option value="accurate">Accurate · broader validation</option><option value="offline">Offline · full evidence</option></select></label><label>Compiled package<select id="routePackage"></select></label></div>
+    <div class="analysis-grid"><label>Execution profile<select id="routeTrackingProfile"><option value="real-time">Real-time · 30 FPS target</option><option value="real-time-legacy">Real-time legacy · 20 FPS cap</option><option value="fast">Fast legacy · 10 FPS cap</option><option value="accurate">Accurate legacy · offline-oriented</option><option value="offline">Offline · full evidence</option></select></label><label>Compiled package<select id="routePackage"></select></label></div>
     <div id="routeTrackerSources" class="source-summary"></div>
     <div class="analysis-actions"><button id="startRouteTracker" class="primary">Start route tracer</button><button id="stopRouteTracker" class="danger" disabled>Stop route tracer</button></div>
     <div id="routeTrackerStatus" class="message"></div><div id="routeTrackerMetrics" class="metrics"></div>
@@ -144,7 +144,7 @@ Checking connected phones, HIK cameras, and rig calibrations…</div><button id=
   <section id="trackerTask" class="task-panel" role="tabpanel" aria-labelledby="trackerTab" hidden>
     <h3>Free-roam live tracker</h3>
     <p class="subtitle">A feature-proposed, correlation-verified map search supplies low-rate absolute fixes. Mini-map shift updates position at capture rate; calibrated cursor pose supplies player heading independently of map alignment.</p>
-    <div class="analysis-grid"><label>Execution profile<select id="trackingProfile"><option value="real-time">Real-time · adaptive low latency</option><option value="fast">Fast · maximum throughput</option><option value="accurate">Accurate · broader validation</option><option value="offline">Offline · full evidence</option></select></label><label>Map atlas<select id="mapAtlas"></select></label></div>
+    <div class="analysis-grid"><label>Execution profile<select id="trackingProfile"><option value="real-time">Real-time · 30 FPS target</option><option value="real-time-legacy">Real-time legacy · 20 FPS cap</option><option value="fast">Fast legacy · 10 FPS cap</option><option value="accurate">Accurate legacy · offline-oriented</option><option value="offline">Offline · full evidence</option></select></label><label>Map atlas<select id="mapAtlas"></select></label></div>
     <div id="trackerSources" class="source-summary"></div>
     <div class="analysis-actions"><button id="startTracker" class="primary">Start live tracker</button><button id="stopTracker" class="danger" disabled>Stop tracker</button></div>
     <div id="trackerStatus" class="message"></div><div id="trackerMetrics" class="metrics"></div>

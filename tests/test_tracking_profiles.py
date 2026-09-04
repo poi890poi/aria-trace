@@ -7,10 +7,20 @@ class TrackingProfileTests(unittest.TestCase):
     def test_profiles_resolve_independently(self):
         realtime = resolve_tracking_profile("real-time")
         offline = resolve_tracking_profile("offline")
-        self.assertTrue(realtime["temporal_pose_search"])
+        self.assertFalse(realtime["temporal_pose_search"])
         self.assertFalse(offline["temporal_pose_search"])
         self.assertEqual(realtime["cursor_pose_method"], "cascade")
-        self.assertEqual(realtime["cursor_validation_policy"], "ambiguous")
+        self.assertEqual(
+            realtime["cursor_pose_core"],
+            "angular_projection_ncc_parabolic",
+        )
+        self.assertEqual(realtime["cursor_validation_policy"], "minimal")
+        self.assertEqual(realtime["cursor_interval_s"], 0.0)
+        self.assertEqual(realtime["pose_confidence_min"], 0.0)
+        legacy = resolve_tracking_profile("real-time-legacy")
+        self.assertEqual(legacy["cursor_pose_core"], "polygon_gaussian")
+        self.assertEqual(legacy["cursor_interval_s"], 0.05)
+        self.assertEqual(legacy["pose_confidence_min"], 0.45)
         self.assertEqual(
             resolve_tracking_profile("fast")["cursor_validation_policy"],
             "minimal",
@@ -24,9 +34,14 @@ class TrackingProfileTests(unittest.TestCase):
 
     def test_explicit_developer_override_is_visible(self):
         value = resolve_tracking_profile(
-            "real-time", {"cursor_pose_method": "vectorized_grid"}
+            "real-time",
+            {
+                "cursor_pose_core": "polygon_gaussian",
+                "cursor_pose_method": "vectorized_grid",
+            },
         )
         self.assertEqual(value["profile"], "real-time")
+        self.assertEqual(value["cursor_pose_core"], "polygon_gaussian")
         self.assertEqual(value["cursor_pose_method"], "vectorized_grid")
 
     def test_unknown_profile_and_override_are_rejected(self):

@@ -1038,6 +1038,10 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         "fast_grid",
                         "legacy_grid",
                     )
+                    cursor_constructor.POSE_METHODS = (
+                        "polygon_gaussian",
+                        "angular_projection_ncc_parabolic",
+                    )
                     state.start_live_tracker(
                         {
                             "game_profile_id": game_id,
@@ -1073,6 +1077,10 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         process_config["gaussian_fit_method"], "fast_grid"
+                    )
+                    self.assertEqual(
+                        process_config["pose_method"],
+                        "angular_projection_ncc_parabolic",
                     )
                     self.assertEqual(process_config["opencv_threads"], 1)
                     self.assertEqual(runtime["latest"]["mode"], "TRACK")
@@ -1213,6 +1221,10 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         "vectorized_grid",
                         "fast_grid",
                         "legacy_grid",
+                    )
+                    cursor_constructor.POSE_METHODS = (
+                        "polygon_gaussian",
+                        "angular_projection_ncc_parabolic",
                     )
                     descriptor = state.start_live_tracker(
                         {

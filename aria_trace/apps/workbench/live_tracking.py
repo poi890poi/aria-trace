@@ -267,6 +267,10 @@ class WorkbenchLiveTrackingMixin:
                 )
             tracking_profile_name = str(value.get("tracking_profile") or "real-time")
             profile_overrides = {}
+            if value.get("cursor_pose_core"):
+                profile_overrides["cursor_pose_core"] = str(
+                    value["cursor_pose_core"]
+                )
             if value.get("cursor_pose_method"):
                 profile_overrides["cursor_pose_method"] = str(
                     value["cursor_pose_method"]
@@ -279,6 +283,13 @@ class WorkbenchLiveTrackingMixin:
                 tracking_profile_name, profile_overrides
             )
             gaussian_fit_method = str(resolved_profile["cursor_pose_method"])
+            cursor_pose_core = str(resolved_profile["cursor_pose_core"])
+            if cursor_pose_core not in CursorPoseEstimator.POSE_METHODS:
+                raise ValueError(
+                    "Cursor pose core must be one of: {}".format(
+                        ", ".join(CursorPoseEstimator.POSE_METHODS)
+                    )
+                )
             if gaussian_fit_method not in CursorPoseEstimator.GAUSSIAN_FIT_METHODS:
                 raise ValueError(
                     "Cursor pose method must be one of: {}".format(
@@ -291,6 +302,7 @@ class WorkbenchLiveTrackingMixin:
                     / calibration_id
                 ),
                 "gaussian_fit_method": gaussian_fit_method,
+                "pose_method": cursor_pose_core,
                 "validation_policy": str(
                     resolved_profile["cursor_validation_policy"]
                 ),
@@ -382,6 +394,7 @@ class WorkbenchLiveTrackingMixin:
                     resolved_profile["representation_interval_s"]
                 ),
                 "cursor_pose_method": gaussian_fit_method,
+                "cursor_pose_core": cursor_pose_core,
                 "tracking_profile": tracking_profile_name,
                 "resolved_tracking_profile": resolved_profile,
                 "started_utc": datetime.now(timezone.utc).isoformat(),

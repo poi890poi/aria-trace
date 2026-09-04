@@ -6,6 +6,20 @@ from typing import Mapping, Optional
 
 TRACKING_PROFILES = {
     "real-time": {
+        "cursor_pose_core": "angular_projection_ncc_parabolic",
+        "cursor_pose_method": "cascade",
+        "cursor_validation_policy": "minimal",
+        "cursor_interval_s": 0.0,
+        "global_interval_s": 2.0,
+        "representation_interval_s": 0.25,
+        "temporal_pose_search": False,
+        "pose_confidence_min": 0.0,
+        "cursor_worker_process": True,
+        "cursor_opencv_threads": 1,
+        "route_map_score_min": 0.50,
+    },
+    "real-time-legacy": {
+        "cursor_pose_core": "polygon_gaussian",
         "cursor_pose_method": "cascade",
         "cursor_validation_policy": "ambiguous",
         "cursor_interval_s": 0.05,
@@ -18,6 +32,7 @@ TRACKING_PROFILES = {
         "route_map_score_min": 0.50,
     },
     "fast": {
+        "cursor_pose_core": "polygon_gaussian",
         "cursor_pose_method": "cascade",
         "cursor_validation_policy": "minimal",
         "cursor_interval_s": 0.10,
@@ -30,6 +45,7 @@ TRACKING_PROFILES = {
         "route_map_score_min": 0.50,
     },
     "accurate": {
+        "cursor_pose_core": "polygon_gaussian",
         "cursor_pose_method": "vectorized_grid",
         "cursor_validation_policy": "full",
         "cursor_interval_s": 0.15,
@@ -42,6 +58,7 @@ TRACKING_PROFILES = {
         "route_map_score_min": 0.50,
     },
     "offline": {
+        "cursor_pose_core": "polygon_gaussian",
         "cursor_pose_method": "vectorized_grid",
         "cursor_validation_policy": "full",
         "cursor_interval_s": 0.0,
