@@ -8,6 +8,11 @@ import numpy as np
 
 from acquisition.hik_capture import CalibratedHikFrameSource, NativeHikFrameSource
 from acquisition.rig_calibration.contracts import FrameSample
+from rig_runtime.domain.spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    compiled_transform_lineage,
+)
 
 
 class FakeNativeAdapter:
@@ -65,7 +70,20 @@ class FakeRectifiedReader:
             image,
             100,
             receive_time_ns=110,
-            metadata={"device_timestamp": 55},
+            metadata={
+                "device_timestamp": 55,
+                "image_space": {
+                    "space_id": RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+                    "transform_lineage": compiled_transform_lineage(
+                        RigSpaceId.HIK_FULL_SENSOR_CAMERA,
+                        RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+                        (
+                            RigTransformOperation.HARDWARE_ROI,
+                            RigTransformOperation.RIG_RECTIFICATION,
+                        ),
+                    ),
+                },
+            },
         )
 
     def release(self):
@@ -158,8 +176,45 @@ class CalibratedHikFrameSourceTests(unittest.TestCase):
             packet.metadata["image_space"]["local_to_canonical_3x3"],
             [[0, 1, 2], [-1, 0, 6], [0, 0, 1]],
         )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.RIG_RECTIFICATION,
+                RigTransformOperation.SESSION_STREAM_VIEW,
+                RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN,
+                RigTransformOperation.ENCODER_PADDING,
+            ],
+            packet.metadata["image_space"]["transform_lineage"]["operation_ids"],
+        )
         source.stop()
         self.assertTrue(reader.released)
+
+    def test_rejects_rotation_already_applied_by_reader(self):
+        class AlreadyRotatedReader(FakeRectifiedReader):
+            def read_sample(self):
+                sample = super().read_sample()
+                sample.metadata["image_space"] = {
+                    "space_id": RigSpaceId.HIK_GAME_UPRIGHT_RECTIFIED_VISIBLE_PHONE,
+                    "transform_lineage": compiled_transform_lineage(
+                        RigSpaceId.HIK_FULL_SENSOR_CAMERA,
+                        RigSpaceId.HIK_GAME_UPRIGHT_RECTIFIED_VISIBLE_PHONE,
+                        (
+                            RigTransformOperation.HARDWARE_ROI,
+                            RigTransformOperation.RIG_RECTIFICATION,
+                            RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN,
+                        ),
+                    ),
+                }
+                return sample
+
+        source = CalibratedHikFrameSource(
+            self.calibration,
+            reader=AlreadyRotatedReader(),
+            output_quarter_turns_clockwise=1,
+        )
+        source.start()
+        with self.assertRaisesRegex(ValueError, "already applied"):
+            source.read()
 
     def test_orientation_can_be_updated_from_evidence_before_recording(self):
         reader = FakeRectifiedReader()

@@ -18,7 +18,12 @@ from .provenance import (
 )
 from .quality import CheckStatus, Decision, QualityCheck, QualityInfo, QualityMetric
 from .schema import SchemaRef
-from .spaces import SpaceRef
+from .spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    SpaceRef,
+    compiled_transform_lineage,
+)
 from .spatial import (
     PIXEL_SPACE_KIND,
     SPATIAL_SCHEMA_VERSION,
@@ -58,6 +63,9 @@ __all__ = [
     "SchemaRef",
     "SourceRef",
     "SpaceRef",
+    "RigSpaceId",
+    "RigTransformOperation",
+    "compiled_transform_lineage",
     "PIXEL_SPACE_KIND",
     "SPATIAL_SCHEMA_VERSION",
     "bind_geometry",

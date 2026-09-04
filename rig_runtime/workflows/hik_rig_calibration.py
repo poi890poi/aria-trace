@@ -119,6 +119,7 @@ from rig_runtime.domain.configuration import (
     SHUTTER_MULTIPLIERS,
     TARGET_PRESENTERS,
 )
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.apps.rig_presentation import console_print
 
 
@@ -1442,12 +1443,12 @@ class HikRigCalibrationSession:
                     geometry.inverse_matrix_3x3, dtype=np.float64
                 ).tolist(),
                 "camera_space": (
-                    "hik_full_sensor_undistorted_pixels"
+                    RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED
                     if self._uses_measured_distortion()
-                    else "hik_full_sensor_bgr_pixels"
+                    else RigSpaceId.HIK_FULL_SENSOR_BGR
                 ),
-                "annotated_evidence_space": "hik_full_sensor_bgr_pixels",
-                "phone_space": "android_logical_display_pixels",
+                "annotated_evidence_space": RigSpaceId.HIK_FULL_SENSOR_BGR,
+                "phone_space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
             },
         }
         index_document["media"] = build_data_matrix_media_registry(
@@ -1866,7 +1867,7 @@ class HikRigCalibrationSession:
                     "width_px": calibration_input_roi[2],
                     "height_px": calibration_input_roi[3],
                     "calibration_input_roi_xywh": calibration_input_roi,
-                    "calibration_input_space": "hik_full_sensor_bgr_pixels",
+                    "calibration_input_space": RigSpaceId.HIK_FULL_SENSOR_BGR,
                 }
             )
             self.progress(
@@ -4130,9 +4131,9 @@ class HikRigCalibrationSession:
                 "adb_visible_crop.png",
                 media_type="image",
                 stored_size_px=output_size,
-                space_id="android_visible_phone_crop_pixels",
+                space_id=RigSpaceId.ANDROID_VISIBLE_PHONE_CROP,
                 operation="crop_without_resampling",
-                source_space_id="android_logical_display_pixels",
+                source_space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 source_region={"kind": "crop", "xywh": [x, y, width, height]},
                 orientation={"value": "android_calibration_display"},
                 metadata_reference="cross_source_check.json#media",
@@ -4141,7 +4142,7 @@ class HikRigCalibrationSession:
                 "hik_rectified.png",
                 media_type="image",
                 stored_size_px=output_size,
-                space_id="hik_rig_rectified_visible_phone_pixels",
+                space_id=RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
                 operation="saved_rig_rectification",
                 source_space_id=str(
                     camera_sample.metadata["image_space"]["space_id"]
@@ -4166,9 +4167,9 @@ class HikRigCalibrationSession:
                 stored_size_px=[
                     int(screenshot.shape[1]), int(screenshot.shape[0])
                 ],
-                space_id="android_logical_display_pixels",
+                space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 operation="adb_screencap_copy",
-                source_space_id="android_logical_display_pixels",
+                source_space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 source_region={
                     "kind": "full_frame",
                     "xywh": [
@@ -4196,9 +4197,9 @@ class HikRigCalibrationSession:
                         name,
                         media_type="image",
                         stored_size_px=output_size,
-                        space_id="rig_cross_source_comparison_local_pixels",
+                        space_id=RigSpaceId.RIG_CROSS_SOURCE_COMPARISON_LOCAL,
                         operation=operation,
-                        source_space_id="aligned_adb_and_hik_comparison_inputs",
+                        source_space_id=RigSpaceId.ALIGNED_ADB_AND_HIK_COMPARISON_INPUTS,
                         source_region={
                             "kind": "coincident_full_frames",
                             "size_px": output_size,
@@ -4212,9 +4213,9 @@ class HikRigCalibrationSession:
                     "side_by_side_adb_then_hik.png",
                     media_type="image",
                     stored_size_px=[width * 2, height],
-                    space_id="diagnostic_composite_pixels",
+                    space_id=RigSpaceId.DIAGNOSTIC_COMPOSITE,
                     operation="horizontal_composite_adb_then_hik",
-                    source_space_id="aligned_adb_and_hik_comparison_inputs",
+                    source_space_id=RigSpaceId.ALIGNED_ADB_AND_HIK_COMPARISON_INPUTS,
                     source_region={
                         "kind": "side_by_side",
                         "left": "adb_visible_crop.png",
@@ -4360,7 +4361,7 @@ class HikRigCalibrationSession:
                 "display_scale_diagnostic": dict(self.display_scale_diagnostic),
                 "panel_scale_measurement": dict(self.panel_scale_measurement),
                 "canonical_panel_space": {
-                    "space_id": "android_phone_natural_display_pixels",
+                    "space_id": RigSpaceId.ANDROID_PHONE_NATURAL,
                     "definition": "Android logical display raster at effective Surface rotation 0",
                     "orientation_quarter_turns_clockwise_from_natural": 0,
                     "size_px": self._calibration_screen_size_px(),
@@ -4401,9 +4402,9 @@ class HikRigCalibrationSession:
                 status="warning",
             )
             calibration["normalization"]["input_space"] = (
-                "hik_full_sensor_undistorted_pixels"
+                RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED
                 if self.lens_model.get("source") == "measured"
-                else "hik_full_sensor_bgr_pixels"
+                else RigSpaceId.HIK_FULL_SENSOR_BGR
             )
             panel_axis = self._panel_axis_config_result(
                 self.panel_axis_measurement
@@ -4496,7 +4497,7 @@ class HikRigCalibrationSession:
                         if panel_axis.get("applied")
                         else "charuco_fallback"
                     ),
-                    "space_id": "hik_full_sensor_camera_pixels",
+                    "space_id": RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                     "panel_up_unit_vector_xy": panel_up,
                     "camera_up_to_panel_up_clockwise_degrees": (
                         camera_up_to_panel_up
@@ -4622,9 +4623,9 @@ class HikRigCalibrationSession:
                 "normalization": {
                     "full_sensor_camera_to_output_3x3": normalization_matrix.tolist(),
                     "matrix_input_space_id": (
-                        "hik_full_sensor_undistorted_pixels"
+                        RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED
                         if self.lens_model.get("source") == "measured"
-                        else "hik_full_sensor_bgr_pixels"
+                        else RigSpaceId.HIK_FULL_SENSOR_BGR
                     ),
                     "output_size_px": [width, height],
                     "origin_screen_xy": [x, y],
@@ -4736,7 +4737,7 @@ class HikRigCalibrationSession:
                             "broad_panel_axis_fit_overlay_on_initial_"
                             "charuco_rectification"
                         ),
-                        source_space_id="hik_full_sensor_camera_pixels",
+                        source_space_id=RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                         source_region={
                             "kind": "full_frame",
                             "xywh": [0, 0] + full_size,
@@ -4904,9 +4905,9 @@ class HikRigCalibrationSession:
             write_image(name, image)
             width, height = int(image.shape[1]), int(image.shape[0])
             phone_media[name] = {
-                "space_id": "android_logical_display_pixels",
+                "space_id": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 "operation": operation,
-                "source_space_id": "android_logical_display_pixels",
+                "source_space_id": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 "source_region": {
                     "kind": "full_frame",
                     "xywh": [0, 0, width, height],
@@ -4994,12 +4995,12 @@ class HikRigCalibrationSession:
                         ).tolist()
                     ),
                     "camera_space": (
-                        "hik_full_sensor_undistorted_pixels"
+                        RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED
                         if self._uses_measured_distortion()
-                        else "hik_full_sensor_bgr_pixels"
+                        else RigSpaceId.HIK_FULL_SENSOR_BGR
                     ),
-                    "raw_evidence_space": "hik_full_sensor_bgr_pixels",
-                    "phone_space": "android_logical_display_pixels",
+                    "raw_evidence_space": RigSpaceId.HIK_FULL_SENSOR_BGR,
+                    "phone_space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 }
                 if self.geometry is not None
                 else None

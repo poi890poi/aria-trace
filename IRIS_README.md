@@ -439,6 +439,23 @@ screenshots are the only canonical-space exemption. Consumers must apply an
 explicit registered transform before combining media or geometry from different
 spaces.
 
+IRIS owns space identifiers and transform-operation identifiers centrally in
+`rig_runtime.domain.spaces`. Frame producers append a `transform_lineage` to
+`metadata.image_space`; the lineage names the root source, final target, and the
+ordered operations already applied. A second crop, rectification, game-upright
+rotation, mask, or encoder pad with the same operation identity is rejected
+instead of silently compensating twice. These records describe completed pixel
+operations; profile facts and requested adapter behavior remain separate inputs.
+
+Runtime policy follows the same ownership rule. Built-in adapter, calibration,
+and acquisition defaults live in `rig_runtime.domain.configuration`. A caller
+request and immutable profile facts are resolved once into a
+`ResolvedAdapterPlan` before opening the camera. The stream consumes that plan;
+it does not independently choose fallback defaults or reread the profile per
+frame. Similar-looking values that represent different concepts—such as a
+calibration frame count and an acquisition sample count—remain separately named
+and owned.
+
 Review evidence expands images onto a magenta checkerboard canvas and renders
 the complete camera sensor and projected phone-display quadrilaterals. This makes
 cropping, ROI, orientation, and out-of-image regions visible to a human reviewer.

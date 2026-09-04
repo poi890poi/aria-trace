@@ -12,6 +12,11 @@ import cv2
 import numpy as np
 
 from rig_runtime.domain.configuration import ADAPTER_DEFAULTS, MASK_POLICIES
+from rig_runtime.domain.spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    compiled_transform_lineage,
+)
 
 from rig_runtime.adapters.rig.devices import CameraConfiguration
 from rig_runtime.domain.spatial import require_spatial_geometry
@@ -296,7 +301,7 @@ class ProfiledHikGameCamera:
                 point = require_spatial_geometry(
                     rotation_center,
                     "point",
-                    expected_space_id="android_phone_natural_display_pixels",
+                    expected_space_id=RigSpaceId.ANDROID_PHONE_NATURAL,
                 )
                 if point["space"]["size_px"] != [width, height]:
                     raise ValueError(
@@ -530,7 +535,7 @@ class ProfiledHikGameCamera:
         boundary = require_spatial_geometry(
             self.minimap.get("outer_boundary"),
             "circle",
-            expected_space_id="android_phone_natural_display_pixels",
+            expected_space_id=RigSpaceId.ANDROID_PHONE_NATURAL,
         )
         center_full = self._canonical_phone_to_upright_full_xy(
             [boundary["center_x"], boundary["center_y"]]
@@ -599,7 +604,7 @@ class ProfiledHikGameCamera:
         center = require_spatial_geometry(
             center_geometry,
             "point",
-            expected_space_id="android_phone_natural_display_pixels",
+            expected_space_id=RigSpaceId.ANDROID_PHONE_NATURAL,
         )
         center_full = self._canonical_phone_to_upright_full_xy(
             [center["x"], center["y"]]
@@ -634,7 +639,7 @@ class ProfiledHikGameCamera:
         boundary = require_spatial_geometry(
             canonical,
             "circle",
-            expected_space_id="android_phone_natural_display_pixels",
+            expected_space_id=RigSpaceId.ANDROID_PHONE_NATURAL,
         )
         if not self._opened:
             raise RuntimeError("Camera must be open to query runtime mini-map geometry")
@@ -1228,12 +1233,12 @@ class ProfiledHikGameCamera:
                 image_space = {
                     "schema_version": "1.0",
                     "space_id": (
-                        "hik_game_upright_rectified_visible_phone_pixels"
+                        RigSpaceId.HIK_GAME_UPRIGHT_RECTIFIED_VISIBLE_PHONE
                         if self.output_quarter_turns_clockwise
-                        else "hik_rig_rectified_visible_phone_pixels"
+                        else RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
                     ),
                     "stored_size_px": [int(width), int(height)],
-                    "parent_space_id": "hik_full_sensor_camera_pixels",
+                    "parent_space_id": RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                     "source_roi_in_parent_xywh": list(self._effective_roi),
                     "transform_reference": (
                         "hik_camera_calibration.json#normalization.dense_map_file"
@@ -1255,9 +1260,9 @@ class ProfiledHikGameCamera:
             elif name == "minimap" and self.rectify_minimap:
                 image_space = {
                     "schema_version": "1.0",
-                    "space_id": "hik_phone_game_normalized_minimap_pixels",
+                    "space_id": RigSpaceId.HIK_NORMALIZED_MINIMAP,
                     "stored_size_px": [int(width), int(height)],
-                    "parent_space_id": "android_phone_natural_display_pixels",
+                    "parent_space_id": RigSpaceId.ANDROID_PHONE_NATURAL,
                     "roi_in_parent_xywh": list(self._screen_crop()),
                     "transform_reference": (
                         "hik_camera_calibration.json#normalization.dense_map_file"
@@ -1292,12 +1297,12 @@ class ProfiledHikGameCamera:
                 image_space = {
                     "schema_version": "1.0",
                     "space_id": (
-                        "hik_game_upright_camera_adapter_roi_pixels"
+                        RigSpaceId.HIK_GAME_UPRIGHT_CAMERA_ADAPTER_ROI
                         if self.output_quarter_turns_clockwise
-                        else "hik_camera_adapter_roi_image_pixels"
+                        else RigSpaceId.HIK_CAMERA_ADAPTER_ROI_IMAGE
                     ),
                     "stored_size_px": [int(width), int(height)],
-                    "parent_space_id": "hik_full_sensor_camera_pixels",
+                    "parent_space_id": RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                     "roi_in_parent_xywh": roi,
                     "local_to_parent_3x3": (
                         np.asarray(
@@ -1319,6 +1324,35 @@ class ProfiledHikGameCamera:
                     ),
                     "color_order": "BGR",
                 }
+            parent_space = dict(sample.metadata.get("image_space") or {})
+            operations = []
+            if self.rectify_minimap:
+                operations.append(RigTransformOperation.RIG_RECTIFICATION)
+                if self.output_quarter_turns_clockwise:
+                    operations.append(
+                        RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN
+                    )
+                if name == "minimap":
+                    operations.append(RigTransformOperation.MINIMAP_CROP)
+                    if self._minimap_mask_precomposed:
+                        operations.append(RigTransformOperation.MINIMAP_MASK)
+            else:
+                operations.append(RigTransformOperation.ADAPTER_OUTPUT_VIEW)
+                if name == "minimap" and self.mode == "dual":
+                    operations.append(RigTransformOperation.MINIMAP_CROP)
+                if self.output_quarter_turns_clockwise:
+                    operations.append(
+                        RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN
+                    )
+            image_space["transform_lineage"] = compiled_transform_lineage(
+                str(
+                    parent_space.get("space_id")
+                    or RigSpaceId.HIK_CAMERA_ACQUISITION
+                ),
+                str(image_space["space_id"]),
+                operations,
+                inherited=parent_space.get("transform_lineage"),
+            )
             stream_metadata[name] = {
                 **common,
                 "stream_id": name,

@@ -13,6 +13,11 @@ from acquisition.rig_calibration.hik.game_camera import (
     _source_crop_to_canonical_phone,
 )
 from rig_runtime.adapters.hik.driver import RectifiedHikCamera
+from rig_runtime.domain.spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    compiled_transform_lineage,
+)
 from rig_runtime.domain.spatial import bind_geometry, oriented_circle, raster_space
 
 
@@ -60,7 +65,17 @@ class FakeAdapter:
             image=image,
             time_ns=1234,
             receive_time_ns=1250,
-            metadata={"frame_number": 42},
+            metadata={
+                "frame_number": 42,
+                "image_space": {
+                    "space_id": RigSpaceId.HIK_CAMERA_ACQUISITION,
+                    "transform_lineage": compiled_transform_lineage(
+                        RigSpaceId.HIK_FULL_SENSOR_CAMERA,
+                        RigSpaceId.HIK_CAMERA_ACQUISITION,
+                        (RigTransformOperation.HARDWARE_ROI,),
+                    ),
+                },
+            },
         )
 
     def close(self):
@@ -318,6 +333,14 @@ class HikGameCameraTests(unittest.TestCase):
             "precomposed_rectification_lookup",
             sample.metadata["image_space"]["game_upright_runtime_operation"],
         )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.RIG_RECTIFICATION,
+                RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN,
+            ],
+            sample.metadata["image_space"]["transform_lineage"]["operation_ids"],
+        )
 
     def test_unrectified_full_rotation_is_discrete_runtime_operation(self):
         camera = RectifiedHikCamera(
@@ -333,6 +356,14 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(
             "discrete_quarter_turn_no_interpolation",
             sample.metadata["image_space"]["game_upright_runtime_operation"],
+        )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.ADAPTER_OUTPUT_VIEW,
+                RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN,
+            ],
+            sample.metadata["image_space"]["transform_lineage"]["operation_ids"],
         )
 
     def test_dual_mode_derives_both_streams_from_one_acquisition(self):
@@ -356,6 +387,25 @@ class HikGameCameraTests(unittest.TestCase):
         self.assertEqual(
             "hik_phone_game_normalized_minimap_pixels",
             frame_set.stream_metadata["minimap"]["image_space"]["space_id"],
+        )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.RIG_RECTIFICATION,
+            ],
+            frame_set.stream_metadata["full"]["image_space"][
+                "transform_lineage"
+            ]["operation_ids"],
+        )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.RIG_RECTIFICATION,
+                RigTransformOperation.MINIMAP_CROP,
+            ],
+            frame_set.stream_metadata["minimap"]["image_space"][
+                "transform_lineage"
+            ]["operation_ids"],
         )
 
     def test_dual_rectified_rotation_is_composed_before_stream_crop(self):
@@ -471,6 +521,25 @@ class HikGameCameraTests(unittest.TestCase):
             frame_set.stream_metadata["minimap"]["image_space"][
                 "roi_in_parent_xywh"
             ],
+        )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.ADAPTER_OUTPUT_VIEW,
+            ],
+            frame_set.stream_metadata["full"]["image_space"][
+                "transform_lineage"
+            ]["operation_ids"],
+        )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.ADAPTER_OUTPUT_VIEW,
+                RigTransformOperation.MINIMAP_CROP,
+            ],
+            frame_set.stream_metadata["minimap"]["image_space"][
+                "transform_lineage"
+            ]["operation_ids"],
         )
 
     def test_full_mode_returns_only_normalized_visible_phone_stream(self):

@@ -18,6 +18,7 @@ from rig_runtime.adapters.filesystem.system_configuration import (
     load_system_configuration,
 )
 from rig_runtime.domain.spatial import raster_space
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.services.calibration.minimap.calibration import (
     calibrate_cursor_orbit_frames,
     calibrate_cursor_static_frames,
@@ -198,7 +199,7 @@ def _calibrate_available_minimap_boundary(
     crop_space = raster_space(
         "game_calibration_android_minimap_discovery_crop_pixels",
         [width, height],
-        parent_space_id="android_logical_display_pixels",
+        parent_space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
         local_to_parent_3x3=[
             [1.0, 0.0, float(x)],
             [0.0, 1.0, float(y)],

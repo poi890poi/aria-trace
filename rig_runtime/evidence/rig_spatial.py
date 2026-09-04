@@ -17,6 +17,7 @@ import numpy as np
 
 from rig_runtime.evidence.media_trace import raster_record
 from rig_runtime.domain.spatial import bind_geometry, raster_space
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.services.calibration.rig.contracts import FrameSample
 
 
@@ -432,10 +433,10 @@ def expanded_rig_camera_review(
         "header_height_px": int(header_height),
     }
     review_geometry_space = raster_space(
-        "rig_expanded_camera_review_pixels", [canvas_width, canvas_height]
+        RigSpaceId.RIG_EXPANDED_CAMERA_REVIEW, [canvas_width, canvas_height]
     )
     full_sensor_geometry_space = raster_space(
-        "hik_full_sensor_camera_pixels", [full_width, full_height]
+        RigSpaceId.HIK_FULL_SENSOR_CAMERA, [full_width, full_height]
     )
     geometry["full_sensor_quadrilateral"] = bind_geometry(
         {"points_xy": full_review.tolist()}, "polygon", review_geometry_space
@@ -460,7 +461,7 @@ def expanded_rig_camera_review(
     )
     review_space = {
         "schema_version": "1.0",
-        "space_id": "rig_expanded_camera_review_pixels",
+        "space_id": RigSpaceId.RIG_EXPANDED_CAMERA_REVIEW,
         "stored_size_px": [canvas_width, canvas_height],
         "orientation": "diagnostic_canvas_top_left_x_right_y_down",
         "color_order": "BGR",
@@ -594,7 +595,7 @@ def standardized_rig_comparison(
     canvas_width = panel_width * 3 + gap * 4
     canvas_height = global_header + panel_header + panel_height + gap * 2
     comparison_geometry_space = raster_space(
-        "rig_standardized_three_space_comparison_pixels",
+        RigSpaceId.RIG_STANDARDIZED_THREE_SPACE_COMPARISON,
         [canvas_width, canvas_height],
     )
     canvas = _checkerboard(canvas_height, canvas_width)
@@ -762,7 +763,7 @@ def standardized_rig_comparison(
     }
     image_space = {
         "schema_version": "1.0",
-        "space_id": "rig_standardized_three_space_comparison_pixels",
+        "space_id": RigSpaceId.RIG_STANDARDIZED_THREE_SPACE_COMPARISON,
         "stored_size_px": [canvas_width, canvas_height],
         "orientation": "diagnostic_canvas_top_left_x_right_y_down",
         "color_order": "BGR",

@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 import numpy as np
+from rig_runtime.domain.spaces import RigSpaceId
 
 
-CANONICAL_ANDROID_SPACE_ID = "android_phone_natural_display_pixels"
-LOGICAL_ANDROID_SPACE_ID = "android_logical_display_pixels"
+CANONICAL_ANDROID_SPACE_ID = RigSpaceId.ANDROID_PHONE_NATURAL
+LOGICAL_ANDROID_SPACE_ID = RigSpaceId.ANDROID_LOGICAL_DISPLAY
 
 
 def _matrix_list(value: np.ndarray) -> list:
@@ -92,7 +93,7 @@ def android_game_image_space(
         "space_id": (
             CANONICAL_ANDROID_SPACE_ID
             if canonical_identity
-            else "android_game_capture_pixels"
+            else RigSpaceId.ANDROID_GAME_CAPTURE
         ),
         "stored_size_px": stored,
         "color_order": "BGR",

@@ -12,6 +12,7 @@ import numpy as np
 
 from rig_runtime.adapters.android.spaces import image_space_from_surface
 from rig_runtime.domain.packets import FramePacket, InputPacket
+from rig_runtime.domain.spaces import RigSpaceId
 
 
 class FrameSource:
@@ -198,7 +199,7 @@ class AdbScreenshotFrameSource(FrameSource):
         height, width = image.shape[:2]
         metadata = {
             "source": "android_adb_screencap",
-            "coordinate_space": "android_logical_display_pixels",
+            "coordinate_space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
         }
         if self.image_space_context is not None:
             metadata["image_space"] = image_space_from_surface(
@@ -228,7 +229,7 @@ class AdbScreenshotFrameSource(FrameSource):
         )
         if self.image_space_context is not None:
             result["image_space_contract"] = {
-                "canonical_space_id": "android_phone_natural_display_pixels",
+                "canonical_space_id": RigSpaceId.ANDROID_PHONE_NATURAL,
                 "canonical_size_px": list(
                     self.image_space_context["natural_size_px"]
                 ),

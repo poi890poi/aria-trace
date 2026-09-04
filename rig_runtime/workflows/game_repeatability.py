@@ -35,6 +35,7 @@ from rig_runtime.domain.spatial import (
     require_spatial_geometry,
     transform_circle_similarity,
 )
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.services.calibration.game_repeatability import (
     compare_thresholded_app_geometry,
     evaluate_minimap_static_geometry,
@@ -169,12 +170,12 @@ def _logical_profile_crop(
         natural_to_logical_matrix(natural_size, stored_turns)
     )
     natural_to_current = natural_to_logical_matrix(natural_size, current_turns)
-    if source_space["space_id"] == "android_phone_natural_display_pixels":
+    if source_space["space_id"] == RigSpaceId.ANDROID_PHONE_NATURAL:
         if source_space["size_px"] != list(map(int, natural_size)):
             raise RuntimeError("Profile boundary natural-panel size is incompatible")
         source_to_current = natural_to_current
     elif source_space["space_id"] in (
-        "android_logical_display_pixels",
+        RigSpaceId.ANDROID_LOGICAL_DISPLAY,
         "profile_android_logical_display_pixels",
     ):
         if source_space["size_px"] != stored_logical_size:
@@ -191,9 +192,9 @@ def _logical_profile_crop(
         dtype=np.float64,
     )
     local_space = raster_space(
-        "current_minimap_crop_pixels",
+        RigSpaceId.CURRENT_MINIMAP_CROP,
         crop[2:],
-        parent_space_id="android_logical_display_pixels",
+        parent_space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
         local_to_parent_3x3=[
             [1.0, 0.0, crop[0]],
             [0.0, 1.0, crop[1]],

@@ -203,39 +203,6 @@ RIG_CALIBRATION_DEFAULTS = RigCalibrationDefaults()
 
 
 @dataclass(frozen=True)
-class AcquisitionDefaults:
-    """Built-in game-acquisition policy in logical display coordinates."""
-
-    camera_width_px: int = 2448
-    camera_height_px: int = 2048
-    camera_fps: float = 30.0
-    android_capture: str = "scrcpy"
-    screenshot_settle_seconds: float = 0.35
-    capture_mode: str = "zigzag"
-    sample_count: int = 12
-    horizontal_swipe_fraction: float = 0.10
-    vertical_swipe_fraction: float = 0.20
-    look_anchor_x_fraction: float = 0.72
-    look_anchor_y_fraction: float = 0.50
-    swipe_travel_seconds: float = 0.12
-    endpoint_hold_seconds: float = 0.10
-    reset_seconds: float = 0.10
-    settle_seconds: float = 1.5
-    tail_seconds: float = 1.5
-    zigzag_move_sample_hz: float = 22.0
-    micro_movement_radius_fraction: float = 0.06
-    micro_movement_pulse_seconds: float = 0.12
-    micro_movement_directions: int = 12
-    micro_movement_repeats: int = 2
-    joystick_center_x_fraction: float = 0.18
-    joystick_center_y_fraction: float = 0.78
-    micro_movement_sample_hz: float = 30.0
-
-
-ACQUISITION_DEFAULTS = AcquisitionDefaults()
-
-
-@dataclass(frozen=True)
 class ZigzagPlanDefaults:
     """Direct long-swipe plan defaults after display geometry is resolved."""
 
@@ -263,6 +230,39 @@ class CursorOrbitPlanDefaults:
 
 
 CURSOR_ORBIT_PLAN_DEFAULTS = CursorOrbitPlanDefaults()
+
+
+@dataclass(frozen=True)
+class AcquisitionDefaults:
+    """Built-in game-acquisition policy in logical display coordinates."""
+
+    camera_width_px: int = 2448
+    camera_height_px: int = 2048
+    camera_fps: float = 30.0
+    android_capture: str = "scrcpy"
+    screenshot_settle_seconds: float = 0.35
+    capture_mode: str = "zigzag"
+    sample_count: int = ZIGZAG_PLAN_DEFAULTS.move_count
+    horizontal_swipe_fraction: float = 0.10
+    vertical_swipe_fraction: float = 0.20
+    look_anchor_x_fraction: float = 0.72
+    look_anchor_y_fraction: float = 0.50
+    swipe_travel_seconds: float = ZIGZAG_PLAN_DEFAULTS.step_seconds
+    endpoint_hold_seconds: float = ZIGZAG_PLAN_DEFAULTS.endpoint_hold_seconds
+    reset_seconds: float = ZIGZAG_PLAN_DEFAULTS.reset_seconds
+    settle_seconds: float = 1.5
+    tail_seconds: float = 1.5
+    zigzag_move_sample_hz: float = ZIGZAG_PLAN_DEFAULTS.move_sample_hz
+    micro_movement_radius_fraction: float = 0.06
+    micro_movement_pulse_seconds: float = CURSOR_ORBIT_PLAN_DEFAULTS.step_seconds
+    micro_movement_directions: int = CURSOR_ORBIT_PLAN_DEFAULTS.direction_count
+    micro_movement_repeats: int = CURSOR_ORBIT_PLAN_DEFAULTS.repeats
+    joystick_center_x_fraction: float = 0.18
+    joystick_center_y_fraction: float = 0.78
+    micro_movement_sample_hz: float = CURSOR_ORBIT_PLAN_DEFAULTS.move_sample_hz
+
+
+ACQUISITION_DEFAULTS = AcquisitionDefaults()
 
 
 __all__ = [

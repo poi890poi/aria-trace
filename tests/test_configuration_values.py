@@ -17,6 +17,11 @@ from rig_runtime.domain.configuration import (
     ZIGZAG_PLAN_DEFAULTS,
     ResolvedAdapterPlan,
 )
+from rig_runtime.domain.spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    compiled_transform_lineage,
+)
 from rig_runtime.workflows import profile_management
 from rig_runtime.workflows import minimap_capture
 from rig_runtime.workflows.hik_rig_calibration import HikCalibrationOptions
@@ -149,6 +154,27 @@ class RigCalibrationConfigurationTests(unittest.TestCase):
 
 
 class AcquisitionConfigurationTests(unittest.TestCase):
+    def test_capture_defaults_reuse_motion_plan_authority(self):
+        self.assertEqual(
+            ZIGZAG_PLAN_DEFAULTS.move_count, ACQUISITION_DEFAULTS.sample_count
+        )
+        self.assertEqual(
+            ZIGZAG_PLAN_DEFAULTS.step_seconds,
+            ACQUISITION_DEFAULTS.swipe_travel_seconds,
+        )
+        self.assertEqual(
+            ZIGZAG_PLAN_DEFAULTS.endpoint_hold_seconds,
+            ACQUISITION_DEFAULTS.endpoint_hold_seconds,
+        )
+        self.assertEqual(
+            CURSOR_ORBIT_PLAN_DEFAULTS.step_seconds,
+            ACQUISITION_DEFAULTS.micro_movement_pulse_seconds,
+        )
+        self.assertEqual(
+            CURSOR_ORBIT_PLAN_DEFAULTS.direction_count,
+            ACQUISITION_DEFAULTS.micro_movement_directions,
+        )
+
     def test_capture_cli_uses_acquisition_policy(self):
         cli = minimap_capture.parser().parse_args([])
         self.assertEqual(ACQUISITION_DEFAULTS.camera_width_px, cli.camera_width)
@@ -184,6 +210,67 @@ class AcquisitionConfigurationTests(unittest.TestCase):
         self.assertEqual(
             CURSOR_ORBIT_PLAN_DEFAULTS.reset_seconds, orbit.reset_seconds
         )
+
+
+class SpatialAuthorityTests(unittest.TestCase):
+    def test_transform_lineage_rejects_duplicate_operation(self):
+        parent = compiled_transform_lineage(
+            RigSpaceId.HIK_FULL_SENSOR_CAMERA,
+            RigSpaceId.HIK_CAMERA_ACQUISITION,
+            (RigTransformOperation.HARDWARE_ROI,),
+        )
+        child = compiled_transform_lineage(
+            RigSpaceId.HIK_CAMERA_ACQUISITION,
+            RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+            (RigTransformOperation.RIG_RECTIFICATION,),
+            inherited=parent,
+        )
+        self.assertEqual(
+            [
+                RigTransformOperation.HARDWARE_ROI,
+                RigTransformOperation.RIG_RECTIFICATION,
+            ],
+            child["operation_ids"],
+        )
+        with self.assertRaisesRegex(ValueError, "already applied"):
+            compiled_transform_lineage(
+                RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+                RigSpaceId.HIK_GAME_UPRIGHT_RECTIFIED_VISIBLE_PHONE,
+                (RigTransformOperation.RIG_RECTIFICATION,),
+                inherited=child,
+            )
+
+    def test_transform_lineage_rejects_space_discontinuity(self):
+        parent = compiled_transform_lineage(
+            RigSpaceId.HIK_FULL_SENSOR_CAMERA,
+            RigSpaceId.HIK_CAMERA_ACQUISITION,
+            (RigTransformOperation.HARDWARE_ROI,),
+        )
+        with self.assertRaisesRegex(ValueError, "discontinuity"):
+            compiled_transform_lineage(
+                RigSpaceId.ANDROID_LOGICAL_DISPLAY,
+                RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+                (RigTransformOperation.RIG_RECTIFICATION,),
+                inherited=parent,
+            )
+
+    def test_rig_space_identifiers_are_defined_only_by_domain_owner(self):
+        root = Path(__file__).resolve().parents[1] / "rig_runtime"
+        owner = (root / "domain" / "spaces.py").resolve()
+        values = {
+            value
+            for name, value in vars(RigSpaceId).items()
+            if name.isupper() and isinstance(value, str)
+        }
+        offenders = []
+        for path in root.rglob("*.py"):
+            if path.resolve() == owner:
+                continue
+            source = path.read_text(encoding="utf-8")
+            for value in values:
+                if '"{}"'.format(value) in source or "'{}'".format(value) in source:
+                    offenders.append("{}: {}".format(path.relative_to(root), value))
+        self.assertEqual([], offenders)
 
 
 if __name__ == "__main__":

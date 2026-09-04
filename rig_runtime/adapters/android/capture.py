@@ -26,6 +26,7 @@ import numpy as np
 
 from rig_runtime.adapters.android.spaces import image_space_from_surface
 from rig_runtime.domain.packets import FramePacket
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.adapters.sources import AdbClockMapper, FrameSource
 from rig_runtime.adapters.filesystem.video import find_ffmpeg
 from rig_runtime.adapters.runtime_tools import find_release_tool
@@ -608,7 +609,7 @@ class AndroidRoiFrameSource(FrameSource):
         }
         if self.image_space_context is not None:
             result["image_space_contract"] = {
-                "canonical_space_id": "android_phone_natural_display_pixels",
+                "canonical_space_id": RigSpaceId.ANDROID_PHONE_NATURAL,
                 "canonical_size_px": list(
                     self.image_space_context["natural_size_px"]
                 ),

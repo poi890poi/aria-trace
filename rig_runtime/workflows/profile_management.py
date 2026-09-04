@@ -40,6 +40,7 @@ from rig_runtime.domain.configuration import (
     QUARTER_TURN_DEGREES,
     ROI_POLICIES,
 )
+from rig_runtime.domain.spaces import RigSpaceId
 
 
 DEFAULT_GAME_MODEL = {
@@ -901,7 +902,7 @@ def _logical_minimap_crop(summary: Mapping[str, Any]) -> list[int]:
     android = summary["android"]
     width, height = map(int, android["frame_size_px"])
     logical_space = raster_space(
-        "android_logical_display_pixels", [width, height]
+        RigSpaceId.ANDROID_LOGICAL_DISPLAY, [width, height]
     )
     boundary = android["outer_boundary"]
     if "space" not in boundary:
@@ -950,9 +951,9 @@ def _geometry_to_canonical_phone(
     logical_size = [int(item) for item in logical_size_px]
     natural_size = [int(item) for item in natural_size_px]
     crop = [int(item) for item in logical_crop_xywh]
-    logical_space = raster_space("android_logical_display_pixels", logical_size)
+    logical_space = raster_space(RigSpaceId.ANDROID_LOGICAL_DISPLAY, logical_size)
     natural_space = raster_space(
-        "android_phone_natural_display_pixels", natural_size
+        RigSpaceId.ANDROID_PHONE_NATURAL, natural_size
     )
     source = dict(value)
     if "space" not in source:
@@ -1356,7 +1357,7 @@ def publish_minimap_profiles(
         )
     phone_payload = {
         "profile_kind": "phone_game",
-        "coordinate_space": "phone_natural_display_pixels",
+        "coordinate_space": RigSpaceId.PHONE_NATURAL_DISPLAY,
         "canonical_phone_crop_xywh": canonical_crop,
         "android_logical_crop_xywh": logical_crop,
         "phone_surface_orientation": surface,

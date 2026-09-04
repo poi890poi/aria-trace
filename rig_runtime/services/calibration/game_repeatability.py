@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from rig_runtime.domain.spatial import require_spatial_geometry
+from rig_runtime.domain.spaces import RigSpaceId
 
 
 def fixed_static_features(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -66,7 +67,7 @@ def evaluate_minimap_static_geometry(
     crop = image[y : y + height, x : x + width].copy()
     binary, edges = fixed_static_features(crop)
     boundary = require_spatial_geometry(
-        boundary, "circle", expected_space_id="current_minimap_crop_pixels"
+        boundary, "circle", expected_space_id=RigSpaceId.CURRENT_MINIMAP_CROP
     )
     if boundary["space"]["size_px"] != [width, height]:
         raise ValueError("Mini-map boundary space does not match the current crop")

@@ -47,6 +47,7 @@ from rig_runtime.adapters.hik.capture import CalibratedHikFrameSource
 from rig_runtime.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
 from rig_runtime.adapters.filesystem.session import SessionWriter
 from rig_runtime.domain.packets import FramePacket
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.domain.configuration import (
     ACQUISITION_DEFAULTS,
     ACQUISITION_MODES,
@@ -861,7 +862,7 @@ def _capture_adb_screenshot_packet(
             receive_time_ns,
             metadata={
                 "source": "android_adb_screencap",
-                "coordinate_space": "android_logical_display_pixels",
+                "coordinate_space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 "transport": "adb_exec_out_screencap_png",
                 "trigger": str(trigger),
                 "stroke_index": int(stroke_index),

@@ -10,6 +10,11 @@ import cv2
 import numpy as np
 
 from rig_runtime.domain.packets import FramePacket
+from rig_runtime.domain.spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    compiled_transform_lineage,
+)
 from rig_runtime.adapters.rig.devices import CameraConfiguration
 from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter
 from rig_runtime.adapters.hik.driver import RectifiedHikCamera
@@ -83,7 +88,7 @@ class CalibratedHikFrameSource(FrameSource):
             @ converter.output_image_to_adapter_3x3
         )
         return {
-            "canonical_space_id": "android_phone_natural_display_pixels",
+            "canonical_space_id": RigSpaceId.ANDROID_PHONE_NATURAL,
             "canonical_size_px": list(converter.phone_natural_size_px),
             "local_to_canonical_3x3": local_to_canonical.tolist(),
             "canonical_to_local_3x3": np.linalg.inv(
@@ -184,9 +189,9 @@ class CalibratedHikFrameSource(FrameSource):
         image_space = {
             "schema_version": "1.0",
             "space_id": (
-                "hik_session_aligned_visible_phone_pixels"
+                RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE
                 if self.rectify
-                else "hik_session_rotated_camera_adapter_roi_pixels"
+                else RigSpaceId.HIK_SESSION_ROTATED_CAMERA_ADAPTER_ROI
             ),
             "stored_size_px": [int(image.shape[1]), int(image.shape[0])],
             "valid_content_size_px": [
@@ -199,21 +204,33 @@ class CalibratedHikFrameSource(FrameSource):
             "padding_right_bottom_px": [padding_right, padding_bottom],
             "color_order": "BGR",
         }
+        parent_space = dict(sample.metadata.get("image_space") or {})
+        operations = [RigTransformOperation.SESSION_STREAM_VIEW]
+        if output_turns:
+            operations.append(RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN)
+        if padding_right or padding_bottom:
+            operations.append(RigTransformOperation.ENCODER_PADDING)
+        image_space["transform_lineage"] = compiled_transform_lineage(
+            str(parent_space.get("space_id") or "unknown_hik_reader_space"),
+            str(image_space["space_id"]),
+            operations,
+            inherited=parent_space.get("transform_lineage"),
+        )
         image_space.update(self._canonical_space_mapping(output_turns))
         metadata.update(
             {
                 "source": "hik_mvs_calibrated",
                 "coordinate_space": (
-                    "hik_session_aligned_visible_phone_pixels"
+                    RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE
                     if self.rectify
-                    else "hik_session_rotated_camera_adapter_roi_pixels"
+                    else RigSpaceId.HIK_SESSION_ROTATED_CAMERA_ADAPTER_ROI
                 ),
                 "source_coordinate_space": (
                     (sample.metadata.get("image_space") or {}).get("space_id")
                     or (
-                        "hik_rig_rectified_visible_phone_pixels"
+                        RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
                         if self.rectify
-                        else "hik_camera_adapter_roi_image_pixels"
+                        else RigSpaceId.HIK_CAMERA_ADAPTER_ROI_IMAGE
                     )
                 ),
                 "rig_calibration": str(self.calibration_file.resolve()),
@@ -266,14 +283,14 @@ class CalibratedHikFrameSource(FrameSource):
             "calibration": str(self.calibration_file.resolve()),
             "rectified": self.rectify,
             "coordinate_space": (
-                "hik_session_aligned_visible_phone_pixels"
+                RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE
                 if self.rectify
-                else "hik_session_rotated_camera_adapter_roi_pixels"
+                else RigSpaceId.HIK_SESSION_ROTATED_CAMERA_ADAPTER_ROI
             ),
             "source_coordinate_space": (
-                "hik_rig_rectified_visible_phone_pixels"
+                RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
                 if self.rectify
-                else "hik_camera_adapter_roi_image_pixels"
+                else RigSpaceId.HIK_CAMERA_ADAPTER_ROI_IMAGE
             ),
             "output_quarter_turns_clockwise_from_calibration_display": (
                 output_turns
@@ -388,7 +405,7 @@ class NativeHikFrameSource(FrameSource):
         metadata.update(
             {
                 "source": "hik_mvs_native_full_sensor",
-                "coordinate_space": "native_hik_sensor_bgr_pixels",
+                "coordinate_space": RigSpaceId.NATIVE_HIK_SENSOR_BGR,
                 "timestamp_timebase": "host perf_counter_ns at frame receive",
                 "device_timestamp_raw": raw_device_time,
                 "full_sensor_roi_xywh": list(self.full_sensor_roi),
@@ -402,7 +419,7 @@ class NativeHikFrameSource(FrameSource):
                 ],
                 "image_space": {
                     "schema_version": "1.0",
-                    "space_id": "native_hik_sensor_bgr_pixels",
+                    "space_id": RigSpaceId.NATIVE_HIK_SENSOR_BGR,
                     "stored_size_px": [int(image.shape[1]), int(image.shape[0])],
                     "valid_content_size_px": [
                         int(sample.image.shape[1]),
@@ -439,7 +456,7 @@ class NativeHikFrameSource(FrameSource):
             "type": type(self).__name__,
             "stream_id": self.stream_id,
             "camera_id": self.camera_id,
-            "coordinate_space": "native_hik_sensor_bgr_pixels",
+            "coordinate_space": RigSpaceId.NATIVE_HIK_SENSOR_BGR,
             "full_sensor_roi_xywh": self.full_sensor_roi,
             "effective_camera": dict(self.metadata),
             "camera_controls": dict(self.controls),

@@ -28,6 +28,7 @@ from rig_runtime.domain.spatial import (
     require_spatial_geometry,
     transform_circle_similarity,
 )
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.evidence.rig_alignment import (
     DEFAULT_MAXIMUM_RESIDUAL_TRANSLATION_PX,
     cross_source_alignment_evidence,
@@ -120,9 +121,9 @@ def _logical_minimap_sampling_mask(
             )
         )
     natural_space = raster_space(
-        "android_phone_natural_display_pixels", natural_size
+        RigSpaceId.ANDROID_PHONE_NATURAL, natural_size
     )
-    logical_space = raster_space("android_logical_display_pixels", logical_size)
+    logical_space = raster_space(RigSpaceId.ANDROID_LOGICAL_DISPLAY, logical_size)
     boundary = dict(boundary_value)
     if "space" not in boundary:
         boundary = normalize_legacy_geometry(boundary, "circle", natural_space)
@@ -390,7 +391,7 @@ def _check_color_spatial_alignment(
         "non_correcting": True,
         "space_contract": {
             "comparison_space": "hik_phone_video",
-            "adb_source_space": "android_logical_display_pixels",
+            "adb_source_space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
             "hik_source_space": "hik_phone_video",
             "adb_to_comparison_3x3": adb_to_hik_3x3.tolist(),
             "mask_space": "hik_phone_video",
@@ -666,7 +667,7 @@ def calibrate_game_color_session(
         context,
         {
             "profile_kind": "phone_game_color",
-            "coordinate_space": "android_logical_display_pixels",
+            "coordinate_space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
             "adb_game_color_reference": adb_color_reference,
             "sampling_geometry": sampling_geometry,
             "capabilities": {

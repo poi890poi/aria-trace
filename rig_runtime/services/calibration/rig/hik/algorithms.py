@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 import cv2
 import numpy as np
+from rig_runtime.domain.spaces import RigSpaceId
 
 from ..geometry import transform_points
 
@@ -491,19 +492,19 @@ def hik_image_space_conversions(
         },
         "spaces": {
             "full_sensor_image": {
-                "id": "hik_full_sensor_bgr_pixels",
+                "id": RigSpaceId.HIK_FULL_SENSOR_BGR,
                 "size_px": [full_width, full_height],
                 "acquisition_roi_xywh": [0, 0, full_width, full_height],
                 "owner": "rig_calibration_only",
             },
             "camera_adapter_roi_image": {
-                "id": "hik_camera_adapter_hardware_roi_bgr_pixels",
+                "id": RigSpaceId.HIK_CAMERA_ADAPTER_HARDWARE_ROI_BGR,
                 "size_px": [roi_width, roi_height],
                 "roi_in_full_sensor_xywh": [roi_x, roi_y, roi_width, roi_height],
                 "owner": "production_camera_adapter_only",
             },
             "calibrated_output_image": {
-                "id": "hik_rig_rectified_visible_phone_pixels",
+                "id": RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
                 "size_px": [output_width, output_height],
                 "owner": "production_camera_adapter_output",
             },
@@ -559,13 +560,13 @@ def hik_image_space_conversions(
             dtype=np.float64,
         )
         result["spaces"]["phone_calibration_display"] = {
-            "id": "android_calibration_logical_display_pixels",
+            "id": RigSpaceId.ANDROID_CALIBRATION_LOGICAL_DISPLAY,
             "size_px": [display_width, display_height],
             "orientation_quarter_turns_clockwise_from_natural": turns,
             "owner": "android_calibration_target_surface",
         }
         result["spaces"]["phone_natural_display"] = {
-            "id": "android_phone_natural_display_pixels",
+            "id": RigSpaceId.ANDROID_PHONE_NATURAL,
             "size_px": [natural_width, natural_height],
             "owner": "android_display_topology",
         }
@@ -576,15 +577,15 @@ def hik_image_space_conversions(
             "calibration_display_to_phone_natural_display_3x3"
         ] = matrix(np.linalg.inv(natural_to_display))
         result["runtime_chain"] = [
-            "hik_full_sensor_bgr_pixels",
-            "hik_camera_adapter_hardware_roi_bgr_pixels",
-            "hik_rig_rectified_visible_phone_pixels",
-            "android_calibration_logical_display_pixels",
-            "android_phone_natural_display_pixels",
+            RigSpaceId.HIK_FULL_SENSOR_BGR,
+            RigSpaceId.HIK_CAMERA_ADAPTER_HARDWARE_ROI_BGR,
+            RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+            RigSpaceId.ANDROID_CALIBRATION_LOGICAL_DISPLAY,
+            RigSpaceId.ANDROID_PHONE_NATURAL,
         ]
     if distortion_measured:
         result["spaces"]["undistorted_full_sensor_image"] = {
-            "id": "hik_full_sensor_undistorted_pixels",
+            "id": RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED,
             "size_px": [full_width, full_height],
             "owner": "calibration_geometry_only",
         }
@@ -614,15 +615,15 @@ def hik_image_space_conversions(
         result["lens_distortion"] = {
             "model": str(lens_model.get("model", "opencv_radtan")),
             "source": "measured",
-            "raw_space_id": "hik_full_sensor_bgr_pixels",
-            "ideal_space_id": "hik_full_sensor_undistorted_pixels",
+            "raw_space_id": RigSpaceId.HIK_FULL_SENSOR_BGR,
+            "ideal_space_id": RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED,
         }
         result["runtime_chain"] = [
-            "hik_camera_adapter_hardware_roi_bgr_pixels",
+            RigSpaceId.HIK_CAMERA_ADAPTER_HARDWARE_ROI_BGR,
             "rectification_maps.npz:output_to_raw_lookup",
-            "hik_rig_rectified_visible_phone_pixels",
-            "android_calibration_logical_display_pixels",
-            "android_phone_natural_display_pixels",
+            RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+            RigSpaceId.ANDROID_CALIBRATION_LOGICAL_DISPLAY,
+            RigSpaceId.ANDROID_PHONE_NATURAL,
         ]
     return result
 
@@ -640,11 +641,11 @@ def validate_hik_coordinate_contract(
     conversions = document.get("conversions") or {}
     schema_version = int(document.get("schema_version", 0))
     required_space_ids = {
-        "full_sensor_image": "hik_full_sensor_bgr_pixels",
-        "camera_adapter_roi_image": "hik_camera_adapter_hardware_roi_bgr_pixels",
-        "calibrated_output_image": "hik_rig_rectified_visible_phone_pixels",
-        "phone_calibration_display": "android_calibration_logical_display_pixels",
-        "phone_natural_display": "android_phone_natural_display_pixels",
+        "full_sensor_image": RigSpaceId.HIK_FULL_SENSOR_BGR,
+        "camera_adapter_roi_image": RigSpaceId.HIK_CAMERA_ADAPTER_HARDWARE_ROI_BGR,
+        "calibrated_output_image": RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
+        "phone_calibration_display": RigSpaceId.ANDROID_CALIBRATION_LOGICAL_DISPLAY,
+        "phone_natural_display": RigSpaceId.ANDROID_PHONE_NATURAL,
     }
 
     def size(name: str) -> tuple[int, int]:
@@ -663,7 +664,7 @@ def validate_hik_coordinate_contract(
     natural_size = size("phone_natural_display")
     if schema_version >= 3:
         required_space_ids["undistorted_full_sensor_image"] = (
-            "hik_full_sensor_undistorted_pixels"
+            RigSpaceId.HIK_FULL_SENSOR_UNDISTORTED
         )
         if size("undistorted_full_sensor_image") != full_size:
             raise ValueError("Undistorted sensor raster must preserve full-sensor size")

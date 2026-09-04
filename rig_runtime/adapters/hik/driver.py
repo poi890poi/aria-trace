@@ -15,6 +15,11 @@ from typing import Any, Mapping, Optional, Sequence, Union
 
 import cv2
 import numpy as np
+from rig_runtime.domain.spaces import (
+    RigSpaceId,
+    RigTransformOperation,
+    compiled_transform_lineage,
+)
 
 from rig_runtime.adapters.rig.devices import CameraAdapter, CameraConfiguration, CameraDevice
 from rig_runtime.services.calibration.rig.contracts import FrameSample
@@ -686,9 +691,9 @@ class HikMvsCameraAdapter(CameraAdapter):
         roi = list(self._active_roi or [0, 0, int(width), int(height)])
         image_space = {
             "schema_version": "1.0",
-            "space_id": "hik_camera_acquisition_pixels",
+            "space_id": RigSpaceId.HIK_CAMERA_ACQUISITION,
             "stored_size_px": [int(width), int(height)],
-            "parent_space_id": "hik_full_sensor_camera_pixels",
+            "parent_space_id": RigSpaceId.HIK_FULL_SENSOR_CAMERA,
             "roi_in_parent_xywh": roi,
             "local_to_parent_3x3": [
                 [1.0, 0.0, float(roi[0])],
@@ -698,6 +703,11 @@ class HikMvsCameraAdapter(CameraAdapter):
             "orientation": "hik_camera_native",
             "color_order": "BGR",
         }
+        image_space["transform_lineage"] = compiled_transform_lineage(
+            RigSpaceId.HIK_FULL_SENSOR_CAMERA,
+            RigSpaceId.HIK_CAMERA_ACQUISITION,
+            (RigTransformOperation.HARDWARE_ROI,),
+        )
         metadata = {
             "adapter_id": self.adapter_id,
             **frame_metadata,
@@ -1413,12 +1423,12 @@ class RectifiedHikCamera:
             image_space = {
                 "schema_version": "1.0",
                 "space_id": (
-                    "hik_game_upright_rectified_visible_phone_pixels"
+                        RigSpaceId.HIK_GAME_UPRIGHT_RECTIFIED_VISIBLE_PHONE
                     if self._output_quarter_turns
-                    else "hik_rig_rectified_visible_phone_pixels"
+                        else RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
                 ),
                 "stored_size_px": [int(width), int(height)],
-                "parent_space_id": "hik_full_sensor_camera_pixels",
+                "parent_space_id": RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                 "source_roi_in_parent_xywh": list(self._effective_roi),
                 "transform_reference": (
                     "hik_camera_calibration.json#normalization.dense_map_file"
@@ -1448,12 +1458,12 @@ class RectifiedHikCamera:
             image_space = {
                 "schema_version": "1.0",
                 "space_id": (
-                    "hik_game_upright_camera_adapter_roi_pixels"
+                    RigSpaceId.HIK_GAME_UPRIGHT_CAMERA_ADAPTER_ROI
                     if self._output_quarter_turns
-                    else "hik_camera_adapter_roi_image_pixels"
+                    else RigSpaceId.HIK_CAMERA_ADAPTER_ROI_IMAGE
                 ),
                 "stored_size_px": [int(width), int(height)],
-                "parent_space_id": "hik_full_sensor_camera_pixels",
+                "parent_space_id": RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                 "roi_in_parent_xywh": list(self._effective_roi),
                 "local_to_parent_3x3": (
                     np.asarray(
@@ -1480,6 +1490,20 @@ class RectifiedHikCamera:
                 ),
                 "color_order": "BGR",
             }
+        parent_space = dict(sample.metadata.get("image_space") or {})
+        operations = []
+        if self._rectify_enabled:
+            operations.append(RigTransformOperation.RIG_RECTIFICATION)
+        else:
+            operations.append(RigTransformOperation.ADAPTER_OUTPUT_VIEW)
+        if self._output_quarter_turns:
+            operations.append(RigTransformOperation.GAME_UPRIGHT_QUARTER_TURN)
+        image_space["transform_lineage"] = compiled_transform_lineage(
+            str(parent_space.get("space_id") or RigSpaceId.HIK_CAMERA_ACQUISITION),
+            str(image_space["space_id"]),
+            operations,
+            inherited=parent_space.get("transform_lineage"),
+        )
         metadata = {
             **dict(sample.metadata),
             "rectified": self._rectify_enabled,

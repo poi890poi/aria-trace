@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence, Union
 
 import cv2
 import numpy as np
+from rig_runtime.domain.spaces import RigSpaceId
 
 from ..geometry import transform_points
 
@@ -240,7 +241,7 @@ class RigCalibratedSpaceConverter:
             },
             "spaces": {
                 "camera_adapter": {
-                    "id": "hik_rig_rectified_visible_phone_pixels",
+                    "id": RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
                     "size_px": list(self.adapter_size_px),
                     "image_orientation": (
                         "game_surface_up"
@@ -252,18 +253,18 @@ class RigCalibratedSpaceConverter:
                     ),
                 },
                 "calibration_display": {
-                    "id": "android_calibration_logical_display_pixels",
+                    "id": RigSpaceId.ANDROID_CALIBRATION_LOGICAL_DISPLAY,
                     "size_px": list(self.calibration_display_size_px),
                     "surface_quarter_turns_clockwise_from_natural": (
                         self.calibration_display_quarter_turns_clockwise_from_natural
                     ),
                 },
                 "phone_natural": {
-                    "id": "android_phone_natural_display_pixels",
+                    "id": RigSpaceId.ANDROID_PHONE_NATURAL,
                     "size_px": list(self.phone_natural_size_px),
                 },
                 "adb": {
-                    "id": "android_logical_display_pixels",
+                    "id": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                     "size_px": list(self.adb_size_px),
                     "surface_quarter_turns_clockwise_from_natural": (
                         self.adb_surface_quarter_turns_clockwise_from_natural

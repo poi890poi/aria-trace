@@ -13,6 +13,7 @@ from rig_runtime.evidence.media_trace import (
 )
 from rig_runtime.evidence.rig_spatial import rig_sample_media_record
 from rig_runtime.services.calibration.rig.contracts import FrameSample
+from rig_runtime.domain.spaces import RigSpaceId
 
 
 def build_hik_calibration_media_registry(
@@ -61,9 +62,9 @@ def build_hik_calibration_media_registry(
                 "valid_screen_mask.png",
                 media_type="image",
                 stored_size_px=image_size_px(mask_path),
-                space_id="hik_rig_rectified_visible_phone_pixels",
+                space_id=RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE,
                 operation="validity_mask_from_camera_to_phone_rectification",
-                source_space_id="hik_full_sensor_camera_pixels",
+                source_space_id=RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                 source_region={"kind": "full_frame", "xywh": [0, 0] + full_size},
                 orientation={"phone_natural": True},
                 transform={
@@ -169,7 +170,7 @@ def build_data_matrix_media_registry(
         role, failure, index = file_metadata.get(
             path.name, ("diagnostic", {}, None)
         )
-        source_space = "hik_full_sensor_camera_pixels"
+        source_space = RigSpaceId.HIK_FULL_SENSOR_CAMERA
         source_region = {"kind": "full_frame", "xywh": [0, 0] + full_size}
         space_id = source_space
         operation = "camera_frame_copy"
@@ -180,15 +181,15 @@ def build_data_matrix_media_registry(
                 "kind": "crop",
                 "xywh": failure.get("raw_camera_crop_xywh"),
             }
-            space_id = "hik_camera_crop_local_pixels"
+            space_id = RigSpaceId.HIK_CAMERA_CROP_LOCAL
             operation = "crop_without_resampling"
         elif role == "rectified_decoder_crop":
-            source_space = "android_logical_display_pixels"
+            source_space = RigSpaceId.ANDROID_LOGICAL_DISPLAY
             source_region = {
                 "kind": "crop",
                 "xywh": failure.get("decode_rect_screen_xywh"),
             }
-            space_id = "data_matrix_decoder_crop_local_pixels"
+            space_id = RigSpaceId.DATA_MATRIX_DECODER_CROP_LOCAL
             operation = "screen_rectification_then_crop"
             orientation = {"as_displayed_by_android": True}
             transform = {
@@ -198,7 +199,7 @@ def build_data_matrix_media_registry(
             }
         elif role == "rectified_camera_frame":
             source_region = {"kind": "full_frame", "xywh": [0, 0] + full_size}
-            space_id = "android_logical_display_pixels"
+            space_id = RigSpaceId.ANDROID_LOGICAL_DISPLAY
             operation = "camera_to_phone_perspective_rectification"
             orientation = {"as_displayed_by_android": True}
             transform = {
@@ -207,7 +208,7 @@ def build_data_matrix_media_registry(
                 )
             }
         elif role == "display_target":
-            source_space = "android_logical_display_pixels"
+            source_space = RigSpaceId.ANDROID_LOGICAL_DISPLAY
             source_region = {"kind": "full_frame", "xywh": [0, 0] + phone_size}
             space_id = source_space
             operation = "generated_data_matrix_display_target"

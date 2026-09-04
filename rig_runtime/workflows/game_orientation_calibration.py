@@ -16,6 +16,7 @@ from rig_runtime.adapters.filesystem.profile_registry import (
 )
 from rig_runtime.adapters.filesystem.session import SessionReader
 from rig_runtime.adapters.hik.capture import rotate_quarter_turns_clockwise
+from rig_runtime.domain.spaces import RigSpaceId
 from rig_runtime.services.calibration.rig.cross_source import (
     match_game_camera_orientation,
 )
@@ -181,7 +182,7 @@ def calibrate_portable_game_orientation_session(
     )
     payload.update(
         profile_kind="phone_game",
-        coordinate_space="phone_natural_display_pixels",
+        coordinate_space=RigSpaceId.PHONE_NATURAL_DISPLAY,
         game_orientation=game_orientation,
         game_surface_quarter_turns_clockwise_from_phone_natural=int(
             selected_turns

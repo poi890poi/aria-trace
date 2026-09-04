@@ -12,6 +12,7 @@ import numpy as np
 from rig_runtime.adapters.filesystem.commented_yaml import write_commented_yaml
 from rig_runtime.adapters.android.spaces import natural_to_logical_matrix
 from rig_runtime.evidence.media_trace import image_size_px, raster_record, validate_media_registry
+from rig_runtime.domain.spaces import RigSpaceId
 from .hik.spaces import RigCalibratedSpaceConverter
 
 
@@ -69,9 +70,9 @@ def build_dual_source_media_registry(
                 android_file,
                 media_type="video",
                 stored_size_px=android_size,
-                space_id="android_logical_display_pixels",
+                space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 operation="scrcpy_decode_and_encode_without_spatial_crop",
-                source_space_id="android_logical_display_pixels",
+                source_space_id=RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 source_region={"kind": "full_frame", "xywh": [0, 0] + android_size},
                 orientation={
                     "quarter_turns_clockwise_from_phone_natural": (
@@ -96,9 +97,9 @@ def build_dual_source_media_registry(
                 media_type="video",
                 stored_size_px=stored,
                 content_size_px=content,
-                space_id="hik_session_aligned_visible_phone_pixels",
+                space_id=RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE,
                 operation="hardware_roi_then_rig_rectification_then_quarter_turn",
-                source_space_id="hik_full_sensor_camera_pixels",
+                source_space_id=RigSpaceId.HIK_FULL_SENSOR_CAMERA,
                 source_region={
                     "kind": "hardware_roi",
                     "xywh": hardware_roi,
@@ -143,16 +144,16 @@ def build_dual_source_media_registry(
             "kind": "comparison",
             "adb_crop_xywh": comparison_crop,
         }
-        space_id = "cross_source_comparison_local_pixels"
+        space_id = RigSpaceId.CROSS_SOURCE_COMPARISON_LOCAL
         operation = "cross_source_diagnostic_visualization"
         image_orientation = {
-            "matches": "hik_session_aligned_visible_phone_pixels"
+            "matches": RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE
         }
 
         if "/orientation_match/" in "/" + relative:
             metadata_reference = "cross_source_check/orientation_match/summary.json"
             if name == "first_adb_game_image.png":
-                space_id = "android_logical_display_pixels"
+                space_id = RigSpaceId.ANDROID_LOGICAL_DISPLAY
                 source_space = space_id
                 source_region = {"kind": "full_frame", "xywh": [0, 0] + size}
                 operation = "first_game_adb_frame_copy"
@@ -161,7 +162,7 @@ def build_dual_source_media_registry(
                     "quarter_turn_selected_by_this_evidence": True,
                 }
             elif name == "first_hik_rig_normalized_calibration_display.png":
-                space_id = "hik_rig_rectified_visible_phone_pixels"
+                space_id = RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
                 source_space = "hik_camera_adapter_roi_pixels"
                 source_region = {
                     "kind": "hardware_roi",
@@ -186,24 +187,24 @@ def build_dual_source_media_registry(
                     "candidate_adapter_image_degrees_clockwise_from_calibration_display": image_degrees
                 }
                 if name.endswith("_adb_crop.png"):
-                    source_space = "android_logical_display_pixels"
+                    source_space = RigSpaceId.ANDROID_LOGICAL_DISPLAY
                     operation = "candidate_adb_crop"
                 elif name.endswith("_hik.png"):
-                    source_space = "hik_rig_rectified_visible_phone_pixels"
+                    source_space = RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
                     operation = "candidate_hik_quarter_turn"
         elif name == "adb_visible_crop.png":
-            source_space = "android_logical_display_pixels"
+            source_space = RigSpaceId.ANDROID_LOGICAL_DISPLAY
             source_region = {"kind": "crop", "xywh": comparison_crop}
             operation = "crop_without_resampling"
         elif name == "hik_rectified.png":
-            source_space = "hik_session_aligned_visible_phone_pixels"
+            source_space = RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE
             source_region = {"kind": "full_frame", "xywh": [0, 0] + size}
             operation = "frame_copy"
         elif name == "valid_mask.png":
-            source_space = "hik_rig_rectified_visible_phone_pixels"
+            source_space = RigSpaceId.HIK_RIG_RECTIFIED_VISIBLE_PHONE
             operation = "rotate_saved_rig_validity_mask"
         elif name.startswith("side_by_side"):
-            space_id = "diagnostic_composite_pixels"
+            space_id = RigSpaceId.DIAGNOSTIC_COMPOSITE
             operation = "horizontal_composite_adb_then_hik"
 
         records.append(
@@ -317,7 +318,7 @@ def build_dual_source_space_document(
         "spaces": {
             **description["spaces"],
             "hik_phone_video": {
-                "id": "hik_session_aligned_visible_phone_pixels",
+                "id": RigSpaceId.HIK_SESSION_ALIGNED_VISIBLE_PHONE,
                 "content_size_px": [content_width, content_height],
                 "stored_size_px": hik_stored_size,
                 "valid_content_xywh": [0, 0, content_width, content_height],
@@ -472,14 +473,14 @@ def write_android_source_space_yaml(
         "schema_version": "1.0",
         "capture_mode": "android_only",
         "spaces": {
-            "android_phone_natural_display_pixels": {
+            RigSpaceId.ANDROID_PHONE_NATURAL: {
                 "size_px": natural_size,
                 "origin": "top_left_pixel_center_at_android_rotation_0",
                 "x_axis": "right",
                 "y_axis": "down",
                 "canonical": True,
             },
-            "android_logical_display_pixels": {
+            RigSpaceId.ANDROID_LOGICAL_DISPLAY: {
                 "size_px": size,
                 "origin": "top_left_pixel_center",
                 "x_axis": "right",
@@ -490,7 +491,7 @@ def write_android_source_space_yaml(
         "streams": {
             "android_phone": {
                 "video": video,
-                "space": "android_logical_display_pixels",
+                "space": RigSpaceId.ANDROID_LOGICAL_DISPLAY,
                 "stored_size_px": size,
                 "timestamp_authority": android_timestamp_authority,
             }
