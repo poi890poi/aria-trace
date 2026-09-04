@@ -54,3 +54,14 @@ Agreement is explicitly not labeled as external ground-truth accuracy.
 
 Record repeated traversals for direct cross-pass repeatability evidence using
 the [route repeatability session protocol](ROUTE_REPEATABILITY_SESSION.md).
+The [method and findings report](REPEATABILITY_BENCHMARK.md) defines the
+reusable contracts, causal boundaries, metrics, reproduction commands, and
+current Run 17/18 evidence.
+`build_repeatability_report.py` discovers recurring complete-state waypoints
+without lap boundaries and subtracts reference path variation before scoring.
+`benchmarks.temporal_turns` diagnoses temporal hysteresis at sharp reversals by
+fitting sign and time lag between independent control, KLT scene, and candidate
+signals instead of assuming equal frame indexes.
+`benchmarks.build_turn_evidence` extracts those three timestamped channels from
+a recorded session. Cursor pose is optional; raw input and KLT remain useful as
+independent behavior evidence when no pose candidate is supplied.
