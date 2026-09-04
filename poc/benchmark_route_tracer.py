@@ -7,6 +7,7 @@ supplies the reported pose or the post-run compliance score.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import time
@@ -30,6 +31,7 @@ VARIANTS = (
     "route_refine_top3",
     "continuous_local",
     "continuous_gated",
+    "local_primary_gated",
 )
 CORRELATION_FEATURES = ("gradient", "intensity", "canny", "laplacian")
 MODE_POLICIES = ("all", "sticky")
@@ -64,6 +66,9 @@ class TraceResult:
     route_state_index: Optional[int] = None
     mode_id: Optional[str] = None
     measurement_accepted: bool = True
+    primary_candidate_produced: bool = True
+    primary_measurement_accepted: bool = True
+    final_gate_rejected: bool = False
 
 
 def _percentiles(values) -> dict:
@@ -283,11 +288,27 @@ class CausalRouteTracer:
                         "local",
                         mode_ids=mode_ids,
                     )
-                if not result.valid:
+                if not result.valid and not (
+                    self.variant == "local_primary_gated"
+                    and self.previous_xy is not None
+                ):
                     result = self._route_refine(observation, feature, mask, 3)
+                elif not result.valid and self.previous_xy is not None:
+                    result = TraceResult(
+                        True,
+                        self.previous_xy[0],
+                        self.previous_xy[1],
+                        result.score,
+                        result.margin,
+                        "primary_rejection_hold",
+                        measurement_accepted=False,
+                        primary_candidate_produced=False,
+                        primary_measurement_accepted=False,
+                    )
         if (
-            self.variant == "continuous_gated"
+            self.variant in ("continuous_gated", "local_primary_gated")
             and result.valid
+            and result.measurement_accepted
             and self.previous_xy is not None
             and self.previous_time_ns is not None
             and session_time_ns is not None
@@ -311,6 +332,9 @@ class CausalRouteTracer:
                     result.route_state_index,
                     result.mode_id,
                     measurement_accepted=False,
+                    primary_candidate_produced=True,
+                    primary_measurement_accepted=True,
+                    final_gate_rejected=True,
                 )
         if result.valid and result.measurement_accepted:
             self.rejection_streak = 0
@@ -378,18 +402,18 @@ class CausalRouteTracer:
         return result
 
 
-def _reference_errors(rows, reference_package, session_id):
+def _attach_reference_errors(rows, reference_package, session_id) -> None:
     if reference_package is None:
-        return None
+        return
     source = reference_package.manifest.get("source_session") or {}
     if str(source.get("session_id")) != str(session_id):
-        return None
+        return
     states = reference_package.states
     times = np.asarray([int(item["session_time_ns"]) for item in states], np.float64)
     xs = np.asarray([float(item["canonical_xy"][0]) for item in states])
     ys = np.asarray([float(item["canonical_xy"][1]) for item in states])
-    errors = []
     for row in rows:
+        row["reference_error_px"] = None
         if not row["valid"]:
             continue
         timestamp = float(row["session_time_ns"])
@@ -398,9 +422,24 @@ def _reference_errors(rows, reference_package, session_id):
         reference = np.asarray(
             [np.interp(timestamp, times, xs), np.interp(timestamp, times, ys)]
         )
-        errors.append(
-            float(np.linalg.norm(np.asarray([row["x"], row["y"]]) - reference))
+        row["reference_error_px"] = float(
+            np.linalg.norm(np.asarray([row["x"], row["y"]]) - reference)
         )
+
+
+def _reference_errors(rows, reference_package, session_id, *, fresh_only=False):
+    if reference_package is None:
+        return None
+    source = reference_package.manifest.get("source_session") or {}
+    if str(source.get("session_id")) != str(session_id):
+        return None
+    errors = []
+    for row in rows:
+        if not row["valid"] or (fresh_only and not row["measurement_accepted"]):
+            continue
+        error = row.get("reference_error_px")
+        if error is not None:
+            errors.append(float(error))
     if not errors:
         return None
     values = np.asarray(errors, dtype=np.float64)
@@ -408,6 +447,7 @@ def _reference_errors(rows, reference_package, session_id):
         "role": "offline-sparse-map-localization-reference",
         "sample_count": len(errors),
         "rmse_px": float(math.sqrt(float(np.mean(values * values)))),
+        "mean_px": float(np.mean(values)),
         "median_px": float(np.median(values)),
         "p95_px": float(np.percentile(values, 95)),
         "max_px": float(np.max(values)),
@@ -500,6 +540,7 @@ def benchmark_session(
         raise RuntimeError("Could not open video: {}".format(reader.video_path("main")))
     rows = []
     decode_times = []
+    extraction_times = []
     initialization_result = None
     try:
         for record in records:
@@ -510,7 +551,12 @@ def benchmark_session(
                 raise RuntimeError(
                     "Video ended before frame {}".format(record["frame_index"])
                 )
+            extraction_started = time.perf_counter_ns()
             observation, mask = extractor.extract(frame)
+            extraction_elapsed_ms = (
+                time.perf_counter_ns() - extraction_started
+            ) / 1.0e6
+            extraction_times.append(extraction_elapsed_ms)
             if initialization == "global" and initialization_result is None:
                 initialization_started = time.perf_counter_ns()
                 fix = atlas.localize(observation, mask)
@@ -546,6 +592,7 @@ def benchmark_session(
                 observation, mask, session_time_ns=record["session_time_ns"]
             )
             elapsed_ms = (time.perf_counter_ns() - started) / 1.0e6
+            core_elapsed_ms = extraction_elapsed_ms + elapsed_ms
             rows.append(
                 {
                     "frame_index": int(record["frame_index"]),
@@ -554,6 +601,13 @@ def benchmark_session(
                     "measurement_accepted": bool(
                         result.valid and result.measurement_accepted
                     ),
+                    "primary_candidate_produced": bool(
+                        result.primary_candidate_produced
+                    ),
+                    "primary_measurement_accepted": bool(
+                        result.primary_measurement_accepted
+                    ),
+                    "final_gate_rejected": bool(result.final_gate_rejected),
                     "x": result.x,
                     "y": result.y,
                     "score": float(result.score),
@@ -562,11 +616,17 @@ def benchmark_session(
                     "route_state_index": result.route_state_index,
                     "mode_id": result.mode_id,
                     "algorithm_elapsed_ms": elapsed_ms,
+                    "extraction_elapsed_ms": extraction_elapsed_ms,
+                    "localization_core_elapsed_ms": core_elapsed_ms,
                 }
             )
     finally:
         capture.release()
         atlas.close()
+
+    _attach_reference_errors(
+        rows, reference_package, reader.manifest.get("session_id")
+    )
 
     valid_rows = [row for row in rows if row["valid"]]
     points = [[row["x"], row["y"]] for row in valid_rows]
@@ -578,6 +638,11 @@ def benchmark_session(
                 math.hypot(second["x"] - first["x"], second["y"] - first["y"])
             )
     algorithm_times = [row["algorithm_elapsed_ms"] for row in rows]
+    core_times = [row["localization_core_elapsed_ms"] for row in rows]
+    fresh_flags = np.asarray(
+        [row["measurement_accepted"] for row in rows], dtype=bool
+    )
+    core_time_array = np.asarray(core_times, dtype=np.float64)
     source_counts = {}
     for row in rows:
         source_counts[row["source"]] = source_counts.get(row["source"], 0) + 1
@@ -621,10 +686,34 @@ def benchmark_session(
             1000.0 / float(np.mean(algorithm_times)) if algorithm_times else 0.0
         ),
         "decode_latency_ms": _percentiles(decode_times),
+        "extraction_latency_ms": _percentiles(extraction_times),
+        "localization_core_latency_ms": _percentiles(core_times),
         "continuity": _loss_metrics([row["valid"] for row in rows]),
         "visual_measurement_continuity": _loss_metrics(
             [row["measurement_accepted"] for row in rows]
         ),
+        "two_layer_contract": {
+            "layer_1": "one current-frame local map measurement",
+            "layer_2": "one final physical-continuity rejection gate",
+            "route_or_global_initialization_is_not_a_per-frame_fallback": True,
+            "primary_candidate_produced_rate": float(
+                np.mean([row["primary_candidate_produced"] for row in rows])
+            ),
+            "primary_measurement_accepted_rate": float(
+                np.mean([row["primary_measurement_accepted"] for row in rows])
+            ),
+            "final_gate_rejection_rate": float(
+                np.mean([row["final_gate_rejected"] for row in rows])
+            ),
+            "fresh_measurement_accepted_rate": float(np.mean(fresh_flags)),
+            "fresh_within_33_3ms_rate": float(
+                np.mean(fresh_flags & (core_time_array <= (1000.0 / 30.0)))
+            ),
+            "fresh_within_66_7ms_rate": float(
+                np.mean(fresh_flags & (core_time_array <= (1000.0 / 15.0)))
+            ),
+            "held_states_count_as_fresh": False,
+        },
         "source_frame_counts": source_counts,
         "adjacent_pose_jump_px": _percentiles(adjacent_jumps),
         "route_compliance": route_similarity_report(
@@ -634,6 +723,12 @@ def benchmark_session(
         ),
         "reference_pose_error": _reference_errors(
             rows, reference_package, reader.manifest.get("session_id")
+        ),
+        "fresh_reference_pose_error": _reference_errors(
+            rows,
+            reference_package,
+            reader.manifest.get("session_id"),
+            fresh_only=True,
         ),
         "map_supported_interval": _supported_interval_metrics(
             rows,
@@ -648,9 +743,17 @@ def benchmark_session(
                 algorithm_times and float(np.mean(algorithm_times)) <= 1000.0 / 30.0
             ),
             "meets_p95_30fps_budget": bool(
-                algorithm_times
-                and float(np.percentile(algorithm_times, 95)) <= 1000.0 / 30.0
+                core_times
+                and float(np.percentile(core_times, 95)) <= 1000.0 / 30.0
             ),
+        },
+        "method_traceability": {
+            "implementation": "poc.benchmark_route_tracer.CausalRouteTracer",
+            "source_file": str(Path(__file__).resolve()),
+            "source_sha256": hashlib.sha256(
+                Path(__file__).read_bytes()
+            ).hexdigest(),
+            "variant": variant,
         },
         "rows_file": "telemetry.jsonl" if output_path else None,
     }

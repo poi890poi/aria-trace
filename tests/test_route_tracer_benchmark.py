@@ -115,6 +115,37 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
         self.assertEqual((result.x, result.y), (50.0, 60.0))
         self.assertEqual(result.source, "continuity_hold")
 
+    def test_two_layer_variant_does_not_invoke_route_recovery_after_seed(self):
+        package = _Package()
+        atlas = Mock()
+        atlas.localizers = {"world": object()}
+        atlas._observe_one_mode.return_value = {
+            "valid": True,
+            "score": 0.20,
+            "best_offset_canonical_xy": [0.0, 0.0],
+        }
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "local_primary_gated",
+            score_min=0.50,
+        )
+        tracer.previous_xy = (50.0, 60.0)
+        tracer.previous_time_ns = 1_000_000_000
+
+        result = tracer.track(
+            np.zeros((32, 32, 3), np.uint8),
+            np.full((32, 32), 255, np.uint8),
+            session_time_ns=1_033_000_000,
+        )
+
+        self.assertTrue(result.valid)
+        self.assertFalse(result.measurement_accepted)
+        self.assertFalse(result.primary_candidate_produced)
+        self.assertEqual(result.source, "primary_rejection_hold")
+        self.assertEqual((result.x, result.y), (50.0, 60.0))
+        self.assertEqual(package.calls, [])
+
     def test_accepted_continuity_clock_accumulates_time_while_held(self):
         package = _Package()
         atlas = Mock()
