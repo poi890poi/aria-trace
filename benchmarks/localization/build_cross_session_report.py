@@ -42,22 +42,6 @@ def _nearest_mode(timestamp_ns: int, times, modes) -> str:
     return str(modes[selected])
 
 
-def _representative_by_family(candidates: list[dict]) -> dict[str, dict]:
-    grouped = defaultdict(list)
-    for candidate in candidates:
-        grouped[candidate["family"]].append(candidate)
-    return {
-        family: min(
-            rows,
-            key=lambda row: (
-                float(row["parameters"].get("local_radius_px") or 1.0e9),
-                row["name"],
-            ),
-        )
-        for family, rows in grouped.items()
-    }
-
-
 def _load(input_root: Path):
     candidates = []
     source_files = []
@@ -68,6 +52,7 @@ def _load(input_root: Path):
         candidates.append(
             {
                 "name": name,
+                "replay": report_path.parent.name,
                 "family": _family(report["parameters"]),
                 "parameters": report["parameters"],
                 "report": report,
@@ -85,28 +70,79 @@ def _load(input_root: Path):
     return candidates, source_files
 
 
-def _qualified_families_by_mode(candidates: list[dict]) -> dict[str, set[str]]:
-    representatives = _representative_by_family(candidates)
-    output = defaultdict(set)
-    for family, candidate in representatives.items():
+def _qualified_representatives_by_mode(
+    candidates: list[dict],
+) -> dict[str, dict[str, str]]:
+    """Choose trusted consensus voters from all sessions, not one directory.
+
+    A method must remain in the same localization basin as the independent
+    sparse anchor: its worst observed anchor disagreement cannot exceed its
+    configured local search radius. Availability remains a separately reported
+    property, so a sparse but precise method can corroborate another method on
+    their overlapping frames. This is a qualification guard, not a claim of
+    absolute accuracy.
+    """
+
+    by_name = defaultdict(list)
+    for candidate in candidates:
+        by_name[candidate["name"]].append(candidate)
+
+    options = defaultdict(list)
+    for name, method_candidates in by_name.items():
+        family = method_candidates[0]["family"]
+        parameters = method_candidates[0]["parameters"]
+        radius = float(parameters.get("local_radius_px") or 0.0)
         by_mode = defaultdict(list)
-        for row in candidate["rows"]:
-            if not row.get("initialization_frame", False):
-                by_mode[row["evaluation_mode_id"]].append(row)
+        for candidate in method_candidates:
+            for row in candidate["rows"]:
+                if not row.get("initialization_frame", False):
+                    by_mode[row["evaluation_mode_id"]].append(row)
         for mode, rows in by_mode.items():
-            fresh = [bool(row["measurement_accepted"]) for row in rows]
-            supported = [
-                row
+            fresh_rate = float(
+                np.mean([bool(row["measurement_accepted"]) for row in rows])
+            )
+            anchor_errors = [
+                float(row["reference_error_px"])
                 for row in rows
                 if row.get("reference_error_px") is not None
                 and row.get("measurement_accepted")
             ]
-            if fresh and float(np.mean(fresh)) >= 0.95 and supported:
-                output[mode].add(family)
-    return dict(output)
+            if not anchor_errors:
+                continue
+            anchor = _summary(anchor_errors)
+            if anchor["worst"] is None or float(anchor["worst"]) > radius:
+                continue
+            latency = _summary(
+                [float(row["localization_core_elapsed_ms"]) for row in rows]
+            )
+            options[(mode, family)].append(
+                {
+                    "name": name,
+                    "fresh_rate": fresh_rate,
+                    "anchor": anchor,
+                    "latency": latency,
+                    "radius": radius,
+                }
+            )
+
+    selected = defaultdict(dict)
+    for (mode, family), rows in options.items():
+        best = min(
+            rows,
+            key=lambda row: (
+                float(row["anchor"]["worst"]),
+                float(row["anchor"]["p95"]),
+                -float(row["fresh_rate"]),
+                float(row["latency"]["p95"]),
+                float(row["radius"]),
+                row["name"],
+            ),
+        )
+        selected[mode][family] = best["name"]
+    return dict(selected)
 
 
-def _annotate(candidates: list[dict]) -> dict[str, set[str]]:
+def _annotate(candidates: list[dict]) -> dict[str, dict[str, str]]:
     mode_cache = {}
     by_session = defaultdict(list)
     for candidate in candidates:
@@ -125,27 +161,29 @@ def _annotate(candidates: list[dict]) -> dict[str, set[str]]:
             for row in candidate["rows"]:
                 row["evaluation_mode_id"] = str(row.get("mode_id") or "unknown")
 
-    qualified = _qualified_families_by_mode(candidates)
+    qualified = _qualified_representatives_by_mode(candidates)
     for session_candidates in by_session.values():
-        representatives = _representative_by_family(session_candidates)
+        by_name = {candidate["name"]: candidate for candidate in session_candidates}
         lookups = {
-            row["family"]: {
-                int(item["session_time_ns"]): item for item in row["rows"]
+            name: {
+                int(item["session_time_ns"]): item for item in candidate["rows"]
             }
-            for row in representatives.values()
+            for name, candidate in by_name.items()
         }
         for candidate in session_candidates:
             for row in candidate["rows"]:
                 row["cross_family_consensus_error_px"] = None
                 if not row.get("measurement_accepted"):
                     continue
+                selected = qualified.get(row["evaluation_mode_id"], {})
                 points = []
-                for family, lookup in lookups.items():
+                for family, name in selected.items():
                     if family == candidate["family"]:
                         continue
-                    if family not in qualified.get(row["evaluation_mode_id"], set()):
+                    peer_candidate = by_name.get(name)
+                    if peer_candidate is None:
                         continue
-                    peer = lookup.get(int(row["session_time_ns"]))
+                    peer = lookups[name].get(int(row["session_time_ns"]))
                     if peer and peer.get("measurement_accepted"):
                         points.append([float(peer["x"]), float(peer["y"])])
                 if len(points) < 2:
@@ -215,6 +253,57 @@ def _pairwise(candidates: list[dict]) -> list[dict]:
     return output
 
 
+def _aggregate_rows(name: str, mode: str, rows: list[dict]) -> dict:
+    fresh = np.asarray([bool(row["measurement_accepted"]) for row in rows])
+    latency = np.asarray([float(row["localization_core_elapsed_ms"]) for row in rows])
+    mode_agreement = np.asarray(
+        [str(row.get("mode_id") or "unknown") == mode for row in rows]
+    )
+    anchor_errors = [
+        float(row["reference_error_px"])
+        for row in rows
+        if row.get("reference_error_px") is not None and row["measurement_accepted"]
+    ]
+    same_mode_anchor_errors = [
+        float(row["reference_error_px"])
+        for row in rows
+        if row.get("reference_error_px") is not None
+        and row["measurement_accepted"]
+        and str(row.get("mode_id") or "unknown") == mode
+    ]
+    wrong_mode_anchor_errors = [
+        float(row["reference_error_px"])
+        for row in rows
+        if row.get("reference_error_px") is not None
+        and row["measurement_accepted"]
+        and str(row.get("mode_id") or "unknown") != mode
+    ]
+    consensus_errors = [
+        float(row["cross_family_consensus_error_px"])
+        for row in rows
+        if row.get("cross_family_consensus_error_px") is not None
+    ]
+    return {
+        "candidate": name,
+        "mode_id": mode,
+        "attempt_count": len(rows),
+        "fresh_measurement_accepted_rate": float(np.mean(fresh)),
+        "fresh_within_33_3ms_rate": float(
+            np.mean(fresh & (latency <= TARGET_DEADLINE_MS))
+        ),
+        "fresh_within_66_7ms_rate": float(
+            np.mean(fresh & (latency <= MINIMUM_DEADLINE_MS))
+        ),
+        "reference_mode_agreement_rate": float(np.mean(mode_agreement)),
+        "wrong_mode_fresh_count": int(np.sum(fresh & ~mode_agreement)),
+        "localization_core_latency_ms": _summary(latency),
+        "offline_anchor_error_px": _summary(anchor_errors),
+        "same_mode_offline_anchor_error_px": _summary(same_mode_anchor_errors),
+        "wrong_mode_offline_anchor_error_px": _summary(wrong_mode_anchor_errors),
+        "cross_family_consensus_error_px": _summary(consensus_errors),
+    }
+
+
 def _aggregate(candidates: list[dict]) -> list[dict]:
     grouped = defaultdict(list)
     for candidate in candidates:
@@ -224,37 +313,22 @@ def _aggregate(candidates: list[dict]) -> list[dict]:
             grouped[(candidate["name"], row["evaluation_mode_id"])].append(row)
     output = []
     for (name, mode), rows in sorted(grouped.items()):
-        fresh = np.asarray([bool(row["measurement_accepted"]) for row in rows])
-        latency = np.asarray(
-            [float(row["localization_core_elapsed_ms"]) for row in rows]
-        )
-        anchor_errors = [
-            float(row["reference_error_px"])
-            for row in rows
-            if row.get("reference_error_px") is not None and row["measurement_accepted"]
-        ]
-        consensus_errors = [
-            float(row["cross_family_consensus_error_px"])
-            for row in rows
-            if row.get("cross_family_consensus_error_px") is not None
-        ]
-        output.append(
-            {
-                "candidate": name,
-                "mode_id": mode,
-                "attempt_count": len(rows),
-                "fresh_measurement_accepted_rate": float(np.mean(fresh)),
-                "fresh_within_33_3ms_rate": float(
-                    np.mean(fresh & (latency <= TARGET_DEADLINE_MS))
-                ),
-                "fresh_within_66_7ms_rate": float(
-                    np.mean(fresh & (latency <= MINIMUM_DEADLINE_MS))
-                ),
-                "localization_core_latency_ms": _summary(latency),
-                "offline_anchor_error_px": _summary(anchor_errors),
-                "cross_family_consensus_error_px": _summary(consensus_errors),
-            }
-        )
+        output.append(_aggregate_rows(name, mode, rows))
+    return output
+
+
+def _aggregate_sessions(candidates: list[dict]) -> list[dict]:
+    output = []
+    for candidate in candidates:
+        by_mode = defaultdict(list)
+        for row in candidate["rows"]:
+            if not row.get("initialization_frame", False):
+                by_mode[row["evaluation_mode_id"]].append(row)
+        for mode, rows in sorted(by_mode.items()):
+            result = _aggregate_rows(candidate["name"], mode, rows)
+            result["replay"] = candidate["replay"]
+            result["session_id"] = candidate["report"]["session"]["session_id"]
+            output.append(result)
     return output
 
 
@@ -266,7 +340,8 @@ def _report_lines(result: dict) -> list[str]:
         "",
         "Offline anchor: sparse 5 Hz feature-plus-correlation localization against the atlas.",
         "Qualified cross-family consensus: median XY from other matcher families on the same frame.",
-        "A family qualifies per mode only with at least 95% fresh output and sparse-anchor support.",
+        "A family qualifies per mode when its worst sparse-anchor disagreement stays within its local search radius.",
+        "Availability is separate: a sparse but precise family may corroborate overlapping frames.",
         "Gradient 12 and gradient 18 are one family and never vote twice.",
         "Neither measure is external ground truth; agreement estimates consistency, not absolute accuracy.",
         "Held positions never count as fresh measurements or consensus votes.",
@@ -289,6 +364,10 @@ def _report_lines(result: dict) -> list[str]:
                     ),
                     "Fresh within 33.3 ms  {}".format(
                         _percent(row["fresh_within_33_3ms_rate"])
+                    ),
+                    "Reference mode agreement  {} ({} wrong-mode fresh fixes)".format(
+                        _percent(row["reference_mode_agreement_rate"]),
+                        row["wrong_mode_fresh_count"],
                     ),
                     "Anchor error mean / P95 / worst  {} / {} / {}".format(
                         _number(anchor["mean"], " px"),
@@ -326,7 +405,7 @@ def build(input_root: Path, output_path: Path) -> dict:
     candidates, sources = _load(Path(input_root))
     qualified = _annotate(candidates)
     result = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "benchmark": "localization_cross_session_consistency",
         "causal_constraints": {
             "offline_anchor_feeds_candidate": False,
@@ -335,9 +414,8 @@ def build(input_root: Path, output_path: Path) -> dict:
             "duplicate_method_families_get_multiple_votes": False,
         },
         "results": _aggregate(candidates),
-        "qualified_consensus_families_by_mode": {
-            mode: sorted(families) for mode, families in qualified.items()
-        },
+        "session_results": _aggregate_sessions(candidates),
+        "qualified_consensus_representatives_by_mode": qualified,
         "pairwise_consistency": _pairwise(candidates),
         "source_files": sources,
     }

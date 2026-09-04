@@ -43,7 +43,11 @@ report:
   artifacts\poc\localization-cross-session-report-YYYYMMDD
 ```
 
-This report uses the offline anchor and a leave-one-family-out median. Search
-radii of the same gradient-correlation implementation count as one family, so
-minor parameter variants cannot manufacture consensus. Held outputs do not
-vote. Agreement is explicitly not labeled as external ground-truth accuracy.
+This report uses the offline anchor and a leave-one-family-out median. A family
+may vote only when its worst anchor disagreement stays inside its configured
+local search basin; availability is reported separately so a sparse but precise
+method can corroborate overlapping frames. Search radii of the same
+gradient-correlation implementation count as one family, so minor parameter
+variants cannot manufacture consensus. Held outputs do not vote. The report
+also separates wrong map-scale/mode fixes from same-mode localization error.
+Agreement is explicitly not labeled as external ground-truth accuracy.
