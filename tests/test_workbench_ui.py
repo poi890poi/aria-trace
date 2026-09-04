@@ -97,13 +97,12 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
         self.assertIn("arrival_localization_source_counts", self.source)
         self.assertIn("geometric fallback", self.source)
 
-    def test_map_atlas_requires_independent_overview_and_detail_stitches(self):
+    def test_map_atlas_uses_one_master_stitch_and_optional_transition(self):
         self.assertEqual(self.parser.locations["worldLayer"], "mapTask")
-        self.assertEqual(self.parser.locations["townLayer"], "mapTask")
-        self.assertIn("world_stitch_id:ui.worldLayer.value", self.source)
-        self.assertIn("town_stitch_id:ui.townLayer.value", self.source)
-        self.assertIn("ui.worldLayer.value!==ui.townLayer.value", self.source)
-        self.assertIn("an overview is never enlarged", self.source)
+        self.assertNotIn("townLayer", self.parser.locations)
+        self.assertIn("map_stitch_id:ui.worldLayer.value", self.source)
+        self.assertIn("None · build a single-scale atlas", self.source)
+        self.assertIn("one sharp, highest-detail master stitch", self.source)
 
     def test_capture_inventory_uses_compact_progressive_disclosure(self):
         self.assertEqual(self.parser.locations["sourceInventoryPanel"], None)

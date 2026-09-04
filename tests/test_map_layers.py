@@ -88,6 +88,25 @@ class MapLayerTests(unittest.TestCase):
             )
             self.assertIsNotNone(town_layer["alignment_evidence_file"])
 
+    def test_builds_single_scale_atlas_without_transition(self):
+        canonical, _ = self._mosaics()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            master = root / "master-stitch"
+            output = root / "atlas"
+            self._write_stitch(master, canonical, "cal-master")
+
+            manifest = build_map_atlas(
+                [{"mode_id": "world", "stitch_root": master}],
+                output,
+                canonical_mode_id="world",
+                atlas_id="single-scale-a",
+            )
+
+            self.assertEqual(len(manifest["layers"]), 1)
+            self.assertEqual(manifest["layers"][0]["mode_id"], "world")
+            self.assertTrue((output / "map_atlas.json").is_file())
+
     def test_rejects_enlarging_a_low_detail_layer(self):
         mosaic = np.full((120, 160, 3), 90, np.uint8)
         coverage = np.full((120, 160), 255, np.uint8)

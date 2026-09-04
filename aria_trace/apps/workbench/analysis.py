@@ -741,34 +741,35 @@ class WorkbenchAnalysisMixin:
             if not game_profile_id:
                 raise ValueError("Choose a game profile")
             game = self.profiles.game(game_profile_id)
+            transition_relative = str(
+                value.get("transition_session_relative_path") or ""
+            )
             layers = [dict(item) for item in value.get("layers") or ()]
             if not layers:
                 world_stitch_id = value.get("world_stitch_id") or value.get(
                     "map_stitch_id"
                 )
                 town_stitch_id = value.get("town_stitch_id")
-                if not town_stitch_id:
-                    raise ValueError(
-                        "Choose a separate town-detail stitch recorded at the "
-                        "larger rendered-map scale"
-                    )
-                if str(world_stitch_id or "") == str(town_stitch_id):
-                    raise ValueError(
-                        "World overview and town detail must use different map "
-                        "stitches; reusing the overview would manufacture blur"
-                    )
-                layers = [
-                    {
-                        "mode_id": "world",
-                        "stitch_id": world_stitch_id,
-                        "display_name": "World overview",
-                    },
-                    {
-                        "mode_id": "town",
-                        "stitch_id": town_stitch_id,
-                        "display_name": "Town detail",
-                    },
-                ]
+                if town_stitch_id:
+                    # Compatibility for previously saved/API-authored requests.
+                    layers = [
+                        {"mode_id": "world", "stitch_id": world_stitch_id,
+                         "display_name": "World overview"},
+                        {"mode_id": "town", "stitch_id": town_stitch_id,
+                         "display_name": "Town detail"},
+                    ]
+                elif transition_relative:
+                    layers = [
+                        {"mode_id": "world", "stitch_id": world_stitch_id,
+                         "display_name": "World scale"},
+                        {"mode_id": "town", "stitch_id": world_stitch_id,
+                         "display_name": "Town scale"},
+                    ]
+                else:
+                    layers = [
+                        {"mode_id": "world", "stitch_id": world_stitch_id,
+                         "display_name": "Single scale"},
+                    ]
             stitch_root = self._map_stitch_root(game_profile_id)
             resolved_layers = []
             for layer in layers:
@@ -786,9 +787,6 @@ class WorkbenchAnalysisMixin:
                 str(value.get("atlas_id") or uuid.uuid4())
             )
             output = self._map_atlas_root(game_profile_id) / atlas_id
-            transition_relative = str(
-                value.get("transition_session_relative_path") or ""
-            )
             transition_path = None
             transition_extractor = None
             if transition_relative:

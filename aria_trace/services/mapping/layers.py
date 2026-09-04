@@ -195,12 +195,12 @@ def build_map_atlas(
     canonical_mode_id: str,
     atlas_id: Optional[str] = None,
 ) -> dict:
-    """Build a portable atlas from independently stitched rendered map scales."""
+    """Build one or more localization scales from canonical map artwork."""
 
     specs = [dict(item) for item in layer_specs]
     mode_ids = [str(item.get("mode_id") or "") for item in specs]
-    if len(specs) < 2:
-        raise ValueError("A multi-scale map atlas needs at least two layers")
+    if not specs:
+        raise ValueError("A map atlas needs at least one layer")
     if any(not mode_id for mode_id in mode_ids) or len(set(mode_ids)) != len(mode_ids):
         raise ValueError("Map atlas mode IDs must be non-empty and unique")
     if canonical_mode_id not in mode_ids:
