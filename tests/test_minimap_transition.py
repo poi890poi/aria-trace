@@ -35,16 +35,18 @@ class MinimapTransitionTests(unittest.TestCase):
         )
         self.assertGreater(model["quality"]["confidence"], 0.70)
         self.assertIsNotNone(model["canonical_boundary"])
+        self.assertEqual(len(model["transition_zones"]), 1)
 
     def test_controller_switches_only_after_consecutive_target_evidence(self):
         model = learn_transition_model(self._observations(), "world", "town")
         controller = TransitionController(model, confirmation_count=3)
 
-        first = controller.update({"world": 0.4, "town": 0.6})
-        interrupted = controller.update({"world": 0.7, "town": 0.3})
-        controller.update({"world": 0.3, "town": 0.7})
-        controller.update({"world": 0.2, "town": 0.8})
-        switched = controller.update({"world": 0.1, "town": 0.9})
+        position = (104.0, 200.0)
+        first = controller.update({"world": 0.4, "town": 0.6}, canonical_xy=position)
+        interrupted = controller.update({"world": 0.7, "town": 0.3}, canonical_xy=position)
+        controller.update({"world": 0.3, "town": 0.7}, canonical_xy=position)
+        controller.update({"world": 0.2, "town": 0.8}, canonical_xy=position)
+        switched = controller.update({"world": 0.1, "town": 0.9}, canonical_xy=position)
 
         self.assertEqual(first["state"], "transitioning")
         self.assertEqual(interrupted["state"], "source_locked")
@@ -56,15 +58,32 @@ class MinimapTransitionTests(unittest.TestCase):
     def test_controller_supports_the_reverse_crossing(self):
         model = learn_transition_model(self._observations(), "world", "town")
         controller = TransitionController(model, confirmation_count=2)
-        controller.update({"world": 0.1, "town": 0.9})
-        to_town = controller.update({"world": 0.1, "town": 0.9})
-        controller.update({"world": 0.9, "town": 0.1})
-        to_world = controller.update({"world": 0.9, "town": 0.1})
+        position = (104.0, 200.0)
+        controller.update({"world": 0.1, "town": 0.9}, canonical_xy=position)
+        to_town = controller.update({"world": 0.1, "town": 0.9}, canonical_xy=position)
+        controller.update({"world": 0.9, "town": 0.1}, canonical_xy=position)
+        to_world = controller.update({"world": 0.9, "town": 0.1}, canonical_xy=position)
 
         self.assertTrue(to_town["switched"])
         self.assertEqual(to_town["active_mode_id"], "town")
         self.assertTrue(to_world["switched"])
         self.assertEqual(to_world["active_mode_id"], "world")
+
+    def test_controller_rejects_mode_switch_outside_observed_zone(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        controller = TransitionController(model, confirmation_count=2)
+
+        first = controller.update(
+            {"world": 0.1, "town": 0.9}, canonical_xy=(500.0, 500.0)
+        )
+        second = controller.update(
+            {"world": 0.1, "town": 0.9}, canonical_xy=(500.0, 500.0)
+        )
+
+        self.assertFalse(first["spatially_eligible"])
+        self.assertEqual(second["state"], "outside_transition_zone")
+        self.assertFalse(second["switched"])
+        self.assertEqual(second["active_mode_id"], "world")
 
     def test_transition_bounds_exclude_long_stable_endpoints(self):
         observations = []

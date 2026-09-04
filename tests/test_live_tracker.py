@@ -455,6 +455,7 @@ class TwoRateTrackerTests(unittest.TestCase):
                     "valid": True,
                     "likelihoods": likelihoods,
                     "raw_correlation_scores": likelihoods,
+                    "canonical_xy_read_only": list(canonical_xy),
                     "elapsed_ms": 1.0,
                     "pose_authority": "none",
                 }

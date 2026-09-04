@@ -841,8 +841,14 @@ class TwoRateRealtimeTracker:
         self._representation_future = None
         controller_result = None
         if observation.get("valid") and self.transition_controller is not None:
+            canonical_xy = observation.get("canonical_xy_read_only")
             controller_result = self.transition_controller.update(
-                observation.get("likelihoods") or {}
+                observation.get("likelihoods") or {},
+                canonical_xy=(
+                    tuple(float(value) for value in canonical_xy)
+                    if canonical_xy is not None
+                    else None
+                ),
             )
         self._last_representation_observation = dict(observation)
         self._last_representation_observation["controller"] = controller_result

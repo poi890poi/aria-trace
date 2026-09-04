@@ -149,13 +149,14 @@ def learn_transition_model(
     positions = [row.canonical_xy for row in transition_rows if row.canonical_xy]
     boundary = None
     if positions:
+        position_array = np.asarray(positions, dtype=np.float64)
+        center_xy = np.mean(position_array, axis=0)
         boundary = {
-            "center_xy": np.mean(np.asarray(positions, dtype=np.float64), axis=0).tolist(),
+            "center_xy": center_xy.tolist(),
             "radius_px": float(
                 max(
                     np.linalg.norm(
-                        np.asarray(point, dtype=np.float64)
-                        - np.mean(np.asarray(positions, dtype=np.float64), axis=0)
+                        np.asarray(point, dtype=np.float64) - center_xy
                     )
                     for point in positions
                 )
@@ -191,6 +192,19 @@ def learn_transition_model(
             "last_frame_index": rows[target_run[1]].frame_index,
         },
         "canonical_boundary": boundary,
+        "transition_zones": (
+            [
+                {
+                    "zone_id": "observed-transition-1",
+                    "center_xy": list(boundary["center_xy"]),
+                    "radius_px": float(boundary["radius_px"]),
+                    "sample_count": int(boundary["sample_count"]),
+                    "allowed_mode_ids": [source_mode_id, target_mode_id],
+                }
+            ]
+            if boundary is not None
+            else []
+        ),
         "quality": {
             "confidence": confidence,
             "endpoint_margin": endpoint_margin,
@@ -211,6 +225,18 @@ class TransitionController:
         self.minimum_margin = float(
             (model.get("runtime") or {}).get("minimum_mode_margin", 0.0)
         )
+        zones = tuple(model.get("transition_zones") or ())
+        legacy_boundary = model.get("canonical_boundary")
+        if not zones and legacy_boundary:
+            zones = (legacy_boundary,)
+        self.transition_zones = tuple(
+            {
+                "zone_id": str(zone.get("zone_id") or "legacy-transition-zone"),
+                "center_xy": tuple(float(value) for value in zone["center_xy"]),
+                "radius_px": max(0.0, float(zone.get("radius_px") or 0.0)),
+            }
+            for zone in zones
+        )
         self.active_mode_id = self.source_mode_id
         self._competing_wins = 0
 
@@ -221,7 +247,35 @@ class TransitionController:
         self.active_mode_id = value
         self._competing_wins = 0
 
-    def update(self, likelihoods: Mapping[str, float]) -> dict:
+    def _matching_zone(
+        self,
+        canonical_xy: Optional[Tuple[float, float]],
+        position_uncertainty_px: float,
+    ):
+        if not self.transition_zones:
+            return None, None, True
+        if canonical_xy is None:
+            return None, None, False
+        point = np.asarray(canonical_xy, dtype=np.float64)
+        matches = []
+        for zone in self.transition_zones:
+            distance = float(
+                np.linalg.norm(point - np.asarray(zone["center_xy"], dtype=np.float64))
+            )
+            matches.append((distance, zone))
+        distance, zone = min(matches, key=lambda item: item[0])
+        allowed_radius = float(zone["radius_px"]) + max(
+            0.0, float(position_uncertainty_px)
+        )
+        return zone, distance, distance <= allowed_radius
+
+    def update(
+        self,
+        likelihoods: Mapping[str, float],
+        *,
+        canonical_xy: Optional[Tuple[float, float]] = None,
+        position_uncertainty_px: float = 0.0,
+    ) -> dict:
         competing_mode_id = (
             self.target_mode_id
             if self.active_mode_id == self.source_mode_id
@@ -229,7 +283,10 @@ class TransitionController:
         )
         active = float(likelihoods.get(self.active_mode_id, 0.0))
         competing = float(likelihoods.get(competing_mode_id, 0.0))
-        if competing - active >= self.minimum_margin:
+        zone, zone_distance, spatially_eligible = self._matching_zone(
+            canonical_xy, position_uncertainty_px
+        )
+        if spatially_eligible and competing - active >= self.minimum_margin:
             self._competing_wins += 1
         else:
             self._competing_wins = 0
@@ -240,7 +297,9 @@ class TransitionController:
         return {
             "active_mode_id": self.active_mode_id,
             "state": (
-                "transitioning"
+                "outside_transition_zone"
+                if not spatially_eligible
+                else "transitioning"
                 if self._competing_wins
                 else (
                     "target_locked"
@@ -254,4 +313,7 @@ class TransitionController:
             "target_confirmation_count": self._competing_wins,
             "competing_mode_id": competing_mode_id,
             "mode_margin": competing - active,
+            "spatially_eligible": spatially_eligible,
+            "transition_zone_id": zone["zone_id"] if zone else None,
+            "transition_zone_distance_px": zone_distance,
         }
