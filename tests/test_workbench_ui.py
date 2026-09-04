@@ -105,6 +105,13 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
         self.assertIn("ui.worldLayer.value!==ui.townLayer.value", self.source)
         self.assertIn("an overview is never enlarged", self.source)
 
+    def test_capture_inventory_uses_compact_progressive_disclosure(self):
+        self.assertEqual(self.parser.locations["sourceInventoryPanel"], None)
+        self.assertIn("<details id=\"sourceInventoryPanel\">", self.source)
+        self.assertNotIn("<details id=\"sourceInventoryPanel\" open", self.source)
+        self.assertIn("ui.sourceInventorySummary.textContent='Sources · '", self.source)
+        self.assertIn("rig calibration'+(rigs.length===1?'':'s')+' ready", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
