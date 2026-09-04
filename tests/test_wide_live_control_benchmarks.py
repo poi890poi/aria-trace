@@ -13,6 +13,24 @@ class WideLiveControlBenchmarkTests(unittest.TestCase):
         output = _apply(rows, "ema_085", 0.0)
         self.assertLess(abs(output[-1]["output_angle_deg"] - 0.7), 0.01)
 
+    def test_pose_physical_gate_rejects_jump_and_holds(self):
+        rows = [
+            {"session_time_ns": 0, "angle_deg": 10.0, "confidence": 1.0},
+            {
+                "session_time_ns": 10_000_000,
+                "angle_deg": 100.0,
+                "confidence": 1.0,
+            },
+        ]
+
+        output = _apply(
+            rows, "physical_gate", 0.0, turn_rate_limit_deg_s=180.0
+        )
+
+        self.assertEqual(output[-1]["output_provenance"], "held")
+        self.assertEqual(output[-1]["output_angle_deg"], 10.0)
+        self.assertTrue(output[-1]["final_physical_gate_rejected"])
+
     def test_localization_confidence_hold_is_not_fresh(self):
         rows = [
             {

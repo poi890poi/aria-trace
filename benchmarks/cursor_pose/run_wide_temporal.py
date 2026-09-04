@@ -32,7 +32,14 @@ CANDIDATES = (
     "polygon_von_mises_moment",
     "analytic_lm_ambiguous",
 )
-POLICIES = ("raw", "confidence_hold", "schmitt", "ema_085", "alpha_beta_085_005")
+POLICIES = (
+    "raw",
+    "physical_gate",
+    "confidence_hold",
+    "schmitt",
+    "ema_085",
+    "alpha_beta_085_005",
+)
 
 
 def _sha(path):
@@ -55,7 +62,7 @@ def _dist(values):
     return {"count": int(len(values)), "mean": float(np.mean(values)), "median": float(np.median(values)), "p95": float(np.percentile(values, 95)), "worst": float(np.max(values))}
 
 
-def _apply(rows, policy, threshold):
+def _apply(rows, policy, threshold, turn_rate_limit_deg_s=None):
     output, state, velocity, previous_ns, locked = [], None, 0.0, None, False
     for source in rows:
         row = dict(source)
@@ -66,10 +73,26 @@ def _apply(rows, policy, threshold):
         elif policy == "schmitt":
             accepted = accepted and float(row["confidence"]) >= (max(0.0, threshold - 0.08) if locked else threshold)
             locked = bool(accepted)
+        physical_rate = None
+        if (
+            accepted
+            and policy == "physical_gate"
+            and state is not None
+            and previous_ns is not None
+        ):
+            dt = (int(row["session_time_ns"]) - previous_ns) / 1e9
+            if 0.005 <= dt <= 2.0:
+                physical_rate = abs(_delta(float(measured), state)) / dt
+                accepted = physical_rate <= float(turn_rate_limit_deg_s)
         if accepted:
             measured = float(measured)
             dt = max(1.0 / 30.0, (int(row["session_time_ns"]) - previous_ns) / 1e9) if previous_ns is not None else 1.0 / 30.0
-            if state is None or policy in ("raw", "confidence_hold", "schmitt"):
+            if state is None or policy in (
+                "raw",
+                "physical_gate",
+                "confidence_hold",
+                "schmitt",
+            ):
                 state = measured
             elif policy == "ema_085":
                 state = (state + 0.85 * _delta(measured, state)) % 360.0
@@ -82,7 +105,16 @@ def _apply(rows, policy, threshold):
             provenance = "fresh_filtered" if policy.startswith(("ema", "alpha")) else "fresh"
         else:
             provenance = "held" if state is not None else "unavailable"
-        row.update(output_angle_deg=state, output_provenance=provenance, measurement_accepted_by_policy=bool(accepted))
+        row.update(
+            output_angle_deg=state,
+            output_provenance=provenance,
+            measurement_accepted_by_policy=bool(accepted),
+            physical_rate_deg_s=physical_rate,
+            physical_rate_limit_deg_s=turn_rate_limit_deg_s,
+            final_physical_gate_rejected=bool(
+                policy == "physical_gate" and measured is not None and not accepted
+            ),
+        )
         output.append(row)
     return output
 
@@ -123,6 +155,13 @@ def _read_jsonl(path):
 def run(args):
     output = args.output.resolve(); output.mkdir(parents=True, exist_ok=True)
     prior = json.loads(args.prior_results.read_text(encoding="utf-8"))
+    calibration = json.loads(args.calibration.read_text(encoding="utf-8"))
+    envelope = (
+        calibration.get("cursor_temporal_dynamics") or {}
+    ).get("recommended_runtime_envelope") or {}
+    turn_rate_limit = float(
+        envelope.get("calibrated_turn_rate_p99_deg_s") or 1440.0
+    )
     thresholds = prior["confidence_thresholds"]
     wide_raw = {}
     for session_id in ("run_17", "run_18"):
@@ -158,10 +197,10 @@ def run(args):
         for policy in POLICIES:
             forward_filtered = []
             for session in sorted(set(row["session"] for row in raw_forward)):
-                forward_filtered.extend(_apply([row for row in raw_forward if row["session"] == session], policy, float(thresholds[name])))
+                forward_filtered.extend(_apply([row for row in raw_forward if row["session"] == session], policy, float(thresholds[name]), turn_rate_limit))
             entry = {"candidate": name, "temporal_policy": policy, "forward_absolute": _summary(forward_filtered, reference_key="reference_angle_deg"), "wide_sessions": {}}
             for session_id in ("run_17", "run_18"):
-                filtered = _apply(wide_raw[session_id][name], policy, float(thresholds[name]))
+                filtered = _apply(wide_raw[session_id][name], policy, float(thresholds[name]), turn_rate_limit)
                 input_rows = _read_jsonl(args.turn_root / session_id.replace("_", "") / "input_turn_signal.jsonl")
                 scene_rows = _read_jsonl(args.turn_root / session_id.replace("_", "") / "scene_klt_turn_signal.jsonl")
                 signal = [row for row in _turn_signal(filtered) if row["valid"]]
@@ -171,7 +210,7 @@ def run(args):
                     "scene_turn_response": evaluate_reversal_response(scene_rows, signal, alignment_sample_hz=30.0),
                 }
             results.append(entry)
-    result = {"schema_version": "1.0", "generated_utc": datetime.now(timezone.utc).isoformat(), "contract": {"target": "30 fresh pose fixes/s; estimator <=33.3ms", "forward_absolute_reference": "forward-only whole-session E2E direction", "wide_accuracy_reference": "leave-one-out cross-method agreement only; not truth", "input_and_klt": "evaluation-only temporal response evidence"}, "results": results, "traceability": {"benchmark_sha256": _sha(__file__), "prior_results_sha256": _sha(args.prior_results), "prior_primary_sha256": _sha(args.prior_primary)}}
+    result = {"schema_version": "1.0", "generated_utc": datetime.now(timezone.utc).isoformat(), "contract": {"target": "30 fresh pose fixes/s; estimator <=33.3ms", "forward_absolute_reference": "forward-only whole-session E2E direction", "wide_accuracy_reference": "leave-one-out cross-method agreement only; not truth", "input_and_klt": "evaluation-only temporal response evidence", "physical_gate": "calibration-derived p99 turning envelope; rejected frames hold and are not fresh", "turn_rate_limit_deg_s": turn_rate_limit}, "results": results, "traceability": {"benchmark_sha256": _sha(__file__), "prior_results_sha256": _sha(args.prior_results), "prior_primary_sha256": _sha(args.prior_primary)}}
     (output / "results.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
