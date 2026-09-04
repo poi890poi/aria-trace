@@ -262,6 +262,38 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
             _correlation_feature(mosaic, "intensity"),
         )
 
+    def test_phase_local_match_reports_new_atlas_center(self):
+        random = np.random.RandomState(8)
+        atlas_feature = random.rand(100, 100).astype(np.float32)
+        localizer = SimpleNamespace(
+            map_gradient=atlas_feature,
+            coverage=np.full((100, 100), 255, np.uint8),
+            original_to_localization=np.eye(3),
+            _localization_xy=lambda value: tuple(value),
+            _original_xy=lambda value: tuple(value),
+        )
+        package = _Package()
+        atlas = Mock(localizers={"world": localizer})
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "local_primary_gated",
+            local_matcher="phase_correlation",
+        )
+
+        result = tracer._observe_one_mode(
+            localizer,
+            atlas_feature[30:70, 33:73],
+            np.full((40, 40), 255, np.uint8),
+            (50.0, 50.0),
+            12.0,
+        )
+
+        self.assertTrue(result["valid"])
+        self.assertAlmostEqual(result["best_offset_canonical_xy"][0], 3.0, delta=0.2)
+        self.assertAlmostEqual(result["best_offset_canonical_xy"][1], 0.0, delta=0.2)
+        self.assertGreater(result["score"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

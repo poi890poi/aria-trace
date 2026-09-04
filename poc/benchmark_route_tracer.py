@@ -34,6 +34,7 @@ VARIANTS = (
     "local_primary_gated",
 )
 CORRELATION_FEATURES = ("gradient", "intensity", "canny", "laplacian")
+LOCAL_MATCHERS = ("ccorr_normed", "phase_correlation")
 MODE_POLICIES = ("all", "sticky")
 INITIALIZATION_POLICIES = ("route", "global")
 CONTINUITY_CLOCKS = ("frame", "accepted")
@@ -126,6 +127,7 @@ class CausalRouteTracer:
         continuity_clock: str = "frame",
         continuity_speed_multiplier: float = 4.0,
         recovery_policy: str = "route",
+        local_matcher: str = "ccorr_normed",
     ) -> None:
         if variant not in VARIANTS:
             raise ValueError("Unknown route tracer variant: {}".format(variant))
@@ -142,6 +144,9 @@ class CausalRouteTracer:
         if mode_policy not in MODE_POLICIES:
             raise ValueError("Unknown mode policy: {}".format(mode_policy))
         self.correlation_feature = correlation_feature
+        if local_matcher not in LOCAL_MATCHERS:
+            raise ValueError("Unknown local matcher: {}".format(local_matcher))
+        self.local_matcher = local_matcher
         self.mode_policy = mode_policy
         if continuity_clock not in CONTINUITY_CLOCKS:
             raise ValueError(
@@ -189,7 +194,7 @@ class CausalRouteTracer:
             selected_modes = mode_ids or self.atlas.localizers.keys()
             for mode_id in selected_modes:
                 localizer = self.atlas.localizers[mode_id]
-                match = self.atlas._observe_one_mode(
+                match = self._observe_one_mode(
                     localizer, feature, mask, center, radius_px
                 )
                 if not match.get("valid"):
@@ -226,6 +231,90 @@ class CausalRouteTracer:
             best["route_state_index"],
             best["mode_id"],
         )
+
+    def _observe_one_mode(self, localizer, feature, mask, center, radius_px):
+        if self.local_matcher == "ccorr_normed":
+            return self.atlas._observe_one_mode(
+                localizer, feature, mask, center, radius_px
+            )
+        height, width = feature.shape[:2]
+        center_x, center_y = localizer._localization_xy(center)
+        left = int(round(center_x - width / 2.0))
+        top = int(round(center_y - height / 2.0))
+        right = left + width
+        bottom = top + height
+        if (
+            left < 0
+            or top < 0
+            or right > localizer.map_gradient.shape[1]
+            or bottom > localizer.map_gradient.shape[0]
+        ):
+            return {
+                "valid": False,
+                "score": 0.0,
+                "coverage_fraction": 0.0,
+                "reason": "insufficient-local-map-area",
+            }
+        map_patch = localizer.map_gradient[top:bottom, left:right]
+        weight = mask.astype(np.float32) / 255.0
+        window = cv2.createHanningWindow((width, height), cv2.CV_32F) * weight
+        shift, response = cv2.phaseCorrelate(
+            map_patch.astype(np.float32) * weight,
+            feature.astype(np.float32) * weight,
+            window,
+        )
+        # phaseCorrelate(map patch, new observation) reports map content moving
+        # opposite to the player-centered observation.  Negating it gives the
+        # new map center relative to the prior center.
+        match_center_local = (center_x - shift[0], center_y - shift[1])
+        match_center_canonical = localizer._original_xy(match_center_local)
+        offset = (
+            float(match_center_canonical[0] - center[0]),
+            float(match_center_canonical[1] - center[1]),
+        )
+        scale_x = math.hypot(
+            localizer.original_to_localization[0, 0],
+            localizer.original_to_localization[1, 0],
+        )
+        scale_y = math.hypot(
+            localizer.original_to_localization[0, 1],
+            localizer.original_to_localization[1, 1],
+        )
+        local_radius = max(4.0, float(radius_px) * (scale_x + scale_y) / 2.0)
+        match_left = int(round(match_center_local[0] - width / 2.0))
+        match_top = int(round(match_center_local[1] - height / 2.0))
+        if (
+            match_left < 0
+            or match_top < 0
+            or match_left + width > localizer.coverage.shape[1]
+            or match_top + height > localizer.coverage.shape[0]
+        ):
+            coverage_fraction = 0.0
+        else:
+            coverage_patch = localizer.coverage[
+                match_top : match_top + height,
+                match_left : match_left + width,
+            ]
+            selected = mask > 0
+            coverage_fraction = float(
+                np.mean(coverage_patch[selected] > 0)
+                if np.any(selected)
+                else 0.0
+            )
+        shift_distance = math.hypot(float(shift[0]), float(shift[1]))
+        valid = bool(
+            math.isfinite(response)
+            and response >= 0.0
+            and shift_distance <= local_radius
+            and coverage_fraction >= 0.75
+        )
+        return {
+            "valid": valid,
+            "score": max(0.0, float(response)) if valid else 0.0,
+            "coverage_fraction": coverage_fraction,
+            "best_offset_canonical_xy": list(offset),
+            "reason": None if valid else "phase-correlation-outside-local-support",
+        }
 
     def _route_refine(self, observation, feature, mask, top_k: int):
         descriptor = describe_minimap(observation, mask)
@@ -507,6 +596,7 @@ def benchmark_session(
     continuity_speed_multiplier: float = 4.0,
     recovery_policy: str = "route",
     initialization: str = "route",
+    local_matcher: str = "ccorr_normed",
     reference_package_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
 ) -> dict:
@@ -531,6 +621,7 @@ def benchmark_session(
         continuity_clock=continuity_clock,
         continuity_speed_multiplier=continuity_speed_multiplier,
         recovery_policy=recovery_policy,
+        local_matcher=local_matcher,
     )
     if initialization not in INITIALIZATION_POLICIES:
         raise ValueError("Unknown initialization policy: {}".format(initialization))
@@ -679,6 +770,7 @@ def benchmark_session(
             "mode_policy": tracer.mode_policy,
             "continuity_clock": tracer.continuity_clock,
             "initialization": initialization,
+            "local_matcher": tracer.local_matcher,
         },
         "initialization": initialization_result,
         "algorithm_latency_ms": _percentiles(algorithm_times),
@@ -740,7 +832,7 @@ def benchmark_session(
             "target_algorithm_fps": 30.0,
             "target_frame_budget_ms": 1000.0 / 30.0,
             "meets_mean_30fps_budget": bool(
-                algorithm_times and float(np.mean(algorithm_times)) <= 1000.0 / 30.0
+                core_times and float(np.mean(core_times)) <= 1000.0 / 30.0
             ),
             "meets_p95_30fps_budget": bool(
                 core_times
@@ -754,6 +846,8 @@ def benchmark_session(
                 Path(__file__).read_bytes()
             ).hexdigest(),
             "variant": variant,
+            "local_matcher": tracer.local_matcher,
+            "correlation_feature": tracer.correlation_feature,
         },
         "rows_file": "telemetry.jsonl" if output_path else None,
     }
@@ -793,6 +887,9 @@ def _parse_args():
     parser.add_argument(
         "--recovery-policy", choices=RECOVERY_POLICIES, default="route"
     )
+    parser.add_argument(
+        "--local-matcher", choices=LOCAL_MATCHERS, default="ccorr_normed"
+    )
     parser.add_argument("--reference-package", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
@@ -817,6 +914,7 @@ def main():
         continuity_clock=args.continuity_clock,
         continuity_speed_multiplier=args.continuity_speed_multiplier,
         recovery_policy=args.recovery_policy,
+        local_matcher=args.local_matcher,
         reference_package_path=args.reference_package,
         output_path=args.output,
     )
