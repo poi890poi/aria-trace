@@ -28,6 +28,18 @@ from rig_runtime.domain.spatial import (
     transform_circle_similarity,
     transform_point,
 )
+from rig_runtime.domain.configuration import (
+    ADAPTER_DEFAULTS,
+    ADAPTER_MODES,
+    COLOR_ORDERS,
+    COLOR_POLICIES,
+    FRAME_RATE_POLICIES,
+    MASK_POLICIES,
+    NORMALIZATION_MODES,
+    ORIENTATION_BEHAVIORS,
+    QUARTER_TURN_DEGREES,
+    ROI_POLICIES,
+)
 
 
 DEFAULT_GAME_MODEL = {
@@ -1471,6 +1483,55 @@ def publish_minimap_profiles(
     return result
 
 
+def _add_adapter_request_arguments(value: argparse.ArgumentParser) -> None:
+    """Expose every adapter request field from its canonical domain policy."""
+
+    value.add_argument(
+        "--mode", choices=ADAPTER_MODES, default=ADAPTER_DEFAULTS.mode
+    )
+    value.add_argument(
+        "--normalization",
+        choices=NORMALIZATION_MODES,
+        default=ADAPTER_DEFAULTS.normalization,
+    )
+    value.add_argument(
+        "--color-order", choices=COLOR_ORDERS, default=ADAPTER_DEFAULTS.color_order
+    )
+    value.add_argument(
+        "--color-policy",
+        choices=COLOR_POLICIES,
+        default=ADAPTER_DEFAULTS.color_policy,
+    )
+    value.add_argument(
+        "--roi-policy", choices=ROI_POLICIES, default=ADAPTER_DEFAULTS.roi_policy
+    )
+    value.add_argument(
+        "--mask-policy", choices=MASK_POLICIES, default=ADAPTER_DEFAULTS.mask_policy
+    )
+    value.add_argument(
+        "--minimap-margin-px",
+        type=int,
+        default=ADAPTER_DEFAULTS.minimap_margin_px,
+    )
+    value.add_argument(
+        "--orientation-behavior",
+        choices=ORIENTATION_BEHAVIORS,
+        default=ADAPTER_DEFAULTS.orientation_behavior,
+    )
+    value.add_argument(
+        "--rotate",
+        type=int,
+        choices=QUARTER_TURN_DEGREES,
+        default=ADAPTER_DEFAULTS.rotate_degrees_clockwise,
+    )
+    value.add_argument(
+        "--frame-rate-policy",
+        choices=FRAME_RATE_POLICIES,
+        default=ADAPTER_DEFAULTS.frame_rate_policy,
+    )
+    value.add_argument("--frame-rate", type=float, default=ADAPTER_DEFAULTS.frame_rate)
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="Manage production calibration profiles")
     value.add_argument("--profile-root", type=Path)
@@ -1521,17 +1582,7 @@ def parser() -> argparse.ArgumentParser:
     resolve.add_argument("--game-id")
     resolve.add_argument("--camera-id")
     resolve.add_argument("--phone-id")
-    resolve.add_argument("--mode", choices=("full", "minimap", "dual"), default="full")
-    resolve.add_argument("--normalization", default="auto")
-    resolve.add_argument("--color-order", default="RGB")
-    resolve.add_argument(
-        "--color-policy",
-        choices=("auto", "rig_locked", "game_matched", "unadjusted"),
-        default="auto",
-    )
-    resolve.add_argument(
-        "--mask-policy", choices=("none", "minimap_circle"), default="none"
-    )
+    _add_adapter_request_arguments(resolve)
     export = subcommands.add_parser(
         "export-adapter",
         help="write one registry-resolved adapter with embedded calibration data",
@@ -1540,17 +1591,7 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--game-id")
     export.add_argument("--camera-id")
     export.add_argument("--phone-id")
-    export.add_argument("--mode", choices=("full", "minimap", "dual"), default="full")
-    export.add_argument("--normalization", default="auto")
-    export.add_argument("--color-order", default="RGB")
-    export.add_argument(
-        "--color-policy",
-        choices=("auto", "rig_locked", "game_matched", "unadjusted"),
-        default="auto",
-    )
-    export.add_argument(
-        "--mask-policy", choices=("none", "minimap_circle"), default="none"
-    )
+    _add_adapter_request_arguments(export)
     portable_export = subcommands.add_parser(
         "export-portable",
         help="export one camera-independent phone-game revision",
@@ -1812,7 +1853,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         normalization=arguments.normalization,
         color_order=arguments.color_order,
         color_policy=arguments.color_policy,
+        roi_policy=arguments.roi_policy,
         mask_policy=arguments.mask_policy,
+        minimap_margin_px=arguments.minimap_margin_px,
+        orientation_behavior=arguments.orientation_behavior,
+        rotate=arguments.rotate,
+        frame_rate_policy=arguments.frame_rate_policy,
+        frame_rate=arguments.frame_rate,
     )
     if arguments.command == "export-adapter":
         from rig_runtime.workflows.adapter_export import export_resolved_adapter

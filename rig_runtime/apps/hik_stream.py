@@ -20,6 +20,15 @@ from rig_runtime.apps.rig_presentation import console_print as print
 from rig_runtime.adapters.hik.compat import Camera, HikCamera
 from rig_runtime.adapters.hik.capture import NativeHikFrameSource
 from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter, RectifiedHikCamera
+from rig_runtime.domain.configuration import (
+    ADAPTER_DEFAULTS,
+    ADAPTER_MODES,
+    COLOR_ORDERS,
+    COLOR_POLICIES,
+    MASK_POLICIES,
+    ORIENTATION_BEHAVIORS,
+    QUARTER_TURN_DEGREES,
+)
 from rig_runtime.adapters.hik.game_camera import (
     MinimapRoiUnavailableError,
     ProfiledHikGameCamera,
@@ -478,6 +487,9 @@ class PhoneDisplayPowerSession:
         self.close()
 
 
+DEMO_COLOR_ORDER = "BGR"
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
@@ -506,8 +518,8 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument(
         "--mode",
-        choices=("minimap", "full", "dual"),
-        default="full",
+        choices=ADAPTER_MODES,
+        default=ADAPTER_DEFAULTS.mode,
         help=(
             "adapter stream mode; native MVS verification supports full only"
         ),
@@ -529,17 +541,23 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--camera-id")
     value.add_argument("--phone-serial")
-    value.add_argument("--color-order", choices=("RGB", "BGR"), default="BGR")
+    value.add_argument(
+        "--color-order", choices=COLOR_ORDERS, default=DEMO_COLOR_ORDER
+    )
     value.add_argument(
         "--color-policy",
-        choices=("auto", "rig_locked", "game_matched", "unadjusted"),
-        default="auto",
+        choices=COLOR_POLICIES,
+        default=ADAPTER_DEFAULTS.color_policy,
     )
-    value.add_argument("--minimap-margin-px", type=int, default=6)
+    value.add_argument(
+        "--minimap-margin-px",
+        type=int,
+        default=ADAPTER_DEFAULTS.minimap_margin_px,
+    )
     value.add_argument(
         "--orientation-behavior",
-        choices=("as_is", "projection", "image"),
-        default="projection",
+        choices=ORIENTATION_BEHAVIORS,
+        default=ADAPTER_DEFAULTS.orientation_behavior,
         help=(
             "Adapter initialization policy: preserve rig output, use the "
             "profile-built game projection, or match one full ADB/HIK pair"
@@ -548,14 +566,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--rotate",
         type=int,
-        choices=(0, 90, 180, 270),
-        default=0,
+        choices=QUARTER_TURN_DEGREES,
+        default=ADAPTER_DEFAULTS.rotate_degrees_clockwise,
         help="Additional clockwise output rotation applied by the adapter",
     )
     value.add_argument(
         "--mask-policy",
-        choices=("none", "minimap_circle"),
-        default="none",
+        choices=MASK_POLICIES,
+        default=ADAPTER_DEFAULTS.mask_policy,
         help=(
             "Adapter only: precompose the calibrated mini-map circle into the "
             "rectification map (requires rectification and minimap/dual mode)"
@@ -591,19 +609,19 @@ def parser() -> argparse.ArgumentParser:
 def open_camera(
     diagnostic_calibration_override: Optional[Path] = None,
     mvs_python_path: Optional[str] = None,
-    rectify: bool = True,
+    rectify: bool = ADAPTER_DEFAULTS.rectify,
     diagnostic_rig_game_profile_override: Optional[Path] = None,
-    mode: str = "full",
+    mode: str = ADAPTER_DEFAULTS.mode,
     profile_root: Optional[Path] = None,
     game_id: Optional[str] = None,
     camera_id: Optional[str] = None,
     phone_serial: Optional[str] = None,
-    color_order: str = "BGR",
-    color_policy: str = "auto",
-    minimap_margin_px: int = 6,
-    mask_policy: str = "none",
-    orientation_behavior: str = "projection",
-    rotate: int = 0,
+    color_order: str = DEMO_COLOR_ORDER,
+    color_policy: str = ADAPTER_DEFAULTS.color_policy,
+    minimap_margin_px: int = ADAPTER_DEFAULTS.minimap_margin_px,
+    mask_policy: str = ADAPTER_DEFAULTS.mask_policy,
+    orientation_behavior: str = ADAPTER_DEFAULTS.orientation_behavior,
+    rotate: int = ADAPTER_DEFAULTS.rotate_degrees_clockwise,
     adb: str = "adb",
 ):
     """Public UVC-like constructor for application code (read/release/isOpened)."""

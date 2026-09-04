@@ -11,6 +11,8 @@ from typing import Dict, Mapping, Optional, Sequence, Union
 import cv2
 import numpy as np
 
+from rig_runtime.domain.configuration import ADAPTER_DEFAULTS, MASK_POLICIES
+
 from rig_runtime.adapters.rig.devices import CameraConfiguration
 from rig_runtime.domain.spatial import require_spatial_geometry
 from rig_runtime.services.calibration.rig.contracts import FrameSample
@@ -210,15 +212,15 @@ class ProfiledHikGameCamera:
         minimap_calibration: PathLike,
         *,
         mode: str = "minimap",
-        rectify_minimap: bool = True,
+        rectify_minimap: bool = ADAPTER_DEFAULTS.rectify,
         adapter: Optional[HikMvsCameraAdapter] = None,
-        minimap_margin_px: int = 6,
+        minimap_margin_px: int = ADAPTER_DEFAULTS.minimap_margin_px,
         apply_game_color: bool = True,
         bayer_conversion: Optional[Mapping[str, object]] = None,
         output_quarter_turns_clockwise: int = 0,
         runtime_surface_quarter_turns_clockwise_from_natural: Optional[int] = None,
-        best_effort_initialization: bool = False,
-        mask_policy: str = "none",
+        best_effort_initialization: bool = ADAPTER_DEFAULTS.best_effort_initialization,
+        mask_policy: str = ADAPTER_DEFAULTS.mask_policy,
     ) -> None:
         if mode not in self.MODES:
             raise ValueError("HIK game stream mode must be minimap, full, or dual")
@@ -250,7 +252,7 @@ class ProfiledHikGameCamera:
         )
         self.best_effort_initialization = bool(best_effort_initialization)
         self.mask_policy = str(mask_policy)
-        if self.mask_policy not in ("none", "minimap_circle"):
+        if self.mask_policy not in MASK_POLICIES:
             raise ValueError("Mask policy must be none or minimap_circle")
         if self.mask_policy != "none" and self.mode not in ("minimap", "dual"):
             raise ValueError("Mini-map masking requires minimap or dual mode")

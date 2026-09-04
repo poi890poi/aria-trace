@@ -22,6 +22,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
 from .commented_yaml import write_commented_yaml
+from rig_runtime.domain.configuration import (
+    ADAPTER_DEFAULTS,
+    ADAPTER_MODES,
+    COLOR_ORDERS,
+    COLOR_POLICIES,
+    FRAME_RATE_POLICIES,
+    MASK_POLICIES,
+    NORMALIZATION_MODES,
+    ORIENTATION_BEHAVIORS,
+    QUARTER_TURN_DEGREES,
+    ROI_POLICIES,
+    ResolvedAdapterPlan,
+)
 
 
 SCHEMA_VERSION = "2.3"
@@ -35,13 +48,6 @@ PROFILE_KINDS = (
     "rig_game_orientation",
 )
 REVISION_STATES = ("review_required", "accepted")
-ADAPTER_MODES = ("full", "minimap", "dual")
-NORMALIZATION_MODES = ("auto", "dense_remap", "homography", "none")
-COLOR_ORDERS = ("RGB", "BGR")
-COLOR_POLICIES = ("auto", "rig_locked", "game_matched", "unadjusted")
-ROI_POLICIES = ("auto", "full_phone", "minimap_only")
-MASK_POLICIES = ("none", "minimap_circle")
-
 PROFILE_HEADER = """# IRIS production profile revision.
 #
 # Revisions are immutable. The SQLite registry is the activation authority;
@@ -238,18 +244,18 @@ class ProfileContext:
 class AdapterRequest:
     """Requested runtime product; options do not create profile identities."""
 
-    purpose: str = "application"
-    mode: str = "full"
-    normalization: str = "auto"
-    color_order: str = "RGB"
-    color_policy: str = "auto"
-    roi_policy: str = "auto"
-    mask_policy: str = "none"
-    minimap_margin_px: int = 6
-    orientation_behavior: str = "projection"
-    rotate: int = 0
-    frame_rate_policy: str = "calibrated"
-    frame_rate: Optional[float] = None
+    purpose: str = ADAPTER_DEFAULTS.purpose
+    mode: str = ADAPTER_DEFAULTS.mode
+    normalization: str = ADAPTER_DEFAULTS.normalization
+    color_order: str = ADAPTER_DEFAULTS.color_order
+    color_policy: str = ADAPTER_DEFAULTS.color_policy
+    roi_policy: str = ADAPTER_DEFAULTS.roi_policy
+    mask_policy: str = ADAPTER_DEFAULTS.mask_policy
+    minimap_margin_px: int = ADAPTER_DEFAULTS.minimap_margin_px
+    orientation_behavior: str = ADAPTER_DEFAULTS.orientation_behavior
+    rotate: int = ADAPTER_DEFAULTS.rotate_degrees_clockwise
+    frame_rate_policy: str = ADAPTER_DEFAULTS.frame_rate_policy
+    frame_rate: Optional[float] = ADAPTER_DEFAULTS.frame_rate
 
     def __post_init__(self) -> None:
         if self.mode not in ADAPTER_MODES:
@@ -272,13 +278,13 @@ class AdapterRequest:
             raise ValueError("Mini-map masking requires rectification")
         if int(self.minimap_margin_px) < 0:
             raise ValueError("Mini-map margin cannot be negative")
-        if self.orientation_behavior not in ("as_is", "projection", "image"):
+        if self.orientation_behavior not in ORIENTATION_BEHAVIORS:
             raise ValueError(
                 "Orientation behavior must be as_is, projection, or image"
             )
-        if int(self.rotate) not in (0, 90, 180, 270):
+        if int(self.rotate) not in QUARTER_TURN_DEGREES:
             raise ValueError("Adapter rotation must be 0, 90, 180, or 270")
-        if self.frame_rate_policy not in ("calibrated", "exact"):
+        if self.frame_rate_policy not in FRAME_RATE_POLICIES:
             raise ValueError("Frame-rate policy must be calibrated or exact")
         if self.frame_rate_policy == "exact" and self.frame_rate is None:
             raise ValueError("Exact frame-rate policy requires frame_rate")
@@ -1462,6 +1468,35 @@ class ProfileRegistry:
         initialization_surface_turns = initialization_recovery.get(
             "selected_surface_quarter_turns_clockwise_from_phone_natural"
         )
+        profile_game_upright_turns = (
+            int(
+                orientation_payload.get(
+                    "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
+                    0,
+                )
+            )
+            % 4
+            if rig_game_orientation
+            else 0
+        )
+        adapter_plan = ResolvedAdapterPlan.create(
+            mode=request.mode,
+            normalization=normalization,
+            color_order=request.color_order,
+            color_policy=effective_color_policy,
+            roi_policy=request.roi_policy,
+            mask_policy=request.mask_policy,
+            minimap_margin_px=request.minimap_margin_px,
+            orientation_behavior=request.orientation_behavior,
+            profile_game_upright_quarter_turns_clockwise=(
+                profile_game_upright_turns
+            ),
+            manual_rotate_degrees_clockwise=request.rotate,
+            initialization_surface_quarter_turns_clockwise_from_natural=(
+                initialization_surface_turns
+            ),
+            game_model=game_model_plan,
+        )
         result = {
             "schema_version": SCHEMA_VERSION,
             "resolved_utc": datetime.now(timezone.utc).isoformat(),
@@ -1501,32 +1536,7 @@ class ProfileRegistry:
                     if game_model else None
                 ),
             },
-            "adapter_plan": {
-                "mode": request.mode,
-                "normalization": normalization,
-                "rectify": normalization != "none",
-                "color_order": request.color_order,
-                "color_policy": effective_color_policy,
-                "roi_policy": request.roi_policy,
-                "mask_policy": request.mask_policy,
-                "minimap_margin_px": int(request.minimap_margin_px),
-                "orientation_behavior": request.orientation_behavior,
-                "manual_rotate_degrees_clockwise": int(request.rotate),
-                "game_upright_quarter_turns_clockwise": int(
-                    (orientation_payload.get(
-                        "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
-                        0,
-                    ))
-                ) % 4 if rig_game_orientation else 0,
-                "initialization_surface_quarter_turns_clockwise_from_natural": (
-                    int(initialization_surface_turns) % 4
-                    if initialization_surface_turns is not None
-                    else None
-                ),
-                "game_model": game_model_plan,
-                "registry_reads_per_frame": 0,
-                "phone_operations": "none",
-            },
+            "adapter_plan": adapter_plan.as_dict(),
         }
         selected_profiles = {
             "rig": rig,

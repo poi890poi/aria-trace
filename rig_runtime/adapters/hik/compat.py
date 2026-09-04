@@ -34,10 +34,62 @@ from .driver import (
     RectifiedHikCamera,
     rotate_quarter_turns_clockwise,
 )
+from rig_runtime.adapters.filesystem.profile_registry import AdapterRequest
+from rig_runtime.domain.configuration import (
+    ADAPTER_DEFAULTS,
+    ORIENTATION_BEHAVIORS,
+    QUARTER_TURN_DEGREES,
+    ResolvedAdapterPlan,
+)
 from rig_runtime.services.calibration.rig.hik.spaces import RigCalibratedSpaceConverter
 
 
 CalibrationPath = Union[str, Path]
+
+
+def _adapter_request_from_config(config: Mapping[str, Any]) -> AdapterRequest:
+    """Resolve caller overrides once against the canonical adapter defaults."""
+
+    normalization = config.get("normalization")
+    if normalization is None:
+        normalization = (
+            ADAPTER_DEFAULTS.normalization
+            if bool(config.get("rectify", ADAPTER_DEFAULTS.rectify))
+            else "none"
+        )
+    if normalization not in ("auto", "none"):
+        raise ValueError(
+            "HikCamera supports normalization='auto' or 'none'; explicit "
+            "dense_remap/homography selection is not implemented"
+        )
+    return AdapterRequest(
+        purpose=str(config.get("purpose", ADAPTER_DEFAULTS.purpose)),
+        mode=str(config.get("mode", ADAPTER_DEFAULTS.mode)),
+        normalization=str(normalization),
+        color_order=str(config.get("color_order", ADAPTER_DEFAULTS.color_order)),
+        color_policy=str(config.get("color_policy", ADAPTER_DEFAULTS.color_policy)),
+        roi_policy=str(config.get("roi_policy", ADAPTER_DEFAULTS.roi_policy)),
+        mask_policy=str(config.get("mask_policy", ADAPTER_DEFAULTS.mask_policy)),
+        minimap_margin_px=int(
+            config.get("minimap_margin_px", ADAPTER_DEFAULTS.minimap_margin_px)
+        ),
+        orientation_behavior=str(
+            config.get(
+                "orientation_behavior", ADAPTER_DEFAULTS.orientation_behavior
+            )
+        ),
+        rotate=int(
+            config.get("rotate", ADAPTER_DEFAULTS.rotate_degrees_clockwise)
+        ),
+        frame_rate_policy=str(
+            config.get("frame_rate_policy", ADAPTER_DEFAULTS.frame_rate_policy)
+        ),
+        frame_rate=(
+            float(config["frame_rate"])
+            if config.get("frame_rate") is not None
+            else ADAPTER_DEFAULTS.frame_rate
+        ),
+    )
 
 
 def _diagnostic_calibration_override(config: Mapping[str, Any]) -> Optional[Path]:
@@ -82,7 +134,6 @@ def _registry_configuration(
     ip: Optional[str], config: Mapping[str, Any]
 ) -> tuple[Path, Dict[str, Any], Dict[str, Any]]:
     from rig_runtime.adapters.filesystem.profile_registry import (
-        AdapterRequest,
         ProfileContext,
         ProfileRegistry,
     )
@@ -106,17 +157,9 @@ def _registry_configuration(
         or os.environ.get("IRIS_GAME_ID")
         or settings["game"].get("game_id")
     )
-    normalization = configured.get("normalization")
-    if normalization is None:
-        normalization = "auto" if bool(configured.get("rectify", True)) else "none"
-    if normalization not in ("auto", "none"):
-        raise ValueError(
-            "HikCamera supports normalization='auto' or 'none'; explicit "
-            "dense_remap/homography selection is not implemented"
-        )
     context = ProfileContext(
         game_id=str(game_id) if game_id else None,
-        platform=str(configured.get("platform", "android")),
+        platform=str(configured.get("platform", ADAPTER_DEFAULTS.platform)),
         package=configured.get("package"),
         game_version=configured.get("game_version"),
         camera_adapter="hik_mvs",
@@ -126,26 +169,7 @@ def _registry_configuration(
         panel_display=configured.get("panel_display") or {},
         game_display=configured.get("game_display") or {},
     )
-    request = AdapterRequest(
-        purpose=str(configured.get("purpose", "application")),
-        mode=str(configured.get("mode", "full")),
-        normalization=str(normalization),
-        color_order=str(configured.get("color_order", "RGB")),
-        color_policy=str(configured.get("color_policy", "auto")),
-        roi_policy=str(configured.get("roi_policy", "auto")),
-        mask_policy=str(configured.get("mask_policy", "none")),
-        minimap_margin_px=int(configured.get("minimap_margin_px", 6)),
-        orientation_behavior=str(
-            configured.get("orientation_behavior", "projection")
-        ),
-        rotate=int(configured.get("rotate", 0)),
-        frame_rate_policy=str(configured.get("frame_rate_policy", "calibrated")),
-        frame_rate=(
-            float(configured["frame_rate"])
-            if configured.get("frame_rate") is not None
-            else None
-        ),
-    )
+    request = _adapter_request_from_config(configured)
     registry = ProfileRegistry(profile_root)
     profile_revisions = configured.get("profile_revisions") or {}
     if not isinstance(profile_revisions, Mapping):
@@ -170,7 +194,12 @@ def _registry_configuration(
         color_policy=resolved["adapter_plan"]["color_policy"],
         minimap_margin_px=resolved["adapter_plan"]["minimap_margin_px"],
         mask_policy=resolved["adapter_plan"]["mask_policy"],
+        orientation_behavior=resolved["adapter_plan"]["orientation_behavior"],
+        rotate=resolved["adapter_plan"]["manual_rotate_degrees_clockwise"],
         game_model=resolved["adapter_plan"]["game_model"],
+        profile_game_upright_quarter_turns_clockwise=resolved["adapter_plan"][
+            "profile_game_upright_quarter_turns_clockwise"
+        ],
         game_upright_quarter_turns_clockwise=resolved["adapter_plan"].get(
             "game_upright_quarter_turns_clockwise", 0
         ),
@@ -222,6 +251,37 @@ class HikCamera:
             )
         else:
             self.calibration_path = explicit_calibration
+            diagnostic_request = _adapter_request_from_config(self.config)
+            diagnostic_game_model = {
+                "cursor_follows": "character",
+                "cursor_behavior_by_acquisition": {
+                    "zigzag": "static",
+                    "micro_movement": "rotating",
+                },
+                "minimap_orientation": "unspecified",
+                "game_orientation": "landscape",
+                "source": "iris_default",
+            }
+            diagnostic_plan = ResolvedAdapterPlan.create(
+                mode=diagnostic_request.mode,
+                normalization=diagnostic_request.normalization,
+                color_order=diagnostic_request.color_order,
+                color_policy=diagnostic_request.color_policy,
+                roi_policy=diagnostic_request.roi_policy,
+                mask_policy=diagnostic_request.mask_policy,
+                minimap_margin_px=diagnostic_request.minimap_margin_px,
+                orientation_behavior=diagnostic_request.orientation_behavior,
+                profile_game_upright_quarter_turns_clockwise=int(
+                    self.config.get("game_upright_quarter_turns_clockwise", 0)
+                ),
+                manual_rotate_degrees_clockwise=diagnostic_request.rotate,
+                initialization_surface_quarter_turns_clockwise_from_natural=(
+                    self.config.get(
+                        "runtime_surface_quarter_turns_clockwise_from_natural"
+                    )
+                ),
+                game_model=diagnostic_game_model,
+            )
             self.resolved_config = {
                 "schema_version": "explicit-path",
                 "selection": "diagnostic_calibration_override",
@@ -238,30 +298,8 @@ class HikCamera:
                         else None
                     ),
                 },
-                "adapter_plan": {
-                    "mode": str(self.config.get("mode", "full")),
-                    "rectify": bool(self.config.get("rectify", True)),
-                    "color_order": str(self.config.get("color_order", "RGB")).upper(),
-                    "mask_policy": str(self.config.get("mask_policy", "none")),
-                    "orientation_behavior": str(
-                        self.config.get("orientation_behavior", "projection")
-                    ),
-                    "manual_rotate_degrees_clockwise": int(
-                        self.config.get("rotate", 0)
-                    ),
-                    "game_model": {
-                        "cursor_follows": "character",
-                        "cursor_behavior_by_acquisition": {
-                            "zigzag": "static",
-                            "micro_movement": "rotating",
-                        },
-                        "minimap_orientation": "unspecified",
-                        "game_orientation": "landscape",
-                        "source": "iris_default",
-                    },
-                    "registry_reads_per_frame": 0,
-                    "phone_operations": "none",
-                },
+                "request": diagnostic_request.as_dict(),
+                "adapter_plan": diagnostic_plan.as_dict(),
             }
         self.calibration = json.loads(self.calibration_path.read_text(encoding="utf-8"))
         camera = self.calibration["camera"]
@@ -284,40 +322,32 @@ class HikCamera:
         self._orientation_job_lock = threading.Lock()
         self._orientation_job: Dict[str, Any] = {}
         self._orientation_job_thread: Optional[threading.Thread] = None
-        self._color_order = str(self.config.get("color_order", "RGB")).upper()
-        self._rectify_enabled = bool(self.config.get("rectify", True))
+        adapter_plan = self.resolved_config["adapter_plan"]
+        self._color_order = str(adapter_plan["color_order"]).upper()
+        self._rectify_enabled = bool(adapter_plan["rectify"])
         self._profile_game_upright_turns = int(
-            self.config.get("game_upright_quarter_turns_clockwise", 0)
+            adapter_plan["profile_game_upright_quarter_turns_clockwise"]
         ) % 4
         self._orientation_behavior = str(
-            self.config.get("orientation_behavior", "projection")
+            adapter_plan["orientation_behavior"]
         ).lower().replace("-", "_")
-        if self._orientation_behavior not in ("as_is", "projection", "image"):
-            raise ValueError(
-                "config['orientation_behavior'] must be as_is, projection, or image"
-            )
-        rotate_degrees = int(self.config.get("rotate", 0))
-        if rotate_degrees not in (0, 90, 180, 270):
-            raise ValueError("config['rotate'] must be 0, 90, 180, or 270")
+        rotate_degrees = int(adapter_plan["manual_rotate_degrees_clockwise"])
         self._manual_rotate_turns = rotate_degrees // 90
-        self._game_upright_turns = self._manual_rotate_turns
-        if self._orientation_behavior == "projection":
-            self._game_upright_turns = (
-                self._profile_game_upright_turns + self._manual_rotate_turns
-            ) % 4
-        self.config["orientation_behavior"] = self._orientation_behavior
-        self.config["rotate"] = rotate_degrees
-        self.config["game_upright_quarter_turns_clockwise"] = (
-            self._game_upright_turns
-        )
-        adapter_plan = self.resolved_config.setdefault("adapter_plan", {})
-        adapter_plan["orientation_behavior"] = self._orientation_behavior
-        adapter_plan["profile_game_upright_quarter_turns_clockwise"] = (
-            self._profile_game_upright_turns
-        )
-        adapter_plan["manual_rotate_degrees_clockwise"] = rotate_degrees
-        adapter_plan["game_upright_quarter_turns_clockwise"] = (
-            self._game_upright_turns
+        self._game_upright_turns = int(
+            adapter_plan["game_upright_quarter_turns_clockwise"]
+        ) % 4
+        self.config.update(
+            mode=adapter_plan["mode"],
+            normalization=adapter_plan["normalization"],
+            rectify=bool(adapter_plan["rectify"]),
+            color_order=adapter_plan["color_order"],
+            color_policy=adapter_plan["color_policy"],
+            roi_policy=adapter_plan["roi_policy"],
+            mask_policy=adapter_plan["mask_policy"],
+            minimap_margin_px=int(adapter_plan["minimap_margin_px"]),
+            orientation_behavior=self._orientation_behavior,
+            rotate=rotate_degrees,
+            game_upright_quarter_turns_clockwise=self._game_upright_turns,
         )
         adapter_plan["phone_operations"] = (
             "one_initialization_adb_screenshot"
@@ -333,10 +363,16 @@ class HikCamera:
             else None
         )
         self._best_effort_initialization = bool(
-            self.config.get("best_effort_initialization", False)
+            self.config.get(
+                "best_effort_initialization",
+                ADAPTER_DEFAULTS.best_effort_initialization,
+            )
         )
         self._persist_initialization_recovery = bool(
-            self.config.get("persist_initialization_recovery", False)
+            self.config.get(
+                "persist_initialization_recovery",
+                ADAPTER_DEFAULTS.persist_initialization_recovery,
+            )
         )
         self._image_orientation_initialized = False
         if self._color_order not in ("RGB", "BGR"):
@@ -505,7 +541,8 @@ class HikCamera:
         minimap_calibration = self.config.get("minimap_calibration")
         game_color = {}
         game_color_path = self.config.get("game_color_calibration")
-        use_game_color = str(self.config.get("color_policy", "auto")) not in (
+        adapter_plan = self.resolved_config["adapter_plan"]
+        use_game_color = str(adapter_plan["color_policy"]) not in (
             "rig_locked",
             "unadjusted",
         )
@@ -521,16 +558,16 @@ class HikCamera:
             from .game_camera import ProfiledHikGameCamera
 
             options = {
-                "mode": str(self.config.get("mode", "minimap")),
-                "rectify_minimap": bool(self.config.get("rectify", True)),
-                "minimap_margin_px": int(self.config.get("minimap_margin_px", 6)),
+                "mode": str(adapter_plan["mode"]),
+                "rectify_minimap": bool(adapter_plan["rectify"]),
+                "minimap_margin_px": int(adapter_plan["minimap_margin_px"]),
                 "apply_game_color": use_game_color,
                 "output_quarter_turns_clockwise": self._game_upright_turns,
                 "runtime_surface_quarter_turns_clockwise_from_natural": (
                     self._runtime_surface_turns
                 ),
                 "best_effort_initialization": self._best_effort_initialization,
-                "mask_policy": str(self.config.get("mask_policy", "none")),
+                "mask_policy": str(adapter_plan["mask_policy"]),
             }
             if game_color:
                 options["bayer_conversion"] = game_color
@@ -1003,7 +1040,7 @@ class HikCamera:
         }
         stream_id = str(self.last_frame_metadata.get("stream_id", "default"))
         self._last_frame_by_stream = {stream_id: frame}
-        if str(self.config.get("mode", "full")) == "full":
+        if str(self.resolved_config["adapter_plan"]["mode"]) == "full":
             self._last_frame_by_stream["full"] = frame
         self._last_frame = frame
         self.last_time_get_frame = time.time()
