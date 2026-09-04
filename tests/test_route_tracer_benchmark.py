@@ -6,6 +6,7 @@ import numpy as np
 
 from poc.benchmark_route_tracer import (
     CausalRouteTracer,
+    _attach_reference_errors,
     _correlation_feature,
     _loss_metrics,
 )
@@ -39,6 +40,70 @@ class _Package:
 
 
 class RouteTracerBenchmarkTests(unittest.TestCase):
+    def test_sparse_reference_does_not_interpolate_across_rejected_gap(self):
+        package = SimpleNamespace(
+            manifest={
+                "source_session": {"session_id": "session"},
+                "reference_rate_hz": 5.0,
+            },
+            states=[
+                {
+                    "session_time_ns": 0,
+                    "canonical_xy": [0.0, 0.0],
+                    "mode_id": "world",
+                },
+                {
+                    "session_time_ns": 1_000_000_000,
+                    "canonical_xy": [10.0, 0.0],
+                    "mode_id": "world",
+                },
+            ],
+        )
+        rows = [
+            {
+                "session_time_ns": 500_000_000,
+                "valid": True,
+                "x": 5.0,
+                "y": 0.0,
+            }
+        ]
+
+        _attach_reference_errors(rows, package, "session")
+
+        self.assertIsNone(rows[0]["reference_error_px"])
+
+    def test_sparse_reference_interpolates_supported_same_mode_interval(self):
+        package = SimpleNamespace(
+            manifest={
+                "source_session": {"session_id": "session"},
+                "reference_rate_hz": 5.0,
+            },
+            states=[
+                {
+                    "session_time_ns": 0,
+                    "canonical_xy": [0.0, 0.0],
+                    "mode_id": "town",
+                },
+                {
+                    "session_time_ns": 200_000_000,
+                    "canonical_xy": [2.0, 0.0],
+                    "mode_id": "town",
+                },
+            ],
+        )
+        rows = [
+            {
+                "session_time_ns": 100_000_000,
+                "valid": True,
+                "x": 1.5,
+                "y": 0.0,
+            }
+        ]
+
+        _attach_reference_errors(rows, package, "session")
+
+        self.assertAlmostEqual(rows[0]["reference_error_px"], 0.5)
+
     def test_route_query_never_uses_demo_progress_or_mode(self):
         package = _Package()
         tracer = CausalRouteTracer(package, Mock(localizers={}), "route_descriptor")

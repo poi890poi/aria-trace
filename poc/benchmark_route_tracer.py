@@ -564,16 +564,38 @@ def _attach_reference_errors(rows, reference_package, session_id) -> None:
     times = np.asarray([int(item["session_time_ns"]) for item in states], np.float64)
     xs = np.asarray([float(item["canonical_xy"][0]) for item in states])
     ys = np.asarray([float(item["canonical_xy"][1]) for item in states])
+    modes = [str(item.get("mode_id") or "unknown") for item in states]
+    reference_rate_hz = float(
+        reference_package.manifest.get("reference_rate_hz") or 5.0
+    )
+    nominal_interval_ns = 1.0e9 / max(reference_rate_hz, 1.0e-6)
+    maximum_bracket_gap_ns = 1.5 * nominal_interval_ns
     for row in rows:
         row["reference_error_px"] = None
         if not row["valid"]:
             continue
         timestamp = float(row["session_time_ns"])
-        if timestamp < times[0] or timestamp > times[-1]:
+        insertion = int(np.searchsorted(times, timestamp))
+        if insertion < len(times) and times[insertion] == timestamp:
+            reference = np.asarray([xs[insertion], ys[insertion]])
+        elif insertion == 0 or insertion >= len(times):
             continue
-        reference = np.asarray(
-            [np.interp(timestamp, times, xs), np.interp(timestamp, times, ys)]
-        )
+        else:
+            left = insertion - 1
+            right = insertion
+            gap_ns = float(times[right] - times[left])
+            if (
+                gap_ns > maximum_bracket_gap_ns
+                or modes[left] != modes[right]
+            ):
+                continue
+            fraction = (timestamp - times[left]) / max(gap_ns, 1.0)
+            reference = np.asarray(
+                [
+                    xs[left] + fraction * (xs[right] - xs[left]),
+                    ys[left] + fraction * (ys[right] - ys[left]),
+                ]
+            )
         row["reference_error_px"] = float(
             np.linalg.norm(np.asarray([row["x"], row["y"]]) - reference)
         )
