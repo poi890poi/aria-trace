@@ -136,7 +136,7 @@ def _registry_configuration(
         mask_policy=str(configured.get("mask_policy", "none")),
         minimap_margin_px=int(configured.get("minimap_margin_px", 6)),
         orientation_behavior=str(
-            configured.get("orientation_behavior", "as_is")
+            configured.get("orientation_behavior", "projection")
         ),
         rotate=int(configured.get("rotate", 0)),
         frame_rate_policy=str(configured.get("frame_rate_policy", "calibrated")),
@@ -193,8 +193,8 @@ class HikCamera:
     The supported compatibility surface is deliberately high-level. It does not
     impersonate the vendor's ctypes structures or status-code based ``MV_CC_*``
     ABI. Methods raise Python exceptions on failure.
-    ``config['orientation_behavior']`` selects ``as_is`` (default),
-    ``projection``, or ``image`` initialization. ``config['rotate']`` adds an
+    ``config['orientation_behavior']`` selects ``projection`` (default),
+    ``as_is``, or ``image`` initialization. ``config['rotate']`` adds an
     explicit 0/90/180/270-degree clockwise output turn. These decisions are
     resolved before streaming and add no per-frame work.
     """
@@ -244,7 +244,7 @@ class HikCamera:
                     "color_order": str(self.config.get("color_order", "RGB")).upper(),
                     "mask_policy": str(self.config.get("mask_policy", "none")),
                     "orientation_behavior": str(
-                        self.config.get("orientation_behavior", "as_is")
+                        self.config.get("orientation_behavior", "projection")
                     ),
                     "manual_rotate_degrees_clockwise": int(
                         self.config.get("rotate", 0)
@@ -290,7 +290,7 @@ class HikCamera:
             self.config.get("game_upright_quarter_turns_clockwise", 0)
         ) % 4
         self._orientation_behavior = str(
-            self.config.get("orientation_behavior", "as_is")
+            self.config.get("orientation_behavior", "projection")
         ).lower().replace("-", "_")
         if self._orientation_behavior not in ("as_is", "projection", "image"):
             raise ValueError(

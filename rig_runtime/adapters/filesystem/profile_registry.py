@@ -246,7 +246,7 @@ class AdapterRequest:
     roi_policy: str = "auto"
     mask_policy: str = "none"
     minimap_margin_px: int = 6
-    orientation_behavior: str = "as_is"
+    orientation_behavior: str = "projection"
     rotate: int = 0
     frame_rate_policy: str = "calibrated"
     frame_rate: Optional[float] = None

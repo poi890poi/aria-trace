@@ -222,7 +222,7 @@ class HikStreamCliTests(unittest.TestCase):
             ]
         )
         self.assertEqual("dual", arguments.mode)
-        self.assertEqual("as_is", arguments.orientation_behavior)
+        self.assertEqual("projection", arguments.orientation_behavior)
         self.assertEqual(0, arguments.rotate)
         self.assertEqual("none", arguments.mask_policy)
         self.assertEqual(

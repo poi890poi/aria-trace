@@ -154,9 +154,9 @@ can separately call `camera.get_iris_frame_metadata()` (or pass `"full"` /
 `"minimap"` after `get_frames()`) to obtain the last image's declared space,
 ROI, orientation, and provenance.
 
-Orientation is explicit. `orientation_behavior="as_is"` is the default and
-preserves rig output. `"projection"` applies the game-up turn already composed
-by profile management. `"image"` obtains one full rig-normalized HIK frame and
+Orientation is explicit. `orientation_behavior="projection"` is the default
+and applies the game-up turn already composed by profile management. `"as_is"`
+preserves rig output. `"image"` obtains one full rig-normalized HIK frame and
 one ADB screenshot during initialization, checks all four turns, then opens the
 requested stream. `rotate=0|90|180|270` adds a manual clockwise turn. The
 selected turn is folded into rectification maps, or applied as one discrete

@@ -369,10 +369,10 @@ is unchanged.
 Rectification is enabled by default. Orientation behavior is explicit and has
 no per-frame registry lookup:
 
-- `as_is` (default) preserves the rig output, plus the optional explicit
-  `rotate` value.
-- `projection` applies the game-up turn already composed by the profile builder
-  from portable game/surface facts and the current rig, plus `rotate`.
+- `projection` (default) applies the game-up turn already composed by the
+  profile builder from portable game/surface facts and the current rig, plus
+  `rotate`.
+- `as_is` preserves the rig output, plus the optional explicit `rotate` value.
 - `image` acquires one full rig-normalized HIK frame and one ADB screenshot at
   initialization, tests all four turns, then opens the requested stream. A
   failed or ambiguous match falls back to `as_is`; it does not mutate a

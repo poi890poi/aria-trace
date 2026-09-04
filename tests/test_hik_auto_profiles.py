@@ -212,27 +212,27 @@ class HikAutoProfileTests(unittest.TestCase):
                 mask_policy="none",
             )
 
-    def test_orientation_policy_defaults_as_is_and_rotate_is_explicit(self):
-        as_is = hikcam.HikCamera(
-            config={
-                "diagnostic_calibration_override": self.calibration,
-                "game_upright_quarter_turns_clockwise": 2,
-                "rotate": 90,
-            }
-        )
+    def test_orientation_policy_defaults_projection_and_rotate_is_explicit(self):
         projection = hikcam.HikCamera(
             config={
                 "diagnostic_calibration_override": self.calibration,
                 "game_upright_quarter_turns_clockwise": 2,
-                "orientation_behavior": "projection",
+                "rotate": 90,
+            }
+        )
+        as_is = hikcam.HikCamera(
+            config={
+                "diagnostic_calibration_override": self.calibration,
+                "game_upright_quarter_turns_clockwise": 2,
+                "orientation_behavior": "as_is",
                 "rotate": 90,
             }
         )
 
-        self.assertEqual(1, as_is._game_upright_turns)
-        self.assertEqual("as_is", as_is._orientation_behavior)
         self.assertEqual(3, projection._game_upright_turns)
         self.assertEqual("projection", projection._orientation_behavior)
+        self.assertEqual(1, as_is._game_upright_turns)
+        self.assertEqual("as_is", as_is._orientation_behavior)
 
     def test_image_orientation_uses_one_full_pair_before_requested_reader(self):
         final_reader = Mock()

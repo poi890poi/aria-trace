@@ -539,7 +539,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--orientation-behavior",
         choices=("as_is", "projection", "image"),
-        default="as_is",
+        default="projection",
         help=(
             "Adapter initialization policy: preserve rig output, use the "
             "profile-built game projection, or match one full ADB/HIK pair"
@@ -602,7 +602,7 @@ def open_camera(
     color_policy: str = "auto",
     minimap_margin_px: int = 6,
     mask_policy: str = "none",
-    orientation_behavior: str = "as_is",
+    orientation_behavior: str = "projection",
     rotate: int = 0,
     adb: str = "adb",
 ):
