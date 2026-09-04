@@ -85,7 +85,28 @@ def _load(input_root: Path):
     return candidates, source_files
 
 
-def _annotate(candidates: list[dict]) -> None:
+def _qualified_families_by_mode(candidates: list[dict]) -> dict[str, set[str]]:
+    representatives = _representative_by_family(candidates)
+    output = defaultdict(set)
+    for family, candidate in representatives.items():
+        by_mode = defaultdict(list)
+        for row in candidate["rows"]:
+            if not row.get("initialization_frame", False):
+                by_mode[row["evaluation_mode_id"]].append(row)
+        for mode, rows in by_mode.items():
+            fresh = [bool(row["measurement_accepted"]) for row in rows]
+            supported = [
+                row
+                for row in rows
+                if row.get("reference_error_px") is not None
+                and row.get("measurement_accepted")
+            ]
+            if fresh and float(np.mean(fresh)) >= 0.95 and supported:
+                output[mode].add(family)
+    return dict(output)
+
+
+def _annotate(candidates: list[dict]) -> dict[str, set[str]]:
     mode_cache = {}
     by_session = defaultdict(list)
     for candidate in candidates:
@@ -104,6 +125,7 @@ def _annotate(candidates: list[dict]) -> None:
             for row in candidate["rows"]:
                 row["evaluation_mode_id"] = str(row.get("mode_id") or "unknown")
 
+    qualified = _qualified_families_by_mode(candidates)
     for session_candidates in by_session.values():
         representatives = _representative_by_family(session_candidates)
         lookups = {
@@ -121,6 +143,8 @@ def _annotate(candidates: list[dict]) -> None:
                 for family, lookup in lookups.items():
                     if family == candidate["family"]:
                         continue
+                    if family not in qualified.get(row["evaluation_mode_id"], set()):
+                        continue
                     peer = lookup.get(int(row["session_time_ns"]))
                     if peer and peer.get("measurement_accepted"):
                         points.append([float(peer["x"]), float(peer["y"])])
@@ -132,6 +156,63 @@ def _annotate(candidates: list[dict]) -> None:
                         np.asarray([float(row["x"]), float(row["y"])]) - consensus
                     )
                 )
+    return qualified
+
+
+def _pairwise(candidates: list[dict]) -> list[dict]:
+    output = []
+    by_name = defaultdict(list)
+    for candidate in candidates:
+        by_name[candidate["name"]].append(candidate)
+    names = sorted(by_name)
+    for left_index, left_name in enumerate(names):
+        for right_name in names[left_index + 1 :]:
+            left_sessions = {
+                row["report"]["session"]["session_id"]: row for row in by_name[left_name]
+            }
+            right_sessions = {
+                row["report"]["session"]["session_id"]: row for row in by_name[right_name]
+            }
+            distances = defaultdict(list)
+            for session in sorted(set(left_sessions) & set(right_sessions)):
+                left = {
+                    int(row["session_time_ns"]): row
+                    for row in left_sessions[session]["rows"]
+                }
+                right = {
+                    int(row["session_time_ns"]): row
+                    for row in right_sessions[session]["rows"]
+                }
+                for timestamp in set(left) & set(right):
+                    first, second = left[timestamp], right[timestamp]
+                    if not (
+                        first.get("measurement_accepted")
+                        and second.get("measurement_accepted")
+                    ):
+                        continue
+                    mode = first["evaluation_mode_id"]
+                    distances[mode].append(
+                        float(
+                            np.linalg.norm(
+                                np.asarray([first["x"], first["y"]], dtype=np.float64)
+                                - np.asarray([second["x"], second["y"]], dtype=np.float64)
+                            )
+                        )
+                    )
+            for mode, values in distances.items():
+                output.append(
+                    {
+                        "left": left_name,
+                        "right": right_name,
+                        "same_method_family": (
+                            _family(left_sessions[next(iter(left_sessions))]["parameters"])
+                            == _family(right_sessions[next(iter(right_sessions))]["parameters"])
+                        ),
+                        "mode_id": mode,
+                        "disagreement_px": _summary(values),
+                    }
+                )
+    return output
 
 
 def _aggregate(candidates: list[dict]) -> list[dict]:
@@ -184,7 +265,8 @@ def _report_lines(result: dict) -> list[str]:
         "EVIDENCE MEANING",
         "",
         "Offline anchor: sparse 5 Hz feature-plus-correlation localization against the atlas.",
-        "Cross-family consensus: median XY from other matcher families on the same frame.",
+        "Qualified cross-family consensus: median XY from other matcher families on the same frame.",
+        "A family qualifies per mode only with at least 95% fresh output and sparse-anchor support.",
         "Gradient 12 and gradient 18 are one family and never vote twice.",
         "Neither measure is external ground truth; agreement estimates consistency, not absolute accuracy.",
         "Held positions never count as fresh measurements or consensus votes.",
@@ -213,7 +295,7 @@ def _report_lines(result: dict) -> list[str]:
                         _number(anchor["p95"], " px"),
                         _number(anchor["worst"], " px"),
                     ),
-                    "Cross-family disagreement mean / P95 / worst  {} / {} / {}".format(
+                    "Qualified-consensus disagreement mean / P95 / worst  {} / {} / {}".format(
                         _number(consensus["mean"], " px"),
                         _number(consensus["p95"], " px"),
                         _number(consensus["worst"], " px"),
@@ -230,6 +312,7 @@ def _report_lines(result: dict) -> list[str]:
             "LIMITATION",
             "",
             "The anchor shares the atlas and some image operations with the candidates.",
+            "When fewer than three qualified families exist, leave-one-family-out consensus is unavailable.",
             "Use these results to rank consistency and find isolated failures, not to certify true map-pixel accuracy.",
             "",
             "Machine report  cross_session_results.json",
@@ -241,7 +324,7 @@ def _report_lines(result: dict) -> list[str]:
 
 def build(input_root: Path, output_path: Path) -> dict:
     candidates, sources = _load(Path(input_root))
-    _annotate(candidates)
+    qualified = _annotate(candidates)
     result = {
         "schema_version": "1.0",
         "benchmark": "localization_cross_session_consistency",
@@ -252,6 +335,10 @@ def build(input_root: Path, output_path: Path) -> dict:
             "duplicate_method_families_get_multiple_votes": False,
         },
         "results": _aggregate(candidates),
+        "qualified_consensus_families_by_mode": {
+            mode: sorted(families) for mode, families in qualified.items()
+        },
+        "pairwise_consistency": _pairwise(candidates),
         "source_files": sources,
     }
     output_path = Path(output_path)
