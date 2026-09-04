@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from rig_runtime.domain.packets import InputPacket
+from rig_runtime.domain.configuration import ZIGZAG_PLAN_DEFAULTS
 from rig_runtime.adapters.sources import InputSource
 
 
@@ -27,12 +28,12 @@ class ZigzagTouchPlan:
     start_xy: Sequence[int]
     end_x: int
     vertical_amplitude_px: int
-    move_count: int = 12
-    step_seconds: float = 0.12
-    endpoint_hold_seconds: float = 0.10
-    settle_seconds: float = 1.0
-    reset_seconds: float = 0.10
-    move_sample_hz: float = 22.0
+    move_count: int = ZIGZAG_PLAN_DEFAULTS.move_count
+    step_seconds: float = ZIGZAG_PLAN_DEFAULTS.step_seconds
+    endpoint_hold_seconds: float = ZIGZAG_PLAN_DEFAULTS.endpoint_hold_seconds
+    settle_seconds: float = ZIGZAG_PLAN_DEFAULTS.settle_seconds
+    reset_seconds: float = ZIGZAG_PLAN_DEFAULTS.reset_seconds
+    move_sample_hz: float = ZIGZAG_PLAN_DEFAULTS.move_sample_hz
 
     def strokes(self) -> List[dict]:
         start_x, horizon_y = map(int, self.start_xy)

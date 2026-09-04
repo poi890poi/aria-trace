@@ -7,12 +7,18 @@ from rig_runtime.adapters.filesystem.profile_registry import AdapterRequest
 from rig_runtime.adapters.hik.compat import _adapter_request_from_config
 from rig_runtime.apps import hik_stream
 from rig_runtime.apps import hik_rig_calibration
+from rig_runtime.adapters.android.cursor_orbit import CursorOrbitTouchPlan
+from rig_runtime.adapters.android.zigzag import ZigzagTouchPlan
 from rig_runtime.domain.configuration import (
+    ACQUISITION_DEFAULTS,
     ADAPTER_DEFAULTS,
+    CURSOR_ORBIT_PLAN_DEFAULTS,
     RIG_CALIBRATION_DEFAULTS,
+    ZIGZAG_PLAN_DEFAULTS,
     ResolvedAdapterPlan,
 )
 from rig_runtime.workflows import profile_management
+from rig_runtime.workflows import minimap_capture
 from rig_runtime.workflows.hik_rig_calibration import HikCalibrationOptions
 
 
@@ -140,6 +146,44 @@ class RigCalibrationConfigurationTests(unittest.TestCase):
                 getattr(RIG_CALIBRATION_DEFAULTS, policy_name), cli_value
             )
             self.assertEqual(cli_value, option_value)
+
+
+class AcquisitionConfigurationTests(unittest.TestCase):
+    def test_capture_cli_uses_acquisition_policy(self):
+        cli = minimap_capture.parser().parse_args([])
+        self.assertEqual(ACQUISITION_DEFAULTS.camera_width_px, cli.camera_width)
+        self.assertEqual(ACQUISITION_DEFAULTS.camera_height_px, cli.camera_height)
+        self.assertEqual(ACQUISITION_DEFAULTS.camera_fps, cli.camera_fps)
+        self.assertEqual(ACQUISITION_DEFAULTS.android_capture, cli.android_capture)
+        self.assertEqual(ACQUISITION_DEFAULTS.sample_count, cli.moves)
+        self.assertEqual(ACQUISITION_DEFAULTS.capture_mode, cli.capture_mode)
+        self.assertEqual(
+            ACQUISITION_DEFAULTS.horizontal_swipe_fraction,
+            cli.horizontal_swipe_fraction,
+        )
+        self.assertEqual(
+            ACQUISITION_DEFAULTS.vertical_swipe_fraction,
+            cli.vertical_swipe_fraction,
+        )
+
+    def test_direct_touch_plans_use_their_own_domain_policy(self):
+        zigzag = ZigzagTouchPlan(
+            start_xy=[100, 100], end_x=50, vertical_amplitude_px=40
+        )
+        orbit = CursorOrbitTouchPlan(center_xy=[100, 100], radius_px=20)
+        self.assertEqual(ZIGZAG_PLAN_DEFAULTS.move_count, zigzag.move_count)
+        self.assertEqual(ZIGZAG_PLAN_DEFAULTS.step_seconds, zigzag.step_seconds)
+        self.assertEqual(
+            ZIGZAG_PLAN_DEFAULTS.endpoint_hold_seconds,
+            zigzag.endpoint_hold_seconds,
+        )
+        self.assertEqual(
+            CURSOR_ORBIT_PLAN_DEFAULTS.direction_count, orbit.direction_count
+        )
+        self.assertEqual(CURSOR_ORBIT_PLAN_DEFAULTS.repeats, orbit.repeats)
+        self.assertEqual(
+            CURSOR_ORBIT_PLAN_DEFAULTS.reset_seconds, orbit.reset_seconds
+        )
 
 
 if __name__ == "__main__":

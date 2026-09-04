@@ -32,6 +32,8 @@ SHUTTER_MULTIPLIERS = (2, 3)
 EXPOSURE_PERIOD_COUNTS = (1, 2, 3)
 DISTORTION_CORRECTION_MODES = ("off", "guided")
 FINAL_BENCHMARK_MODES = ("auto", "full", "reduced", "skip")
+ANDROID_CAPTURE_MODES = ("scrcpy", "adb-screenshot")
+ACQUISITION_MODES = ("zigzag", "micro-movement", "cursor-orbit")
 
 
 @dataclass(frozen=True)
@@ -233,12 +235,45 @@ class AcquisitionDefaults:
 ACQUISITION_DEFAULTS = AcquisitionDefaults()
 
 
+@dataclass(frozen=True)
+class ZigzagPlanDefaults:
+    """Direct long-swipe plan defaults after display geometry is resolved."""
+
+    move_count: int = 12
+    step_seconds: float = 0.12
+    endpoint_hold_seconds: float = 0.10
+    settle_seconds: float = 1.0
+    reset_seconds: float = 0.10
+    move_sample_hz: float = 22.0
+
+
+ZIGZAG_PLAN_DEFAULTS = ZigzagPlanDefaults()
+
+
+@dataclass(frozen=True)
+class CursorOrbitPlanDefaults:
+    """Direct micro-movement plan defaults after display geometry is resolved."""
+
+    direction_count: int = 12
+    repeats: int = 2
+    step_seconds: float = 0.12
+    settle_seconds: float = 1.0
+    reset_seconds: float = 0.18
+    move_sample_hz: float = 30.0
+
+
+CURSOR_ORBIT_PLAN_DEFAULTS = CursorOrbitPlanDefaults()
+
+
 __all__ = [
     "ACQUISITION_DEFAULTS",
+    "ACQUISITION_MODES",
     "ADAPTER_DEFAULTS",
     "ADAPTER_MODES",
+    "ANDROID_CAPTURE_MODES",
     "COLOR_ORDERS",
     "COLOR_POLICIES",
+    "CURSOR_ORBIT_PLAN_DEFAULTS",
     "DISTORTION_CORRECTION_MODES",
     "EXPOSURE_PERIOD_COUNTS",
     "FINAL_BENCHMARK_MODES",
@@ -252,8 +287,11 @@ __all__ = [
     "ROI_POLICIES",
     "SHUTTER_MULTIPLIERS",
     "TARGET_PRESENTERS",
+    "ZIGZAG_PLAN_DEFAULTS",
     "AcquisitionDefaults",
     "AdapterDefaults",
     "ResolvedAdapterPlan",
     "RigCalibrationDefaults",
+    "CursorOrbitPlanDefaults",
+    "ZigzagPlanDefaults",
 ]

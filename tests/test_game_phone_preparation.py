@@ -156,6 +156,20 @@ class GamePhonePreparationTests(unittest.TestCase):
         self.assertEqual(1408, plan.end_x)
         self.assertEqual(600, plan.vertical_amplitude_px)
 
+    def test_swipe_distances_are_configurable_as_display_fractions(self):
+        arguments = capture.parser().parse_args(
+            [
+                "--horizontal-swipe-fraction",
+                "0.25",
+                "--vertical-swipe-fraction",
+                "0.30",
+            ]
+        )
+        plan = capture._build_zigzag_plan(arguments, 2400, 1080)
+        self.assertEqual([1728, 540], plan.start_xy)
+        self.assertEqual(1128, plan.end_x)
+        self.assertEqual(324, plan.vertical_amplitude_px)
+
     def test_swipe_distance_override_must_fit_the_display(self):
         arguments = capture.parser().parse_args(
             ["--vertical-swipe-distance-px", "1080"]

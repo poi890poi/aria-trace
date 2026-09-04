@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Sequence
 
 from rig_runtime.adapters.android.zigzag import AndroidZigzagInputSource
+from rig_runtime.domain.configuration import CURSOR_ORBIT_PLAN_DEFAULTS
 
 
 @dataclass(frozen=True)
@@ -21,12 +22,12 @@ class CursorOrbitTouchPlan:
 
     center_xy: Sequence[int]
     radius_px: int
-    direction_count: int = 12
-    repeats: int = 2
-    step_seconds: float = 0.12
-    settle_seconds: float = 1.0
-    reset_seconds: float = 0.18
-    move_sample_hz: float = 30.0
+    direction_count: int = CURSOR_ORBIT_PLAN_DEFAULTS.direction_count
+    repeats: int = CURSOR_ORBIT_PLAN_DEFAULTS.repeats
+    step_seconds: float = CURSOR_ORBIT_PLAN_DEFAULTS.step_seconds
+    settle_seconds: float = CURSOR_ORBIT_PLAN_DEFAULTS.settle_seconds
+    reset_seconds: float = CURSOR_ORBIT_PLAN_DEFAULTS.reset_seconds
+    move_sample_hz: float = CURSOR_ORBIT_PLAN_DEFAULTS.move_sample_hz
 
     @property
     def start_xy(self) -> Sequence[int]:

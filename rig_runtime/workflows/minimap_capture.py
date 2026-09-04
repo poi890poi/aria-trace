@@ -47,6 +47,11 @@ from rig_runtime.adapters.hik.capture import CalibratedHikFrameSource
 from rig_runtime.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
 from rig_runtime.adapters.filesystem.session import SessionWriter
 from rig_runtime.domain.packets import FramePacket
+from rig_runtime.domain.configuration import (
+    ACQUISITION_DEFAULTS,
+    ACQUISITION_MODES,
+    ANDROID_CAPTURE_MODES,
+)
 from rig_runtime.workflows.recording import AcquisitionRecorder
 from rig_runtime.adapters.android.phone import (
     AdbPhoneSession,
@@ -270,6 +275,13 @@ def _positive_pixel_distance(value: str) -> int:
     return distance
 
 
+def _display_fraction(value: str) -> float:
+    fraction = float(value)
+    if not 0.0 < fraction <= 1.0:
+        raise argparse.ArgumentTypeError("display fraction must be in (0, 1]")
+    return fraction
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description=(
@@ -293,9 +305,15 @@ def parser() -> argparse.ArgumentParser:
         help="wake the phone but leave game launch to the user",
     )
     value.add_argument("--camera-id")
-    value.add_argument("--camera-width", type=int, default=2448)
-    value.add_argument("--camera-height", type=int, default=2048)
-    value.add_argument("--camera-fps", type=float, default=30.0)
+    value.add_argument(
+        "--camera-width", type=int, default=ACQUISITION_DEFAULTS.camera_width_px
+    )
+    value.add_argument(
+        "--camera-height", type=int, default=ACQUISITION_DEFAULTS.camera_height_px
+    )
+    value.add_argument(
+        "--camera-fps", type=float, default=ACQUISITION_DEFAULTS.camera_fps
+    )
     value.add_argument("--mvs-python-path")
     value.add_argument("--profile-root", type=Path)
     value.add_argument("--phone-serial")
@@ -311,30 +329,36 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument(
         "--android-capture",
-        choices=("scrcpy", "adb-screenshot"),
-        default="scrcpy",
+        choices=ANDROID_CAPTURE_MODES,
+        default=ACQUISITION_DEFAULTS.android_capture,
         help=(
             "Android image transport: continuous scrcpy video or one lossless "
-            "ADB screencap after each settled swipe (default: scrcpy)"
+            "ADB screencap after each settled swipe (default: {})".format(
+                ACQUISITION_DEFAULTS.android_capture
+            )
         ),
     )
     value.add_argument(
         "--screenshot-settle-seconds",
         type=float,
-        default=0.35,
+        default=ACQUISITION_DEFAULTS.screenshot_settle_seconds,
         help=(
             "ADB-screenshot mode delay after touch UP before capturing the "
-            "settled game image (default: 0.35)"
+            "settled game image (default: {})".format(
+                ACQUISITION_DEFAULTS.screenshot_settle_seconds
+            )
         ),
     )
     value.add_argument(
         "--output-root", type=Path, default=Path("sessions") / "calibration"
     )
-    value.add_argument("--moves", type=int, default=12)
+    value.add_argument(
+        "--moves", type=int, default=ACQUISITION_DEFAULTS.sample_count
+    )
     value.add_argument(
         "--capture-mode",
-        choices=("zigzag", "micro-movement", "cursor-orbit"),
-        default="zigzag",
+        choices=ACQUISITION_MODES,
+        default=ACQUISITION_DEFAULTS.capture_mode,
         help=(
             "zigzag uses long camera-look strokes; micro-movement uses balanced "
             "short movement-joystick pulses. Cursor behavior is interpreted later "
@@ -342,80 +366,101 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     value.add_argument(
+        "--horizontal-swipe-fraction",
+        type=_display_fraction,
+        default=ACQUISITION_DEFAULTS.horizontal_swipe_fraction,
+        help="horizontal distance as a fraction of game-display width",
+    )
+    value.add_argument(
+        "--vertical-swipe-fraction",
+        type=_display_fraction,
+        default=ACQUISITION_DEFAULTS.vertical_swipe_fraction,
+        help="vertical distance as a fraction of game-display height",
+    )
+    value.add_argument(
         "--horizontal-swipe-distance-px",
         type=_positive_pixel_distance,
         metavar="PX",
-        help=(
-            "horizontal distance of every diagonal swipe; default is 10%% "
-            "of the current game-display width (240 px at 2400x1080)"
-        ),
+        help="deprecated absolute-pixel override of --horizontal-swipe-fraction",
     )
     value.add_argument(
         "--vertical-swipe-distance-px",
         type=_positive_pixel_distance,
         metavar="PX",
-        help=(
-            "vertical distance of every diagonal swipe; default is 20%% "
-            "of the landscape display height (216 px at 2400x1080)"
-        ),
+        help="deprecated absolute-pixel override of --vertical-swipe-fraction",
     )
     value.add_argument(
         "--travel-seconds",
         "--step-seconds",
         dest="step_seconds",
         type=float,
-        default=0.12,
+        default=ACQUISITION_DEFAULTS.swipe_travel_seconds,
         help=(
             "time spent moving from the swipe start to its endpoint; "
-            "--step-seconds is retained as a compatibility alias (default: 0.12)"
+            "--step-seconds is retained as a compatibility alias (default: {})"
+            .format(ACQUISITION_DEFAULTS.swipe_travel_seconds)
         ),
     )
     value.add_argument(
         "--endpoint-hold-seconds",
         type=float,
-        default=0.10,
+        default=ACQUISITION_DEFAULTS.endpoint_hold_seconds,
         help=(
             "time to keep the finger DOWN at the swipe endpoint before UP "
-            "(default: 0.10)"
+            "(default: {})".format(ACQUISITION_DEFAULTS.endpoint_hold_seconds)
         ),
     )
-    value.add_argument("--reset-seconds", type=float, default=0.10)
-    value.add_argument("--settle-seconds", type=float, default=1.5)
-    value.add_argument("--tail-seconds", type=float, default=1.5)
+    value.add_argument(
+        "--reset-seconds", type=float, default=ACQUISITION_DEFAULTS.reset_seconds
+    )
+    value.add_argument(
+        "--settle-seconds", type=float, default=ACQUISITION_DEFAULTS.settle_seconds
+    )
+    value.add_argument(
+        "--tail-seconds", type=float, default=ACQUISITION_DEFAULTS.tail_seconds
+    )
     value.add_argument(
         "--micro-movement-radius-px",
         "--cursor-orbit-radius-px",
         dest="cursor_orbit_radius_px",
         type=_positive_pixel_distance,
-        help="micro-movement joystick pulse radius; default is 6%% of display height",
+        help="micro-movement joystick pulse radius; default is {:.0%} of display height".format(
+            ACQUISITION_DEFAULTS.micro_movement_radius_fraction
+        ),
     )
     value.add_argument(
         "--micro-movement-pulse-seconds",
         "--cursor-pulse-seconds",
         dest="cursor_pulse_seconds",
         type=float,
-        default=0.12,
-        help="duration of each short micro-movement pulse (default: 0.12)",
+        default=ACQUISITION_DEFAULTS.micro_movement_pulse_seconds,
+        help="duration of each short micro-movement pulse (default: {})".format(
+            ACQUISITION_DEFAULTS.micro_movement_pulse_seconds
+        ),
     )
     value.add_argument(
         "--micro-movement-directions",
         "--cursor-orbit-directions",
         dest="cursor_orbit_directions",
         type=int,
-        default=12,
+        default=ACQUISITION_DEFAULTS.micro_movement_directions,
     )
     value.add_argument(
         "--micro-movement-repeats",
         "--cursor-orbit-repeats",
         dest="cursor_orbit_repeats",
         type=int,
-        default=2,
+        default=ACQUISITION_DEFAULTS.micro_movement_repeats,
     )
     value.add_argument(
-        "--joystick-center-x-fraction", type=float, default=0.18
+        "--joystick-center-x-fraction",
+        type=float,
+        default=ACQUISITION_DEFAULTS.joystick_center_x_fraction,
     )
     value.add_argument(
-        "--joystick-center-y-fraction", type=float, default=0.78
+        "--joystick-center-y-fraction",
+        type=float,
+        default=ACQUISITION_DEFAULTS.joystick_center_y_fraction,
     )
     value.add_argument("--yes", action="store_true")
     value.add_argument(
@@ -442,10 +487,14 @@ def parser() -> argparse.ArgumentParser:
 def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
     horizontal_distance = getattr(arguments, "horizontal_swipe_distance_px", None)
     if horizontal_distance is None:
-        horizontal_distance = round(width * 0.10)
+        horizontal_distance = round(
+            width * float(arguments.horizontal_swipe_fraction)
+        )
     vertical_distance = getattr(arguments, "vertical_swipe_distance_px", None)
     if vertical_distance is None:
-        vertical_distance = round(height * 0.20)
+        vertical_distance = round(
+            height * float(arguments.vertical_swipe_fraction)
+        )
     horizontal_distance = int(horizontal_distance)
     vertical_distance = int(vertical_distance)
     if horizontal_distance <= 0:
@@ -455,8 +504,8 @@ def _build_zigzag_plan(arguments, width: int, height: int) -> ZigzagTouchPlan:
     # The game receives Android input in its current logical display raster.
     # Anchor on the right-center look-control surface, away from the movement
     # joystick and common edge gestures.
-    start_x = round(width * 0.72)
-    horizon_y = round(height * 0.50)
+    start_x = round(width * ACQUISITION_DEFAULTS.look_anchor_x_fraction)
+    horizon_y = round(height * ACQUISITION_DEFAULTS.look_anchor_y_fraction)
     upper_y = horizon_y - round(vertical_distance / 2.0)
     lower_y = upper_y + vertical_distance
     if start_x - horizontal_distance < 0:
@@ -501,7 +550,7 @@ def _build_cursor_orbit_plan(
     radius = int(
         arguments.cursor_orbit_radius_px
         if arguments.cursor_orbit_radius_px is not None
-        else round(height * 0.06)
+        else round(height * ACQUISITION_DEFAULTS.micro_movement_radius_fraction)
     )
     if (
         center[0] - radius < 0
