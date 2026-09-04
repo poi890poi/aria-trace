@@ -265,18 +265,24 @@ class CursorPoseEstimator:
             self.angular_template_energy = (
                 math.sqrt(float(np.sum(self.angular_template ** 2))) + 1.0e-6
             )
-        self.polygon_masks = np.stack(
-            [
-                render_polygon(self.polygon, self.patch_size, angle, supersample=4)
-                for angle in range(360)
-            ]
-        )
-        self.polygon_edges = np.stack(
-            [polygon_edge(mask) for mask in self.polygon_masks]
-        )
-        self.polygon_distance_transforms = np.stack(
-            [edge_distance_transform(edge) for edge in self.polygon_edges]
-        )
+        self.polygon_masks = None
+        self.polygon_edges = None
+        self.polygon_distance_transforms = None
+        if self.pose_method == "polygon_gaussian":
+            self.polygon_masks = np.stack(
+                [
+                    render_polygon(
+                        self.polygon, self.patch_size, angle, supersample=4
+                    )
+                    for angle in range(360)
+                ]
+            )
+            self.polygon_edges = np.stack(
+                [polygon_edge(mask) for mask in self.polygon_masks]
+            )
+            self.polygon_distance_transforms = np.stack(
+                [edge_distance_transform(edge) for edge in self.polygon_edges]
+            )
 
     def _crop(self, frame: np.ndarray) -> np.ndarray:
         x, y, width, height = self.crop_xywh
