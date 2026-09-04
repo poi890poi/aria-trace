@@ -425,7 +425,7 @@ def parser() -> argparse.ArgumentParser:
         "--cursor-orbit-radius-px",
         dest="cursor_orbit_radius_px",
         type=_positive_pixel_distance,
-        help="micro-movement joystick pulse radius; default is {:.0%} of display height".format(
+        help="micro-movement joystick pulse radius; default is {:.0%}% of display height".format(
             ACQUISITION_DEFAULTS.micro_movement_radius_fraction
         ),
     )

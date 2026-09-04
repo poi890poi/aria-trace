@@ -154,6 +154,11 @@ class RigCalibrationConfigurationTests(unittest.TestCase):
 
 
 class AcquisitionConfigurationTests(unittest.TestCase):
+    def test_capture_cli_help_renders_percentage_defaults(self):
+        help_text = minimap_capture.parser().format_help()
+        self.assertIn("default is 6%", help_text)
+        self.assertIn("display height", help_text)
+
     def test_capture_defaults_reuse_motion_plan_authority(self):
         self.assertEqual(
             ZIGZAG_PLAN_DEFAULTS.move_count, ACQUISITION_DEFAULTS.sample_count
