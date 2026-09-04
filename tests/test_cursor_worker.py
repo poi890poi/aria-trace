@@ -15,6 +15,7 @@ class CursorWorkerTests(unittest.TestCase):
                 "calibration",
                 gaussian_fit_method="cascade",
                 validation_policy="minimal",
+                pose_method="angular_projection_ncc_parabolic",
                 opencv_threads=1,
             )
             worker.shutdown()
@@ -22,6 +23,9 @@ class CursorWorkerTests(unittest.TestCase):
         arguments = constructor.call_args[1]
         self.assertEqual(arguments["max_workers"], 1)
         self.assertEqual(arguments["mp_context"].get_start_method(), "spawn")
+        self.assertEqual(
+            arguments["initargs"][-2], "angular_projection_ncc_parabolic"
+        )
         self.assertEqual(arguments["initargs"][-1], 1)
         pool.shutdown.assert_called_once_with(wait=False)
 

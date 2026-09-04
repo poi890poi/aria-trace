@@ -6,6 +6,31 @@ from acquisition.cursor_pose import CursorPoseEstimator, circular_difference_deg
 
 
 class CircularGaussianFitTests(unittest.TestCase):
+    def test_parabolic_circular_peak_refines_between_bins(self):
+        response = np.zeros(360, dtype=np.float32)
+        response[40:43] = [0.8, 1.0, 0.9]
+
+        peak = CursorPoseEstimator._parabolic_circular_peak(response)
+
+        self.assertGreater(peak, 41.0)
+        self.assertLess(peak, 41.5)
+
+    def test_angular_projection_correlation_recovers_circular_shift(self):
+        estimator = object.__new__(CursorPoseEstimator)
+        template = np.zeros(360, dtype=np.float32)
+        template[4:11] = np.linspace(0.1, 1.0, 7)
+        template[11:19] = np.linspace(0.9, 0.05, 8)
+        estimator.angular_template_fft = np.fft.fft(template)
+        estimator.angular_template_energy = float(np.linalg.norm(template))
+        estimator.x_map = np.arange(360, dtype=np.float32)[:, None]
+        estimator.y_map = np.zeros((360, 1), dtype=np.float32)
+        observed = np.roll(template, 73).reshape(1, 360)
+
+        shift, response, _ = estimator._angular_projection_correlate(observed)
+
+        self.assertAlmostEqual(shift, 73.0, places=4)
+        self.assertGreater(float(np.max(response)), 0.99)
+
     def test_pixel_validation_policy_only_expands_ambiguous_frames(self):
         estimator = object.__new__(CursorPoseEstimator)
         strong = {

@@ -15,6 +15,7 @@ def _initialize_worker(
     calibration_path: str,
     gaussian_fit_method: str,
     validation_policy: str,
+    pose_method: str,
     opencv_threads: int,
 ) -> None:
     global _PROCESS_ESTIMATOR
@@ -25,6 +26,7 @@ def _initialize_worker(
         calibration_path,
         gaussian_fit_method=gaussian_fit_method,
         validation_policy=validation_policy,
+        pose_method=pose_method,
     )
 
 
@@ -60,6 +62,7 @@ class CursorPoseProcessExecutor:
         *,
         gaussian_fit_method: str,
         validation_policy: str,
+        pose_method: str = "polygon_gaussian",
         opencv_threads: int = 1,
     ) -> None:
         self._executor = ProcessPoolExecutor(
@@ -70,6 +73,7 @@ class CursorPoseProcessExecutor:
                 str(calibration_path),
                 str(gaussian_fit_method),
                 str(validation_policy),
+                str(pose_method),
                 max(1, int(opencv_threads)),
             ),
         )

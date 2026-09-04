@@ -65,6 +65,10 @@ def _color_heatmap(values: np.ndarray) -> np.ndarray:
 class CursorPoseEstimator:
     """Estimate one screen-space cursor angle without temporal assumptions."""
 
+    POSE_METHODS = (
+        "polygon_gaussian",
+        "angular_projection_ncc_parabolic",
+    )
     GAUSSIAN_FIT_METHODS = (
         "cascade",
         "analytic_lm",
@@ -79,6 +83,7 @@ class CursorPoseEstimator:
         calibration_path: Path,
         gaussian_fit_method: str = "vectorized_grid",
         validation_policy: str = "full",
+        pose_method: str = "polygon_gaussian",
     ) -> None:
         calibration_path = Path(calibration_path)
         if calibration_path.is_dir():
@@ -91,6 +96,13 @@ class CursorPoseEstimator:
                 )
             )
         self.gaussian_fit_method = gaussian_fit_method
+        if pose_method not in self.POSE_METHODS:
+            raise ValueError(
+                "Unsupported cursor pose method {!r}; expected one of {}".format(
+                    pose_method, ", ".join(self.POSE_METHODS)
+                )
+            )
+        self.pose_method = pose_method
         if validation_policy not in self.VALIDATION_POLICIES:
             raise ValueError(
                 "Unsupported validation policy {!r}; expected one of {}".format(
@@ -131,6 +143,16 @@ class CursorPoseEstimator:
         model_path = self.root / self.calibration.get("model_file", "model.npz")
         model = np.load(model_path)
         self.template = model["cursor_binary"].astype(np.float32)
+        self.symmetric_probability_template = None
+        if self.pose_method == "angular_projection_ncc_parabolic":
+            if "cursor_symmetric_probability" not in model:
+                raise ValueError(
+                    "Angular projection pose estimation requires "
+                    "cursor_symmetric_probability in the calibration model"
+                )
+            self.symmetric_probability_template = model[
+                "cursor_symmetric_probability"
+            ].astype(np.float32)
         if "cursor_polygon_relative_xy" not in model:
             raise ValueError("Calibration predates the rigid symmetric polygon model")
         self.polygon = model["cursor_polygon_relative_xy"].astype(np.float64)
@@ -225,6 +247,24 @@ class CursorPoseEstimator:
         self.template_energy = (
             math.sqrt(float(np.sum(self.template_polar ** 2))) + 1.0e-6
         )
+        self.angular_template_polar = None
+        self.angular_template = None
+        self.angular_template_fft = None
+        self.angular_template_energy = None
+        if self.symmetric_probability_template is not None:
+            self.angular_template_polar = cv2.remap(
+                self.symmetric_probability_template,
+                self.x_map,
+                self.y_map,
+                cv2.INTER_LINEAR,
+            )
+            self.angular_template = np.sum(
+                self.angular_template_polar, axis=1, dtype=np.float32
+            )
+            self.angular_template_fft = np.fft.fft(self.angular_template)
+            self.angular_template_energy = (
+                math.sqrt(float(np.sum(self.angular_template ** 2))) + 1.0e-6
+            )
         self.polygon_masks = np.stack(
             [
                 render_polygon(self.polygon, self.patch_size, angle, supersample=4)
@@ -764,6 +804,151 @@ class CursorPoseEstimator:
         return gaussian_fit, correlation, polar
 
     @staticmethod
+    def _parabolic_circular_peak(response: np.ndarray) -> float:
+        response = np.asarray(response, dtype=np.float64).reshape(-1)
+        index = int(np.argmax(response))
+        left = float(response[(index - 1) % len(response)])
+        center = float(response[index])
+        right = float(response[(index + 1) % len(response)])
+        denominator = left - 2.0 * center + right
+        offset = 0.0
+        if abs(denominator) > 1.0e-12:
+            offset = float(
+                np.clip(0.5 * (left - right) / denominator, -1.0, 1.0)
+            )
+        return float((index + offset) % len(response))
+
+    @staticmethod
+    def _response_prominence(response: np.ndarray, center_deg: float) -> tuple:
+        response = np.asarray(response, dtype=np.float64).reshape(-1)
+        positions = np.arange(len(response), dtype=np.float64)
+        peak = float(
+            np.interp(center_deg % len(response), positions, response, period=len(response))
+        )
+        distance = np.abs(
+            circular_difference_degrees(
+                positions * 360.0 / len(response), center_deg
+            )
+        )
+        outside = response[distance >= 20.0]
+        second = (
+            float(np.max(outside)) if len(outside) else float(np.median(response))
+        )
+        scale = max(
+            float(np.percentile(response, 95) - np.percentile(response, 20)),
+            1.0e-6,
+        )
+        prominence = float(np.clip((peak - second) / scale, 0.0, 1.0))
+        return peak, second, prominence
+
+    def _angular_projection_correlate(self, patch: np.ndarray):
+        if self.angular_template_fft is None or self.angular_template_energy is None:
+            raise RuntimeError("Angular projection template is not initialized")
+        polar = cv2.remap(
+            patch,
+            self.x_map,
+            self.y_map,
+            cv2.INTER_LINEAR,
+        )
+        observed = np.sum(polar, axis=1, dtype=np.float32)
+        response = np.fft.ifft(
+            np.fft.fft(observed) * np.conj(self.angular_template_fft)
+        ).real.astype(np.float32)
+        observed_energy = math.sqrt(float(np.sum(observed ** 2)))
+        response /= observed_energy * self.angular_template_energy + 1.0e-6
+        shift = self._parabolic_circular_peak(response)
+        return shift, response, polar
+
+    def _estimate_angular_projection(
+        self,
+        common: dict,
+        crop: np.ndarray,
+        mask: np.ndarray,
+        centroid: np.ndarray,
+        area: int,
+        patch: np.ndarray,
+    ) -> dict:
+        shift, correlation, polar = self._angular_projection_correlate(patch)
+        peak, second_peak, prominence = self._response_prominence(
+            correlation, shift
+        )
+        predicted_probability = render_polygon(
+            self.polygon, self.patch_size, shift, supersample=4
+        )
+        predicted = predicted_probability >= 0.5
+        observed = patch >= 0.5
+        union = int(np.logical_or(predicted, observed).sum())
+        aligned_iou = (
+            float(np.logical_and(predicted, observed).sum() / union)
+            if union
+            else 0.0
+        )
+        centroid_vector = centroid - self.pivot
+        centroid_angle = math.degrees(
+            math.atan2(float(centroid_vector[1]), float(centroid_vector[0]))
+        )
+        centroid_shift = float(
+            wrap_signed_degrees(
+                centroid_angle - self.canonical_centroid_angle_deg
+            )
+        )
+        agreement_error = float(
+            circular_difference_degrees(shift, centroid_shift)
+        )
+        component_scores = {
+            "response_prominence": prominence,
+            "polygon_iou": float(np.clip(aligned_iou / 0.82, 0.0, 1.0)),
+            "centroid_agreement": float(
+                math.exp(-((agreement_error / 20.0) ** 2))
+            ),
+        }
+        confidence = float(
+            np.prod([max(value, 0.02) for value in component_scores.values()])
+            ** (1.0 / len(component_scores))
+        )
+        shift_radians = math.radians(shift)
+        rotation = np.array(
+            [
+                [math.cos(shift_radians), -math.sin(shift_radians)],
+                [math.sin(shift_radians), math.cos(shift_radians)],
+            ]
+        )
+        common.update(
+            {
+                "relative_rotation_deg": float(shift),
+                "angle_screen_deg": float((self.symmetry_axis_deg + shift) % 360.0),
+                "pose_model": "symmetric_average_angular_projection_ncc_parabolic",
+                "pose_method": self.pose_method,
+                "symmetry_axis_template_deg": float(self.symmetry_axis_deg),
+                "centroid_rotation_deg": centroid_shift,
+                "centroid_agreement_error_deg": agreement_error,
+                "cursor_centroid_x": float(centroid[0]),
+                "cursor_centroid_y": float(centroid[1]),
+                "component_area_px": int(area),
+                "angular_correlation_peak": peak,
+                "angular_correlation_second_peak": second_peak,
+                "angular_correlation_peak_margin": peak - second_peak,
+                "angular_correlation_prominence": prominence,
+                "raw_correlation_peak_deg": float(np.argmax(correlation)),
+                "peak_interpolation": "three_point_parabolic",
+                "template_aligned_iou": aligned_iou,
+                "validation_policy": "catastrophic_gate_owned_by_runtime",
+                "pixel_validation_performed": False,
+                "temporal_search_applied": False,
+                "confidence": confidence,
+                "confidence_level": _confidence_level(confidence),
+                "confidence_components": component_scores,
+                "_correlation": correlation,
+                "_polar": polar,
+                "_mask": mask,
+                "_crop": crop,
+                "_predicted_probability": predicted_probability,
+                "_polygon_points_crop": self.polygon @ rotation.T + self.pivot,
+            }
+        )
+        return common
+
+    @staticmethod
     def _symmetric_chamfer_curve(
         observed_edge: np.ndarray,
         observed_distance: np.ndarray,
@@ -874,6 +1059,10 @@ class CursorPoseEstimator:
             if angle_prior_deg is not None
             else None
         )
+        if self.pose_method == "angular_projection_ncc_parabolic":
+            return self._estimate_angular_projection(
+                common, crop, mask, centroid, area, patch
+            )
         gaussian_fit, correlation, chamfer_curve, observed_edge = (
             self._polygon_likelihood(patch, relative_prior, search_half_width_deg)
         )
@@ -956,6 +1145,7 @@ class CursorPoseEstimator:
                 "relative_rotation_deg": float(shift),
                 "angle_screen_deg": float((self.symmetry_axis_deg + shift) % 360.0),
                 "pose_model": "symmetry_constrained_rigid_polygon",
+                "pose_method": self.pose_method,
                 "symmetry_axis_template_deg": float(self.symmetry_axis_deg),
                 "centroid_rotation_deg": centroid_shift,
                 "centroid_agreement_error_deg": agreement_error,
