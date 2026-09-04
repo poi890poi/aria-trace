@@ -398,11 +398,14 @@ python -m iris_tools camera-adapter-demo `
   --camera-library native --camera-id CAMERA_ID --gui
 ```
 
-The calibrated GUI draws the mini-map boundary in cyan and the cursor rotation
-center/envelope in magenta. Press `G` to toggle all geometry, `B` to toggle only
-the boundary, and `C` to toggle only cursor geometry. These are display-only
-overlays; returned camera frames are unchanged. FPS is a rolling average and
-the telemetry label refreshes twice per second so it remains readable.
+The calibrated GUI draws the mini-map boundary in cyan, the cursor rotation
+center/envelope in magenta, and the canonical `GAME UP`/`GAME RIGHT` axes in
+green/orange. Press `G` to toggle all geometry, `B` to toggle only the boundary,
+`C` to toggle only cursor geometry, and `A` to toggle the game axes. The game
+axes remain visible when the circular boundary is hidden. These are
+display-only overlays; returned camera frames are unchanged. FPS is a rolling
+average and the telemetry label refreshes twice per second so it remains
+readable.
 
 Mini-map masking requires an active mini-map profile, `--mode minimap` or
 `--mode dual`, and rectification (the default; do not pass `--no-rectify`). It

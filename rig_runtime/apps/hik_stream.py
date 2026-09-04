@@ -200,6 +200,7 @@ class GeometryOverlayState:
     enabled: bool = True
     minimap_boundary: bool = True
     cursor: bool = True
+    game_axes: bool = True
 
     def handle_key(self, key: int) -> Optional[str]:
         if key in (ord("g"), ord("G")):
@@ -210,12 +211,16 @@ class GeometryOverlayState:
         elif key in (ord("c"), ord("C")):
             self.cursor = not self.cursor
             self.enabled = True
+        elif key in (ord("a"), ord("A")):
+            self.game_axes = not self.game_axes
+            self.enabled = True
         else:
             return None
-        return "Geometry overlay: {} (boundary {}, cursor {})".format(
+        return "Geometry overlay: {} (boundary {}, cursor {}, game axes {})".format(
             "on" if self.enabled else "off",
             "on" if self.minimap_boundary else "off",
             "on" if self.cursor else "off",
+            "on" if self.game_axes else "off",
         )
 
 
@@ -253,18 +258,25 @@ def overlay_stream_geometry(
     rendered = frame.copy()
     if not state.enabled:
         return rendered
-    if state.minimap_boundary:
-        geometry = _runtime_geometry(camera, "get_minimap_geometry", stream_name)
-        if (
-            geometry.get("available_in_stream_space")
-            and _space_matches_frame(geometry, frame)
-        ):
-            center = tuple(int(round(value)) for value in geometry["center_xy_px"])
-            size = geometry.get("boundary_size_xy_px") or [
-                2.0 * float(geometry["radius_px"]),
-                2.0 * float(geometry["radius_px"]),
-            ]
-            axes = tuple(max(1, int(round(float(value) / 2.0))) for value in size)
+    minimap_geometry = (
+        _runtime_geometry(camera, "get_minimap_geometry", stream_name)
+        if state.minimap_boundary or state.game_axes
+        else {}
+    )
+    minimap_geometry_available = bool(
+        minimap_geometry.get("available_in_stream_space")
+        and _space_matches_frame(minimap_geometry, frame)
+    )
+    if minimap_geometry_available:
+        center = tuple(
+            int(round(value)) for value in minimap_geometry["center_xy_px"]
+        )
+        size = minimap_geometry.get("boundary_size_xy_px") or [
+            2.0 * float(minimap_geometry["radius_px"]),
+            2.0 * float(minimap_geometry["radius_px"]),
+        ]
+        axes = tuple(max(1, int(round(float(value) / 2.0))) for value in size)
+        if state.minimap_boundary:
             cv2.ellipse(
                 rendered,
                 center,
@@ -286,12 +298,13 @@ def overlay_stream_geometry(
                 1,
                 cv2.LINE_AA,
             )
-            orientation_frame = geometry.get("orientation_frame")
+        if state.game_axes:
+            orientation_frame = minimap_geometry.get("orientation_frame")
             if isinstance(orientation_frame, Mapping):
                 arm = max(12, int(round(min(axes) * 0.75)))
-                for name, color in (
-                    ("up_unit_xy", (80, 255, 80)),
-                    ("right_unit_xy", (80, 160, 255)),
+                for name, label, color in (
+                    ("up_unit_xy", "GAME UP", (80, 255, 80)),
+                    ("right_unit_xy", "GAME RIGHT", (80, 160, 255)),
                 ):
                     vector = orientation_frame.get(name)
                     if isinstance(vector, Sequence) and len(vector) == 2:
@@ -307,6 +320,30 @@ def overlay_stream_geometry(
                             2,
                             cv2.LINE_AA,
                             tipLength=0.22,
+                        )
+                        label_origin = (
+                            max(4, min(rendered.shape[1] - 92, endpoint[0] + 4)),
+                            max(14, min(rendered.shape[0] - 4, endpoint[1] - 4)),
+                        )
+                        cv2.putText(
+                            rendered,
+                            label,
+                            label_origin,
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.42,
+                            (12, 12, 12),
+                            3,
+                            cv2.LINE_AA,
+                        )
+                        cv2.putText(
+                            rendered,
+                            label,
+                            label_origin,
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.42,
+                            color,
+                            1,
+                            cv2.LINE_AA,
                         )
     if state.cursor:
         geometry = _runtime_geometry(camera, "get_cursor_geometry", stream_name)
@@ -528,8 +565,9 @@ def parser() -> argparse.ArgumentParser:
         "--gui",
         action="store_true",
         help=(
-            "Show live frames; G/B/C toggles geometry, O corrects game-up "
-            "from fresh ADB/HIK evidence, and Q/Esc closes"
+            "Show live frames; G/B/C/A toggles geometry, boundary, cursor, and "
+            "canonical game axes; O corrects game-up from fresh ADB/HIK "
+            "evidence, and Q/Esc closes"
         ),
     )
     value.add_argument(
@@ -910,8 +948,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         windows = ["HIK {}".format(name) for name in stream_names]
         print(
-            "Live {} stream opened. G toggles geometry, B boundary, C cursor; "
-            "O matches all four orientations against a fresh ADB screenshot; "
+            "Live {} stream opened. G toggles geometry, B boundary, C cursor, "
+            "A canonical game axes; O matches all four orientations against "
+            "a fresh ADB screenshot; "
             "Q/Esc or close a window exits."
             .format(
                 effective_mode

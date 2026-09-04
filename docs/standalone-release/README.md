@@ -340,9 +340,10 @@ camera-adapter-demo.bat --game-id GAME_ID --mode dual ^
   --mask-policy minimap_circle --gui
 ```
 
-Rectification must remain enabled. Press `G`, `B`, or `C` to toggle the
-display-only geometry overlay, boundary, or cursor respectively; these keys do
-not change masking or returned frames. Export every active portable game model,
+Rectification must remain enabled. Press `G`, `B`, `C`, or `A` to toggle the
+display-only geometry overlay, boundary, cursor, or canonical `GAME UP`/`GAME
+RIGHT` axes respectively. The axes remain visible when the boundary is hidden;
+these keys do not change masking or returned frames. Export every active portable game model,
 mini-map/cursor geometry, and phone-game color reference with:
 
 ```bat

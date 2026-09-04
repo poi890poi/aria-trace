@@ -121,6 +121,10 @@ class HikStreamCliTests(unittest.TestCase):
             "available_in_stream_space": True,
             "center_xy_px": [50.0, 40.0],
             "boundary_size_xy_px": [60.0, 60.0],
+            "orientation_frame": {
+                "up_unit_xy": [0.0, -1.0],
+                "right_unit_xy": [1.0, 0.0],
+            },
             "image_space": {"stored_size_px": [100, 80]},
         }
         camera.get_cursor_geometry.return_value = {
@@ -141,6 +145,28 @@ class HikStreamCliTests(unittest.TestCase):
         rejected = stream.overlay_stream_geometry(frame, camera, "minimap", state)
         self.assertEqual(0, int(rejected.max()))
 
+    def test_game_axes_remain_visible_when_boundary_is_hidden(self):
+        frame = np.zeros((120, 160, 3), np.uint8)
+        camera = Mock()
+        camera.get_minimap_geometry.return_value = {
+            "available_in_stream_space": True,
+            "center_xy_px": [80.0, 60.0],
+            "boundary_size_xy_px": [80.0, 80.0],
+            "orientation_frame": {
+                "up_unit_xy": [0.0, -1.0],
+                "right_unit_xy": [1.0, 0.0],
+            },
+            "image_space": {"stored_size_px": [160, 120]},
+        }
+        state = stream.GeometryOverlayState(
+            minimap_boundary=False,
+            cursor=False,
+            game_axes=True,
+        )
+        rendered = stream.overlay_stream_geometry(frame, camera, "minimap", state)
+        self.assertGreater(int(rendered.max()), 0)
+        self.assertGreater(int(rendered[:, :, 1].max()), 0)
+
     def test_geometry_overlay_runtime_keys_toggle_components(self):
         state = stream.GeometryOverlayState()
         self.assertIn("off", state.handle_key(ord("g")))
@@ -148,6 +174,8 @@ class HikStreamCliTests(unittest.TestCase):
         self.assertIn("boundary off", state.handle_key(ord("b")))
         self.assertTrue(state.enabled)
         self.assertFalse(state.minimap_boundary)
+        self.assertIn("game axes off", state.handle_key(ord("a")))
+        self.assertFalse(state.game_axes)
         self.assertIsNone(state.handle_key(ord("x")))
 
     def test_open_camera_delegates_profiled_modes_to_existing_game_adapter(self):
