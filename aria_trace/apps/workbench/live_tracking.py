@@ -597,15 +597,10 @@ class WorkbenchLiveTrackingMixin:
                         ]
                         if latest["sequence"] % 30 == 0:
                             runtime["evidence"] = evidence_recorder.summary
-                with self._lock:
-                    runtime["status"] = "stopped"
-                    runtime["detail"] = "Live tracking stopped by the user."
             except Exception as exc:
                 error = "{}: {}".format(type(exc).__name__, exc)
                 run_error = error
                 with self._lock:
-                    runtime["status"] = "failed"
-                    runtime["detail"] = error
                     runtime["error"] = error
                     self._last_error = "Live tracker failed: {}".format(error)
             finally:
@@ -636,6 +631,12 @@ class WorkbenchLiveTrackingMixin:
                 with self._lock:
                     runtime["evidence"] = evidence_summary
                     runtime["route_similarity"] = route_similarity
+                    runtime["status"] = "failed" if run_error else "stopped"
+                    runtime["detail"] = (
+                        run_error
+                        if run_error
+                        else "Live tracking stopped by the user."
+                    )
 
         thread = threading.Thread(
             target=work, name="acquisition-live-tracker", daemon=True
