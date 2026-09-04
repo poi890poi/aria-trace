@@ -729,6 +729,58 @@ class TwoRateTrackerTests(unittest.TestCase):
         finally:
             tracker.close()
 
+    def test_cursor_angular_gate_holds_last_accepted_heading(self):
+        class JumpingCursorPoseEstimator(FakeCursorPoseEstimator):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+                self.calibration = {
+                    "cursor_temporal_dynamics": {
+                        "recommended_runtime_envelope": {
+                            "calibrated_turn_rate_p99_deg_s": 180.0,
+                        }
+                    }
+                }
+
+            def estimate(self, frame, frame_index=None, session_time_ns=None):
+                self.calls += 1
+                return {
+                    "detected": True,
+                    "angle_screen_deg": 10.0 if self.calls == 1 else 100.0,
+                    "confidence": 0.9,
+                    "session_time_ns": session_time_ns,
+                }
+
+        estimator = JumpingCursorPoseEstimator()
+        tracker = self._tracker(
+            ImmediateLocalizer(), cursor_pose_estimator=estimator
+        )
+        tracker.cursor_interval_ns = 1
+        frame = np.zeros((100, 100, 3), np.uint8)
+        rejected = None
+        try:
+            for index in range(200):
+                result = tracker.update(
+                    frame, 1_000_000_000 + index * 10_000_000
+                )
+                if (
+                    (result.get("cursor_pose") or {}).get("decision")
+                    == "rejected:implausible-angular-rate"
+                ):
+                    rejected = result
+                    break
+                time.sleep(0.001)
+
+            self.assertIsNotNone(rejected)
+            self.assertTrue(rejected["cursor_pose"]["held"])
+            self.assertFalse(rejected["cursor_pose_measurement_fresh_accepted"])
+            self.assertAlmostEqual(
+                rejected["cursor_pose"]["held_angle_screen_deg"], 10.0
+            )
+            self.assertAlmostEqual(rejected["pose"]["cursor_screen_deg"], 10.0)
+        finally:
+            tracker.close()
+
     def test_route_candidate_window_is_verified_and_falls_back_on_miss(self):
         class Advisor:
             def propose(self, observation, mask):

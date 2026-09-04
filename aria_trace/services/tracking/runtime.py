@@ -640,6 +640,7 @@ class TwoRateRealtimeTracker:
         self._cursor_future = None
         self._cursor_submit_host_time_ns = None
         self._last_cursor_pose = None
+        self._last_cursor_measurement = None
         self._cursor_error = None
         self.temporal_pose_search = bool(temporal_pose_search)
         self.pose_confidence_min = float(pose_confidence_min)
@@ -1012,13 +1013,53 @@ class TwoRateRealtimeTracker:
                     and float(public_result.get("confidence") or 0.0)
                     >= self.pose_confidence_min
                 )
-                public_result["accepted"] = accepted
-                public_result["decision"] = (
+                decision = (
                     "accepted"
                     if accepted
                     else "rejected:cursor-detection-or-confidence"
                 )
+                result_time_ns = int(
+                    public_result.get("session_time_ns") or timestamp_ns
+                )
+                result_angle = (
+                    float(public_result["angle_screen_deg"])
+                    if accepted
+                    else None
+                )
+                measured_rate = None
+                hard_rate = float(
+                    self.cursor_motion_envelope.get(
+                        "calibrated_turn_rate_p99_deg_s", 1440.0
+                    )
+                )
+                if (
+                    accepted
+                    and self._cursor_last_angle is not None
+                    and self._cursor_last_time_ns is not None
+                ):
+                    elapsed_s = (
+                        result_time_ns - self._cursor_last_time_ns
+                    ) / 1.0e9
+                    if 0.005 <= elapsed_s <= 2.0:
+                        measured_rate = _angle_difference_deg(
+                            result_angle, self._cursor_last_angle
+                        ) / elapsed_s
+                        if abs(measured_rate) > hard_rate:
+                            accepted = False
+                            decision = "rejected:implausible-angular-rate"
+                public_result["accepted"] = accepted
+                public_result["decision"] = decision
                 public_result["fresh_measurement"] = accepted
+                public_result["held"] = bool(
+                    not accepted and self._last_cursor_pose is not None
+                )
+                public_result["held_angle_screen_deg"] = (
+                    float(self._last_cursor_pose["angle_screen_deg"])
+                    if public_result["held"]
+                    else None
+                )
+                public_result["measured_angular_rate_deg_s"] = measured_rate
+                public_result["angular_rate_limit_deg_s"] = hard_rate
                 public_result["capture_to_publish_within_33_3ms"] = bool(
                     accepted
                     and capture_to_publish_ms is not None
@@ -1029,48 +1070,25 @@ class TwoRateRealtimeTracker:
                     and capture_to_publish_ms is not None
                     and capture_to_publish_ms <= (1000.0 / 15.0)
                 )
-                self._last_cursor_pose = public_result
+                self._last_cursor_measurement = public_result
                 if accepted:
-                    result_time_ns = int(
-                        public_result.get("session_time_ns") or timestamp_ns
-                    )
-                    result_angle = float(public_result["angle_screen_deg"])
-                    if (
-                        self._cursor_last_angle is not None
-                        and self._cursor_last_time_ns is not None
-                    ):
-                        elapsed_s = (
-                            result_time_ns - self._cursor_last_time_ns
-                        ) / 1.0e9
-                        if 0.005 <= elapsed_s <= 2.0:
-                            measured_rate = _angle_difference_deg(
-                                result_angle, self._cursor_last_angle
-                            ) / elapsed_s
-                            hard_rate = float(
-                                self.cursor_motion_envelope.get(
-                                    "calibrated_turn_rate_p99_deg_s", 1440.0
-                                )
+                    self._last_cursor_pose = public_result
+                    if measured_rate is not None:
+                        self._cursor_angular_velocity_deg_s = (
+                            0.5 * self._cursor_angular_velocity_deg_s
+                            + 0.5 * measured_rate
+                        )
+                        normal_threshold = float(
+                            self.cursor_motion_envelope.get(
+                                "normal_turn_rate_p95_deg_s",
+                                hard_rate * 0.25,
                             )
-                            measured_rate = float(
-                                np.clip(measured_rate, -hard_rate, hard_rate)
-                            )
-                            self._cursor_angular_velocity_deg_s = (
-                                0.5 * self._cursor_angular_velocity_deg_s
-                                + 0.5 * measured_rate
-                            )
-                            normal_threshold = float(
-                                self.cursor_motion_envelope.get(
-                                    "normal_turn_rate_p95_deg_s",
-                                    hard_rate * 0.25,
-                                )
-                            )
-                            self._cursor_tracking_state = (
-                                "turning"
-                                if abs(measured_rate) > normal_threshold
-                                else "stable"
-                            )
-                        else:
-                            self._cursor_tracking_state = "stable"
+                        )
+                        self._cursor_tracking_state = (
+                            "turning"
+                            if abs(measured_rate) > normal_threshold
+                            else "stable"
+                        )
                     else:
                         self._cursor_tracking_state = "stable"
                     self._cursor_last_angle = result_angle
@@ -1369,7 +1387,9 @@ class TwoRateRealtimeTracker:
             self.last_representation_ns = timestamp_ns
         self.sequence += 1
         cursor_pose_output = (
-            dict(self._last_cursor_pose) if self._last_cursor_pose else None
+            dict(self._last_cursor_measurement)
+            if self._last_cursor_measurement
+            else None
         )
         cursor_measurement_fresh_accepted = bool(
             cursor_pose_fresh
@@ -1383,6 +1403,19 @@ class TwoRateRealtimeTracker:
                 (timestamp_ns - int(cursor_pose_output["session_time_ns"])) / 1.0e6,
             )
             cursor_pose_output["age_ms"] = cursor_age_ms
+        accepted_cursor_age_ms = None
+        if (
+            self._last_cursor_pose
+            and self._last_cursor_pose.get("session_time_ns") is not None
+        ):
+            accepted_cursor_age_ms = max(
+                0.0,
+                (
+                    timestamp_ns
+                    - int(self._last_cursor_pose["session_time_ns"])
+                )
+                / 1.0e6,
+            )
         if self.fusion._state is None:
             pose = None
             mode = "INITIALIZING"
@@ -1395,8 +1428,8 @@ class TwoRateRealtimeTracker:
             if (
                 self._last_cursor_pose
                 and self._last_cursor_pose.get("accepted")
-                and cursor_age_ms is not None
-                and cursor_age_ms <= 2000.0
+                and accepted_cursor_age_ms is not None
+                and accepted_cursor_age_ms <= 2000.0
             ):
                 cursor_screen_deg = float(
                     self._last_cursor_pose["angle_screen_deg"]
