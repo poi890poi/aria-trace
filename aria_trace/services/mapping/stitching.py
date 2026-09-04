@@ -919,26 +919,52 @@ def stitch_map_frames(
                 canvas_width, canvas_height
             )
         )
-    accumulator = np.zeros((canvas_height, canvas_width, 3), np.float32)
-    weights = np.zeros((canvas_height, canvas_width), np.float32)
+    # A map is rigid source artwork.  Averaging dozens of almost-aligned
+    # viewports destroys its small text and line detail, so retain the best
+    # source sample at every canvas pixel instead.  Subpixel placement is
+    # applied inside a one-pixel-padded ROI rather than rounded away.
+    mosaic = np.zeros((canvas_height, canvas_width, 3), np.uint8)
+    best_weights = np.zeros((canvas_height, canvas_width), np.float32)
+    overlap_count = np.zeros((canvas_height, canvas_width), np.uint16)
     feather = cv2.createHanningWindow(
         (viewport_width, viewport_height), cv2.CV_32F
     )
     feather = np.maximum(feather, 0.08)
     for index in selected:
-        origin = np.rint(positions[index] - minimum).astype(int)
-        ox, oy = int(origin[0]), int(origin[1])
-        accumulator[oy : oy + viewport_height, ox : ox + viewport_width] += (
-            viewports[index].astype(np.float32) * feather[:, :, None]
+        origin = positions[index] - minimum
+        base = np.floor(origin).astype(int)
+        ox, oy = int(base[0]), int(base[1])
+        fraction = origin - base
+        roi_width = min(viewport_width + 1, canvas_width - ox)
+        roi_height = min(viewport_height + 1, canvas_height - oy)
+        transform = np.float32(
+            [[1.0, 0.0, float(fraction[0])], [0.0, 1.0, float(fraction[1])]]
         )
-        weights[oy : oy + viewport_height, ox : ox + viewport_width] += feather
-    mosaic = np.divide(
-        accumulator,
-        np.maximum(weights[:, :, None], 1.0e-6),
-    ).clip(0, 255).astype(np.uint8)
-    coverage = (weights > 0).astype(np.uint8) * 255
+        warped = cv2.warpAffine(
+            viewports[index], transform, (roi_width, roi_height),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+        )
+        warped_weight = cv2.warpAffine(
+            feather, transform, (roi_width, roi_height),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+        )
+        target_weights = best_weights[oy : oy + roi_height, ox : ox + roi_width]
+        replace = warped_weight > target_weights
+        target = mosaic[oy : oy + roi_height, ox : ox + roi_width]
+        target[replace] = warped[replace]
+        target_weights[replace] = warped_weight[replace]
+        overlap_count[oy : oy + roi_height, ox : ox + roi_width] += (
+            warped_weight > 0
+        ).astype(np.uint16)
+    coverage = (best_weights > 0).astype(np.uint8) * 255
     coverage_heatmap = cv2.applyColorMap(
-        np.uint8(np.clip(weights / max(float(weights.max()), 1.0) * 255, 0, 255)),
+        np.uint8(
+            np.clip(
+                overlap_count / max(float(overlap_count.max()), 1.0) * 255,
+                0,
+                255,
+            )
+        ),
         cv2.COLORMAP_TURBO,
     )
     if progress:
@@ -1042,6 +1068,7 @@ def stitch_map_frames(
         "rejected_registrations": len(registrations) - accepted,
         "median_registration_response": float(np.median(responses)) if responses else 0.0,
         "observed_canvas_coverage": observed_coverage,
+        "composition_method": "subpixel_highest_feather_weight_source",
         "viewport_crop_xywh": [x0, y0, viewport_width, viewport_height],
         "mosaic_size_wh": [canvas_width, canvas_height],
         "localization": localization,

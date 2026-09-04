@@ -212,6 +212,10 @@ class MapStitchingTests(unittest.TestCase):
             self.assertGreater(result["accepted_registrations"], 5)
             self.assertGreater(result["mosaic_size_wh"][0], 350)
             self.assertEqual(result["coverage_scope"], "observed_viewports_only")
+            self.assertEqual(
+                result["composition_method"],
+                "subpixel_highest_feather_weight_source",
+            )
             for item in result["evidence"]:
                 self.assertGreater((output / item["name"]).stat().st_size, 0)
             self.assertTrue((output / "map_stitch.json").is_file())
