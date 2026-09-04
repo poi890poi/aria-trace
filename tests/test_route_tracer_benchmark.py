@@ -6,6 +6,7 @@ import numpy as np
 
 from poc.benchmark_route_tracer import (
     CausalRouteTracer,
+    INITIALIZATION_POLICIES,
     _attach_reference_errors,
     _correlation_feature,
     _loss_metrics,
@@ -40,6 +41,9 @@ class _Package:
 
 
 class RouteTracerBenchmarkTests(unittest.TestCase):
+    def test_known_start_is_an_explicit_initialization_policy(self):
+        self.assertIn("known_start", INITIALIZATION_POLICIES)
+
     def test_sparse_reference_does_not_interpolate_across_rejected_gap(self):
         package = SimpleNamespace(
             manifest={

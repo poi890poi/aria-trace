@@ -36,7 +36,7 @@ VARIANTS = (
 CORRELATION_FEATURES = ("gradient", "intensity", "canny", "laplacian")
 LOCAL_MATCHERS = ("ccorr_normed", "phase_correlation")
 MODE_POLICIES = ("all", "sticky")
-INITIALIZATION_POLICIES = ("route", "global")
+INITIALIZATION_POLICIES = ("route", "global", "known_start")
 CONTINUITY_CLOCKS = ("frame", "accepted")
 RECOVERY_POLICIES = ("route", "global_consensus")
 
@@ -718,6 +718,17 @@ def benchmark_session(
     decode_times = []
     extraction_times = []
     initialization_result = None
+    known_start = None
+    if initialization == "known_start":
+        if reference_package is None or not reference_package.states:
+            raise ValueError("known_start initialization needs a reference package")
+        state = reference_package.states[0]
+        known_start = {
+            "session_time_ns": int(state["session_time_ns"]),
+            "x": float(state["canonical_xy"][0]),
+            "y": float(state["canonical_xy"][1]),
+            "mode_id": str(state["mode_id"]),
+        }
     try:
         for record in records:
             decode_started = time.perf_counter_ns()
@@ -733,6 +744,29 @@ def benchmark_session(
                 time.perf_counter_ns() - extraction_started
             ) / 1.0e6
             extraction_times.append(extraction_elapsed_ms)
+            if (
+                known_start is not None
+                and initialization_result is None
+                and int(record["session_time_ns"]) < known_start["session_time_ns"]
+            ):
+                continue
+            known_start_initializing = bool(
+                known_start is not None and initialization_result is None
+            )
+            if known_start_initializing:
+                tracer.previous_xy = (known_start["x"], known_start["y"])
+                tracer.previous_time_ns = known_start["session_time_ns"]
+                tracer.previous_mode_id = known_start["mode_id"]
+                initialization_result = {
+                    "valid": True,
+                    "elapsed_ms": 0.0,
+                    "x": known_start["x"],
+                    "y": known_start["y"],
+                    "mode_id": known_start["mode_id"],
+                    "source": "evaluator_declared_known_start",
+                    "feeds_tracker_once": True,
+                    "reference_future_positions_used": False,
+                }
             if initialization == "global" and initialization_result is None:
                 initialization_started = time.perf_counter_ns()
                 fix = atlas.localize(observation, mask)
@@ -811,7 +845,9 @@ def benchmark_session(
                     "algorithm_elapsed_ms": elapsed_ms,
                     "extraction_elapsed_ms": extraction_elapsed_ms,
                     "localization_core_elapsed_ms": core_elapsed_ms,
-                    "initialization_frame": route_initializing,
+                    "initialization_frame": bool(
+                        route_initializing or known_start_initializing
+                    ),
                 }
             )
     finally:
@@ -849,6 +885,13 @@ def benchmark_session(
             "demo_motion_vector_used": False,
             "demo_heading_used": False,
             "route_pose_used": variant == "route_descriptor",
+            "known_start_reference_feeds_tracker_once": bool(
+                initialization == "known_start"
+            ),
+            "reference_future_positions_feed_tracker": False,
+            "cold_start_localization_measured": bool(
+                initialization != "known_start"
+            ),
             "route_role": (
                 "pose baseline only"
                 if variant == "route_descriptor"
