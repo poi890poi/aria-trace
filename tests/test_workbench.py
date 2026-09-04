@@ -2128,6 +2128,62 @@ class WorkbenchTests(unittest.TestCase):
                     scene_candidates[0]["session_key"], "managed-sessions/run_01"
                 )
 
+                repeatability_labeled = state.label_session(
+                    "managed-sessions/run_01", "route_repeatability"
+                )["sessions"][0]
+                self.assertEqual(
+                    repeatability_labeled["label"], "route_repeatability"
+                )
+                self.assertEqual(
+                    repeatability_labeled["capture_kind"], "benchmark"
+                )
+                self.assertEqual(
+                    repeatability_labeled["segment_semantics"]["benchmark_type"],
+                    "localization_repeatability",
+                )
+                metadata = json.loads(
+                    (path / "session_metadata.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(metadata["schema_version"], "1.1")
+                self.assertEqual(metadata["capture_kind"], "benchmark")
+                self.assertEqual(
+                    metadata["segment_semantics"]["minimum_complete_passes"], 3
+                )
+                self.assertEqual(
+                    metadata["segment_semantics"]["position_truth_role"], "none"
+                )
+                annotations = AnnotationStore(path).list()
+                marker_kinds = {item["kind"] for item in annotations}
+                self.assertIn("capture_start", marker_kinds)
+                self.assertIn("capture_complete", marker_kinds)
+                self.assertNotIn("route_start", marker_kinds)
+                self.assertNotIn("route_complete", marker_kinds)
+                repeatability_candidates = state.descriptor()[
+                    "analysis_candidates"
+                ]["genshin-impact-pc"]["route_repeatability"]
+                self.assertEqual(
+                    repeatability_candidates[0]["session_key"],
+                    "managed-sessions/run_01",
+                )
+                evidence_path = (
+                    root
+                    / "artifacts"
+                    / "poc_evidence"
+                    / "genshin-impact-pc"
+                    / "evidence_index.json"
+                )
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                indexed = next(
+                    item
+                    for item in evidence["unassigned_sessions"]
+                    if item["relative_path"].replace("\\", "/")
+                    == "managed-sessions/run_01"
+                )
+                self.assertEqual(indexed["capture_kind"], "benchmark")
+                self.assertEqual(
+                    indexed["segment_semantics"]["repetition_unit"], "route_pass"
+                )
+
                 teleport_labeled = state.label_session(
                     "managed-sessions/run_01", "teleportation"
                 )["sessions"][0]

@@ -51,6 +51,7 @@ def _indexed_session(session_root: Path, manifest_path: Path) -> dict:
         "capture_kind",
         "capture_id",
         "workflow_stage_id",
+        "segment_semantics",
     ):
         if metadata.get(key):
             effective_context[key] = metadata[key]
@@ -86,7 +87,7 @@ def _indexed_session(session_root: Path, manifest_path: Path) -> dict:
         "capture_id": effective_context.get("capture_id"),
         "workflow_stage_id": effective_context.get("workflow_stage_id"),
         "segment_label": effective_context.get("segment_label"),
-        "segment_semantics": context.get("segment_semantics"),
+        "segment_semantics": effective_context.get("segment_semantics"),
         "start_trigger": context.get("start_trigger"),
         "input_requirement": context.get("input_requirement"),
         "profile_draft_updated_utc": (

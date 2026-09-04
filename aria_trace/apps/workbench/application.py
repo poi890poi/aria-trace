@@ -59,6 +59,7 @@ class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, Workbenc
         "minimap_calibration",
         "minimap_cruise",
         "scene_yaw_calibration",
+        "benchmark",
     )
     SESSION_LABELS = (
         {"value": "", "label": "Unlabeled"},
@@ -124,6 +125,28 @@ class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, Workbenc
             "capture_kind": "route",
             "workflow_stage_id": "route",
             "capture_id": "genshin-poc-short-route",
+        },
+        {
+            "value": "route_repeatability",
+            "label": "Repeated route laps / back-and-forth",
+            "capture_kind": "benchmark",
+            "workflow_stage_id": "route-repeatability",
+            "capture_id": "route-repeatability",
+            "segment_semantics": {
+                "benchmark_type": "localization_repeatability",
+                "repetition_unit": "route_pass",
+                "supported_direction_patterns": [
+                    "same_direction_laps",
+                    "alternating_forward_reverse",
+                ],
+                "minimum_complete_passes": 3,
+                "pass_correspondence_source": (
+                    "post_run_masked_visual_sequence_alignment"
+                ),
+                "input_role": "optional_segmentation_and_behavior_evidence_only",
+                "position_truth_role": "none",
+                "label_source": "post_capture_user_confirmation",
+            },
         },
     )
     SESSION_METADATA_FILENAME = "session_metadata.json"

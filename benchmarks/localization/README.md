@@ -51,3 +51,6 @@ gradient-correlation implementation count as one family, so minor parameter
 variants cannot manufacture consensus. Held outputs do not vote. The report
 also separates wrong map-scale/mode fixes from same-mode localization error.
 Agreement is explicitly not labeled as external ground-truth accuracy.
+
+Record repeated traversals for direct cross-pass repeatability evidence using
+the [route repeatability session protocol](ROUTE_REPEATABILITY_SESSION.md).

@@ -159,6 +159,13 @@ class SessionCatalog:
             ),
             "status": status,
             "label": label,
+            "capture_kind": metadata.get("capture_kind")
+            or context.get("capture_kind"),
+            "workflow_stage_id": metadata.get("workflow_stage_id")
+            or context.get("workflow_stage_id"),
+            "capture_id": metadata.get("capture_id") or context.get("capture_id"),
+            "segment_semantics": metadata.get("segment_semantics")
+            or context.get("segment_semantics"),
             "markers": kinds,
             "input_capture": input_health,
         }

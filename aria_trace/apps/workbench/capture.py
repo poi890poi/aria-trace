@@ -1190,12 +1190,13 @@ class WorkbenchCaptureMixin:
                         capture_id=stage.get("capture_id"),
                     )
             metadata = {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "label": definition["value"],
                 "label_display": definition["label"],
                 "capture_kind": definition.get("capture_kind"),
                 "workflow_stage_id": definition.get("workflow_stage_id"),
                 "capture_id": definition.get("capture_id"),
+                "segment_semantics": definition.get("segment_semantics"),
                 "updated_utc": datetime.now(timezone.utc).isoformat(),
             }
             _write_json_atomic(path / self.SESSION_METADATA_FILENAME, metadata)

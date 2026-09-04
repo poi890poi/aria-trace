@@ -137,6 +137,7 @@ class WorkbenchAnalysisMixin:
             "full_map",
             "ordinary_cruise",
             "route",
+            "route_repeatability",
             "teleportation",
             "minimap_transition",
         }
