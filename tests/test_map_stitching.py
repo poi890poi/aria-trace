@@ -17,9 +17,20 @@ from acquisition.map_stitching import (
     load_localization_reference_candidates,
     stitch_map_frames,
 )
+from aria_trace.services.mapping.stitching import _select_session_keyframes
 
 
 class MapStitchingTests(unittest.TestCase):
+    class _Capture:
+        def __init__(self, frames):
+            self.frames = iter(frames)
+
+        def read(self):
+            try:
+                return True, next(self.frames)
+            except StopIteration:
+                return False, None
+
     def test_oriented_gradient_zncc_prefers_matching_edge_polarity(self):
         template = np.zeros((30, 30, 3), np.uint8)
         template[:, 15:] = 220
@@ -204,6 +215,23 @@ class MapStitchingTests(unittest.TestCase):
             for item in result["evidence"]:
                 self.assertGreater((output / item["name"]).stat().st_size, 0)
             self.assertTrue((output / "map_stitch.json").is_file())
+
+    def test_session_keyframe_selection_does_not_retain_every_video_frame(self):
+        rng = np.random.RandomState(12)
+        panorama = rng.randint(0, 255, (220, 600, 3), dtype=np.uint8)
+        frames = [
+            panorama[:, offset : offset + 300].copy()
+            for offset in range(0, 181, 3)
+        ]
+        selected, indices, decoded = _select_session_keyframes(
+            self._Capture(frames), len(frames)
+        )
+
+        self.assertEqual(decoded, len(frames))
+        self.assertEqual(len(selected), len(indices))
+        self.assertLess(len(selected), len(frames) // 3)
+        self.assertEqual(indices[0], 0)
+        self.assertGreater(indices[-1], 50)
 
 
 if __name__ == "__main__":

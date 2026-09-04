@@ -97,6 +97,14 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
         self.assertIn("arrival_localization_source_counts", self.source)
         self.assertIn("geometric fallback", self.source)
 
+    def test_map_atlas_requires_independent_overview_and_detail_stitches(self):
+        self.assertEqual(self.parser.locations["worldLayer"], "mapTask")
+        self.assertEqual(self.parser.locations["townLayer"], "mapTask")
+        self.assertIn("world_stitch_id:ui.worldLayer.value", self.source)
+        self.assertIn("town_stitch_id:ui.townLayer.value", self.source)
+        self.assertIn("ui.worldLayer.value!==ui.townLayer.value", self.source)
+        self.assertIn("an overview is never enlarged", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

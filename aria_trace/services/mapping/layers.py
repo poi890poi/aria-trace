@@ -136,11 +136,19 @@ def _build_layer_specific_localization(
             )
         )
     requested_factor = 1.0 / original_per_minimap
+    if requested_factor > 1.0 + 1.0e-3:
+        raise RuntimeError(
+            "Layer {} would need {:.3f}x image enlargement to match the mini-map. "
+            "Use a full-map stitch recorded at a larger rendered-map scale; "
+            "upscaling cannot create matchable detail.".format(
+                mode_id, requested_factor
+            )
+        )
     size = (
         max(64, int(round(mosaic.shape[1] * requested_factor))),
         max(64, int(round(mosaic.shape[0] * requested_factor))),
     )
-    interpolation = cv2.INTER_AREA if requested_factor < 1.0 else cv2.INTER_CUBIC
+    interpolation = cv2.INTER_AREA if requested_factor < 1.0 else cv2.INTER_NEAREST
     localization_mosaic = cv2.resize(mosaic, size, interpolation=interpolation)
     localization_coverage = cv2.resize(
         coverage, size, interpolation=cv2.INTER_NEAREST
@@ -168,6 +176,10 @@ def _build_layer_specific_localization(
         "localization_to_original_3x3": localization_to_original,
         "localization_size_wh": list(size),
         "map_pixels_per_minimap_pixel": original_per_minimap,
+        "localization_resample_factor": float(requested_factor),
+        "localization_resampling": (
+            "area_downsample" if requested_factor < 1.0 else "native_scale"
+        ),
         "minimap_reference_file": reference_file,
         "minimap_reference_to_original_map_3x3": estimate[
             "layer_original_to_canonical_3x3"
@@ -313,6 +325,10 @@ def build_map_atlas(
                 "map_pixels_per_minimap_pixel": localization.get(
                     "map_pixels_per_minimap_pixel"
                 ),
+                "localization_resample_factor": localization.get(
+                    "resample_factor"
+                ),
+                "localization_resampling": localization.get("resampling"),
                 "minimap_reference_file": None,
                 "minimap_reference_quality": localization.get("quality"),
             }
@@ -337,6 +353,12 @@ def build_map_atlas(
                 ),
                 "map_pixels_per_minimap_pixel": layer_localization.get(
                     "map_pixels_per_minimap_pixel"
+                ),
+                "localization_resample_factor": layer_localization.get(
+                    "localization_resample_factor"
+                ),
+                "localization_resampling": layer_localization.get(
+                    "localization_resampling"
                 ),
                 "minimap_reference_file": layer_localization.get(
                     "minimap_reference_file"

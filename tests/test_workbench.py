@@ -2919,8 +2919,12 @@ class WorkbenchTests(unittest.TestCase):
 
                 def fake_atlas(layers, output, canonical_mode_id, atlas_id):
                     output.mkdir(parents=True)
+                    (output / "layers" / "town").mkdir(parents=True)
                     (output / "canonical_mosaic.png").write_bytes(b"atlas-image")
                     (output / "canonical_coverage.png").write_bytes(b"coverage")
+                    (output / "layers" / "town" / "localization_mosaic.png").write_bytes(
+                        b"town-detail"
+                    )
                     result = {
                         "schema_version": "1.0",
                         "atlas_id": atlas_id,
@@ -2932,7 +2936,12 @@ class WorkbenchTests(unittest.TestCase):
                         "canonical_mode_id": canonical_mode_id,
                         "canonical_mosaic_file": "canonical_mosaic.png",
                         "canonical_coverage_file": "canonical_coverage.png",
-                        "layers": [],
+                        "layers": [
+                            {
+                                "mode_id": "town",
+                                "localization_mosaic_file": "layers/town/localization_mosaic.png",
+                            }
+                        ],
                     }
                     (output / "map_atlas.json").write_text(
                         json.dumps(result), encoding="utf-8"
@@ -2958,6 +2967,30 @@ class WorkbenchTests(unittest.TestCase):
                     ),
                     b"atlas-image",
                 )
+                self.assertEqual(
+                    state.map_atlas_image(
+                        "genshin-impact-pc",
+                        "atlas-a",
+                        "layers/town/localization_mosaic.png",
+                    ),
+                    b"town-detail",
+                )
+
+                with self.assertRaisesRegex(ValueError, "town-detail stitch"):
+                    state.run_map_atlas(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "world_stitch_id": "world-stitch",
+                        }
+                    )
+                with self.assertRaisesRegex(ValueError, "manufacture blur"):
+                    state.run_map_atlas(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "world_stitch_id": "world-stitch",
+                            "town_stitch_id": "world-stitch",
+                        }
+                    )
 
                 calibration_root = (
                     root
@@ -3033,7 +3066,7 @@ class WorkbenchTests(unittest.TestCase):
                 stitch_root = (
                     root / "artifacts" / "map_stitches" / "genshin-impact-pc"
                 )
-                for stitch_id in ("world-stitch",):
+                for stitch_id in ("world-stitch", "town-stitch"):
                     path = stitch_root / stitch_id
                     path.mkdir(parents=True)
                     (path / "map_stitch.json").write_text(
@@ -3077,7 +3110,7 @@ class WorkbenchTests(unittest.TestCase):
                 def fake_atlas(layers, output, canonical_mode_id, atlas_id):
                     self.assertIs(layers[0]["minimap_reference"], source["image"])
                     self.assertIs(layers[1]["minimap_reference"], target["image"])
-                    self.assertEqual(
+                    self.assertNotEqual(
                         layers[0]["stitch_root"], layers[1]["stitch_root"]
                     )
                     output.mkdir(parents=True)
@@ -3128,7 +3161,8 @@ class WorkbenchTests(unittest.TestCase):
                         {
                             "game_profile_id": "genshin-impact-pc",
                             "atlas_id": "atlas-transition",
-                            "map_stitch_id": "world-stitch",
+                            "world_stitch_id": "world-stitch",
+                            "town_stitch_id": "town-stitch",
                             "transition_session_relative_path": "transitions/run_01",
                             "minimap_calibration_id": "cal-a",
                         }
@@ -3145,7 +3179,14 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertEqual(
                     atlas["transition_reference"]["target_frame_index"], 58
                 )
-                self.assertEqual(atlas["source_map_stitch_id"], "world-stitch")
+                self.assertIsNone(atlas["source_map_stitch_id"])
+                self.assertEqual(
+                    atlas["source_layers"],
+                    [
+                        {"mode_id": "world", "stitch_id": "world-stitch"},
+                        {"mode_id": "town", "stitch_id": "town-stitch"},
+                    ],
+                )
             finally:
                 state.close()
 

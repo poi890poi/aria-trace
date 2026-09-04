@@ -612,11 +612,17 @@ def _build_localization_derivative(
     if not 0.5 <= scale <= 16.0:
         raise RuntimeError("Mini-map/full-map scale {:.3f} is implausible".format(scale))
     requested_factor = 1.0 / scale
+    if requested_factor > 1.0 + 1.0e-3:
+        raise RuntimeError(
+            "The stitched map would need {:.3f}x image enlargement to match the "
+            "mini-map. Record the full map at a larger rendered-map scale; "
+            "upscaling cannot create matchable detail.".format(requested_factor)
+        )
     localization_size = (
         max(64, int(round(mosaic.shape[1] * requested_factor))),
         max(64, int(round(mosaic.shape[0] * requested_factor))),
     )
-    interpolation = cv2.INTER_AREA if requested_factor < 1.0 else cv2.INTER_CUBIC
+    interpolation = cv2.INTER_AREA if requested_factor < 1.0 else cv2.INTER_NEAREST
     localization_mosaic = cv2.resize(mosaic, localization_size, interpolation=interpolation)
     localization_coverage = cv2.resize(
         coverage, localization_size, interpolation=cv2.INTER_NEAREST
@@ -749,6 +755,10 @@ def _build_localization_derivative(
         "coverage_file": "localization_coverage.png",
         "size_wh": list(localization_size),
         "map_pixels_per_minimap_pixel": scale,
+        "resample_factor": float(requested_factor),
+        "resampling": (
+            "area_downsample" if requested_factor < 1.0 else "native_scale"
+        ),
         "minimap_to_map_rotation_deg": applied_rotation,
         "applied_map_rotation_deg": applied_rotation,
         "diagnostic_residual_rotation_deg": residual_rotation,
@@ -821,10 +831,17 @@ def stitch_map_frames(
     provenance=None,
     progress=None,
     localization_reference=None,
+    source_frame_indices=None,
+    source_frame_count=None,
 ) -> dict:
     """Register overlapping map-view frames and write a reviewable mosaic."""
     if len(frames) < 2:
         raise ValueError("Map stitching needs at least two frames")
+    source_frame_indices = list(
+        range(len(frames)) if source_frame_indices is None else source_frame_indices
+    )
+    if len(source_frame_indices) != len(frames):
+        raise ValueError("Source frame indices must match the supplied map frames")
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     height, width = frames[0].shape[:2]
@@ -863,8 +880,10 @@ def stitch_map_frames(
         )
         registrations.append(
             {
-                "from_frame": reference_index,
-                "to_frame": index,
+                "from_frame": source_frame_indices[reference_index],
+                "to_frame": source_frame_indices[index],
+                "_from_local": reference_index,
+                "_to_local": index,
                 "content_shift_xy_px": [shift[0], shift[1]],
                 "magnitude_px": magnitude,
                 "response": response,
@@ -943,8 +962,8 @@ def stitch_map_frames(
     samples = []
     for item in sample_rows:
         overlay = _registration_image(
-            viewports[item["from_frame"]],
-            viewports[item["to_frame"]],
+            viewports[item["_from_local"]],
+            viewports[item["_to_local"]],
             item["content_shift_xy_px"],
         )
         samples.append(cv2.resize(overlay, (320, 180)))
@@ -1005,6 +1024,10 @@ def stitch_map_frames(
             ]
         )
     accepted = sum(1 for item in registrations if item["accepted"])
+    public_registrations = [
+        {key: value for key, value in item.items() if not key.startswith("_")}
+        for item in registrations
+    ]
     observed_coverage = float(np.count_nonzero(coverage) / coverage.size)
     result = {
         "schema_version": "1.0",
@@ -1012,8 +1035,8 @@ def stitch_map_frames(
         "status": "review_required" if accepted else "failed",
         "coverage_scope": "observed_viewports_only",
         "provenance": provenance or {},
-        "source_frame_count": len(frames),
-        "selected_frame_indices": selected,
+        "source_frame_count": int(source_frame_count or len(frames)),
+        "selected_frame_indices": [source_frame_indices[index] for index in selected],
         "selected_frame_count": len(selected),
         "accepted_registrations": accepted,
         "rejected_registrations": len(registrations) - accepted,
@@ -1022,7 +1045,7 @@ def stitch_map_frames(
         "viewport_crop_xywh": [x0, y0, viewport_width, viewport_height],
         "mosaic_size_wh": [canvas_width, canvas_height],
         "localization": localization,
-        "registrations": registrations,
+        "registrations": public_registrations,
         "warnings": [
             "Observed coverage does not certify every game region or layer."
         ],
@@ -1030,6 +1053,73 @@ def stitch_map_frames(
     }
     _atomic_json(output_path / "map_stitch.json", result)
     return result
+
+
+def _select_session_keyframes(capture, expected_count: int, progress=None):
+    """Stream a long recording and retain only overlapping, displaced keyframes."""
+    selected_frames = []
+    selected_indices = []
+    reference = None
+    reference_position = np.array([0.0, 0.0])
+    last_position = reference_position.copy()
+    last_accepted_frame = None
+    last_accepted_index = None
+    decoded_count = 0
+    viewport_size = None
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        source_index = decoded_count
+        decoded_count += 1
+        height, width = frame.shape[:2]
+        margins = {
+            "left": min(180, width // 5),
+            "top": min(65, height // 10),
+            "right": min(100, width // 8),
+            "bottom": min(55, height // 10),
+        }
+        x0, y0 = margins["left"], margins["top"]
+        x1, y1 = width - margins["right"], height - margins["bottom"]
+        viewport = frame[y0:y1, x0:x1]
+        if reference is None:
+            reference = viewport.copy()
+            viewport_size = (x1 - x0, y1 - y0)
+            selected_frames.append(frame.copy())
+            selected_indices.append(source_index)
+            last_accepted_frame = frame.copy()
+            last_accepted_index = source_index
+        else:
+            shift, response = _estimate_translation(reference, viewport)
+            magnitude = float(np.linalg.norm(shift))
+            accepted = bool(
+                response >= 0.06
+                and abs(shift[0]) < viewport_size[0] * 0.45
+                and abs(shift[1]) < viewport_size[1] * 0.45
+            )
+            if accepted:
+                last_position = reference_position - np.asarray(shift)
+                last_accepted_frame = frame.copy()
+                last_accepted_index = source_index
+                if magnitude >= 28.0:
+                    selected_frames.append(frame.copy())
+                    selected_indices.append(source_index)
+                    reference = viewport.copy()
+                    reference_position = last_position.copy()
+        if progress and decoded_count % 90 == 0:
+            progress(
+                "Selecting map keyframes: {} / {} frames · {} retained".format(
+                    decoded_count, expected_count or "?", len(selected_frames)
+                )
+            )
+    if (
+        last_accepted_frame is not None
+        and last_accepted_index != selected_indices[-1]
+        and np.linalg.norm(last_position - reference_position) >= 5.0
+    ):
+        selected_frames.append(last_accepted_frame)
+        selected_indices.append(last_accepted_index)
+    return selected_frames, selected_indices, decoded_count
 
 
 def stitch_map_session(
@@ -1041,21 +1131,12 @@ def stitch_map_session(
     reader = SessionReader(session_path)
     records = reader.frames_by_stream.get("main", [])
     if progress:
-        progress("Decoding the full-map recording")
+        progress("Streaming the full-map recording and selecting keyframes")
     capture = cv2.VideoCapture(str(reader.video_path("main")))
-    frames = []
     try:
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            frames.append(frame)
-            if progress and len(frames) % 90 == 0:
-                progress(
-                    "Decoding full-map video: {} / {} frames".format(
-                        len(frames), len(records)
-                    )
-                )
+        frames, source_indices, decoded_count = _select_session_keyframes(
+            capture, len(records), progress
+        )
     finally:
         capture.release()
     return stitch_map_frames(
@@ -1068,4 +1149,6 @@ def stitch_map_session(
         },
         progress=progress,
         localization_reference=localization_reference,
+        source_frame_indices=source_indices,
+        source_frame_count=decoded_count,
     )

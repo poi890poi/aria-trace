@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -11,6 +12,7 @@ from acquisition.map_layers import (
     build_map_atlas,
     estimate_map_layer_alignment,
 )
+from aria_trace.services.mapping.layers import _build_layer_specific_localization
 
 
 class MapLayerTests(unittest.TestCase):
@@ -85,6 +87,29 @@ class MapLayerTests(unittest.TestCase):
                 item for item in manifest["layers"] if item["mode_id"] == "town"
             )
             self.assertIsNotNone(town_layer["alignment_evidence_file"])
+
+    def test_rejects_enlarging_a_low_detail_layer(self):
+        mosaic = np.full((120, 160, 3), 90, np.uint8)
+        coverage = np.full((120, 160), 255, np.uint8)
+        reference = np.full((80, 80, 3), 90, np.uint8)
+        mask = np.full((80, 80), 255, np.uint8)
+        estimate = {
+            "layer_original_to_canonical_3x3": np.eye(3),
+            "quality": {"canonical_pixels_per_layer_pixel": 0.8},
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "aria_trace.services.mapping.layers.estimate_map_layer_alignment",
+            return_value=estimate,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "image enlargement"):
+                _build_layer_specific_localization(
+                    mosaic,
+                    coverage,
+                    reference,
+                    mask,
+                    Path(temporary),
+                    "town",
+                )
 
     def test_layered_localizer_returns_canonical_coordinates_and_mode(self):
         canonical, layer = self._mosaics()

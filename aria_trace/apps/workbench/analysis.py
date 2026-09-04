@@ -743,18 +743,29 @@ class WorkbenchAnalysisMixin:
             game = self.profiles.game(game_profile_id)
             layers = [dict(item) for item in value.get("layers") or ()]
             if not layers:
-                map_stitch_id = value.get("map_stitch_id") or value.get(
-                    "world_stitch_id"
+                world_stitch_id = value.get("world_stitch_id") or value.get(
+                    "map_stitch_id"
                 )
+                town_stitch_id = value.get("town_stitch_id")
+                if not town_stitch_id:
+                    raise ValueError(
+                        "Choose a separate town-detail stitch recorded at the "
+                        "larger rendered-map scale"
+                    )
+                if str(world_stitch_id or "") == str(town_stitch_id):
+                    raise ValueError(
+                        "World overview and town detail must use different map "
+                        "stitches; reusing the overview would manufacture blur"
+                    )
                 layers = [
                     {
                         "mode_id": "world",
-                        "stitch_id": map_stitch_id,
+                        "stitch_id": world_stitch_id,
                         "display_name": "World overview",
                     },
                     {
                         "mode_id": "town",
-                        "stitch_id": value.get("town_stitch_id") or map_stitch_id,
+                        "stitch_id": town_stitch_id,
                         "display_name": "Town detail",
                     },
                 ]
@@ -888,7 +899,12 @@ class WorkbenchAnalysisMixin:
     def map_atlas_image(
         self, game_profile_id: str, atlas_id: str, name: str
     ) -> bytes:
-        if Path(name).name != name or not name.lower().endswith(".png"):
+        relative = Path(name)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or relative.suffix.lower() != ".png"
+        ):
             raise ValueError("Invalid map-atlas evidence image name")
         root = self._map_atlas_root(game_profile_id) / safe_id(atlas_id)
         descriptor = json.loads(
@@ -906,10 +922,14 @@ class WorkbenchAnalysisMixin:
             item.get("minimap_reference_file")
             for item in descriptor.get("layers") or []
         )
+        declared.update(
+            item.get("localization_mosaic_file")
+            for item in descriptor.get("layers") or []
+        )
         declared.add((descriptor.get("transition_model") or {}).get("evidence_file"))
         if name not in declared:
             raise ValueError("Unknown map-atlas evidence image")
-        return (root / name).read_bytes()
+        return (root / relative).read_bytes()
 
     def _route_tracking_root(self, game_profile_id: str) -> Path:
         return self.artifact_root / "route_tracking" / safe_id(game_profile_id)
