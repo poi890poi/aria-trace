@@ -400,6 +400,12 @@ class WorkbenchLiveTrackingMixin:
                 "started_utc": datetime.now(timezone.utc).isoformat(),
                 "latest": None,
                 "high_rate_fps": 0.0,
+                "cursor_attempt_fps": 0.0,
+                "fresh_pose_fps": 0.0,
+                "fresh_pose_frame_rate": 0.0,
+                "cursor_deadline_33_3ms_rate": 0.0,
+                "cursor_deadline_66_7ms_rate": 0.0,
+                "cursor_capture_to_publish_p95_ms": None,
                 "processed_frames": 0,
                 "error": None,
                 "route_similarity": None,
@@ -450,6 +456,7 @@ class WorkbenchLiveTrackingMixin:
 
         def work() -> None:
             recent_times = []
+            recent_pose_samples = []
             frame_pump = LatestFramePump(frame_source)
             run_error = None
             try:
@@ -496,10 +503,91 @@ class WorkbenchLiveTrackingMixin:
                         and recent_times[-1] > recent_times[0]
                         else 0.0
                     )
+                    cursor = latest.get("cursor_pose") or {}
+                    recent_pose_samples.append(
+                        {
+                            "time": now,
+                            "attempt": bool(latest.get("cursor_pose_fresh")),
+                            "fresh": bool(
+                                latest.get("cursor_pose_measurement_fresh_accepted")
+                            ),
+                            "deadline_33": bool(
+                                latest.get("cursor_pose_deadline_33_3ms_met")
+                            ),
+                            "deadline_66": bool(
+                                latest.get("cursor_pose_deadline_66_7ms_met")
+                            ),
+                            "latency_ms": (
+                                float(cursor["capture_to_publish_ms"])
+                                if latest.get("cursor_pose_fresh")
+                                and cursor.get("capture_to_publish_ms") is not None
+                                else None
+                            ),
+                        }
+                    )
+                    recent_pose_samples = [
+                        item
+                        for item in recent_pose_samples
+                        if now - item["time"] <= 2.0
+                    ]
+                    pose_window_s = (
+                        recent_pose_samples[-1]["time"]
+                        - recent_pose_samples[0]["time"]
+                        if len(recent_pose_samples) >= 2
+                        else 0.0
+                    )
+                    fresh_count = sum(item["fresh"] for item in recent_pose_samples)
+                    attempt_count = sum(
+                        item["attempt"] for item in recent_pose_samples
+                    )
+                    pose_sample_count = len(recent_pose_samples)
+                    latencies = sorted(
+                        item["latency_ms"]
+                        for item in recent_pose_samples
+                        if item["latency_ms"] is not None
+                    )
+                    p95_latency = (
+                        latencies[
+                            min(
+                                len(latencies) - 1,
+                                max(0, math.ceil(0.95 * len(latencies)) - 1),
+                            )
+                        ]
+                        if latencies
+                        else None
+                    )
                     with self._lock:
                         runtime["latest"] = latest
                         runtime["processed_frames"] = latest["sequence"]
                         runtime["high_rate_fps"] = high_rate_fps
+                        runtime["cursor_attempt_fps"] = (
+                            attempt_count / pose_window_s
+                            if pose_window_s > 0.0
+                            else 0.0
+                        )
+                        runtime["fresh_pose_fps"] = (
+                            fresh_count / pose_window_s
+                            if pose_window_s > 0.0
+                            else 0.0
+                        )
+                        runtime["fresh_pose_frame_rate"] = (
+                            fresh_count / pose_sample_count
+                            if pose_sample_count
+                            else 0.0
+                        )
+                        runtime["cursor_deadline_33_3ms_rate"] = (
+                            sum(item["deadline_33"] for item in recent_pose_samples)
+                            / pose_sample_count
+                            if pose_sample_count
+                            else 0.0
+                        )
+                        runtime["cursor_deadline_66_7ms_rate"] = (
+                            sum(item["deadline_66"] for item in recent_pose_samples)
+                            / pose_sample_count
+                            if pose_sample_count
+                            else 0.0
+                        )
+                        runtime["cursor_capture_to_publish_p95_ms"] = p95_latency
                         runtime["capture_dropped_before_processing"] = (
                             frame_pump.dropped_before_processing
                         )

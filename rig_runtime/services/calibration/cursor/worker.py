@@ -1,6 +1,7 @@
 """Process-isolated cursor pose execution for the live tracker."""
 
 import multiprocessing
+import time
 from concurrent.futures import ProcessPoolExecutor
 
 import cv2
@@ -39,6 +40,7 @@ def _estimate(
 ):
     if _PROCESS_ESTIMATOR is None:
         raise RuntimeError("Cursor pose worker was not initialized")
+    started_host_time_ns = time.perf_counter_ns()
     result = _PROCESS_ESTIMATOR.estimate(
         frame,
         frame_index,
@@ -46,9 +48,16 @@ def _estimate(
         angle_prior_deg,
         search_half_width_deg,
     )
+    completed_host_time_ns = time.perf_counter_ns()
     # Diagnostic arrays are useful offline but expensive to copy back for every
     # live frame. Event evidence is reconstructed from the source frame.
-    return _PROCESS_ESTIMATOR.public_result(result)
+    public = _PROCESS_ESTIMATOR.public_result(result)
+    public["estimator_started_host_time_ns"] = started_host_time_ns
+    public["estimator_completed_host_time_ns"] = completed_host_time_ns
+    public["estimator_elapsed_ms"] = (
+        completed_host_time_ns - started_host_time_ns
+    ) / 1.0e6
+    return public
 
 
 class CursorPoseProcessExecutor:

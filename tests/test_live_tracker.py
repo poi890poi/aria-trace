@@ -700,7 +700,7 @@ class TwoRateTrackerTests(unittest.TestCase):
         result = None
         try:
             for index in range(100):
-                result = tracker.update(frame, index * 2_000_000 + 1)
+                result = tracker.update(frame, time.perf_counter_ns())
                 if (
                     result.get("pose")
                     and result["pose"].get("player_heading_map_deg") is not None
@@ -717,6 +717,14 @@ class TwoRateTrackerTests(unittest.TestCase):
                 "calibrated_cursor_plus_map_alignment",
             )
             self.assertEqual(cursor_pose_estimator.last_frame_shape, (80, 80, 3))
+            self.assertTrue(result["cursor_pose_fresh"])
+            self.assertTrue(result["cursor_pose_measurement_fresh_accepted"])
+            self.assertGreaterEqual(
+                result["cursor_pose"]["capture_to_publish_ms"], 0.0
+            )
+            self.assertGreaterEqual(
+                result["cursor_pose"]["submit_to_publish_ms"], 0.0
+            )
         finally:
             tracker.close()
 

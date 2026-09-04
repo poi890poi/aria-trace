@@ -638,6 +638,7 @@ class TwoRateRealtimeTracker:
             self._cursor_executor = None
             self._cursor_executor_kind = None
         self._cursor_future = None
+        self._cursor_submit_host_time_ns = None
         self._last_cursor_pose = None
         self._cursor_error = None
         self.temporal_pose_search = bool(temporal_pose_search)
@@ -972,6 +973,34 @@ class TwoRateRealtimeTracker:
                         lambda value: value,
                     )(result)
                 )
+                published_host_time_ns = time.perf_counter_ns()
+                source_frame_time_ns = public_result.get("session_time_ns")
+                capture_to_publish_ms = (
+                    max(
+                        0.0,
+                        (
+                            published_host_time_ns - int(source_frame_time_ns)
+                        )
+                        / 1.0e6,
+                    )
+                    if source_frame_time_ns is not None
+                    else None
+                )
+                submit_to_publish_ms = (
+                    max(
+                        0.0,
+                        (
+                            published_host_time_ns
+                            - int(self._cursor_submit_host_time_ns)
+                        )
+                        / 1.0e6,
+                    )
+                    if self._cursor_submit_host_time_ns is not None
+                    else None
+                )
+                public_result["published_host_time_ns"] = published_host_time_ns
+                public_result["capture_to_publish_ms"] = capture_to_publish_ms
+                public_result["submit_to_publish_ms"] = submit_to_publish_ms
                 accepted = bool(
                     public_result.get("detected")
                     and float(public_result.get("confidence") or 0.0)
@@ -982,6 +1011,17 @@ class TwoRateRealtimeTracker:
                     "accepted"
                     if accepted
                     else "rejected:cursor-detection-or-confidence"
+                )
+                public_result["fresh_measurement"] = accepted
+                public_result["capture_to_publish_within_33_3ms"] = bool(
+                    accepted
+                    and capture_to_publish_ms is not None
+                    and capture_to_publish_ms <= (1000.0 / 30.0)
+                )
+                public_result["capture_to_publish_within_66_7ms"] = bool(
+                    accepted
+                    and capture_to_publish_ms is not None
+                    and capture_to_publish_ms <= (1000.0 / 15.0)
                 )
                 self._last_cursor_pose = public_result
                 if accepted:
@@ -1040,6 +1080,7 @@ class TwoRateRealtimeTracker:
                 self._cursor_rejections += 1
                 self._cursor_tracking_state = "recovering"
             self._cursor_future = None
+            self._cursor_submit_host_time_ns = None
         cursor_due = (
             self.last_cursor_ns is None
             or timestamp_ns - self.last_cursor_ns >= self.cursor_interval_ns
@@ -1058,6 +1099,7 @@ class TwoRateRealtimeTracker:
                 "state": self._cursor_tracking_state,
             }
             cursor_crop = self.extractor.crop(frame).copy()
+            self._cursor_submit_host_time_ns = time.perf_counter_ns()
             if self._cursor_executor_kind == "process":
                 self._cursor_future = self._cursor_executor.submit(
                     cursor_crop,
@@ -1323,6 +1365,11 @@ class TwoRateRealtimeTracker:
         cursor_pose_output = (
             dict(self._last_cursor_pose) if self._last_cursor_pose else None
         )
+        cursor_measurement_fresh_accepted = bool(
+            cursor_pose_fresh
+            and cursor_pose_output
+            and cursor_pose_output.get("accepted")
+        )
         cursor_age_ms = None
         if cursor_pose_output and cursor_pose_output.get("session_time_ns") is not None:
             cursor_age_ms = max(
@@ -1428,6 +1475,17 @@ class TwoRateRealtimeTracker:
             "map_representation_error": self._representation_error,
             "cursor_pose": cursor_pose_output,
             "cursor_pose_fresh": cursor_pose_fresh,
+            "cursor_pose_measurement_fresh_accepted": (
+                cursor_measurement_fresh_accepted
+            ),
+            "cursor_pose_deadline_33_3ms_met": bool(
+                cursor_measurement_fresh_accepted
+                and cursor_pose_output.get("capture_to_publish_within_33_3ms")
+            ),
+            "cursor_pose_deadline_66_7ms_met": bool(
+                cursor_measurement_fresh_accepted
+                and cursor_pose_output.get("capture_to_publish_within_66_7ms")
+            ),
             "cursor_pose_running": self._cursor_future is not None,
             "cursor_executor": self._cursor_executor_kind,
             "cursor_error": self._cursor_error,

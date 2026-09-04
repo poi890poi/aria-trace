@@ -323,6 +323,8 @@ function renderTrackerAnalysisFor(mode){
       metric('Player heading',heading,pose.heading_source||'waiting for calibrated cursor')+
       metric('Map alignment',alignment,'motion-to-mosaic transform · latest Δ '+Number(local.map_alignment_delta_deg||0).toFixed(2)+'°')+
       metric('Cursor pose',cursor.accepted?Number(cursor.angle_screen_deg).toFixed(1)+'°':'unavailable',(cursor.decision||'waiting')+' · confidence '+Number(cursor.confidence||0).toFixed(3)+' · age '+Number(cursor.age_ms||0).toFixed(0)+' ms')+
+      metric('Fresh pose rate',Number(tracker.fresh_pose_fps||0).toFixed(1)+' fixes/s','accepted from current frames · attempts '+Number(tracker.cursor_attempt_fps||0).toFixed(1)+'/s · frame acceptance '+(Number(tracker.fresh_pose_frame_rate||0)*100).toFixed(1)+'%')+
+      metric('Pose deadlines',(Number(tracker.cursor_deadline_33_3ms_rate||0)*100).toFixed(1)+'% ≤33.3 ms',(Number(tracker.cursor_deadline_66_7ms_rate||0)*100).toFixed(1)+'% ≤66.7 ms · capture-to-publish p95 '+Number(tracker.cursor_capture_to_publish_p95_ms||0).toFixed(1)+' ms')+
       metric('Global candidate',Number(globalFix.score||0).toFixed(3),(rejected?'REJECTED · ':'')+decision+' · margin '+Number(globalFix.margin||0).toFixed(3))+
       metric('Global geometry',(globalFix.inlier_count||0)+' / '+(globalFix.ratio_match_count||0)+' inliers','p95 '+Number(globalFix.reprojection_p95_localization_px||0).toFixed(2)+' px · '+Number(globalFix.elapsed_ms||0).toFixed(1)+' ms')+
       metric('Map scale mode',latest.active_map_mode_id||globalFix.map_mode_id||'not established',transition.to_mode_id?transition.from_mode_id+' → '+transition.to_mode_id+' · position held continuously':'no scale transition observed')+
