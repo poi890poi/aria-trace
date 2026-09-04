@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from rig_runtime.adapters.filesystem.profile_registry import AdapterRequest
 from rig_runtime.adapters.hik.compat import _adapter_request_from_config
 from rig_runtime.apps import hik_stream
+from rig_runtime.apps import hik_rig_calibration
 from rig_runtime.domain.configuration import (
     ADAPTER_DEFAULTS,
+    RIG_CALIBRATION_DEFAULTS,
     ResolvedAdapterPlan,
 )
 from rig_runtime.workflows import profile_management
+from rig_runtime.workflows.hik_rig_calibration import HikCalibrationOptions
 
 
 class AdapterConfigurationTests(unittest.TestCase):
@@ -79,6 +83,63 @@ class AdapterConfigurationTests(unittest.TestCase):
             projected.game_upright_quarter_turns_clockwise,
             projected.as_dict()["game_upright_quarter_turns_clockwise"],
         )
+
+
+class RigCalibrationConfigurationTests(unittest.TestCase):
+    def test_cli_and_options_use_one_rig_calibration_policy(self):
+        cli = hik_rig_calibration.parser().parse_args([])
+        options = HikCalibrationOptions(
+            camera_id="camera",
+            phone_serial="phone",
+            output_directory=Path("unused"),
+        )
+        pairs = (
+            (cli.camera_width, options.camera_width_px, "camera_width_px"),
+            (cli.camera_height, options.camera_height_px, "camera_height_px"),
+            (cli.camera_fps, options.camera_fps, "camera_fps"),
+            (cli.target_port, options.target_port, "target_port"),
+            (cli.target_presenter, options.target_presenter, "target_presenter"),
+            (cli.panel_scale, options.panel_scale_mode, "panel_scale_mode"),
+            (
+                cli.operation_timeout_seconds,
+                options.operation_timeout_seconds,
+                "operation_timeout_seconds",
+            ),
+            (
+                cli.max_shutter_multiplier,
+                options.maximum_shutter_multiplier,
+                "maximum_shutter_multiplier",
+            ),
+            (
+                cli.max_exposure_periods,
+                options.maximum_exposure_periods,
+                "maximum_exposure_periods",
+            ),
+            (cli.max_auto_gain_db, options.maximum_auto_gain_db, "maximum_auto_gain_db"),
+            (cli.geometry_frames, options.geometry_frames, "geometry_frames"),
+            (
+                cli.visible_screen_margin_px,
+                options.visible_screen_margin_px,
+                "visible_screen_margin_px",
+            ),
+            (cli.settle_frames, options.settle_frames, "settle_frames"),
+            (
+                cli.distortion_correction,
+                options.distortion_correction,
+                "distortion_correction",
+            ),
+            (
+                cli.distortion_views,
+                options.distortion_view_count,
+                "distortion_view_count",
+            ),
+            (cli.final_benchmark, options.final_benchmark_mode, "final_benchmark_mode"),
+        )
+        for cli_value, option_value, policy_name in pairs:
+            self.assertEqual(
+                getattr(RIG_CALIBRATION_DEFAULTS, policy_name), cli_value
+            )
+            self.assertEqual(cli_value, option_value)
 
 
 if __name__ == "__main__":

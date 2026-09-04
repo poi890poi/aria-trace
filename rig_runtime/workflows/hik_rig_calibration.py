@@ -110,6 +110,15 @@ from rig_runtime.adapters.filesystem.system_configuration import (
     DEFAULT_RIG_REPEATABILITY_POLICY,
     RIG_REPEATABILITY_POLICIES,
 )
+from rig_runtime.domain.configuration import (
+    DISTORTION_CORRECTION_MODES,
+    EXPOSURE_PERIOD_COUNTS,
+    FINAL_BENCHMARK_MODES,
+    PANEL_SCALE_MODES,
+    RIG_CALIBRATION_DEFAULTS,
+    SHUTTER_MULTIPLIERS,
+    TARGET_PRESENTERS,
+)
 from rig_runtime.apps.rig_presentation import console_print
 
 
@@ -119,6 +128,7 @@ CompleteGrader = Callable[[np.ndarray, str, Mapping[str, Any]], Mapping[str, Any
 DATA_MATRIX_ACCEPTANCE_RATE = 0.95
 DATA_MATRIX_MINIMUM_TRIALS = 20
 DATA_MATRIX_DEFAULT_TRIALS = 40
+DATA_MATRIX_INITIAL_MODULE_PX = 1
 DATA_MATRIX_MAX_PATTERNS_PER_SCREEN = 8
 PANEL_FONT_SCALE = 0.50
 PANEL_LINE_STEP_PX = 22
@@ -226,33 +236,35 @@ class HikCalibrationOptions:
     camera_id: str
     phone_serial: str
     output_directory: Path
-    camera_width_px: int = 2448
-    camera_height_px: int = 2048
-    camera_fps: float = 30.0
-    target_port: int = 0
-    target_presenter: str = "native_app"
+    camera_width_px: int = RIG_CALIBRATION_DEFAULTS.camera_width_px
+    camera_height_px: int = RIG_CALIBRATION_DEFAULTS.camera_height_px
+    camera_fps: float = RIG_CALIBRATION_DEFAULTS.camera_fps
+    target_port: int = RIG_CALIBRATION_DEFAULTS.target_port
+    target_presenter: str = RIG_CALIBRATION_DEFAULTS.target_presenter
     phone_target_apk: Optional[Path] = None
-    panel_scale_mode: str = "auto"
+    panel_scale_mode: str = RIG_CALIBRATION_DEFAULTS.panel_scale_mode
     display_component: Optional[str] = None
-    operation_timeout_seconds: float = 8.0
+    operation_timeout_seconds: float = RIG_CALIBRATION_DEFAULTS.operation_timeout_seconds
     refresh_hz_override: Optional[float] = None
-    maximum_shutter_multiplier: int = 2
-    maximum_exposure_periods: int = 1
-    maximum_auto_gain_db: float = 12.0
-    exposure_noise_frames: int = 4
-    geometry_frames: int = 12
-    visible_screen_margin_px: int = 8
-    settle_frames: int = 3
+    maximum_shutter_multiplier: int = RIG_CALIBRATION_DEFAULTS.maximum_shutter_multiplier
+    maximum_exposure_periods: int = RIG_CALIBRATION_DEFAULTS.maximum_exposure_periods
+    maximum_auto_gain_db: float = RIG_CALIBRATION_DEFAULTS.maximum_auto_gain_db
+    exposure_noise_frames: int = RIG_CALIBRATION_DEFAULTS.exposure_noise_frames
+    geometry_frames: int = RIG_CALIBRATION_DEFAULTS.geometry_frames
+    visible_screen_margin_px: int = RIG_CALIBRATION_DEFAULTS.visible_screen_margin_px
+    settle_frames: int = RIG_CALIBRATION_DEFAULTS.settle_frames
     headless: bool = False
     save_without_prompt: bool = False
     grade_data_matrix: bool = False
     data_matrix_trials_per_size: int = DATA_MATRIX_DEFAULT_TRIALS
-    data_matrix_initial_module_px: int = 1
+    data_matrix_initial_module_px: int = DATA_MATRIX_INITIAL_MODULE_PX
     complete_grader_plugin: Optional[str] = None
     strict_display_screenshot_verification: bool = False
-    distortion_correction: str = "off"
-    distortion_view_count: int = 8
-    distortion_min_relative_p95_improvement: float = 0.05
+    distortion_correction: str = RIG_CALIBRATION_DEFAULTS.distortion_correction
+    distortion_view_count: int = RIG_CALIBRATION_DEFAULTS.distortion_view_count
+    distortion_min_relative_p95_improvement: float = (
+        RIG_CALIBRATION_DEFAULTS.distortion_min_relative_p95_improvement
+    )
     repeatability_policy: str = DEFAULT_RIG_REPEATABILITY_POLICY
     save_max_displacement_px: float = float(
         _DEFAULT_REPEATABILITY["save_max_displacement_px"]
@@ -260,12 +272,12 @@ class HikCalibrationOptions:
     save_movement_consecutive_frames: int = int(
         _DEFAULT_REPEATABILITY["save_movement_consecutive_frames"]
     )
-    final_benchmark_mode: str = "auto"
+    final_benchmark_mode: str = RIG_CALIBRATION_DEFAULTS.final_benchmark_mode
 
     def __post_init__(self) -> None:
-        if self.maximum_shutter_multiplier not in (2, 3):
+        if self.maximum_shutter_multiplier not in SHUTTER_MULTIPLIERS:
             raise ValueError("Maximum shutter multiplier must be 2 or 3")
-        if self.maximum_exposure_periods not in (1, 2, 3):
+        if self.maximum_exposure_periods not in EXPOSURE_PERIOD_COUNTS:
             raise ValueError("Maximum exposure periods must be 1, 2, or 3")
         if self.maximum_auto_gain_db <= 0:
             raise ValueError("Maximum HIK auto gain must be positive")
@@ -285,7 +297,7 @@ class HikCalibrationOptions:
             raise ValueError("Operation timeout must be positive")
         if self.visible_screen_margin_px < 0:
             raise ValueError("Visible-screen coverage margin cannot be negative")
-        if self.final_benchmark_mode not in ("auto", "full", "reduced", "skip"):
+        if self.final_benchmark_mode not in FINAL_BENCHMARK_MODES:
             raise ValueError(
                 "Final benchmark mode must be auto, full, reduced, or skip"
             )
@@ -295,7 +307,7 @@ class HikCalibrationOptions:
             raise ValueError("Save movement frame count must be positive")
         if self.repeatability_policy not in RIG_REPEATABILITY_POLICIES:
             raise ValueError("Unknown rig repeatability policy")
-        if self.target_presenter not in ("native_app", "owned_http", "legacy_gallery"):
+        if self.target_presenter not in TARGET_PRESENTERS:
             raise ValueError("Unknown phone target presenter")
         if not 0 <= int(self.target_port) <= 65535:
             raise ValueError("Phone target port must be within 0..65535")
@@ -303,9 +315,9 @@ class HikCalibrationOptions:
             raise ValueError(
                 "display_component applies only to target_presenter=legacy_gallery"
             )
-        if self.panel_scale_mode not in ("auto", "adb", "hik_charuco"):
+        if self.panel_scale_mode not in PANEL_SCALE_MODES:
             raise ValueError("Unknown panel scale mode")
-        if self.distortion_correction not in ("off", "guided"):
+        if self.distortion_correction not in DISTORTION_CORRECTION_MODES:
             raise ValueError("Distortion correction must be off or guided")
         if self.distortion_view_count < 4:
             raise ValueError("Guided distortion calibration needs at least four views")

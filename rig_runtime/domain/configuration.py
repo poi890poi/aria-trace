@@ -26,6 +26,12 @@ MASK_POLICIES = ("none", "minimap_circle")
 ORIENTATION_BEHAVIORS = ("as_is", "projection", "image")
 FRAME_RATE_POLICIES = ("calibrated", "exact")
 QUARTER_TURN_DEGREES = (0, 90, 180, 270)
+TARGET_PRESENTERS = ("native_app", "owned_http", "legacy_gallery")
+PANEL_SCALE_MODES = ("auto", "adb", "hik_charuco")
+SHUTTER_MULTIPLIERS = (2, 3)
+EXPOSURE_PERIOD_COUNTS = (1, 2, 3)
+DISTORTION_CORRECTION_MODES = ("off", "guided")
+FINAL_BENCHMARK_MODES = ("auto", "full", "reduced", "skip")
 
 
 @dataclass(frozen=True)
@@ -233,13 +239,19 @@ __all__ = [
     "ADAPTER_MODES",
     "COLOR_ORDERS",
     "COLOR_POLICIES",
+    "DISTORTION_CORRECTION_MODES",
+    "EXPOSURE_PERIOD_COUNTS",
+    "FINAL_BENCHMARK_MODES",
     "FRAME_RATE_POLICIES",
     "MASK_POLICIES",
     "NORMALIZATION_MODES",
     "ORIENTATION_BEHAVIORS",
+    "PANEL_SCALE_MODES",
     "QUARTER_TURN_DEGREES",
     "RIG_CALIBRATION_DEFAULTS",
     "ROI_POLICIES",
+    "SHUTTER_MULTIPLIERS",
+    "TARGET_PRESENTERS",
     "AcquisitionDefaults",
     "AdapterDefaults",
     "ResolvedAdapterPlan",

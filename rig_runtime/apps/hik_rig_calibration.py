@@ -16,8 +16,20 @@ from rig_runtime.adapters.android.phone import (
     resolve_adb_executable,
 )
 from rig_runtime.workflows.hik_rig_calibration import (
+    DATA_MATRIX_DEFAULT_TRIALS,
+    DATA_MATRIX_INITIAL_MODULE_PX,
+    DATA_MATRIX_MINIMUM_TRIALS,
     HikCalibrationOptions,
     HikRigCalibrationSession,
+)
+from rig_runtime.domain.configuration import (
+    DISTORTION_CORRECTION_MODES,
+    EXPOSURE_PERIOD_COUNTS,
+    FINAL_BENCHMARK_MODES,
+    PANEL_SCALE_MODES,
+    RIG_CALIBRATION_DEFAULTS,
+    SHUTTER_MULTIPLIERS,
+    TARGET_PRESENTERS,
 )
 from rig_runtime.adapters.filesystem.profile_registry import default_profile_root
 from rig_runtime.adapters.filesystem.system_configuration import (
@@ -89,35 +101,52 @@ def parser() -> argparse.ArgumentParser:
         help="save the calibration bundle without publishing its active rig profile",
     )
     value.add_argument("--list-cameras", action="store_true")
-    value.add_argument("--camera-width", type=int, default=2448)
-    value.add_argument("--camera-height", type=int, default=2048)
-    value.add_argument("--camera-fps", type=float, default=30.0)
+    value.add_argument(
+        "--camera-width", type=int, default=RIG_CALIBRATION_DEFAULTS.camera_width_px
+    )
+    value.add_argument(
+        "--camera-height", type=int, default=RIG_CALIBRATION_DEFAULTS.camera_height_px
+    )
+    value.add_argument(
+        "--camera-fps", type=float, default=RIG_CALIBRATION_DEFAULTS.camera_fps
+    )
     value.add_argument("--refresh-hz", type=float)
     value.add_argument(
         "--max-shutter-multiplier",
         type=int,
-        choices=(2, 3),
-        default=2,
+        choices=SHUTTER_MULTIPLIERS,
+        default=RIG_CALIBRATION_DEFAULTS.maximum_shutter_multiplier,
         help="Fastest shutter-rate multiple of panel refresh",
     )
     value.add_argument(
         "--max-exposure-periods",
         type=int,
-        choices=(1, 2, 3),
-        default=1,
-        help="Longest HIK auto exposure in complete panel refresh periods (default: 1)",
+        choices=EXPOSURE_PERIOD_COUNTS,
+        default=RIG_CALIBRATION_DEFAULTS.maximum_exposure_periods,
+        help=(
+            "Longest HIK auto exposure in complete panel refresh periods "
+            "(default: {})".format(
+                RIG_CALIBRATION_DEFAULTS.maximum_exposure_periods
+            )
+        ),
     )
     value.add_argument(
         "--max-auto-gain-db",
         type=float,
-        default=12.0,
-        help="HIK one-shot auto-gain upper limit in dB (default: 12)",
+        default=RIG_CALIBRATION_DEFAULTS.maximum_auto_gain_db,
+        help="HIK one-shot auto-gain upper limit in dB (default: {})".format(
+            RIG_CALIBRATION_DEFAULTS.maximum_auto_gain_db
+        ),
     )
-    value.add_argument("--exposure-noise-frames", type=int, default=4)
+    value.add_argument(
+        "--exposure-noise-frames",
+        type=int,
+        default=RIG_CALIBRATION_DEFAULTS.exposure_noise_frames,
+    )
     value.add_argument(
         "--target-presenter",
-        choices=("native_app", "owned_http", "legacy_gallery"),
-        default="native_app",
+        choices=TARGET_PRESENTERS,
+        default=RIG_CALIBRATION_DEFAULTS.target_presenter,
         help=(
             "phone target surface: native immersive SurfaceView (default), "
             "compatibility browser HTTP surface, or legacy Gallery"
@@ -133,8 +162,8 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument(
         "--panel-scale",
-        choices=("auto", "adb", "hik_charuco"),
-        default="auto",
+        choices=PANEL_SCALE_MODES,
+        default=RIG_CALIBRATION_DEFAULTS.panel_scale_mode,
         help=(
             "geometry destination scale: auto enables ChArUco/native-surface scale "
             "on MTK platforms; adb retains compatibility raster dimensions"
@@ -143,7 +172,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--target-port",
         type=int,
-        default=0,
+        default=RIG_CALIBRATION_DEFAULTS.target_port,
         help="local owned-target port; 0 chooses a free port (default)",
     )
     value.add_argument(
@@ -153,12 +182,20 @@ def parser() -> argparse.ArgumentParser:
             "auto-detects the built-in Gallery/Display app"
         ),
     )
-    value.add_argument("--operation-timeout-seconds", type=float, default=8.0)
-    value.add_argument("--geometry-frames", type=int, default=12)
+    value.add_argument(
+        "--operation-timeout-seconds",
+        type=float,
+        default=RIG_CALIBRATION_DEFAULTS.operation_timeout_seconds,
+    )
+    value.add_argument(
+        "--geometry-frames",
+        type=int,
+        default=RIG_CALIBRATION_DEFAULTS.geometry_frames,
+    )
     value.add_argument(
         "--distortion-correction",
-        choices=("off", "guided"),
-        default="off",
+        choices=DISTORTION_CORRECTION_MODES,
+        default=RIG_CALIBRATION_DEFAULTS.distortion_correction,
         help=(
             "guided collects distinct ChArUco views and enables correction only "
             "after independent holdout improvement; off keeps homography-only"
@@ -167,25 +204,34 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--distortion-views",
         type=int,
-        default=8,
-        help="guided ChArUco views including one independent holdout (default: 8)",
+        default=RIG_CALIBRATION_DEFAULTS.distortion_view_count,
+        help=(
+            "guided ChArUco views including one independent holdout "
+            "(default: {})".format(RIG_CALIBRATION_DEFAULTS.distortion_view_count)
+        ),
     )
     value.add_argument(
         "--distortion-min-relative-p95-improvement",
         type=float,
-        default=0.05,
+        default=RIG_CALIBRATION_DEFAULTS.distortion_min_relative_p95_improvement,
         help="minimum independent p95 improvement required to save correction",
     )
     value.add_argument(
         "--visible-screen-margin-px",
         type=int,
-        default=8,
+        default=RIG_CALIBRATION_DEFAULTS.visible_screen_margin_px,
         help=(
             "Outward display-space margin around all camera-visible phone pixels "
-            "for normalization and hardware ROI coverage (default: 8)"
+            "for normalization and hardware ROI coverage (default: {})".format(
+                RIG_CALIBRATION_DEFAULTS.visible_screen_margin_px
+            )
         ),
     )
-    value.add_argument("--settle-frames", type=int, default=3)
+    value.add_argument(
+        "--settle-frames",
+        type=int,
+        default=RIG_CALIBRATION_DEFAULTS.settle_frames,
+    )
     value.add_argument(
         "--strict-display-screenshot-verification",
         action="store_true",
@@ -197,8 +243,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--headless", action="store_true", help="Skip interactive focus UI")
     value.add_argument(
         "--final-benchmark",
-        choices=("auto", "full", "reduced", "skip"),
-        default="auto",
+        choices=FINAL_BENCHMARK_MODES,
+        default=RIG_CALIBRATION_DEFAULTS.final_benchmark_mode,
         help=(
             "final stream benchmark policy: auto uses reduced reads and no "
             "display transitions in headless mode, full in GUI mode"
@@ -220,10 +266,16 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--data-matrix-trials",
         type=int,
-        default=40,
-        help="Patterns per module size (minimum 20, default 40)",
+        default=DATA_MATRIX_DEFAULT_TRIALS,
+        help="Patterns per module size (minimum {}, default {})".format(
+            DATA_MATRIX_MINIMUM_TRIALS, DATA_MATRIX_DEFAULT_TRIALS
+        ),
     )
-    value.add_argument("--data-matrix-initial-module-px", type=int, default=1)
+    value.add_argument(
+        "--data-matrix-initial-module-px",
+        type=int,
+        default=DATA_MATRIX_INITIAL_MODULE_PX,
+    )
     value.add_argument(
         "--complete-grader-plugin",
         help="Optional module:callable implementing an external complete symbol verifier",
