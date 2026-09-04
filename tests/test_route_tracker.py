@@ -124,6 +124,41 @@ class RouteTrackerTests(unittest.TestCase):
             self.assertEqual(second["source"], "continuous-local")
             self.assertEqual(map_localizer.centers[-1], (83.0, -4.0))
 
+    def test_visual_tracker_prefers_active_layer_refinement(self):
+        class ActiveLayerMap:
+            def __init__(self):
+                self.active_calls = 0
+
+            def refine_near(self, *args, **kwargs):
+                raise AssertionError("all-layer refinement must not be used")
+
+            def refine_active_near(
+                self, observation, mask, center, search_radius_px, score_min
+            ):
+                self.active_calls += 1
+                return {
+                    "valid": True,
+                    "x": float(center[0]),
+                    "y": float(center[1]),
+                    "score": 0.2,
+                    "selected_mode_id": "world",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            package, images = self._package(Path(temporary) / "route")
+            map_localizer = ActiveLayerMap()
+            tracker = RouteVisualTracker(
+                package, map_localizer, score_min=0.0, local_radius_px=12.0
+            )
+            tracker.seed(40.0, 0.0)
+
+            result = tracker.track(
+                images[4], np.full((64, 64), 255, np.uint8)
+            )
+
+            self.assertTrue(result["measurement_accepted"])
+            self.assertEqual(map_localizer.active_calls, 1)
+
     def test_visual_tracker_holds_prior_pose_on_implausible_jump(self):
         class JumpingMap:
             def __init__(self):

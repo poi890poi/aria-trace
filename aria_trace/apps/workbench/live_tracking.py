@@ -365,6 +365,9 @@ class WorkbenchLiveTrackingMixin:
                         route_package,
                         localizer,
                         score_min=float(resolved_profile["route_map_score_min"]),
+                        local_radius_px=float(
+                            resolved_profile["route_local_radius_px"]
+                        ),
                     )
                     if tracking_mode == "route-assisted"
                     else None

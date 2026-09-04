@@ -16,7 +16,8 @@ TRACKING_PROFILES = {
         "pose_confidence_min": 0.0,
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
-        "route_map_score_min": 0.50,
+        "route_map_score_min": 0.0,
+        "route_local_radius_px": 12.0,
     },
     "real-time-legacy": {
         "cursor_pose_core": "polygon_gaussian",
@@ -30,6 +31,7 @@ TRACKING_PROFILES = {
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
         "route_map_score_min": 0.50,
+        "route_local_radius_px": 18.0,
     },
     "fast": {
         "cursor_pose_core": "polygon_gaussian",
@@ -43,6 +45,7 @@ TRACKING_PROFILES = {
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
         "route_map_score_min": 0.50,
+        "route_local_radius_px": 18.0,
     },
     "accurate": {
         "cursor_pose_core": "polygon_gaussian",
@@ -56,6 +59,7 @@ TRACKING_PROFILES = {
         "cursor_worker_process": True,
         "cursor_opencv_threads": 1,
         "route_map_score_min": 0.50,
+        "route_local_radius_px": 18.0,
     },
     "offline": {
         "cursor_pose_core": "polygon_gaussian",
@@ -69,6 +73,7 @@ TRACKING_PROFILES = {
         "cursor_worker_process": True,
         "cursor_opencv_threads": 2,
         "route_map_score_min": 0.50,
+        "route_local_radius_px": 18.0,
     },
 }
 
@@ -102,4 +107,6 @@ def resolve_tracking_profile(
         raise ValueError("cursor_opencv_threads must be at least one")
     if not 0.0 <= float(value["route_map_score_min"]) <= 1.0:
         raise ValueError("route_map_score_min must be within 0..1")
+    if not 4.0 <= float(value["route_local_radius_px"]) <= 150.0:
+        raise ValueError("route_local_radius_px must be within 4..150")
     return value

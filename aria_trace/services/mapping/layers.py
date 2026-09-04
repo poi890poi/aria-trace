@@ -668,6 +668,30 @@ class LayeredGlobalLocalizer:
             "modes": diagnostics,
         }
 
+    def refine_active_near(
+        self,
+        observation: np.ndarray,
+        mask: np.ndarray,
+        canonical_xy,
+        search_radius_px: float = 18.0,
+        score_min: float = 0.55,
+    ) -> dict:
+        """Refine XY against only the currently active representation layer."""
+
+        mode_ids = (
+            (self.active_mode_id,)
+            if self.active_mode_id is not None
+            else None
+        )
+        return self.refine_near(
+            observation,
+            mask,
+            canonical_xy,
+            search_radius_px=search_radius_px,
+            score_min=score_min,
+            mode_ids=mode_ids,
+        )
+
     def localize_all(
         self,
         observation: np.ndarray,

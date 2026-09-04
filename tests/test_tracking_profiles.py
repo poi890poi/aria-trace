@@ -29,7 +29,8 @@ class TrackingProfileTests(unittest.TestCase):
         self.assertTrue(realtime["cursor_worker_process"])
         self.assertEqual(realtime["cursor_opencv_threads"], 1)
         self.assertEqual(offline["cursor_opencv_threads"], 2)
-        self.assertEqual(realtime["route_map_score_min"], 0.50)
+        self.assertEqual(realtime["route_map_score_min"], 0.0)
+        self.assertEqual(realtime["route_local_radius_px"], 12.0)
         self.assertEqual(offline["route_map_score_min"], 0.50)
 
     def test_explicit_developer_override_is_visible(self):
@@ -54,6 +55,10 @@ class TrackingProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "route_map_score_min"):
             resolve_tracking_profile(
                 "real-time", {"route_map_score_min": 1.1}
+            )
+        with self.assertRaisesRegex(ValueError, "route_local_radius_px"):
+            resolve_tracking_profile(
+                "real-time", {"route_local_radius_px": 2.0}
             )
 
 

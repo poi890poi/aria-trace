@@ -238,8 +238,13 @@ class RouteVisualTracker:
         )
 
     def _refine(self, observation, mask, center, radius, source, state_index=None):
+        refiner = getattr(
+            self.map_localizer,
+            "refine_active_near",
+            self.map_localizer.refine_near,
+        )
         result = dict(
-            self.map_localizer.refine_near(
+            refiner(
                 observation,
                 mask,
                 center,
