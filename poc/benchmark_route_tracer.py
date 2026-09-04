@@ -742,10 +742,27 @@ def benchmark_session(
                         )
                     )
             started = time.perf_counter_ns()
+            route_initializing = bool(
+                initialization == "route" and initialization_result is None
+            )
             result = tracer.track(
                 observation, mask, session_time_ns=record["session_time_ns"]
             )
             elapsed_ms = (time.perf_counter_ns() - started) / 1.0e6
+            if route_initializing:
+                initialization_result = {
+                    "valid": bool(result.valid and result.measurement_accepted),
+                    "elapsed_ms": elapsed_ms,
+                    "score": float(result.score),
+                    "margin": float(result.margin),
+                    "x": result.x,
+                    "y": result.y,
+                    "mode_id": result.mode_id,
+                    "source": result.source,
+                    "feeds_tracker_once": bool(
+                        result.valid and result.measurement_accepted
+                    ),
+                }
             core_elapsed_ms = extraction_elapsed_ms + elapsed_ms
             rows.append(
                 {
@@ -772,6 +789,7 @@ def benchmark_session(
                     "algorithm_elapsed_ms": elapsed_ms,
                     "extraction_elapsed_ms": extraction_elapsed_ms,
                     "localization_core_elapsed_ms": core_elapsed_ms,
+                    "initialization_frame": route_initializing,
                 }
             )
     finally:

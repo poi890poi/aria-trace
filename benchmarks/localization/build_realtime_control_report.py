@@ -66,7 +66,12 @@ def _candidate_name(root: Path, report_path: Path) -> str:
 
 
 def _aggregate_candidate(name: str, runs: list[dict]) -> dict:
-    rows = [row for run in runs for row in run["rows"]]
+    rows = [
+        row
+        for run in runs
+        for row in run["rows"]
+        if not row.get("initialization_frame", False)
+    ]
     fresh = np.asarray([bool(row["measurement_accepted"]) for row in rows])
     candidate = np.asarray(
         [bool(row.get("primary_candidate_produced", True)) for row in rows]
