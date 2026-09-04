@@ -839,6 +839,11 @@ def benchmark_session(
             "frame_count": len(rows),
         },
         "route_package": str(Path(package_path)),
+        "reference_package": (
+            str(Path(reference_package_path))
+            if reference_package_path is not None
+            else None
+        ),
         "atlas": str(Path(atlas_path)),
         "parameters": {
             "score_min": float(score_min),

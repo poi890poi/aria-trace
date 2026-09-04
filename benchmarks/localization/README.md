@@ -32,3 +32,18 @@ The output is a machine-readable JSON file and a narrow-screen `REPORT.txt`.
 The report recommends only candidates with independent post-run reference
 coverage; unlabeled holdouts can support latency and availability but cannot
 prove localization accuracy.
+
+For sessions that have only a sparse offline atlas anchor, add several matcher
+families under the same candidate/replay layout and build the consistency
+report:
+
+```powershell
+& $python -m benchmarks.localization.build_cross_session_report `
+  artifacts\poc\localization-cross-session-candidates-YYYYMMDD `
+  artifacts\poc\localization-cross-session-report-YYYYMMDD
+```
+
+This report uses the offline anchor and a leave-one-family-out median. Search
+radii of the same gradient-correlation implementation count as one family, so
+minor parameter variants cannot manufacture consensus. Held outputs do not
+vote. Agreement is explicitly not labeled as external ground-truth accuracy.
