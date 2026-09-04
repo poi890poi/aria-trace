@@ -2181,7 +2181,12 @@ class WorkbenchTests(unittest.TestCase):
                 )
                 self.assertEqual(indexed["capture_kind"], "benchmark")
                 self.assertEqual(
-                    indexed["segment_semantics"]["repetition_unit"], "route_pass"
+                    indexed["segment_semantics"]["repetition_unit"],
+                    "repeated_complete_state_visit",
+                )
+                self.assertEqual(
+                    indexed["segment_semantics"]["lap_boundary_requirement"],
+                    "none",
                 )
 
                 teleport_labeled = state.label_session(
