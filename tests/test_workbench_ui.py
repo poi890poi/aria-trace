@@ -112,6 +112,21 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
         self.assertIn("ui.sourceInventorySummary.textContent='Sources · '", self.source)
         self.assertIn("rig calibration'+(rigs.length===1?'':'s')+' ready", self.source)
 
+    def test_session_collection_is_filterable_and_paged(self):
+        for element_id in (
+            "sessionSearch",
+            "sessionLabelFilter",
+            "sessionPageSize",
+            "sessionPrevious",
+            "sessionNext",
+            "sessionPageStatus",
+        ):
+            self.assertIn(element_id, self.parser.locations)
+        self.assertIn("filtered.slice(start,end)", self.source)
+        self.assertIn("Math.ceil(filtered.length/pageSize)", self.source)
+        self.assertIn("sessionPage=0;renderSessions()", self.source)
+        self.assertIn("No matching sessions", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
