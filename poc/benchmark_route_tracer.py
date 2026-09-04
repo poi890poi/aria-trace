@@ -66,9 +66,9 @@ class TraceResult:
     source: str
     route_state_index: Optional[int] = None
     mode_id: Optional[str] = None
-    measurement_accepted: bool = True
-    primary_candidate_produced: bool = True
-    primary_measurement_accepted: bool = True
+    measurement_accepted: bool = False
+    primary_candidate_produced: bool = False
+    primary_measurement_accepted: bool = False
     final_gate_rejected: bool = False
 
 
@@ -187,7 +187,14 @@ class CausalRouteTracer:
         return self.package.candidates(descriptor, top_k=top_k)
 
     def _refine_centers(
-        self, feature, mask, centers, radius_px, source, mode_ids=None
+        self,
+        feature,
+        mask,
+        centers,
+        radius_px,
+        source,
+        mode_ids=None,
+        apply_score=True,
     ):
         hypotheses = []
         for center, route_state_index in centers:
@@ -220,16 +227,19 @@ class CausalRouteTracer:
             >= 8.0
         ]
         second = max(distinct_scores, default=0.0)
-        valid = bool(best["score"] >= self.score_min)
+        valid = bool(not apply_score or best["score"] >= self.score_min)
         return TraceResult(
             valid,
-            best["x"] if valid else None,
-            best["y"] if valid else None,
+            best["x"],
+            best["y"],
             best["score"],
             best["score"] - second,
             source,
             best["route_state_index"],
             best["mode_id"],
+            measurement_accepted=valid,
+            primary_candidate_produced=True,
+            primary_measurement_accepted=valid,
         )
 
     def _observe_one_mode(self, localizer, feature, mask, center, radius_px):
@@ -316,7 +326,9 @@ class CausalRouteTracer:
             "reason": None if valid else "phase-correlation-outside-local-support",
         }
 
-    def _route_refine(self, observation, feature, mask, top_k: int):
+    def _route_refine(
+        self, observation, feature, mask, top_k: int, *, apply_score=True
+    ):
         descriptor = describe_minimap(observation, mask)
         candidates = self._route_candidates(descriptor, top_k)
         centers = [
@@ -324,7 +336,12 @@ class CausalRouteTracer:
             for item in candidates
         ]
         return self._refine_centers(
-            feature, mask, centers, self.recovery_radius_px, "route_recovery"
+            feature,
+            mask,
+            centers,
+            self.recovery_radius_px,
+            "route_recovery",
+            apply_score=apply_score,
         )
 
     def track(self, observation, mask, session_time_ns=None) -> TraceResult:
@@ -351,6 +368,9 @@ class CausalRouteTracer:
                 "route_descriptor",
                 int(best["state_index"]),
                 str(state["mode_id"]),
+                measurement_accepted=valid,
+                primary_candidate_produced=True,
+                primary_measurement_accepted=valid,
             )
         else:
             feature = _correlation_feature(
@@ -376,12 +396,19 @@ class CausalRouteTracer:
                         self.local_radius_px,
                         "local",
                         mode_ids=mode_ids,
+                        apply_score=self.variant != "local_primary_gated",
                     )
                 if not result.valid and not (
                     self.variant == "local_primary_gated"
                     and self.previous_xy is not None
                 ):
-                    result = self._route_refine(observation, feature, mask, 3)
+                    result = self._route_refine(
+                        observation,
+                        feature,
+                        mask,
+                        3,
+                        apply_score=self.variant != "local_primary_gated",
+                    )
                 elif not result.valid and self.previous_xy is not None:
                     result = TraceResult(
                         True,
@@ -394,6 +421,42 @@ class CausalRouteTracer:
                         primary_candidate_produced=False,
                         primary_measurement_accepted=False,
                     )
+        if (
+            self.variant == "local_primary_gated"
+            and result.valid
+            and result.measurement_accepted
+            and result.score < self.score_min
+        ):
+            if self.previous_xy is None:
+                result = TraceResult(
+                    False,
+                    None,
+                    None,
+                    result.score,
+                    result.margin,
+                    "initialization_rejected_by_final_gate",
+                    result.route_state_index,
+                    result.mode_id,
+                    measurement_accepted=False,
+                    primary_candidate_produced=True,
+                    primary_measurement_accepted=False,
+                    final_gate_rejected=True,
+                )
+            else:
+                result = TraceResult(
+                    True,
+                    self.previous_xy[0],
+                    self.previous_xy[1],
+                    result.score,
+                    result.margin,
+                    "confidence_hold",
+                    result.route_state_index,
+                    result.mode_id,
+                    measurement_accepted=False,
+                    primary_candidate_produced=True,
+                    primary_measurement_accepted=False,
+                    final_gate_rejected=True,
+                )
         if (
             self.variant in ("continuous_gated", "local_primary_gated")
             and result.valid

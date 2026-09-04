@@ -115,7 +115,7 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
         self.assertEqual((result.x, result.y), (50.0, 60.0))
         self.assertEqual(result.source, "continuity_hold")
 
-    def test_two_layer_variant_does_not_invoke_route_recovery_after_seed(self):
+    def test_two_layer_variant_rejects_low_score_in_single_final_gate(self):
         package = _Package()
         atlas = Mock()
         atlas.localizers = {"world": object()}
@@ -141,8 +141,9 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
 
         self.assertTrue(result.valid)
         self.assertFalse(result.measurement_accepted)
-        self.assertFalse(result.primary_candidate_produced)
-        self.assertEqual(result.source, "primary_rejection_hold")
+        self.assertTrue(result.primary_candidate_produced)
+        self.assertTrue(result.final_gate_rejected)
+        self.assertEqual(result.source, "confidence_hold")
         self.assertEqual((result.x, result.y), (50.0, 60.0))
         self.assertEqual(package.calls, [])
 
