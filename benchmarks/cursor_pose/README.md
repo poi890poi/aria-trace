@@ -32,6 +32,17 @@ disagreement alone. Outlier-gate validation additionally needs labeled pose
 failures or a separately specified corruption protocol; agreement with the
 accurate estimator is an audit, not independent truth.
 
+## Real-time control premise
+
+The control target is 30 fresh pose fixes per second with a 33.3 ms
+capture-to-publication deadline.  The minimum usable tier is 15 fresh fixes per
+second with a 66.7 ms deadline.  Held and predicted outputs are continuity
+signals and never count as fresh real-time availability.
+
+Offline estimator timing is not complete pipeline timing.  Reports must label
+it as estimator-only evidence until capture, decode, extraction, worker IPC,
+scheduling, fusion, rendering, and publication are timestamped end to end.
+
 ## Rate names and denominators
 
 Never use an unqualified field or column named `rate`.
@@ -95,6 +106,13 @@ strategy. They are robustness stress tests, not natural rejection measurements.
 
 ## Reproducibility and code management
 
+All evaluated algorithm implementations are retained for future research,
+including rejected and inconclusive candidates.  Production code must not
+import the POC harness, and promoting one candidate must not delete another.
+Each result manifest hashes the exact implementation so later work can repeat
+or compare it.  Removal is allowed only after the implementation and its
+evidence have been preserved in an explicitly named archive commit or tag.
+
 Every run writes:
 
 - `benchmark_config.json`: immutable run parameters and thresholds;
@@ -144,3 +162,16 @@ benchmark, combine them without merging their different evidence semantics:
 
 The combined `REPORT.md` is phone-readable. `layered_results.json` preserves
 the compared rows and hashes both authoritative source result files.
+
+Build the plain-text real-time control report from an existing complete
+candidate benchmark without rerunning the estimators:
+
+```powershell
+& $python -m benchmarks.cursor_pose.build_realtime_control_report `
+  artifacts\poc\cursor-pose-candidate-e2e-YYYYMMDD-HHMMSS `
+  sessions\workbench\recordings-genshin-impact-pc `
+  artifacts\poc\cursor-pose-realtime-control-YYYYMMDD-HHMMSS
+```
+
+This report measures source timing and estimator-only deadline completion.  It
+does not claim capture-to-publication compliance.
