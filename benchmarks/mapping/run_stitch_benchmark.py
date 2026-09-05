@@ -90,26 +90,28 @@ def _load_frames(source_path: Path, indices: list[int], crop_xywh) -> list[np.nd
 def _baseline_positions(stitch: dict) -> np.ndarray:
     selected = stitch["selected_frame_indices"]
     registrations = stitch["registrations"]
-    if len(registrations) != len(selected) - 1:
-        raise RuntimeError(
-            "Benchmark requires one recorded registration per selected frame; got {} for {}"
-            .format(len(registrations), len(selected))
-        )
-    positions = [np.zeros(2, np.float64)]
-    reference_position = positions[0].copy()
-    for index, registration in enumerate(registrations, start=1):
-        if registration["to_frame"] != selected[index]:
-            raise RuntimeError("Registration/frame ordering does not reproduce the stitch")
+    positions_by_frame = {int(selected[0]): np.zeros(2, np.float64)}
+    last_position = positions_by_frame[int(selected[0])]
+    for registration in registrations:
+        from_frame = int(registration["from_frame"])
+        to_frame = int(registration["to_frame"])
+        reference_position = positions_by_frame.get(from_frame)
+        if reference_position is None:
+            raise RuntimeError(
+                "Registration references an unknown source frame: {}".format(from_frame)
+            )
         if registration["accepted"]:
             position = reference_position - np.asarray(
                 registration["content_shift_xy_px"], dtype=np.float64
             )
-            if float(registration["magnitude_px"]) >= 28.0:
-                reference_position = position.copy()
         else:
-            position = positions[-1].copy()
-        positions.append(position)
-    return np.asarray(positions)
+            position = last_position.copy()
+        positions_by_frame[to_frame] = position
+        last_position = position
+    missing = [index for index in selected if int(index) not in positions_by_frame]
+    if missing:
+        raise RuntimeError("No recorded position for selected frames: {}".format(missing))
+    return np.asarray([positions_by_frame[int(index)] for index in selected])
 
 
 def _candidate_loop_pairs(positions: np.ndarray, viewport_wh, per_frame=3):
@@ -163,11 +165,19 @@ def _discover_loop_edges(frames, positions, maximum_edges=900):
 
 def _sequential_edges(stitch: dict):
     rows = []
-    for index, registration in enumerate(stitch["registrations"], start=1):
+    local_by_frame = {
+        int(frame_index): local_index
+        for local_index, frame_index in enumerate(stitch["selected_frame_indices"])
+    }
+    for registration in stitch["registrations"]:
+        first = local_by_frame.get(int(registration["from_frame"]))
+        second = local_by_frame.get(int(registration["to_frame"]))
+        if first is None or second is None or not registration["accepted"]:
+            continue
         rows.append(
             {
-                "first": index - 1,
-                "second": index,
+                "first": first,
+                "second": second,
                 "delta_xy": (-np.asarray(registration["content_shift_xy_px"])).tolist(),
                 "response": float(registration["response"]),
                 "held_out": False,
