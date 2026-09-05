@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from benchmarks.localization.reference_cache import ensure_reference
 from benchmarks.localization.run_workbench_replay import score
+from benchmarks.localization.build_workbench_report import heading_publication_latency
 
 
 class ReferenceCacheTests(unittest.TestCase):
@@ -44,6 +45,12 @@ class ReferenceCacheTests(unittest.TestCase):
 
 
 class ReplayScoreTests(unittest.TestCase):
+    def test_heading_age_uses_workbench_publication_after_engine_consumption(self):
+        row = {"control_published_host_time_ns": 2_000_000_000,
+               "cursor_pose": {"session_time_ns": 1_930_000_000, "capture_to_publish_ms": 40}}
+        self.assertEqual(heading_publication_latency(row), 70)
+        self.assertIsNone(heading_publication_latency({"cursor_pose": {}}))
+
     def test_holds_drops_initialization_and_reference_gaps_stay_distinct(self):
         with tempfile.TemporaryDirectory() as directory:
             reference = Path(directory)

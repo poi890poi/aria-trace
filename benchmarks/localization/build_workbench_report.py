@@ -7,7 +7,15 @@ from pathlib import Path
 import numpy as np
 
 from benchmarks.localization.run_workbench_replay import distribution, read_rows
+from benchmarks.localization.reference_cache import identity
 from benchmarks.localization.repeated_waypoints import discover_repeated_waypoints, evaluate_candidate_repeatability
+
+
+def heading_publication_latency(row):
+    """Age of the consumed heading at Workbench publication, after engine work."""
+    source = (row.get("cursor_pose") or {}).get("session_time_ns")
+    published = row.get("control_published_host_time_ns")
+    return (published-source)/1e6 if source is not None and published is not None else None
 
 
 def build(root):
@@ -22,6 +30,8 @@ def build(root):
         steady = [r for r in rows if first is not None and r["host_time_ns"] >= first]
         source_count = sum(r["host_time_ns"] >= first for r in source) if first else len(source)
         cursor_fresh = [r for r in steady if r.get("cursor_pose_measurement_fresh_accepted")]
+        heading_latencies = [heading_publication_latency(r) for r in cursor_fresh]
+        heading_latencies = [v for v in heading_latencies if v is not None]
         summary = {k:v for k,v in report.items() if k not in ("implementation", "request", "git_status")}
         summary["cohort"] = path.parent.parent.name
         # The free-roam runtime reports fresh relative motion even before an
@@ -34,8 +44,8 @@ def build(root):
         summary["steady_source_fresh_xy_rate"] = sum(bool(r.get("xy_measurement_fresh_accepted")) for r in steady)/max(source_count,1)
         for limit, name in ((1000/30,"33ms"),(1000/15,"67ms")):
             summary["steady_source_fresh_xy_within_"+name] = sum(bool(r.get("xy_measurement_fresh_accepted")) and r["capture_to_control_publish_ms"] <= limit for r in steady)/max(source_count,1)
-            summary["steady_source_fresh_heading_within_"+name] = sum((r.get("cursor_pose") or {}).get("capture_to_publish_ms", float("inf")) <= limit for r in cursor_fresh)/max(source_count,1)
-        summary["fresh_heading_capture_to_publish_ms"] = distribution([r["cursor_pose"]["capture_to_publish_ms"] for r in cursor_fresh if r["cursor_pose"].get("capture_to_publish_ms") is not None])
+            summary["steady_source_fresh_heading_within_"+name] = sum(v <= limit for v in heading_latencies)/max(source_count,1)
+        summary["fresh_heading_capture_to_publish_ms"] = distribution(heading_latencies)
         summary["heading_available_rate"] = sum((r.get("pose") or {}).get("cursor_screen_deg") is not None for r in steady)/max(len(steady),1)
         summary["error_change_between_reference_samples_px"] = distribution(np.abs(np.diff([r["reference_error_px"] for r in rows if r.get("reference_error_px") is not None])))
         if report["session"] in (17,18):
@@ -51,6 +61,7 @@ def build(root):
             (path.parent/"repeatability.json").write_text(json.dumps({"waypoints":waypoints,"result":summary["repeatability"]},indent=2))
         results.append(summary)
     value = {"measurement_boundary":"Original-cadence recorded video through actual Workbench loop; excludes physical capture and browser/display.",
+             "implementation":identity(__file__),
              "scoring_reference":"Slow inferred atlas localization, not external ground truth. Sparse gaps and mode changes are not interpolated. Demo-session route-assisted reference also supplies proposals and is not independent.",
              "source_denominator":"All source frames from first available pose, including frames overwritten by latest-frame queue.",
              "results":results}
