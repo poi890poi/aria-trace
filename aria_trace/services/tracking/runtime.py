@@ -220,6 +220,23 @@ class GlobalMapLocalizer:
             affine,
         ).reshape(2)
 
+        # These mandatory geometry checks cannot be rescued by correlation.
+        # Reject before scanning the map or building diagnostic rasters.
+        geometry_reasons = []
+        if inlier_count < 6:
+            geometry_reasons.append("too-few-geometric-inliers")
+        if inlier_ratio < 0.60:
+            geometry_reasons.append("low-inlier-ratio")
+        if reprojection_p95 > 3.0:
+            geometry_reasons.append("high-reprojection-error")
+        if not 0.75 <= scale <= 1.30:
+            geometry_reasons.append("scale-out-of-range")
+        if geometry_reasons:
+            return self._invalid(
+                started, geometry_reasons,
+                ratio_match_count=ratio_count, inlier_count=inlier_count,
+                inlier_ratio=inlier_ratio, reprojection_p95_px=reprojection_p95,
+            )
         transformed, transformed_mask = self._transform(
             _gradient(observation), mask, scale, angle
         )
@@ -299,14 +316,6 @@ class GlobalMapLocalizer:
         center_x = int(np.clip(round(correlation_center[0]), 0, self.coverage.shape[1] - 1))
         center_y = int(np.clip(round(correlation_center[1]), 0, self.coverage.shape[0] - 1))
         reasons = []
-        if inlier_count < 6:
-            reasons.append("too-few-geometric-inliers")
-        if inlier_ratio < 0.60:
-            reasons.append("low-inlier-ratio")
-        if reprojection_p95 > 3.0:
-            reasons.append("high-reprojection-error")
-        if not 0.75 <= scale <= 1.30:
-            reasons.append("scale-out-of-range")
         if score < 0.55:
             reasons.append("low-correlation")
         if margin < 0.06:
