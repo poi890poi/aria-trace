@@ -22,7 +22,6 @@ from aria_trace.services.mapping.stitching import _estimate_rigid_translation
 METHODS = (
     "current_feather_owner",
     "pose_graph_feather_owner",
-    "pose_graph_voronoi",
     "pose_graph_dp_color_grad",
     "pose_graph_graphcut_color",
     "pose_graph_graphcut_color_grad",
@@ -272,7 +271,7 @@ def _warp(image: np.ndarray, placement: Placement, interpolation=cv2.INTER_LINEA
 
 def _seam_masks(frames, placements, method, seam_scale):
     if method.endswith("feather_owner"):
-        return None, 0.0
+        return None, 0.0, 0
     finder_name = method.removeprefix("pose_graph_")
     height, width = frames[0].shape[:2]
     small_wh = (
@@ -290,7 +289,6 @@ def _seam_masks(frames, placements, method, seam_scale):
         )
         for placement in placements
     ]
-    masks = [np.full((small_wh[1], small_wh[0]), 255, np.uint8) for _ in frames]
     if finder_name == "voronoi":
         finder = cv2.detail_VoronoiSeamFinder()
     elif finder_name == "dp_color_grad":
@@ -302,21 +300,63 @@ def _seam_masks(frames, placements, method, seam_scale):
     else:
         raise ValueError("Unknown seam method: {}".format(method))
     started = time.perf_counter()
-    result = finder.find(images, corners, masks)
+    canvas_width = max(corner[0] + small_wh[0] for corner in corners)
+    canvas_height = max(corner[1] + small_wh[1] for corner in corners)
+    owner = np.full((canvas_height, canvas_width), -1, np.int32)
+    composite = np.zeros((canvas_height, canvas_width, 3), np.float32)
+    failures = 0
+    for index, (image, corner) in enumerate(zip(images, corners)):
+        ox, oy = corner
+        roi_width = min(small_wh[0], canvas_width - ox)
+        roi_height = min(small_wh[1], canvas_height - oy)
+        owner_roi = owner[oy : oy + roi_height, ox : ox + roi_width]
+        composite_roi = composite[oy : oy + roi_height, ox : ox + roi_width]
+        incoming = image[:roi_height, :roi_width]
+        old_mask = (owner_roi >= 0).astype(np.uint8) * 255
+        new_mask = np.full((roi_height, roi_width), 255, np.uint8)
+        if not np.any(old_mask):
+            replace = new_mask > 0
+        else:
+            try:
+                result = finder.find(
+                    [composite_roi.copy(), incoming],
+                    [(0, 0), (0, 0)],
+                    [old_mask, new_mask],
+                )
+                old_result = result[0].get() if hasattr(result[0], "get") else np.asarray(result[0])
+                new_result = result[1].get() if hasattr(result[1], "get") else np.asarray(result[1])
+                replace = (new_result > 0) & (old_result == 0)
+                replace |= (owner_roi < 0) & (new_result > 0)
+            except cv2.error:
+                # Keep the prior owner in overlap and use the new frame only for
+                # uncovered pixels. The failure count makes this explicit rather
+                # than silently presenting the fallback as the tested method.
+                failures += 1
+                replace = owner_roi < 0
+        composite_roi[replace] = incoming[replace]
+        owner_roi[replace] = index
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     materialized = []
-    for value in result:
-        array = value.get() if hasattr(value, "get") else np.asarray(value)
+    for index, corner in enumerate(corners):
+        ox, oy = corner
+        array = np.zeros((small_wh[1], small_wh[0]), np.uint8)
+        roi_width = min(small_wh[0], canvas_width - ox)
+        roi_height = min(small_wh[1], canvas_height - oy)
+        array[:roi_height, :roi_width] = (
+            owner[oy : oy + roi_height, ox : ox + roi_width] == index
+        ).astype(np.uint8) * 255
         materialized.append(
             cv2.resize(array, (width, height), interpolation=cv2.INTER_NEAREST)
         )
-    return materialized, elapsed_ms
+    return materialized, elapsed_ms, failures
 
 
 def _compose(frames, positions, method, seam_scale):
     height, width = frames[0].shape[:2]
     placements, canvas_wh = _placements(positions, (width, height))
-    masks, seam_plan_ms = _seam_masks(frames, placements, method, seam_scale)
+    masks, seam_plan_ms, seam_finder_failures = _seam_masks(
+        frames, placements, method, seam_scale
+    )
     mosaic = np.zeros((canvas_wh[1], canvas_wh[0], 3), np.uint8)
     owner = np.full((canvas_wh[1], canvas_wh[0]), -1, np.int32)
     best = np.zeros((canvas_wh[1], canvas_wh[0]), np.float32)
@@ -349,14 +389,14 @@ def _compose(frames, positions, method, seam_scale):
     # Low-resolution seam planning can leave isolated unowned pixels. Fill only
     # those from the current deterministic owner; never blend source pixels.
     if masks is not None and np.any(owner < 0):
-        fallback, fallback_owner, _, _ = _compose(
+        fallback, fallback_owner, _, _, _ = _compose(
             frames, positions, "pose_graph_feather_owner", seam_scale
         )
         missing = (owner < 0) & (fallback_owner >= 0)
         mosaic[missing] = fallback[missing]
         owner[missing] = fallback_owner[missing]
     compose_ms = (time.perf_counter() - started) * 1000.0
-    return mosaic, owner, feature, seam_plan_ms + compose_ms
+    return mosaic, owner, feature, seam_plan_ms + compose_ms, seam_finder_failures
 
 
 def _seam_mask(owner: np.ndarray):
@@ -369,7 +409,7 @@ def _seam_mask(owner: np.ndarray):
     return seam
 
 
-def _metrics(mosaic, owner, feature, elapsed_ms):
+def _metrics(mosaic, owner, feature, elapsed_ms, seam_finder_failures):
     valid = owner >= 0
     seam = _seam_mask(owner)
     seam_bool = seam > 0
@@ -399,6 +439,7 @@ def _metrics(mosaic, owner, feature, elapsed_ms):
         "valid_luma_mean": float(np.mean(valid_gray)) if valid_gray.size else 0.0,
         "output_laplacian_variance": sharpness,
         "offline_runtime_ms": float(elapsed_ms),
+        "seam_finder_failures": int(seam_finder_failures),
     }, seam
 
 
@@ -465,10 +506,12 @@ def run(artifact_path: Path, output_path: Path, seam_scale: float) -> dict:
     rows = []
     for method in METHODS:
         positions = baseline if method == "current_feather_owner" else optimized
-        mosaic, owner, feature, elapsed_ms = _compose(
+        mosaic, owner, feature, elapsed_ms, seam_finder_failures = _compose(
             frames, positions, method, seam_scale
         )
-        metrics, seam = _metrics(mosaic, owner, feature, elapsed_ms)
+        metrics, seam = _metrics(
+            mosaic, owner, feature, elapsed_ms, seam_finder_failures
+        )
         row = {"method": method, "metrics": metrics}
         rows.append(row)
         _write_candidate(output_path, method, mosaic, seam, feature, metrics)

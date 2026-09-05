@@ -34,6 +34,11 @@ The edge-protection metric is deliberately broader than a game-specific road
 classifier. Review the rendered seam overlay to distinguish roads/streets from
 other protected details.
 
+OpenCV's batch Voronoi seam finder is not a runnable candidate for the large
+session-19 overlap graph: it raises an opaque native exception. The benchmark
+records this negative implementation result rather than disguising a fallback
+as Voronoi output. DP and graph-cut candidates use bounded pairwise updates.
+
 ## Run
 
 ```powershell
