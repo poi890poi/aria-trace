@@ -233,6 +233,8 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
 
         self.assertFalse(first.measurement_accepted)
         self.assertTrue(second.measurement_accepted)
+        self.assertEqual(len(tracer.transition_switches), 0)
+        tracer._finalize_transition_mode(second)
         self.assertEqual(len(tracer.transition_switches), 1)
         tracer.previous_mode_id = "town"
         tracer.previous_xy = (101.0, 50.0)

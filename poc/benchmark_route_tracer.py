@@ -310,6 +310,23 @@ class CausalRouteTracer:
                 primary_measurement_accepted=True,
                 final_gate_rejected=True,
             )
+        return result
+
+    def _finalize_transition_mode(self, result: TraceResult) -> None:
+        """Commit a confirmed layer change only after every final gate accepts it."""
+
+        if (
+            self.mode_policy != "transition_zone"
+            or self._armed_transition_zone_id is None
+            or not result.valid
+            or not result.measurement_accepted
+            or result.mode_id is None
+            or self.previous_mode_id is None
+            or result.mode_id == self.previous_mode_id
+            or self._pending_mode_id != result.mode_id
+            or self._pending_mode_wins < self.transition_confirmation_count
+        ):
+            return
         self.transition_switches.append(
             {
                 "from_mode_id": self.previous_mode_id,
@@ -321,7 +338,6 @@ class CausalRouteTracer:
         self._armed_transition_zone_id = None
         self._pending_mode_id = None
         self._pending_mode_wins = 0
-        return result
 
     def _refine_centers(
         self,
@@ -683,6 +699,7 @@ class CausalRouteTracer:
                     )
                     self.rejection_streak = 0
                     self.global_recovery_hypotheses = []
+        self._finalize_transition_mode(result)
         if result.valid:
             if result.measurement_accepted:
                 self.previous_xy = (float(result.x), float(result.y))
