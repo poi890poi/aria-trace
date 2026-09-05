@@ -224,6 +224,16 @@ class MapStitchingTests(unittest.TestCase):
                 result["composition_method"],
                 "subpixel_highest_feather_weight_source",
             )
+            self.assertGreater(
+                result["composition_quality"]["source_owner_count"], 1
+            )
+            self.assertGreater(
+                result["composition_quality"]["seam_pixel_count"], 0
+            )
+            self.assertIn(
+                "protected_feature_seam_fraction",
+                result["composition_quality"],
+            )
             for item in result["evidence"]:
                 self.assertGreater((output / item["name"]).stat().st_size, 0)
             self.assertTrue((output / "map_stitch.json").is_file())

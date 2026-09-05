@@ -803,6 +803,125 @@ def _write_image(path: Path, image: np.ndarray) -> None:
         raise RuntimeError("Could not write map-stitch evidence: {}".format(path))
 
 
+def _composition_quality_evidence(
+    mosaic: np.ndarray,
+    coverage: np.ndarray,
+    source_owner: np.ndarray,
+) -> dict:
+    """Render diagnostics for the existing hard-owner composition result."""
+
+    valid = source_owner >= 0
+    seam = np.zeros(source_owner.shape, np.uint8)
+    horizontal = (
+        valid[:, :-1]
+        & valid[:, 1:]
+        & (source_owner[:, :-1] != source_owner[:, 1:])
+    )
+    vertical = (
+        valid[:-1, :]
+        & valid[1:, :]
+        & (source_owner[:-1, :] != source_owner[1:, :])
+    )
+    seam[:, :-1][horizontal] = 255
+    seam[:, 1:][horizontal] = 255
+    seam[:-1, :][vertical] = 255
+    seam[1:, :][vertical] = 255
+
+    seam_overlay = mosaic.copy()
+    seam_overlay[seam > 0] = (30, 30, 255)
+
+    source_owner_image = np.zeros_like(mosaic)
+    owner_ids = np.unique(source_owner[valid])
+    if owner_ids.size:
+        values = np.arange(int(owner_ids.max()) + 1, dtype=np.int64)
+        palette = np.column_stack(
+            (
+                35 + (values * 67) % 205,
+                35 + (values * 131) % 205,
+                35 + (values * 193) % 205,
+            )
+        ).astype(np.uint8)
+        source_owner_image[valid] = palette[source_owner[valid]]
+
+    gray = cv2.cvtColor(mosaic, cv2.COLOR_BGR2GRAY)
+    low_frequency = cv2.GaussianBlur(
+        gray.astype(np.float32), (0, 0), 8.0
+    )
+    step = np.zeros(gray.shape, np.float32)
+    horizontal_step = np.abs(
+        low_frequency[:, :-1] - low_frequency[:, 1:]
+    )
+    vertical_step = np.abs(
+        low_frequency[:-1, :] - low_frequency[1:, :]
+    )
+    step[:, :-1][horizontal] = np.maximum(
+        step[:, :-1][horizontal], horizontal_step[horizontal]
+    )
+    step[:, 1:][horizontal] = np.maximum(
+        step[:, 1:][horizontal], horizontal_step[horizontal]
+    )
+    step[:-1, :][vertical] = np.maximum(
+        step[:-1, :][vertical], vertical_step[vertical]
+    )
+    step[1:, :][vertical] = np.maximum(
+        step[1:, :][vertical], vertical_step[vertical]
+    )
+    low_frequency_step = cv2.applyColorMap(
+        np.uint8(np.clip(step / 32.0 * 255.0, 0, 255)),
+        cv2.COLORMAP_TURBO,
+    )
+    low_frequency_step[seam == 0] = 0
+
+    protected_features = cv2.dilate(
+        cv2.Canny(gray, 50, 140), np.ones((5, 5), np.uint8)
+    ) > 0
+    protected_seam = (seam > 0) & protected_features
+    protected_overlay = mosaic.copy()
+    protected_overlay[seam > 0] = (30, 30, 255)
+    protected_overlay[protected_seam] = (255, 70, 220)
+
+    outside = coverage == 0
+    component_count, labels = cv2.connectedComponents(
+        outside.astype(np.uint8), connectivity=8
+    )
+    border_labels = set(labels[0, :]) | set(labels[-1, :])
+    border_labels |= set(labels[:, 0]) | set(labels[:, -1])
+    hole_labels = [
+        label for label in range(1, component_count) if label not in border_labels
+    ]
+    interior_holes = np.isin(labels, hole_labels)
+    seam_values = step[seam > 0]
+    seam_pixels = int(np.count_nonzero(seam))
+    return {
+        "images": {
+            "source_ownership.png": source_owner_image,
+            "seam_overlay.png": seam_overlay,
+            "low_frequency_tile_step.png": low_frequency_step,
+            "protected_feature_seams.png": protected_overlay,
+        },
+        "metrics": {
+            "source_owner_count": int(len(owner_ids)),
+            "seam_pixel_count": seam_pixels,
+            "protected_feature_seam_fraction": (
+                float(np.count_nonzero(protected_seam) / seam_pixels)
+                if seam_pixels
+                else 0.0
+            ),
+            "low_frequency_step_luma": {
+                "median": float(np.median(seam_values)) if seam_values.size else 0.0,
+                "p95": (
+                    float(np.percentile(seam_values, 95))
+                    if seam_values.size
+                    else 0.0
+                ),
+                "worst": float(np.max(seam_values)) if seam_values.size else 0.0,
+            },
+            "interior_hole_count": len(hole_labels),
+            "interior_hole_pixel_count": int(np.count_nonzero(interior_holes)),
+        },
+    }
+
+
 def _registration_image(first: np.ndarray, second: np.ndarray, shift_xy) -> np.ndarray:
     first_gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
     aligned = cv2.warpAffine(
@@ -1249,11 +1368,14 @@ def stitch_map_frames(
     mosaic = np.zeros((canvas_height, canvas_width, 3), np.uint8)
     best_weights = np.zeros((canvas_height, canvas_width), np.float32)
     overlap_count = np.zeros((canvas_height, canvas_width), np.uint16)
+    source_owner = np.full((canvas_height, canvas_width), -1, np.int32)
     feather = cv2.createHanningWindow(
         (viewport_width, viewport_height), cv2.CV_32F
     )
     feather = np.maximum(feather, 0.08)
-    for index, selected_position in zip(selected, selected_positions):
+    for owner_id, (index, selected_position) in enumerate(
+        zip(selected, selected_positions)
+    ):
         origin = selected_position - minimum
         base = np.floor(origin).astype(int)
         ox, oy = int(base[0]), int(base[1])
@@ -1276,6 +1398,10 @@ def stitch_map_frames(
         target = mosaic[oy : oy + roi_height, ox : ox + roi_width]
         target[replace] = warped[replace]
         target_weights[replace] = warped_weight[replace]
+        target_owner = source_owner[
+            oy : oy + roi_height, ox : ox + roi_width
+        ]
+        target_owner[replace] = owner_id
         overlap_count[oy : oy + roi_height, ox : ox + roi_width] += (
             warped_weight > 0
         ).astype(np.uint16)
@@ -1289,6 +1415,9 @@ def stitch_map_frames(
             )
         ),
         cv2.COLORMAP_TURBO,
+    )
+    composition_quality = _composition_quality_evidence(
+        mosaic, coverage, source_owner
     )
     if progress:
         progress("Building registration-quality and coverage evidence")
@@ -1325,6 +1454,10 @@ def stitch_map_frames(
         {"name": "coverage_heatmap.png", "title": "Coverage overlap heatmap", "category": "coverage"},
         {"name": "registration_quality.png", "title": "Pairwise registration quality", "category": "quality"},
         {"name": "alignment_samples.png", "title": "Representative frame alignments", "category": "quality"},
+        {"name": "source_ownership.png", "title": "Hard source owner per output pixel", "category": "composition"},
+        {"name": "seam_overlay.png", "title": "Hard-owner seam locations", "category": "composition"},
+        {"name": "low_frequency_tile_step.png", "title": "Low-frequency luma change across seams", "category": "composition"},
+        {"name": "protected_feature_seams.png", "title": "Seams crossing generic line features", "category": "composition"},
     ]
     if placement_evidence is not None:
         evidence.append(
@@ -1335,12 +1468,14 @@ def stitch_map_frames(
             }
         )
     if progress:
-        progress("Writing the mosaic and five review images")
+        progress("Writing the mosaic and composition review images")
     _write_image(output_path / "mosaic.png", mosaic)
     _write_image(output_path / "coverage.png", coverage)
     _write_image(output_path / "coverage_heatmap.png", coverage_heatmap)
     _write_image(output_path / "registration_quality.png", quality)
     _write_image(output_path / "alignment_samples.png", alignment_samples)
+    for name, image in composition_quality["images"].items():
+        _write_image(output_path / name, image)
     if placement_evidence is not None:
         _write_image(output_path / "placement_closure.png", placement_evidence)
     localization = None
@@ -1407,6 +1542,7 @@ def stitch_map_frames(
         "median_registration_response": float(np.median(responses)) if responses else 0.0,
         "observed_canvas_coverage": observed_coverage,
         "composition_method": "subpixel_highest_feather_weight_source",
+        "composition_quality": composition_quality["metrics"],
         "placement_method": placement_optimization["method"],
         "placement_optimization": placement_optimization,
         "viewport_crop_xywh": [x0, y0, viewport_width, viewport_height],
