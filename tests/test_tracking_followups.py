@@ -1,5 +1,10 @@
 import unittest
-from aria_trace.services.tracking.runtime import GlobalFix
+from unittest.mock import patch
+from types import SimpleNamespace
+import threading
+import cv2
+import numpy as np
+from aria_trace.services.tracking.runtime import GlobalFix, GlobalMapLocalizer
 from aria_trace.services.localization.route.tracker import RouteVisualTracker
 from benchmarks.localization.tracking_followups import installed, sources
 from tests import test_live_tracker as fixtures
@@ -7,9 +12,26 @@ from tests import test_live_tracker as fixtures
 
 class FollowupTests(unittest.TestCase):
     def test_all_candidates_compile(self):
-        for variant in ("", "K", "L", "KL", "M", "KLM"):
+        for variant in ("", "K", "L", "KL", "M", "KLM", "N", "MN", "LN"):
             for key, source in sources(variant).items():
                 compile(source,str(key),"exec")
+
+    def test_invalid_geometry_never_runs_map_correlation(self):
+        localizer=object.__new__(GlobalMapLocalizer)
+        localizer._cancel=threading.Event()
+        points=[cv2.KeyPoint(float(i*3),float(i*2),1) for i in range(6)]
+        descriptors=np.zeros((6,128),np.float32)
+        localizer.sift=SimpleNamespace(detectAndCompute=lambda *args:(points,descriptors))
+        localizer.map_points=points
+        localizer.map_descriptors=descriptors
+        localizer._transform=lambda *args:self.fail("transformed known-invalid geometry")
+        pairs=[(cv2.DMatch(i,i,1),cv2.DMatch(i,(i+1)%6,10)) for i in range(6)]
+        matcher=SimpleNamespace(knnMatch=lambda *args,**kwargs:pairs)
+        affine=np.array([[2.,0,0],[0,2.,0]])
+        with installed("N"), patch('aria_trace.services.tracking.runtime.cv2.BFMatcher',return_value=matcher), patch('aria_trace.services.tracking.runtime.cv2.estimateAffinePartial2D',return_value=(affine,np.ones((6,1),np.uint8))):
+            fix=localizer.localize(np.zeros((30,30,3),np.uint8),np.full((30,30),255,np.uint8))
+        self.assertFalse(fix.valid)
+        self.assertIn("scale-out-of-range",fix.rejection_reasons)
 
     def test_layer_change_widens_search_without_disabling_continuity(self):
         class Map:

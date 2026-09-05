@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import textwrap
 
-from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker as Runtime
+from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker as Runtime, GlobalMapLocalizer
 from aria_trace.services.localization.route.tracker import RouteVisualTracker as Visual
 from benchmarks.localization.tracking_candidates import replace_once
 from benchmarks.localization.run_workbench_replay import run
@@ -21,6 +21,7 @@ CHANGES = {
     "K": "Wider current-image refinement after a confirmed layer switch, retaining continuity gating until accepted.",
     "L": "Observe representation at up to source 30 Hz while a transition is armed; keep visual confirmation thresholds.",
     "M": "Use first valid initialization hypothesis as a bounded next-search proposal; invalid fixes clear it normally.",
+    "N": "Skip map correlation when feature geometry has already failed mandatory acceptance checks.",
 }
 
 
@@ -39,7 +40,7 @@ def sources(variant):
         raise ValueError("Unknown variant: "+variant)
     values = {(c,n): method(c,n) for c,n in (
         (Visual,"track"), (Visual,"confirm_trained_transition_layer"),
-        (Runtime,"update"), (Runtime,"_global_search"))}
+        (Runtime,"update"), (Runtime,"_global_search"), (GlobalMapLocalizer,"localize"))}
     if "K" in variant:
         key = Visual,"confirm_trained_transition_layer"
         values[key] = replace_once(values[key], '    pending = self._trained_transition\n',
@@ -63,6 +64,24 @@ def sources(variant):
             '            fix = self._initial_hypotheses[-1]\n'
             '            return (float(fix.x), float(fix.y)), 150.0\n'
             '        return None, None\n')
+    if "N" in variant:
+        key = GlobalMapLocalizer,"localize"
+        values[key] = replace_once(values[key], '    transformed, transformed_mask = self._transform(\n',
+            '''    geometry_reasons = []
+    if inlier_count < 6:
+        geometry_reasons.append("too-few-geometric-inliers")
+    if inlier_ratio < 0.60:
+        geometry_reasons.append("low-inlier-ratio")
+    if reprojection_p95 > 3.0:
+        geometry_reasons.append("high-reprojection-error")
+    if not 0.75 <= scale <= 1.30:
+        geometry_reasons.append("scale-out-of-range")
+    if geometry_reasons:
+        return self._invalid(started, geometry_reasons,
+            ratio_match_count=ratio_count, inlier_count=inlier_count,
+            inlier_ratio=inlier_ratio, reprojection_p95_px=reprojection_p95)
+    transformed, transformed_mask = self._transform(
+''')
     return values
 
 
