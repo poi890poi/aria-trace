@@ -282,11 +282,11 @@ class RouteCandidateAdvisor:
 
 
 class RouteVisualTracker:
-    """Track XY from current map pixels, using route states only as proposals."""
+    """Track current atlas pixels; an optional route supplies search proposals."""
 
     def __init__(
         self,
-        package: RouteTrackingPackage,
+        package: Optional[RouteTrackingPackage],
         map_localizer,
         *,
         score_min: float = 0.55,
@@ -307,7 +307,7 @@ class RouteVisualTracker:
         self.previous_xy = None
         self.previous_time_ns = None
         self._trained_transition = None
-        motion = package.manifest.get("motion_envelope") or {}
+        motion = (package.manifest.get("motion_envelope") or {}) if package is not None else {}
         speed_p99 = (motion.get("speed_px_s") or {}).get("p99")
         self.continuity_speed_limit_px_s = max(
             120.0, 4.0 * float(speed_p99 or 0.0)
@@ -325,7 +325,7 @@ class RouteVisualTracker:
     ) -> Optional[dict]:
         """Hold XY and select the nearest trained post-transition search anchor."""
 
-        if self.previous_xy is None:
+        if self.previous_xy is None or self.package is None:
             return None
         source_mode_id = str(source_mode_id)
         target_mode_id = str(target_mode_id)
@@ -437,6 +437,8 @@ class RouteVisualTracker:
         return result
 
     def _recover(self, observation, mask):
+        if self.package is None:
+            return None
         descriptor = describe_minimap(observation, mask)
         candidates = self.package.candidates(
             descriptor,
@@ -482,7 +484,7 @@ class RouteVisualTracker:
                 observation,
                 mask,
                 self.previous_xy,
-                self.local_radius_px,
+                self.recovery_radius_px if self.previous_time_ns is None else self.local_radius_px,
                 "continuous-local",
             )
         if pending_transition is None and (
@@ -544,7 +546,7 @@ class RouteVisualTracker:
                     if pose_available
                     else "unlocalized"
                 ),
-                "route_role": "bounded-search-proposal-only",
+                "route_role": "bounded-search-proposal-only" if self.package is not None else "none",
                 "continuity_rejected": continuity_rejected,
                 "transition_waiting": bool(
                     pending_transition is not None and not measurement_accepted

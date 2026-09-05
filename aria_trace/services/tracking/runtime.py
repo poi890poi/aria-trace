@@ -604,6 +604,14 @@ class TwoRateRealtimeTracker:
         self._last_global_diagnostics = None
         self.global_candidate_advisor = global_candidate_advisor
         self.route_visual_tracker = route_visual_tracker
+        if route_visual_tracker is None and callable(getattr(self.localizer, "refine_near", None)):
+            # Atlas matching does not require demonstrated states. Keep the
+            # relative-motion fallback for localizers without this capability.
+            from aria_trace.services.localization.route.tracker import RouteVisualTracker
+
+            self.route_visual_tracker = RouteVisualTracker(
+                None, self.localizer, score_min=0.0, local_radius_px=12.0,
+            )
         self._last_route_tracking = None
         self._last_route_assistance = None
         observe_modes = getattr(self.localizer, "observe_modes", None)
