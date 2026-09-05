@@ -100,6 +100,7 @@ def main():
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--max-seconds",type=float)
     p.add_argument("--mode",default="free-roam",choices=["free-roam","route-assisted"])
+    p.add_argument("--record-video",action="store_true")
     args=p.parse_args()
     args.atlas="08b6f2d6-820a-4bfd-875a-6a55d1986a4e"
     args.calibration="segments-df624035-833-bd07601f-708"
@@ -107,7 +108,6 @@ def main():
     args.cache=Path("artifacts/benchmark_cache/atlas_references")
     args.references=Path("artifacts/poc/workbench-rebuilt-atlas-20260905/references/references.json")
     args.references_only=False
-    args.record_video=False
     args.loss_error_limit_px=None
     args.experiment={"variant":"decode-ahead", "buffer_frames":30,
         "scope":"recorded-source adapter only; production tracker unchanged"}
