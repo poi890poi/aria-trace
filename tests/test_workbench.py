@@ -3037,6 +3037,82 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_map_atlas_automatically_uses_best_current_master_stitch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                stitch_root = (
+                    root / "artifacts" / "map_stitches" / "genshin-impact-pc"
+                )
+                candidates = {
+                    "small-detail": {
+                        "mosaic_size_wh": [1600, 1200],
+                        "observed_canvas_coverage": 0.9,
+                        "localization": {
+                            "status": "ready",
+                            "map_pixels_per_minimap_pixel": 4.0,
+                        },
+                    },
+                    "broad-master": {
+                        "mosaic_size_wh": [3400, 3000],
+                        "observed_canvas_coverage": 0.75,
+                        "localization": {
+                            "status": "review_required",
+                            "map_pixels_per_minimap_pixel": 3.9,
+                        },
+                    },
+                }
+                for stitch_id, fields in candidates.items():
+                    path = stitch_root / stitch_id
+                    path.mkdir(parents=True)
+                    manifest = {
+                        "stitch_id": stitch_id,
+                        "status": "review_required",
+                        "generated_utc": "2026-09-05T00:00:00+00:00",
+                        **fields,
+                    }
+                    (path / "map_stitch.json").write_text(
+                        json.dumps(manifest), encoding="utf-8"
+                    )
+
+                selected = {}
+
+                def fake_atlas(layers, output, canonical_mode_id, atlas_id):
+                    selected["stitch_id"] = layers[0]["stitch_id"]
+                    output.mkdir(parents=True)
+                    (output / "canonical_mosaic.png").write_bytes(b"image")
+                    (output / "canonical_coverage.png").write_bytes(b"mask")
+                    return {
+                        "schema_version": "1.0",
+                        "atlas_id": atlas_id,
+                        "status": "ready",
+                        "canonical_mode_id": canonical_mode_id,
+                        "canonical_mosaic_file": "canonical_mosaic.png",
+                        "canonical_coverage_file": "canonical_coverage.png",
+                        "layers": [],
+                    }
+
+                with patch(
+                    "aria_trace.apps.workbench.analysis.build_map_atlas",
+                    side_effect=fake_atlas,
+                ):
+                    state.run_map_atlas(
+                        {
+                            "game_profile_id": "genshin-impact-pc",
+                            "atlas_id": "automatic-atlas",
+                        }
+                    )
+
+                self.assertEqual(selected["stitch_id"], "broad-master")
+            finally:
+                state.close()
+
     def test_map_atlas_uses_transition_endpoints_for_independent_layer_scales(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

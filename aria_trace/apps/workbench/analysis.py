@@ -602,7 +602,78 @@ class WorkbenchAnalysisMixin:
             items.sort(
                 key=lambda item: item.get("generated_utc") or "", reverse=True
             )
+            current_source_ids = {}
+            for item in items:
+                source_key = str(item.get("source_session_key") or "")
+                if not source_key:
+                    item["source_current"] = None
+                    continue
+                if source_key not in current_source_ids:
+                    try:
+                        source_path = self._session_path(source_key)
+                        current_source_ids[source_key] = str(
+                            self._describe_session(source_path).get("session_id") or ""
+                        )
+                    except (OSError, ValueError, KeyError):
+                        current_source_ids[source_key] = ""
+                artifact_source_id = str(
+                    (item.get("provenance") or {}).get("source_session_id") or ""
+                )
+                current_source_id = current_source_ids[source_key]
+                item["source_current"] = (
+                    artifact_source_id == current_source_id
+                    if artifact_source_id and current_source_id
+                    else None
+                )
+                item["history_only"] = item["source_current"] is False
+            selectable = [
+                item
+                for item in items
+                if item.get("status") not in ("failed", "invalid")
+                and not item.get("history_only")
+            ]
+            if not selectable:
+                selectable = [
+                    item
+                    for item in items
+                    if item.get("status") not in ("failed", "invalid")
+                ]
+            if selectable:
+                recommended = max(selectable, key=self._map_stitch_selection_score)
+                recommended["recommended_for_atlas"] = True
+                recommended["recommendation_reason"] = (
+                    "largest observed world coverage at the available source detail"
+                )
         return values
+
+    @staticmethod
+    def _map_stitch_selection_score(item: dict):
+        size = item.get("mosaic_size_wh") or [0, 0]
+        width = float(size[0]) if len(size) > 0 else 0.0
+        height = float(size[1]) if len(size) > 1 else 0.0
+        coverage = max(0.0, float(item.get("observed_canvas_coverage") or 0.0))
+        localization = item.get("localization") or {}
+        scale = max(
+            1.0e-9,
+            float(localization.get("map_pixels_per_minimap_pixel") or 0.0),
+        )
+        # Convert observed source pixels back to a comparable mini-map-space
+        # extent. This keeps a detailed but tiny scan from outranking a master
+        # that covers substantially more of the world.
+        comparable_world_area = width * height * coverage / (scale * scale)
+        return (
+            comparable_world_area,
+            scale,
+            localization.get("status") == "ready",
+            str(item.get("generated_utc") or ""),
+        )
+
+    def _recommended_map_stitch(self, game_profile_id: str) -> Optional[dict]:
+        items = self._map_stitches().get(game_profile_id, [])
+        return next(
+            (item for item in items if item.get("recommended_for_atlas")),
+            None,
+        )
 
     def run_map_stitch(self, value: dict, progress=None) -> dict:
         if progress:
@@ -749,6 +820,15 @@ class WorkbenchAnalysisMixin:
                 world_stitch_id = value.get("world_stitch_id") or value.get(
                     "map_stitch_id"
                 )
+                if not world_stitch_id:
+                    recommended = self._recommended_map_stitch(game_profile_id)
+                    world_stitch_id = (
+                        recommended.get("stitch_id") if recommended else None
+                    )
+                if not world_stitch_id:
+                    raise ValueError(
+                        "Build a usable map stitch before creating an atlas"
+                    )
                 town_stitch_id = value.get("town_stitch_id")
                 if town_stitch_id:
                     # Compatibility for previously saved/API-authored requests.
