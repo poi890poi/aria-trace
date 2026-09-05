@@ -763,7 +763,13 @@ def _attach_reference_errors(rows, reference_package, session_id) -> None:
         row["reference_mode_id"] = reference_mode_id
 
 
-def _reference_mode_metrics(rows):
+def _reference_role(reference_package, default: str) -> str:
+    if reference_package is None:
+        return default
+    return str(reference_package.manifest.get("reference_role") or default)
+
+
+def _reference_mode_metrics(rows, reference_package=None):
     supported = [
         row
         for row in rows
@@ -781,7 +787,9 @@ def _reference_mode_metrics(rows):
         for row in supported
     ]
     return {
-        "role": "offline-sparse-reference-mode-agreement",
+        "role": _reference_role(
+            reference_package, "offline-sparse-reference-mode-agreement"
+        ),
         "sample_count": len(supported),
         "mismatch_count": len(mismatches),
         "mismatch_rate": len(mismatches) / float(len(supported)),
@@ -809,7 +817,9 @@ def _reference_errors(rows, reference_package, session_id, *, fresh_only=False):
         return None
     values = np.asarray(errors, dtype=np.float64)
     return {
-        "role": "offline-sparse-map-localization-reference",
+        "role": _reference_role(
+            reference_package, "offline-sparse-map-localization-reference"
+        ),
         "sample_count": len(errors),
         "rmse_px": float(math.sqrt(float(np.mean(values * values)))),
         "mean_px": float(np.mean(values)),
@@ -1180,7 +1190,9 @@ def benchmark_session(
             ),
             "held_states_count_as_fresh": False,
         },
-        "reference_mode_agreement": _reference_mode_metrics(rows),
+        "reference_mode_agreement": _reference_mode_metrics(
+            rows, reference_package
+        ),
         "transition_switches": list(tracer.transition_switches),
         "source_frame_counts": source_counts,
         "adjacent_pose_jump_px": _percentiles(adjacent_jumps),
