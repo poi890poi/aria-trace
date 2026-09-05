@@ -23,6 +23,9 @@ CANDIDATES = {
     "B": "Use reverse-direction transition endpoints as current-image search proposals.",
     "C": "Use the latest consensus observation pose instead of averaging poses across motion.",
     "D": "Preserve global recovery consensus across accepted local-motion updates while recovery is latched.",
+    "F": "Remove the automatic hold on transition arming; keep current-layer tracking until visual layer confirmation.",
+    "G": "Consume cursor after XY work, without waiting on its own; with E, defer the bounded wait too.",
+    "H": "Remove full-scene KLT and camera-derived minimap rotation trials from free-roam tracking.",
     "E": "Submit then consume same-frame cursor result within the remaining 33.3 ms source deadline; retain asynchronous fallback.",
 }
 
@@ -80,6 +83,18 @@ def candidate_sources(letters):
         source = replace_once(source, '        self._local_rejections = 0\n        self._recovery_hypotheses = []\n    elif (',
                               '        self._local_rejections = 0\n        if not self._recovery_request_active:\n            self._recovery_hypotheses = []\n    elif (')
         put(TwoRateRealtimeTracker, "update", source)
+    if "F" in letters:
+        source = get(RouteVisualTracker, "track")
+        source = replace_once(source, '        return self._held_transition_result()\n',
+                              '        pending_transition = None  # arming is a proposal, not a reason to freeze XY\n')
+        put(RouteVisualTracker, "track", source)
+    if "H" in letters:
+        source = get(TwoRateRealtimeTracker, "update")
+        source = replace_once(source, '    if self.route_visual_tracker is not None:\n        # Route-assisted XY',
+                              '    if True:  # north-fixed minimap motion ablation\n        # Route-assisted XY')
+        source = replace_once(source, '            "bypassed:route-map-correlation",\n',
+                              '            "bypassed:route-map-correlation" if self.route_visual_tracker is not None else "bypassed:scene-motion-ablation",\n')
+        put(TwoRateRealtimeTracker, "update", source)
     if "E" in letters:
         source = get(TwoRateRealtimeTracker, "update")
         consume_start = source.index('    cursor_pose_fresh = False\n')
@@ -96,6 +111,18 @@ def candidate_sources(letters):
                 pass  # timeout stays pending; completed errors use existing handling
 '''
         source = source[:consume_start] + submit + wait + consume + source[cursor_end:]
+        put(TwoRateRealtimeTracker, "update", source)
+    if "G" in letters:
+        source = get(TwoRateRealtimeTracker, "update")
+        consume_start = source.index('    cursor_pose_fresh = False\n')
+        if "E" in letters:
+            consume_start = source.index('    if self._cursor_future is not None and not self._cursor_future.done():\n')
+            consume_end = source.index('    global_fix = None\n', consume_start)
+        else:
+            consume_end = source.index('    cursor_due = (\n', consume_start)
+        consume = source[consume_start:consume_end]
+        source = source[:consume_start] + source[consume_end:]
+        source = replace_once(source, '    self.sequence += 1\n', consume + '    self.sequence += 1\n')
         put(TwoRateRealtimeTracker, "update", source)
     return methods
 
