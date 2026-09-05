@@ -104,8 +104,8 @@ def build(pose_path: Path, localization_path: Path, output: Path):
     lines += [
         "INTERPRETATION",
         "",
-        "Angular projection is the only candidate combining 100% wide-session fresh coverage, sub-3 ms P95 compute, and approximately 3 deg forward P95 error.",
-        "The calibrated pose gate limit is {} deg/s; raw and gated results show whether this safety layer rejects any observed frame.".format(_n(pose["contract"].get("turn_rate_limit_deg_s"))),
+        "Angular projection combines 100% wide-session fresh coverage, {} worst-session P95 compute, and approximately 3 deg forward P95 error.".format(_n(pose_p95, " ms")),
+        "The calibrated pose gate limit is {} deg/s; raw and gated results show whether this corruption guard rejects any observed frame.".format(_n(pose["contract"].get("turn_rate_limit_deg_s"))),
         "Confidence holding lowers forward P95 slightly but rejects about 10% of wide outdoor frames and does not reduce worst error. It fails the availability objective.",
         "EMA and alpha-beta do not materially improve pose error and increase wrong-direction persistence at sharp reversals. They are rejected for now.",
         "Gradient CCORR is stable in both outdoor and town sessions. Radius 8/12/18 gives the same pose; 12 px keeps balanced search support.",
