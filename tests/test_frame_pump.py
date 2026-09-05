@@ -34,6 +34,36 @@ class FastSource:
 
 
 class LatestFramePumpTests(unittest.TestCase):
+    def test_observer_sees_source_frames_without_consuming_latest_value(self):
+        source = FastSource()
+        observed = []
+        pump = LatestFramePump(
+            source,
+            observer=lambda packet: observed.append(packet.host_capture_time_ns),
+        )
+        pump.start()
+        try:
+            value = pump.read_latest(0.2)
+            self.assertIn(value.host_capture_time_ns, observed)
+            self.assertIsNone(pump.observer_error)
+        finally:
+            pump.stop()
+
+    def test_observer_failure_does_not_stop_capture(self):
+        source = FastSource()
+
+        def fail(_packet):
+            raise ValueError("observer failed")
+
+        pump = LatestFramePump(source, observer=fail)
+        pump.start()
+        try:
+            value = pump.read_latest(0.2)
+            self.assertIsNotNone(value)
+            self.assertEqual("ValueError: observer failed", pump.observer_error)
+        finally:
+            pump.stop()
+
     def test_slow_consumer_gets_latest_frame_and_drop_count(self):
         source = FastSource()
         pump = LatestFramePump(source)

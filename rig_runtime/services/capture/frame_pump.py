@@ -11,8 +11,9 @@ T = TypeVar("T")
 class LatestFramePump(Generic[T]):
     """Read independently and expose only the newest undelivered source value."""
 
-    def __init__(self, source) -> None:
+    def __init__(self, source, observer=None) -> None:
         self.source = source
+        self.observer = observer
         self._condition = threading.Condition()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -21,6 +22,7 @@ class LatestFramePump(Generic[T]):
         self._latest_sequence = 0
         self._delivered_sequence = 0
         self._error = None
+        self._observer_error = None
         self.dropped_before_processing = 0
 
     def start(self, timeout_s: float = 5.0) -> None:
@@ -46,6 +48,15 @@ class LatestFramePump(Generic[T]):
                 if packet is None:
                     self._stop.wait(0.001)
                     continue
+                if self.observer is not None:
+                    try:
+                        self.observer(packet)
+                    except Exception as exc:
+                        # Auxiliary consumers (recording, metrics, previews) must
+                        # never terminate the latency-critical capture pump.
+                        self._observer_error = "{}: {}".format(
+                            type(exc).__name__, exc
+                        )
                 with self._condition:
                     if self._latest_sequence > self._delivered_sequence:
                         self.dropped_before_processing += 1
@@ -80,6 +91,10 @@ class LatestFramePump(Generic[T]):
                 return None
             self._delivered_sequence = self._latest_sequence
             return self._latest
+
+    @property
+    def observer_error(self) -> Optional[str]:
+        return self._observer_error
 
     def stop(self) -> None:
         self._stop.set()
