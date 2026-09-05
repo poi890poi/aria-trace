@@ -317,15 +317,32 @@ def _seam_masks(frames, placements, method, seam_scale):
         if not np.any(old_mask):
             replace = new_mask > 0
         else:
+            # Give both sources exclusive support. Cropping the old mosaic to
+            # exactly the incoming tile leaves no old-only terminal and causes
+            # every OpenCV finder to degenerate to the same first-owner mask.
+            padding = 12
+            ux0 = max(0, ox - padding)
+            uy0 = max(0, oy - padding)
+            ux1 = min(canvas_width, ox + roi_width + padding)
+            uy1 = min(canvas_height, oy + roi_height + padding)
+            old_image = composite[uy0:uy1, ux0:ux1].copy()
+            old_union_mask = (owner[uy0:uy1, ux0:ux1] >= 0).astype(np.uint8) * 255
             try:
                 result = finder.find(
-                    [composite_roi.copy(), incoming],
-                    [(0, 0), (0, 0)],
-                    [old_mask, new_mask],
+                    [old_image, incoming],
+                    [(ux0, uy0), (ox, oy)],
+                    [old_union_mask, new_mask],
                 )
                 old_result = result[0].get() if hasattr(result[0], "get") else np.asarray(result[0])
                 new_result = result[1].get() if hasattr(result[1], "get") else np.asarray(result[1])
-                replace = (new_result > 0) & (old_result == 0)
+                dx = ox - ux0
+                dy = oy - uy0
+                old_at_incoming = old_result[
+                    dy : dy + roi_height, dx : dx + roi_width
+                ]
+                replace = (new_result[:roi_height, :roi_width] > 0) & (
+                    old_at_incoming == 0
+                )
                 replace |= (owner_roi < 0) & (new_result > 0)
             except cv2.error:
                 # Keep the prior owner in overlap and use the new frame only for
