@@ -1409,9 +1409,19 @@ class TwoRateRealtimeTracker:
             or timestamp_ns - self.last_representation_ns
             >= self.representation_interval_ns
         )
+        representation_spatially_relevant = False
+        if self.fusion._state is not None and self.transition_controller is not None:
+            state = self.fusion.state
+            representation_spatially_relevant = (
+                self.transition_controller.observation_required(
+                    (float(state.pose.x), float(state.pose.y)),
+                    float(state.position_sigma_m),
+                )
+            )
         if (
             self.fusion._state is not None
             and self._active_map_mode_id is not None
+            and representation_spatially_relevant
             and representation_due
             and self._representation_future is None
             and self._representation_executor is not None
@@ -1572,6 +1582,9 @@ class TwoRateRealtimeTracker:
             ),
             "map_representation_observation_running": (
                 self._representation_future is not None
+            ),
+            "map_representation_observation_spatially_relevant": (
+                representation_spatially_relevant
             ),
             "map_representation_error": self._representation_error,
             "cursor_pose": cursor_pose_output,

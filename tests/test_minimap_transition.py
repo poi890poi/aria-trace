@@ -85,6 +85,49 @@ class MinimapTransitionTests(unittest.TestCase):
         self.assertFalse(second["switched"])
         self.assertEqual(second["active_mode_id"], "world")
 
+    def test_representation_observation_is_spatially_gated(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        controller = TransitionController(model, confirmation_count=2)
+        center = tuple(model["transition_zones"][0]["center_xy"])
+
+        self.assertTrue(controller.observation_required(center))
+        self.assertFalse(controller.observation_required((500.0, 500.0)))
+        self.assertTrue(
+            controller.observation_required(
+                (center[0] + 20.0, center[1]), position_uncertainty_px=20.0
+            )
+        )
+        self.assertTrue(
+            controller.observation_required((center[0] + 35.0, center[1]))
+        )
+        self.assertFalse(
+            controller.observation_required((center[0] + 41.0, center[1]))
+        )
+
+    def test_representation_observation_preserves_legacy_global_behavior(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        model["transition_zones"] = []
+        model["canonical_boundary"] = None
+        controller = TransitionController(model, confirmation_count=2)
+
+        self.assertTrue(controller.observation_required(None))
+        self.assertTrue(controller.observation_required((500.0, 500.0)))
+
+    def test_representation_observation_stays_enabled_in_armed_exit_corridor(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        model.setdefault("runtime", {})["armed_exit_radius_px"] = 40.0
+        controller = TransitionController(model, confirmation_count=2)
+        center = tuple(model["transition_zones"][0]["center_xy"])
+
+        controller.update({"world": 0.8, "town": 0.2}, canonical_xy=center)
+
+        self.assertTrue(
+            controller.observation_required((center[0] + 35.0, center[1]))
+        )
+        self.assertFalse(
+            controller.observation_required((center[0] + 41.0, center[1]))
+        )
+
     def test_controller_keeps_transition_armed_while_evidence_leaves_tiny_zone(self):
         model = learn_transition_model(self._observations(), "world", "town")
         model.setdefault("runtime", {})["armed_exit_radius_px"] = 40.0

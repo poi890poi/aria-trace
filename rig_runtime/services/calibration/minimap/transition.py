@@ -279,6 +279,34 @@ class TransitionController:
         )
         return zone, distance, distance <= allowed_radius
 
+    def observation_required(
+        self,
+        canonical_xy: Optional[Tuple[float, float]],
+        position_uncertainty_px: float = 0.0,
+    ) -> bool:
+        """Return whether representation evidence can affect a transition.
+
+        Legacy models without spatial zones remain globally observable.  A
+        zoned model is observed inside its uncertainty-expanded decision zone
+        or the wider approach/exit corridor.  The controller's ``update``
+        method retains the tighter authority to decide an actual switch.
+        """
+
+        zone, zone_distance, _within_observed_zone = self._matching_zone(
+            canonical_xy, position_uncertainty_px
+        )
+        if not self.transition_zones:
+            return True
+        return bool(
+            zone
+            and zone_distance
+            <= max(
+                float(zone["radius_px"])
+                + max(0.0, float(position_uncertainty_px)),
+                self.armed_exit_radius_px,
+            )
+        )
+
     def update(
         self,
         likelihoods: Mapping[str, float],
