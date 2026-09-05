@@ -1,6 +1,7 @@
 """Production regressions distinct from the frozen candidate comparisons."""
 
 import unittest
+import time
 from types import SimpleNamespace
 from concurrent.futures import Future
 
@@ -14,6 +15,37 @@ from tests import test_live_tracker as fixtures
 
 
 class AtlasTrackingIntegrationTests(unittest.TestCase):
+    def test_completed_current_frame_heading_is_published_in_same_update(self):
+        tracker = fixtures.TwoRateTrackerTests._tracker(
+            fixtures.ImmediateLocalizer(), cursor_pose_estimator=fixtures.FakeCursorPoseEstimator())
+        tracker._cursor_executor.shutdown(wait=True)
+        def submit(function, *args):
+            future = Future()
+            future.set_result(function(*args))
+            return future
+        tracker._cursor_executor = SimpleNamespace(submit=submit, shutdown=lambda **kwargs: None)
+        try:
+            tracker.fusion.initialize(Pose2D(10, 20, 15))
+            timestamp = time.perf_counter_ns()
+            result = tracker.update(np.zeros((100, 100, 3), np.uint8), timestamp)
+            self.assertTrue(result["cursor_pose_fresh"])
+            self.assertEqual(result["cursor_pose"]["session_time_ns"], timestamp)
+        finally:
+            tracker.close()
+
+    def test_expired_frame_does_not_wait_for_pending_heading(self):
+        tracker = fixtures.TwoRateTrackerTests._tracker(fixtures.ImmediateLocalizer())
+        future = Future()
+        future.result = lambda *args, **kwargs: self.fail("waited beyond source deadline")
+        tracker._cursor_future = future
+        try:
+            result = tracker.update(np.zeros((100, 100, 3), np.uint8), 1)
+            self.assertFalse(result["cursor_pose_fresh"])
+            self.assertIs(tracker._cursor_future, future)
+        finally:
+            tracker._cursor_future = None
+            tracker.close()
+
     def test_transition_uses_uncertainty_from_observed_frame(self):
         tracker = object.__new__(TwoRateRealtimeTracker)
         tracker.transition_controller = TransitionController({
