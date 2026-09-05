@@ -620,11 +620,12 @@ class WorkbenchAnalysisMixin:
                     (item.get("provenance") or {}).get("source_session_id") or ""
                 )
                 current_source_id = current_source_ids[source_key]
-                item["source_current"] = (
-                    artifact_source_id == current_source_id
-                    if artifact_source_id and current_source_id
-                    else None
-                )
+                if not current_source_id:
+                    item["source_current"] = False
+                elif artifact_source_id:
+                    item["source_current"] = artifact_source_id == current_source_id
+                else:
+                    item["source_current"] = None
                 item["history_only"] = item["source_current"] is False
             selectable = [
                 item

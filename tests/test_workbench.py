@@ -3113,6 +3113,44 @@ class WorkbenchTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_missing_map_source_is_history_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                profiles=ProfileCatalog(),
+                desktop_api=ArbitraryDesktop(),
+            )
+            try:
+                artifact = (
+                    root
+                    / "artifacts"
+                    / "map_stitches"
+                    / "genshin-impact-pc"
+                    / "old-stitch"
+                )
+                artifact.mkdir(parents=True)
+                (artifact / "map_stitch.json").write_text(
+                    json.dumps(
+                        {
+                            "status": "review_required",
+                            "source_session_key": "maps/run_99",
+                            "provenance": {"source_session_id": "deleted-session"},
+                            "mosaic_size_wh": [1000, 800],
+                            "observed_canvas_coverage": 0.8,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                item = state._map_stitches()["genshin-impact-pc"][0]
+
+                self.assertFalse(item["source_current"])
+                self.assertTrue(item["history_only"])
+            finally:
+                state.close()
+
     def test_map_atlas_uses_transition_endpoints_for_independent_layer_scales(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
