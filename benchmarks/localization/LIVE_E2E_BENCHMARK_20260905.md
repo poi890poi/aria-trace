@@ -6,7 +6,7 @@ Production is unchanged. The recorded-video localization core has passing
 candidates, but the latest real workbench trace does **not** pass the full
 capture-to-publication control target.
 
-Pending implementation candidate:
+Conservative production baseline to preserve:
 
 1. gradient `TM_CCORR_NORMED`, 12 px local radius, no global score threshold;
 2. accepted-time physical continuity gate;
@@ -14,9 +14,13 @@ Pending implementation candidate:
 4. all-layer search inside the zone, with two consecutive target-layer wins;
 5. hold the previous pose while a representation change is unconfirmed.
 
-Laplacian CCORR is retained as a secondary candidate. It reduced the largest
-transition-reference outlier, but its lower long-run fresh coverage and larger
-compute spike make it a higher-risk default.
+Pending live A/B challenger: replace only the gradient feature with Laplacian
+CCORR. It reduced the largest transition-reference outlier from 16.70 to
+12.52 px and is the machine report's accuracy-first selection. Its lower
+long-run fresh coverage and larger compute spike make it a higher-risk default,
+so it must beat the gradient baseline on capture-to-publication evidence before
+landing. No estimator is yet recommended for production replacement because
+the current full live E2E trace fails.
 
 ## Evidence contract
 
