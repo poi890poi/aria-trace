@@ -29,3 +29,21 @@ the wrong layer during transition; stale inputs can look smooth. Meaningful
 regressions cover no-route operation, unsupported-map fallback, first refinement,
 observation-time uncertainty and asynchronous delivery. Land independent slices
 in separate commits and record their measured evidence here.
+
+Integrated slices: `83c0389` direct matching and first refinement; `9f1eba3`
+observation uncertainty; `b6c6125` heading submission/consumption. The production
+replay cohort is `artifacts/poc/tracking-integration-20260905/production-AEGIJ`.
+
+Follow-up experiments freeze b6c6125 methods: K widens position refinement after
+a visually confirmed layer switch while retaining continuity gating; L raises
+representation observation cadence only while armed; M reuses the first valid
+initialization hypothesis as a 150 px bounded proposal for the next solve.
+Invalid observations still clear initial hypotheses, restoring unrestricted
+search. Test K and L separately on 9/14/11, then KL if results support it.
+Test M on 9/15 and the first 45 s of 17, explicitly as a startup experiment.
+No hypothesis supplies an accepted pose without current image measurement.
+
+A separate recorded-source experiment primes at most 30 decoded frames and
+releases each at its original timestamp. It reports setup and decoder wait
+separately. It tests replay transport, not tracker compute or physical capture.
+Frame identity/order and non-early release have a behavioral regression.
