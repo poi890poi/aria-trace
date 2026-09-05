@@ -2,9 +2,13 @@
 
 ## Decision status
 
-Production is unchanged. The recorded-video localization core has passing
-candidates, but the latest real workbench trace does **not** pass the full
-capture-to-publication control target.
+The recorded-video localization core has passing candidates, but the latest
+real workbench trace does **not** pass the full capture-to-publication control
+target. The estimator baseline remains unchanged. Two scheduling improvements
+have since landed: representation observation is limited to the learned
+transition approach corridor, and each frame is published to tracking before
+the optional recording observer copies it. A new live trace is still required
+before either is credited with a 30 FPS E2E pass.
 
 Conservative production baseline to preserve:
 
@@ -146,3 +150,15 @@ is not an accuracy pass.
 - Clock causality: `artifacts/poc/live-e2e-clock-causality-20260905/`
 
 All raw chronological telemetry is retained beside each `report.json`.
+
+Post-benchmark implementation commits:
+
+- `228501a`: spatially gate asynchronous scale observations; the last trace
+  spent 7.4% of frames in the approach corridor, while historical observation
+  jobs cost 33.89 ms median and 94.05 ms p95 on their worker;
+- `4192793`: publish a captured frame before optional route-video observation;
+- `f58b859`: reuse the engine's current mini-map observation for evidence
+  instead of extracting it twice.
+
+These changes remove measured or directly demonstrated waste. They are not a
+substitute for a fresh capture-to-publication benchmark.

@@ -13,7 +13,11 @@ crosses fewer protected line features, but visual review exposes broad source
 tile/tonality blocks. DP color-gradient and graph-cut color-gradient are clear
 negative results.
 
-Production mapping and tracking remain unchanged by this benchmark.
+The recommended placement has since landed. A post-land audit found that the
+first integration used optimized positions for canvas bounds and metadata but
+still used sequential positions for composition. Commit `abe644f` repairs that
+authority break and adds a regression proving pixels use the optimized pose.
+Post-build owner and seam evidence landed separately in `b29b4b2`.
 
 ## Evidence contract
 
@@ -130,6 +134,8 @@ but not evidence that capture-to-control latency passes.
 ## Traceability
 
 - Benchmark implementation: commits `413733b`, `60d4e3b`, `8812fd6`, `b158f35`.
+- Production placement integration: `3e6618f`; compositor authority correction:
+  `abe644f`; post-build quality evidence: `b29b4b2`.
 - Run 19 machine result:
   `artifacts/poc/map-stitch-session19-20260905-final/results.json`
 - Run 19 comparison:
