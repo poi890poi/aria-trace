@@ -153,9 +153,11 @@ def _summarize(rows, reference):
         and float(row["localization_core_elapsed_ms"]) <= 1000.0 / 30.0
         for row in rows
     )
+    physical_rejections = sum(bool(row.get("final_gate_rejected")) for row in rows)
     return {
         "frames": len(rows), "fresh_rate": fresh / count,
         "available_rate": available / count, "fresh_within_33_3ms_rate": deadline / count,
+        "final_physical_gate_rejection_rate": physical_rejections / count,
         "error_px": _distribution(errors), "adjacent_jump_px": _distribution(jumps),
         "core_latency_ms": _distribution([row["localization_core_elapsed_ms"] for row in rows]),
     }
@@ -199,6 +201,7 @@ def run(args):
                 "candidate": row["candidate"], "session": row["session"],
                 "temporal_policy": row["temporal_policy"], "fresh_rate": row["fresh_rate"],
                 "available_rate": row["available_rate"], "fresh_within_33_3ms_rate": row["fresh_within_33_3ms_rate"],
+                "final_physical_gate_rejection_rate": row["final_physical_gate_rejection_rate"],
                 **{"error_" + key: value for key, value in row["error_px"].items()},
                 **{"latency_" + key: value for key, value in row["core_latency_ms"].items()},
                 "jump_p95": row["adjacent_jump_px"]["p95"], "jump_worst": row["adjacent_jump_px"]["worst"],

@@ -145,7 +145,10 @@ def _summary(rows, *, reference_key=None, agreement_key=None):
             errors.append(abs(_delta(angle, reference)))
     fresh = sum(row["output_provenance"].startswith("fresh") for row in rows)
     available = sum(row["output_angle_deg"] is not None for row in rows)
-    return {"frames": len(rows), "fresh_rate": fresh / count, "available_rate": available / count, "error_deg": _dist(errors), "latency_ms": _dist([row["latency_ms"] for row in rows])}
+    physical_rejections = sum(
+        bool(row.get("final_physical_gate_rejected")) for row in rows
+    )
+    return {"frames": len(rows), "fresh_rate": fresh / count, "available_rate": available / count, "final_physical_gate_rejection_rate": physical_rejections / count, "error_deg": _dist(errors), "latency_ms": _dist([row["latency_ms"] for row in rows])}
 
 
 def _read_jsonl(path):

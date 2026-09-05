@@ -1,6 +1,6 @@
 import unittest
 
-from benchmarks.cursor_pose.run_wide_temporal import _apply
+from benchmarks.cursor_pose.run_wide_temporal import _apply, _summary
 from benchmarks.localization.run_wide_temporal import _temporal
 
 
@@ -15,11 +15,17 @@ class WideLiveControlBenchmarkTests(unittest.TestCase):
 
     def test_pose_physical_gate_rejects_jump_and_holds(self):
         rows = [
-            {"session_time_ns": 0, "angle_deg": 10.0, "confidence": 1.0},
+            {
+                "session_time_ns": 0,
+                "angle_deg": 10.0,
+                "confidence": 1.0,
+                "latency_ms": 1.0,
+            },
             {
                 "session_time_ns": 10_000_000,
                 "angle_deg": 100.0,
                 "confidence": 1.0,
+                "latency_ms": 1.0,
             },
         ]
 
@@ -30,6 +36,9 @@ class WideLiveControlBenchmarkTests(unittest.TestCase):
         self.assertEqual(output[-1]["output_provenance"], "held")
         self.assertEqual(output[-1]["output_angle_deg"], 10.0)
         self.assertTrue(output[-1]["final_physical_gate_rejected"])
+        self.assertEqual(
+            _summary(output)["final_physical_gate_rejection_rate"], 0.5
+        )
 
     def test_localization_confidence_hold_is_not_fresh(self):
         rows = [

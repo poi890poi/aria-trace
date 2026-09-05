@@ -31,7 +31,7 @@ def build(pose_path: Path, localization_path: Path, output: Path):
         "Localization: use gradient CCORR_NORMED in a 12 px local window after one global fix.",
         "Localization final layer: reject only an impossible XY step using the calibrated speed envelope; hold the last state. Do not use the 0.50 score threshold globally.",
         "",
-        "These are benchmark recommendations, not landed production changes.",
+        "The default real-time core and two-layer acceptance policies are landed; full capture-to-publication validation remains pending.",
         "",
         "CONTROL CONTRACT",
         "",
@@ -63,13 +63,14 @@ def build(pose_path: Path, localization_path: Path, output: Path):
             "",
         ]
     lines += ["POSE TEMPORAL COMPARISON", ""]
-    for policy in ("raw", "confidence_hold", "schmitt", "ema_085", "alpha_beta_085_005"):
+    for policy in ("raw", "physical_gate", "confidence_hold", "schmitt", "ema_085", "alpha_beta_085_005"):
         row = pose_lookup[("angular_projection_ncc_parabolic", policy)]
         wide = [row["wide_sessions"][key] for key in ("run_17", "run_18")]
         lines += [
             policy,
             "  Fresh, worst session: {}".format(_pct(min(x["agreement_diagnostic"]["fresh_rate"] for x in wide))),
             "  Forward P95 / worst: {} / {}".format(_n(row["forward_absolute"]["error_deg"]["p95"], " deg"), _n(row["forward_absolute"]["error_deg"]["worst"], " deg")),
+            "  Final physical-gate rejection, worst session: {}".format(_pct(max(x["agreement_diagnostic"].get("final_physical_gate_rejection_rate", 0.0) for x in wide))),
             "  Wrong-direction persistence P95, worst session: {}".format(_n(max(x["input_turn_response"]["wrong_direction_duration_ms"]["p95"] for x in wide), " ms")),
             "",
         ]
@@ -81,6 +82,7 @@ def build(pose_path: Path, localization_path: Path, output: Path):
             name,
             "  Outdoor fresh / P95 / worst: {} / {} / {}".format(_pct(outdoor["fresh_rate"]), _n(outdoor["error_p95"], " px"), _n(outdoor["error_worst"], " px")),
             "  Town fresh / P95 / worst: {} / {} / {}".format(_pct(town["fresh_rate"]), _n(town["error_p95"], " px"), _n(town["error_worst"], " px")),
+            "  Final physical-gate rejection, worst session: {}".format(_pct(max(float(outdoor.get("final_physical_gate_rejection_rate") or 0.0), float(town.get("final_physical_gate_rejection_rate") or 0.0)))),
             "  Core P95, worst session: {}".format(_n(max(float(outdoor["latency_p95"]), float(town["latency_p95"])), " ms")),
             "",
         ]
@@ -103,6 +105,7 @@ def build(pose_path: Path, localization_path: Path, output: Path):
         "INTERPRETATION",
         "",
         "Angular projection is the only candidate combining 100% wide-session fresh coverage, sub-3 ms P95 compute, and approximately 3 deg forward P95 error.",
+        "The calibrated pose gate limit is {} deg/s; raw and gated results show whether this safety layer rejects any observed frame.".format(_n(pose["contract"].get("turn_rate_limit_deg_s"))),
         "Confidence holding lowers forward P95 slightly but rejects about 10% of wide outdoor frames and does not reduce worst error. It fails the availability objective.",
         "EMA and alpha-beta do not materially improve pose error and increase wrong-direction persistence at sharp reversals. They are rejected for now.",
         "Gradient CCORR is stable in both outdoor and town sessions. Radius 8/12/18 gives the same pose; 12 px keeps balanced search support.",
