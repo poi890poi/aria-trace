@@ -295,6 +295,20 @@ class TwoRateTrackerTests(unittest.TestCase):
             localizer.release.set()
             tracker.close()
 
+    def test_current_minimap_is_reused_for_read_only_evidence(self):
+        tracker = self._tracker(ImmediateLocalizer())
+        frame = np.zeros((100, 100, 3), np.uint8)
+        frame[10:20, 10:20] = 255
+        try:
+            tracker.update(frame, 1)
+            observation = tracker.latest_minimap_observation()
+
+            self.assertIsNotNone(observation)
+            self.assertEqual(observation.shape[:2], (68, 68))
+            self.assertIs(observation, tracker.previous_minimap)
+        finally:
+            tracker.close()
+
     def test_scene_yaw_does_not_force_rotation_of_static_minimap(self):
         localizer = BlockingLocalizer()
         tracker = self._tracker(localizer)

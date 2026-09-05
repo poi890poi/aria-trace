@@ -542,6 +542,7 @@ class TwoRateRealtimeTracker:
         self.global_interval_ns = int(float(global_interval_s) * 1.0e9)
         self.last_global_ns = None
         self.previous_minimap = None
+        self._latest_minimap_observation = None
         self.local_response_min = float(local_response_min)
         self.local_shift_max_px = max(
             3.0,
@@ -912,6 +913,11 @@ class TwoRateRealtimeTracker:
     def _clear_recovery_request(self) -> None:
         self._recovery_request_active = False
 
+    def latest_minimap_observation(self) -> Optional[np.ndarray]:
+        """Expose the current frame's extracted mini-map for read-only evidence."""
+
+        return self._latest_minimap_observation
+
     @staticmethod
     def _mean_fix(rows) -> Pose2D:
         return Pose2D(
@@ -940,6 +946,7 @@ class TwoRateRealtimeTracker:
             self._ensure_scene_estimator(frame)
             yaw = self.scene_estimator.update(frame)
         minimap, mask = self.extractor.extract(frame)
+        self._latest_minimap_observation = minimap
         representation_observation_fresh = self._consume_representation_observation(
             timestamp_ns
         )

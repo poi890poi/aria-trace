@@ -571,10 +571,12 @@ class WorkbenchLiveTrackingMixin:
                     diagnostics = (
                         take_diagnostics() if callable(take_diagnostics) else None
                     )
-                    extractor = getattr(engine, "extractor", None)
-                    minimap = None
-                    if extractor is not None:
-                        minimap, _ = extractor.extract(packet.image)
+                    latest_minimap = getattr(
+                        engine, "latest_minimap_observation", None
+                    )
+                    minimap = (
+                        latest_minimap() if callable(latest_minimap) else None
+                    )
                     if latest.get("global_fix_fresh"):
                         diagnostics = dict(diagnostics or {})
                         diagnostics["map_overlay"] = render_map_overlay(
