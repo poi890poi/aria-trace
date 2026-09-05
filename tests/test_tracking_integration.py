@@ -15,6 +15,36 @@ from tests import test_live_tracker as fixtures
 
 
 class AtlasTrackingIntegrationTests(unittest.TestCase):
+    def test_armed_transition_observes_at_control_cadence_only_while_armed(self):
+        def exercise(armed):
+            class Localizer(fixtures.ImmediateLocalizer):
+                transition_model = {"source_mode_id":"world", "target_mode_id":"town"}
+                calls = 0
+                def refine_near(self, observation, mask, center, **kwargs):
+                    return {"valid": True, "x": center[0], "y": center[1], "score": .9}
+                def observe_modes(self, *args):
+                    self.calls += 1
+                    return {"valid": False}
+            localizer = Localizer()
+            tracker = fixtures.TwoRateTrackerTests._tracker(localizer)
+            tracker._representation_executor.shutdown(wait=True)
+            def submit(function, *args):
+                future = Future()
+                future.set_result(function(*args))
+                return future
+            tracker._representation_executor = SimpleNamespace(submit=submit, shutdown=lambda **kwargs: None)
+            try:
+                tracker.fusion.initialize(Pose2D(10, 20, 0))
+                tracker._activate_map_mode("world", update_scale=False)
+                tracker.last_representation_ns = 1_000_000_000
+                tracker._last_representation_observation = {"controller":{"transition_armed":armed}}
+                tracker.update(np.zeros((100,100,3),np.uint8), 1_050_000_000)
+                return localizer.calls
+            finally:
+                tracker.close()
+        self.assertEqual(exercise(False),0)
+        self.assertEqual(exercise(True),1)
+
     def test_completed_current_frame_heading_is_published_in_same_update(self):
         tracker = fixtures.TwoRateTrackerTests._tracker(
             fixtures.ImmediateLocalizer(), cursor_pose_estimator=fixtures.FakeCursorPoseEstimator())

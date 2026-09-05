@@ -1283,10 +1283,18 @@ class TwoRateRealtimeTracker:
                 search_radius,
             )
             self.last_global_ns = timestamp_ns
+        representation_interval_ns = self.representation_interval_ns
+        representation_controller = (
+            (self._last_representation_observation or {}).get("controller") or {}
+        )
+        if representation_controller.get("transition_armed"):
+            # Two visual confirmations should not each wait a quarter second
+            # while current-layer position estimates are already deteriorating.
+            representation_interval_ns = min(representation_interval_ns, int(1e9 / 30))
         representation_due = (
             self.last_representation_ns is None
             or timestamp_ns - self.last_representation_ns
-            >= self.representation_interval_ns
+            >= representation_interval_ns
         )
         representation_spatially_relevant = False
         if self.fusion._state is not None and self.transition_controller is not None:
