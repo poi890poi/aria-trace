@@ -19,6 +19,8 @@ from acquisition.map_stitching import (
 )
 from aria_trace.services.mapping.stitching import _select_session_keyframes
 from aria_trace.services.mapping.stitching import _estimate_rigid_translation
+from aria_trace.services.mapping.stitching import _fit_translation_pose_graph
+from aria_trace.services.mapping.stitching import _translation_residual_summary
 
 
 class MapStitchingTests(unittest.TestCase):
@@ -249,6 +251,66 @@ class MapStitchingTests(unittest.TestCase):
 
         self.assertTrue(result["spatially_coherent"])
         self.assertLess(result["translation_spread_px"], 1.0)
+
+    def test_translation_pose_graph_reduces_heldout_loop_drift(self):
+        truth = np.asarray(
+            [
+                [0, 0], [10, 0], [20, 0], [20, 10], [20, 20],
+                [10, 20], [0, 20], [0, 10], [0, 0],
+            ],
+            dtype=np.float64,
+        )
+        drift = np.asarray([0.35, 0.12], dtype=np.float64)
+        sequential = []
+        baseline = [truth[0].copy()]
+        for index in range(1, len(truth)):
+            delta = truth[index] - truth[index - 1] + drift
+            baseline.append(baseline[-1] + delta)
+            sequential.append(
+                {
+                    "first": index - 1,
+                    "second": index,
+                    "delta_xy_px": delta.tolist(),
+                    "response": 0.9,
+                    "accepted": True,
+                    "held_out": False,
+                }
+            )
+        loops = []
+        for first, second in ((1, 7), (2, 6), (3, 5)):
+            loops.append(
+                {
+                    "first": first,
+                    "second": second,
+                    "delta_xy_px": (truth[second] - truth[first]).tolist(),
+                    "response": 0.95,
+                    "accepted": True,
+                    "held_out": False,
+                }
+            )
+        heldout = {
+            "first": 0,
+            "second": 8,
+            "delta_xy_px": [0.0, 0.0],
+            "response": 0.95,
+            "accepted": True,
+            "held_out": True,
+        }
+        loops.append(heldout)
+        baseline_summary = _translation_residual_summary(
+            np.asarray(baseline), loops, held_out=True
+        )
+        optimized = _fit_translation_pose_graph(
+            len(truth), sequential + loops
+        )
+        optimized_summary = _translation_residual_summary(
+            optimized, loops, held_out=True
+        )
+
+        self.assertLess(
+            optimized_summary["worst_px"], baseline_summary["worst_px"]
+        )
+        self.assertLess(optimized_summary["worst_px"], 1.0)
 
     def test_session_keyframe_selection_does_not_retain_every_video_frame(self):
         rng = np.random.RandomState(12)

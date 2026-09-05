@@ -22,6 +22,9 @@ MAX_LOCALIZATION_REFERENCE_FRAMES = 9
 ORIENTED_GRADIENT_MIN_SCORE = 0.35
 ORIENTED_GRADIENT_MIN_MARGIN = 0.10
 MAX_RIGID_TRANSLATION_SPREAD_PX = 2.0
+POSE_GRAPH_LOOP_GATE_PX = 18.0
+POSE_GRAPH_MAX_LOOP_EDGES = 900
+POSE_GRAPH_MIN_LOOP_EDGES = 5
 
 
 def _oriented_gradient_channels(image: np.ndarray):
@@ -867,6 +870,269 @@ def _estimate_rigid_translation(first: np.ndarray, second: np.ndarray) -> dict:
     }
 
 
+def _translation_loop_pairs(positions: np.ndarray, viewport_wh, per_frame=3):
+    """Return bounded non-neighbour overlaps proposed by the chain placement."""
+
+    width, height = viewport_wh
+    pairs = set()
+    for first in range(len(positions)):
+        candidates = []
+        for second in range(first + 12, len(positions)):
+            delta = np.abs(positions[second] - positions[first])
+            if delta[0] >= width * 0.72 or delta[1] >= height * 0.72:
+                continue
+            overlap_fraction = (1.0 - delta[0] / width) * (
+                1.0 - delta[1] / height
+            )
+            if overlap_fraction < 0.32:
+                continue
+            candidates.append((float(np.linalg.norm(delta)), second))
+        for _, second in sorted(candidates)[:per_frame]:
+            pairs.add((first, second))
+    return sorted(pairs)
+
+
+def _discover_translation_loop_edges(viewports, positions) -> list:
+    """Measure loop closures without granting the chain result pose authority."""
+
+    height, width = viewports[0].shape[:2]
+    pairs = _translation_loop_pairs(positions, (width, height))
+    if len(pairs) > POSE_GRAPH_MAX_LOOP_EDGES:
+        indexes = np.unique(
+            np.linspace(0, len(pairs) - 1, POSE_GRAPH_MAX_LOOP_EDGES)
+            .round()
+            .astype(int)
+        )
+        pairs = [pairs[index] for index in indexes]
+    edges = []
+    for ordinal, (first, second) in enumerate(pairs):
+        rigid = _estimate_rigid_translation(viewports[first], viewports[second])
+        shift = np.asarray(rigid["shift_xy_px"], dtype=np.float64)
+        expected = positions[first] - positions[second]
+        gate_error = float(np.linalg.norm(shift - expected))
+        accepted = bool(
+            rigid["response"] >= 0.10
+            and rigid["spatially_coherent"]
+            and gate_error <= POSE_GRAPH_LOOP_GATE_PX
+        )
+        edges.append(
+            {
+                "first": int(first),
+                "second": int(second),
+                "delta_xy_px": (-shift).tolist(),
+                "response": float(rigid["response"]),
+                "discovery_gate_error_px": gate_error,
+                "spatially_coherent": bool(rigid["spatially_coherent"]),
+                "accepted": accepted,
+                "held_out": bool(
+                    (first * 1009 + second * 9176 + ordinal) % 5 == 0
+                ),
+            }
+        )
+    return edges
+
+
+def _fit_translation_pose_graph(count: int, edges, iterations=5) -> np.ndarray:
+    """Fit translation-only tile poses with robust iteratively weighted LS."""
+
+    training = [
+        edge
+        for edge in edges
+        if edge.get("accepted", True) and not edge.get("held_out", False)
+    ]
+    if not training:
+        raise ValueError("Translation pose graph has no training constraints")
+    base_weights = np.asarray(
+        [max(float(edge.get("response", 1.0)), 0.05) for edge in training],
+        dtype=np.float64,
+    )
+    weights = base_weights.copy()
+    positions = np.zeros((count, 2), np.float64)
+    for _ in range(max(1, int(iterations))):
+        matrix = np.zeros((len(training) + 1, count), np.float64)
+        target = np.zeros((len(training) + 1, 2), np.float64)
+        for row, (edge, weight) in enumerate(zip(training, weights)):
+            scale = float(np.sqrt(weight))
+            matrix[row, int(edge["first"])] = -scale
+            matrix[row, int(edge["second"])] = scale
+            target[row] = np.asarray(edge["delta_xy_px"], np.float64) * scale
+        matrix[-1, 0] = 10.0
+        positions = np.linalg.lstsq(matrix, target, rcond=None)[0]
+        residuals = np.asarray(
+            [
+                np.linalg.norm(
+                    positions[int(edge["second"])]
+                    - positions[int(edge["first"])]
+                    - np.asarray(edge["delta_xy_px"], np.float64)
+                )
+                for edge in training
+            ],
+            dtype=np.float64,
+        )
+        huber = np.minimum(1.0, 2.0 / np.maximum(residuals, 1.0e-6))
+        weights = base_weights * huber
+    return positions
+
+
+def _translation_residual_summary(positions: np.ndarray, edges, held_out: bool):
+    values = []
+    for edge in edges:
+        if not edge.get("accepted", True):
+            continue
+        if bool(edge.get("held_out", False)) != bool(held_out):
+            continue
+        residual = (
+            positions[int(edge["second"])]
+            - positions[int(edge["first"])]
+            - np.asarray(edge["delta_xy_px"], np.float64)
+        )
+        values.append(float(np.linalg.norm(residual)))
+    if not values:
+        return {"count": 0, "median_px": None, "p95_px": None, "worst_px": None}
+    return {
+        "count": len(values),
+        "median_px": float(np.median(values)),
+        "p95_px": float(np.percentile(values, 95)),
+        "worst_px": float(np.max(values)),
+    }
+
+
+def _render_placement_closure(
+    initial: np.ndarray,
+    optimized: np.ndarray,
+    before: dict,
+    after: dict,
+) -> np.ndarray:
+    image = np.full((620, 1100, 3), 18, np.uint8)
+    panel_width = 760
+    combined = np.vstack((initial, optimized))
+    minimum = combined.min(axis=0)
+    maximum = combined.max(axis=0)
+    span = np.maximum(maximum - minimum, 1.0)
+    scale = min((panel_width - 70) / span[0], 540 / span[1])
+
+    def points(values):
+        normalized = (values - minimum) * scale
+        normalized[:, 0] += 30
+        normalized[:, 1] += 40
+        normalized[:, 1] = 590 - normalized[:, 1]
+        return np.rint(normalized).astype(int)
+
+    initial_points = points(initial)
+    optimized_points = points(optimized)
+    cv2.polylines(image, [initial_points], False, (70, 90, 240), 2, cv2.LINE_AA)
+    cv2.polylines(image, [optimized_points], False, (70, 225, 120), 2, cv2.LINE_AA)
+    for index in range(0, len(initial_points), max(1, len(initial_points) // 40)):
+        cv2.line(
+            image,
+            tuple(initial_points[index]),
+            tuple(optimized_points[index]),
+            (100, 100, 100),
+            1,
+            cv2.LINE_AA,
+        )
+    cv2.putText(image, "Sequential chain", (790, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (70, 90, 240), 2, cv2.LINE_AA)
+    cv2.putText(image, "Robust pose graph", (790, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (70, 225, 120), 2, cv2.LINE_AA)
+    rows = (
+        "Held-out closure residual",
+        "before median: {:.2f} px".format(before["median_px"] or 0.0),
+        "before P95: {:.2f} px".format(before["p95_px"] or 0.0),
+        "before worst: {:.2f} px".format(before["worst_px"] or 0.0),
+        "after median: {:.2f} px".format(after["median_px"] or 0.0),
+        "after P95: {:.2f} px".format(after["p95_px"] or 0.0),
+        "after worst: {:.2f} px".format(after["worst_px"] or 0.0),
+    )
+    for index, row in enumerate(rows):
+        cv2.putText(
+            image,
+            row,
+            (790, 200 + index * 42),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            (235, 235, 235),
+            1,
+            cv2.LINE_AA,
+        )
+    return image
+
+
+def _optimize_selected_translation_poses(
+    viewports,
+    selected,
+    initial_positions: np.ndarray,
+    registrations,
+):
+    selected_viewports = [viewports[index] for index in selected]
+    node_for_local = {local: node for node, local in enumerate(selected)}
+    sequential = []
+    for registration in registrations:
+        first = node_for_local.get(registration["_from_local"])
+        second = node_for_local.get(registration["_to_local"])
+        if first is None or second is None or not registration["accepted"]:
+            continue
+        sequential.append(
+            {
+                "first": first,
+                "second": second,
+                "delta_xy_px": (
+                    -np.asarray(registration["content_shift_xy_px"], np.float64)
+                ).tolist(),
+                "response": float(registration["response"]),
+                "accepted": True,
+                "held_out": False,
+            }
+        )
+    loops = _discover_translation_loop_edges(selected_viewports, initial_positions)
+    accepted_loops = [edge for edge in loops if edge["accepted"]]
+    training_loops = [edge for edge in accepted_loops if not edge["held_out"]]
+    heldout_loops = [edge for edge in accepted_loops if edge["held_out"]]
+    before = _translation_residual_summary(
+        initial_positions, accepted_loops, held_out=True
+    )
+    diagnostics = {
+        "method": "sequential_translation_chain",
+        "status": "not_applied",
+        "loop_candidate_count": len(loops),
+        "accepted_loop_count": len(accepted_loops),
+        "training_loop_count": len(training_loops),
+        "heldout_loop_count": len(heldout_loops),
+        "loop_gate_px": POSE_GRAPH_LOOP_GATE_PX,
+        "baseline_heldout_residual": before,
+        "optimized_heldout_residual": None,
+        "maximum_tile_adjustment_px": 0.0,
+        "loops": loops,
+    }
+    if (
+        len(accepted_loops) < POSE_GRAPH_MIN_LOOP_EDGES
+        or not training_loops
+        or not heldout_loops
+    ):
+        diagnostics["status"] = "insufficient-independent-loop-evidence"
+        return initial_positions, diagnostics, None
+    optimized = _fit_translation_pose_graph(
+        len(selected), sequential + accepted_loops
+    )
+    after = _translation_residual_summary(optimized, accepted_loops, held_out=True)
+    adjustment = np.linalg.norm(optimized - initial_positions, axis=1)
+    maximum_adjustment = float(np.max(adjustment))
+    diagnostics["optimized_heldout_residual"] = after
+    diagnostics["maximum_tile_adjustment_px"] = maximum_adjustment
+    improved = bool(
+        after["p95_px"] is not None
+        and before["p95_px"] is not None
+        and after["p95_px"] < before["p95_px"]
+        and after["worst_px"] <= before["worst_px"]
+        and maximum_adjustment <= POSE_GRAPH_LOOP_GATE_PX
+    )
+    if not improved:
+        diagnostics["status"] = "rejected-no-heldout-improvement"
+        return initial_positions, diagnostics, None
+    diagnostics["method"] = "robust_translation_pose_graph_irls"
+    diagnostics["status"] = "applied"
+    evidence = _render_placement_closure(initial_positions, optimized, before, after)
+    return optimized, diagnostics, evidence
+
+
 def stitch_map_frames(
     frames,
     output_path: Path,
@@ -954,6 +1220,16 @@ def stitch_map_frames(
         selected.append(len(positions) - 1)
     selected_positions = np.asarray([positions[index] for index in selected])
     viewport_height, viewport_width = viewports[0].shape[:2]
+    if progress:
+        progress("Validating global tile placement with non-neighbour loop closures")
+    selected_positions, placement_optimization, placement_evidence = (
+        _optimize_selected_translation_poses(
+            viewports,
+            selected,
+            selected_positions,
+            registrations,
+        )
+    )
     minimum = np.floor(selected_positions.min(axis=0)).astype(int)
     maximum = np.ceil(selected_positions.max(axis=0)).astype(int)
     canvas_width = int(maximum[0] - minimum[0] + viewport_width)
@@ -1050,6 +1326,14 @@ def stitch_map_frames(
         {"name": "registration_quality.png", "title": "Pairwise registration quality", "category": "quality"},
         {"name": "alignment_samples.png", "title": "Representative frame alignments", "category": "quality"},
     ]
+    if placement_evidence is not None:
+        evidence.append(
+            {
+                "name": "placement_closure.png",
+                "title": "Sequential versus loop-constrained tile placement",
+                "category": "quality",
+            }
+        )
     if progress:
         progress("Writing the mosaic and five review images")
     _write_image(output_path / "mosaic.png", mosaic)
@@ -1057,6 +1341,8 @@ def stitch_map_frames(
     _write_image(output_path / "coverage_heatmap.png", coverage_heatmap)
     _write_image(output_path / "registration_quality.png", quality)
     _write_image(output_path / "alignment_samples.png", alignment_samples)
+    if placement_evidence is not None:
+        _write_image(output_path / "placement_closure.png", placement_evidence)
     localization = None
     if localization_reference is not None:
         if progress:
@@ -1121,6 +1407,8 @@ def stitch_map_frames(
         "median_registration_response": float(np.median(responses)) if responses else 0.0,
         "observed_canvas_coverage": observed_coverage,
         "composition_method": "subpixel_highest_feather_weight_source",
+        "placement_method": placement_optimization["method"],
+        "placement_optimization": placement_optimization,
         "viewport_crop_xywh": [x0, y0, viewport_width, viewport_height],
         "mosaic_size_wh": [canvas_width, canvas_height],
         "localization": localization,
