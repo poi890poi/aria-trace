@@ -1891,3 +1891,69 @@ def render_minimap_route_overlay(
     )
     overlay[:, :, 3] = cv2.bitwise_and(overlay[:, :, 3], circular_mask)
     return overlay
+
+
+def render_route_trace_video_frame(
+    frame: np.ndarray,
+    mosaic: np.ndarray,
+    state: dict,
+    route_points,
+    minimap_calibration: dict,
+    crop_xywh,
+    *,
+    panel_opacity: float = 0.68,
+) -> np.ndarray:
+    """Compose only a game source frame and the route-tracing overlays."""
+
+    if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError("Route video needs one BGR game frame")
+    output = frame.copy()
+    frame_height, frame_width = output.shape[:2]
+    crop_x, crop_y, crop_width, crop_height = tuple(map(int, crop_xywh))
+    route_overlay = render_minimap_route_overlay(
+        route_points,
+        state,
+        minimap_calibration,
+        crop_xywh,
+    )
+    left = max(0, crop_x)
+    top = max(0, crop_y)
+    right = min(frame_width, crop_x + crop_width)
+    bottom = min(frame_height, crop_y + crop_height)
+    if right > left and bottom > top:
+        overlay_left = left - crop_x
+        overlay_top = top - crop_y
+        overlay = route_overlay[
+            overlay_top : overlay_top + (bottom - top),
+            overlay_left : overlay_left + (right - left),
+        ]
+        alpha = overlay[:, :, 3:4].astype(np.float32) / 255.0
+        base = output[top:bottom, left:right].astype(np.float32)
+        foreground = overlay[:, :, :3].astype(np.float32)
+        output[top:bottom, left:right] = np.clip(
+            foreground * alpha + base * (1.0 - alpha), 0, 255
+        ).astype(np.uint8)
+
+    panel_width = max(180, min(360, int(round(frame_width * 0.24))))
+    panel_height = max(120, int(round(panel_width * 2.0 / 3.0)))
+    panel = render_map_overlay(
+        mosaic,
+        state,
+        size=(panel_width, panel_height),
+        route_points=route_points,
+    )
+    margin = max(6, int(round(min(frame_width, frame_height) * 0.012)))
+    panel_left = max(0, frame_width - panel_width - margin)
+    panel_top = margin
+    panel_right = min(frame_width, panel_left + panel_width)
+    panel_bottom = min(frame_height, panel_top + panel_height)
+    panel = panel[: panel_bottom - panel_top, : panel_right - panel_left]
+    opacity = float(np.clip(panel_opacity, 0.0, 1.0))
+    output[panel_top:panel_bottom, panel_left:panel_right] = cv2.addWeighted(
+        panel,
+        opacity,
+        output[panel_top:panel_bottom, panel_left:panel_right],
+        1.0 - opacity,
+        0.0,
+    )
+    return output
