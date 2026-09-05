@@ -1,5 +1,8 @@
 # Tracking implementation evaluation
 
+Completed decisions, production revisions, paired comparisons and remaining
+validation gaps: [integration results](TRACKING_INTEGRATION_RESULTS_20260905.md).
+
 Type: supported estimator behavior change, followed by isolated transition,
 initialization and scheduling fixes/experiments. User authorized the plan after
 the 55-replay candidate report.
@@ -47,3 +50,9 @@ A separate recorded-source experiment primes at most 30 decoded frames and
 releases each at its original timestamp. It reports setup and decoder wait
 separately. It tests replay transport, not tracker compute or physical capture.
 Frame identity/order and non-early release have a behavioral regression.
+
+N subsequently tests removing correlation for hypotheses whose feature geometry
+already fails mandatory acceptance gates. N and LN startup comparisons, full LN
+demo/laps and final production checks support landing it as `cd5cdca`. L is
+landed as `e7f3e04`; K and M remain experimental. Decoder prefetch stays an
+explicit recorded-source experiment and is not a physical-capture optimization.
