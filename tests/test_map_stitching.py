@@ -18,6 +18,7 @@ from acquisition.map_stitching import (
     stitch_map_frames,
 )
 from aria_trace.services.mapping.stitching import _select_session_keyframes
+from aria_trace.services.mapping.stitching import _estimate_rigid_translation
 
 
 class MapStitchingTests(unittest.TestCase):
@@ -224,6 +225,31 @@ class MapStitchingTests(unittest.TestCase):
                 self.assertGreater((output / item["name"]).stat().st_size, 0)
             self.assertTrue((output / "map_stitch.json").is_file())
 
+    def test_rigid_translation_detects_a_horizontal_capture_tear(self):
+        rng = np.random.RandomState(37)
+        panorama = rng.randint(0, 255, (300, 520, 3), dtype=np.uint8)
+        first = panorama[:, 40:440].copy()
+        second = np.empty_like(first)
+        second[:150] = panorama[:150, 52:452]
+        second[150:] = panorama[150:, 60:460]
+
+        result = _estimate_rigid_translation(first, second)
+
+        self.assertGreater(result["response"], 0.05)
+        self.assertFalse(result["spatially_coherent"])
+        self.assertGreater(result["translation_spread_px"], 2.0)
+
+    def test_rigid_translation_accepts_one_consistent_map_shift(self):
+        rng = np.random.RandomState(39)
+        panorama = rng.randint(0, 255, (300, 520, 3), dtype=np.uint8)
+        first = panorama[:, 40:440].copy()
+        second = panorama[:, 54:454].copy()
+
+        result = _estimate_rigid_translation(first, second)
+
+        self.assertTrue(result["spatially_coherent"])
+        self.assertLess(result["translation_spread_px"], 1.0)
+
     def test_session_keyframe_selection_does_not_retain_every_video_frame(self):
         rng = np.random.RandomState(12)
         panorama = rng.randint(0, 255, (220, 600, 3), dtype=np.uint8)
@@ -240,6 +266,24 @@ class MapStitchingTests(unittest.TestCase):
         self.assertLess(len(selected), len(frames) // 3)
         self.assertEqual(indices[0], 0)
         self.assertGreater(indices[-1], 50)
+
+    def test_session_keyframe_selection_reports_incoherent_frames(self):
+        rng = np.random.RandomState(43)
+        panorama = rng.randint(0, 255, (220, 620, 3), dtype=np.uint8)
+        first = panorama[:, :300].copy()
+        torn = np.empty_like(first)
+        torn[:110] = panorama[:110, 12:312]
+        torn[110:] = panorama[110:, 30:330]
+        diagnostics = {}
+
+        _select_session_keyframes(
+            self._Capture([first, torn]),
+            2,
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(diagnostics["spatially_incoherent_frame_indices"], [1])
+        self.assertEqual(diagnostics["spatially_incoherent_frame_count"], 1)
 
 
 if __name__ == "__main__":

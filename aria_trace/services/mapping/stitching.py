@@ -21,6 +21,7 @@ MAP_ORIENTATION_MODEL = "fixed_north_up"
 MAX_LOCALIZATION_REFERENCE_FRAMES = 9
 ORIENTED_GRADIENT_MIN_SCORE = 0.35
 ORIENTED_GRADIENT_MIN_MARGIN = 0.10
+MAX_RIGID_TRANSLATION_SPREAD_PX = 2.0
 
 
 def _oriented_gradient_channels(image: np.ndarray):
@@ -828,6 +829,44 @@ def _estimate_translation(first: np.ndarray, second: np.ndarray):
     return (float(shift[0] * 2.0), float(shift[1] * 2.0)), float(response)
 
 
+def _estimate_rigid_translation(first: np.ndarray, second: np.ndarray) -> dict:
+    """Estimate translation and reject screen tears that violate map rigidity."""
+    shift, response = _estimate_translation(first, second)
+    height = first.shape[0]
+    band_height = max(48, int(round(height * 0.40)))
+    starts = (0, max(0, (height - band_height) // 2), height - band_height)
+    bands = []
+    for start in starts:
+        band_shift, band_response = _estimate_translation(
+            first[start : start + band_height],
+            second[start : start + band_height],
+        )
+        if band_response >= 0.06:
+            bands.append(
+                {
+                    "shift_xy_px": [float(band_shift[0]), float(band_shift[1])],
+                    "response": float(band_response),
+                }
+            )
+    spread = None
+    if len(bands) >= 2:
+        band_shifts = np.asarray(
+            [item["shift_xy_px"] for item in bands], dtype=np.float64
+        )
+        center = np.median(band_shifts, axis=0)
+        spread = float(
+            np.max(np.linalg.norm(band_shifts - center[None, :], axis=1))
+        )
+    return {
+        "shift_xy_px": [float(shift[0]), float(shift[1])],
+        "response": float(response),
+        "translation_spread_px": spread,
+        "band_observations": bands,
+        "spatially_coherent": spread is None
+        or spread <= MAX_RIGID_TRANSLATION_SPREAD_PX,
+    }
+
+
 def stitch_map_frames(
     frames,
     output_path: Path,
@@ -874,12 +913,15 @@ def stitch_map_frames(
                     index, len(viewports) - 1
                 )
             )
-        shift, response = _estimate_translation(reference, viewports[index])
+        rigid = _estimate_rigid_translation(reference, viewports[index])
+        shift = rigid["shift_xy_px"]
+        response = rigid["response"]
         magnitude = float(np.linalg.norm(shift))
         accepted = bool(
             response >= 0.06
             and abs(shift[0]) < (x1 - x0) * 0.45
             and abs(shift[1]) < (y1 - y0) * 0.45
+            and rigid["spatially_coherent"]
         )
         registrations.append(
             {
@@ -890,6 +932,8 @@ def stitch_map_frames(
                 "content_shift_xy_px": [shift[0], shift[1]],
                 "magnitude_px": magnitude,
                 "response": response,
+                "translation_spread_px": rigid["translation_spread_px"],
+                "spatially_coherent": rigid["spatially_coherent"],
                 "accepted": accepted,
             }
         )
@@ -1053,6 +1097,9 @@ def stitch_map_frames(
             ]
         )
     accepted = sum(1 for item in registrations if item["accepted"])
+    incoherent = sum(
+        1 for item in registrations if not item["spatially_coherent"]
+    )
     public_registrations = [
         {key: value for key, value in item.items() if not key.startswith("_")}
         for item in registrations
@@ -1069,6 +1116,8 @@ def stitch_map_frames(
         "selected_frame_count": len(selected),
         "accepted_registrations": accepted,
         "rejected_registrations": len(registrations) - accepted,
+        "spatially_incoherent_registrations": incoherent,
+        "maximum_rigid_translation_spread_px": MAX_RIGID_TRANSLATION_SPREAD_PX,
         "median_registration_response": float(np.median(responses)) if responses else 0.0,
         "observed_canvas_coverage": observed_coverage,
         "composition_method": "subpixel_highest_feather_weight_source",
@@ -1085,7 +1134,9 @@ def stitch_map_frames(
     return result
 
 
-def _select_session_keyframes(capture, expected_count: int, progress=None):
+def _select_session_keyframes(
+    capture, expected_count: int, progress=None, diagnostics=None
+):
     """Stream a long recording and retain only overlapping, displaced keyframes."""
     selected_frames = []
     selected_indices = []
@@ -1095,6 +1146,7 @@ def _select_session_keyframes(capture, expected_count: int, progress=None):
     last_accepted_frame = None
     last_accepted_index = None
     decoded_count = 0
+    spatially_incoherent_indices = []
     viewport_size = None
     while True:
         ok, frame = capture.read()
@@ -1120,13 +1172,18 @@ def _select_session_keyframes(capture, expected_count: int, progress=None):
             last_accepted_frame = frame.copy()
             last_accepted_index = source_index
         else:
-            shift, response = _estimate_translation(reference, viewport)
+            rigid = _estimate_rigid_translation(reference, viewport)
+            shift = rigid["shift_xy_px"]
+            response = rigid["response"]
             magnitude = float(np.linalg.norm(shift))
             accepted = bool(
                 response >= 0.06
                 and abs(shift[0]) < viewport_size[0] * 0.45
                 and abs(shift[1]) < viewport_size[1] * 0.45
+                and rigid["spatially_coherent"]
             )
+            if not rigid["spatially_coherent"]:
+                spatially_incoherent_indices.append(source_index)
             if accepted:
                 last_position = reference_position - np.asarray(shift)
                 last_accepted_frame = frame.copy()
@@ -1149,6 +1206,18 @@ def _select_session_keyframes(capture, expected_count: int, progress=None):
     ):
         selected_frames.append(last_accepted_frame)
         selected_indices.append(last_accepted_index)
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "spatially_incoherent_frame_indices": spatially_incoherent_indices,
+                "spatially_incoherent_frame_count": len(
+                    spatially_incoherent_indices
+                ),
+                "maximum_rigid_translation_spread_px": (
+                    MAX_RIGID_TRANSLATION_SPREAD_PX
+                ),
+            }
+        )
     return selected_frames, selected_indices, decoded_count
 
 
@@ -1163,13 +1232,14 @@ def stitch_map_session(
     if progress:
         progress("Streaming the full-map recording and selecting keyframes")
     capture = cv2.VideoCapture(str(reader.video_path("main")))
+    selection_diagnostics = {}
     try:
         frames, source_indices, decoded_count = _select_session_keyframes(
-            capture, len(records), progress
+            capture, len(records), progress, diagnostics=selection_diagnostics
         )
     finally:
         capture.release()
-    return stitch_map_frames(
+    result = stitch_map_frames(
         frames,
         output_path,
         provenance={
@@ -1182,3 +1252,6 @@ def stitch_map_session(
         source_frame_indices=source_indices,
         source_frame_count=decoded_count,
     )
+    result["source_selection"] = selection_diagnostics
+    _atomic_json(Path(output_path) / "map_stitch.json", result)
+    return result
