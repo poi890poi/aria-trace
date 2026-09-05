@@ -20,6 +20,7 @@ from aria_trace.apps.workbench.application import AcquisitionWorkbench
 from rig_runtime.domain.packets import FramePacket
 from rig_runtime.adapters.filesystem.profiles import ProfileCatalog
 from benchmarks.localization.reference_cache import ensure_reference, identity
+from benchmarks.localization.tracking_loss import calibrate_loss_tolerances, evaluate_tracking_loss
 
 
 def read_rows(path):
@@ -73,7 +74,7 @@ def distribution(values):
             {"mean": float(a.mean()), "median": float(np.median(a)), "p95": float(np.percentile(a, 95)), "worst": float(a.max())})}
 
 
-def score(rows, source, reference):
+def score(rows, source, reference, *, loss_error_limit_px=None, loss_calibration=None):
     source_by_time = {r["host_time_ns"]: r for r in source.rows}
     refs = read_rows(reference / "route_states.jsonl")
     times = np.array([r["session_time_ns"] for r in refs], dtype=np.int64)
@@ -127,6 +128,17 @@ def score(rows, source, reference):
     steady = [r for r in enriched if first_pose is not None and r["host_time_ns"] >= first_pose]
     duration = (source.frames[-1]["session_time_ns"] - source.frames[0]["session_time_ns"])/1e9
     fresh = sum(r["output_provenance"] == "fresh" for r in steady)
+    loss_options = {"start_ns": source.frames[0]["session_time_ns"],
+                    "end_ns": source.frames[-1]["session_time_ns"],
+                    "max_sample_gap_s": max_gap/1e9}
+    sensitivity = {}
+    for limit in sorted({5.0, 10.0, 20.0} | ({float(loss_error_limit_px)} if loss_error_limit_px is not None else set())):
+        sensitivity[str(limit)] = evaluate_tracking_loss(enriched, error_limit_px=limit, **loss_options)
+    # Restore per-sample annotations to the headline tolerance after sensitivity.
+    if loss_error_limit_px is None and loss_calibration is None:
+        loss_calibration = calibrate_loss_tolerances([])
+    tracking_loss = evaluate_tracking_loss(enriched, error_limit_px=loss_error_limit_px,
+                                          calibration=loss_calibration if loss_error_limit_px is None else None, **loss_options)
     return enriched, {
         "source_frames": len(source.rows), "processed_frames": len(rows), "steady_frames": len(steady),
         "duration_s": duration, "processed_fps": len(rows)/duration,
@@ -135,7 +147,8 @@ def score(rows, source, reference):
         "all_source_fresh_rate": sum(bool(r.get("pose")) and bool(r.get("xy_measurement_fresh_accepted")) for r in rows)/len(source.rows),
         "held_frames": sum(r["output_provenance"] == "held" for r in enriched),
         "unavailable_frames": sum(r["output_provenance"] == "unavailable" for r in enriched),
-        "loss_episodes": losses, "longest_loss_s": max((r["seconds"] for r in losses), default=0),
+        "nonfresh_xy_episodes": losses, "longest_nonfresh_xy_s": max((r["seconds"] for r in losses), default=0),
+        "tracking_loss": tracking_loss, "tracking_loss_sensitivity": sensitivity,
         "reference_error_px": distribution(errors), "reference_coverage_rate": len(errors)/max(len(rows),1),
         "reference_mode_agreement": float(np.mean(mode_matches)) if mode_matches else None,
         "output_step_px": distribution(steps), "steps_over_8px": sum(v > 8 for v in steps),
@@ -205,7 +218,9 @@ def run(args):
                 raise RuntimeError("Workbench did not finish")
             tracking_id = state._live_tracker["tracking_id"]
             rows = read_rows(target / tracking_id / "telemetry.jsonl")
-            enriched, summary = score(rows, source, references[number])
+            loss_calibration = calibrate_loss_tolerances(references.values(), exclude_reference=references[number])
+            enriched, summary = score(rows, source, references[number], loss_error_limit_px=args.loss_error_limit_px,
+                                      loss_calibration=loss_calibration)
             summary.update({"session": number, "mode": args.mode, "request": request,
                             "reference": str(references[number]), "reference_role": "slow-inferred-atlas-reference-not-external-truth",
                             "evidence": str(target/tracking_id), "status": state._live_tracker["status"],
@@ -238,6 +253,8 @@ def main():
     parser.add_argument("--references-only", action="store_true")
     parser.add_argument("--record-video", action="store_true")
     parser.add_argument("--max-seconds", type=float)
+    parser.add_argument("--loss-error-limit-px", type=float,
+                        help="Optional diagnostic override; default derives a reference-resolution envelope from other recordings")
     args = parser.parse_args()
     run(args)
 

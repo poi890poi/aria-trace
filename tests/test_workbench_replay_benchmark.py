@@ -72,7 +72,7 @@ class ReplayScoreTests(unittest.TestCase):
             self.assertEqual(result["steady_fresh_rate"], 3/5)
             self.assertEqual(result["all_source_fresh_rate"], 3/7)
             self.assertAlmostEqual(result["initialization_s"], .25)
-            self.assertEqual(len(result["loss_episodes"]), 1)
+            self.assertEqual(len(result["nonfresh_xy_episodes"]), 1)
             self.assertNotIn("reference_error_px", enriched[3])  # transition
             self.assertNotIn("reference_error_px", enriched[4])  # oversized gap
             self.assertEqual(result["reference_error_px"]["count"], 3)

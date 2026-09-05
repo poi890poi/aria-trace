@@ -45,17 +45,37 @@ This continues archived task **Ariadne Game Tracker**, task ID
 
 ## Production results
 
-Route-assisted results, with errors in canonical map pixels over scored samples:
+Route-assisted results, with errors in canonical map pixels over scored samples.
+The revised [loss evaluation protocol](TRACKING_LOSS_PROTOCOL.md) replaces the
+headline hold interval with reference-based tracking loss. Position envelopes
+come from other recordings' reference consistency and map resolution, without
+using candidate output; they are diagnostic distinguishability limits, not
+validated auto-cruise tolerances. Longest loss includes acquisition; the next
+column isolates loss after verified acquisition. Recovery requires 0.5 s of
+fresh reference-consistent output. Unknown intervals cannot verify recovery.
 
-| Session | First pose | Fresh XY after init | Reference P95 | Publication P95 | Longest XY hold |
-|---|---:|---:|---:|---:|---:|
-| 11, demonstration | 2.17 s | 97.9% | 2.81 px | 25.21 ms | 1.31 s |
-| 14, cruise / reverse transition | 2.08 s | 97.4% | 58.70 px | 27.77 ms | 0.13 s |
-| 15, cruise | 2.09 s | 100% | 3.50 px | 24.48 ms | 0 |
-| 16, long cruise | 3.82 s | 99.9% | 3.73 px | 25.07 ms | 0.08 s |
-| 17, outdoor laps | 24.27 s | 100% | 3.93 px | 20.84 ms | 0 |
-| 18, town laps | 2.17 s | 100% | 1.34 px | 26.86 ms | 0 |
-| 11, video recording enabled | 2.14 s | 97.9% | 2.80 px | 24.60 ms | 1.31 s |
+| Session | First pose | Fresh XY after init | Reference P95 | Publication P95 | Longest tracking lost | Lost after acquisition |
+|---|---:|---:|---:|---:|---:|---:|
+| 11, demonstration | 2.17 s | 97.9% | 2.81 px | 25.21 ms | 2.17 s | 0.54 s |
+| 14, cruise / reverse transition | 2.08 s | 97.4% | 58.70 px | 27.77 ms | 4.21 s, unresolved | 4.21 s |
+| 15, cruise | 2.09 s | 100% | 3.50 px | 24.48 ms | 2.09 s | 0 |
+| 16, long cruise | 3.82 s | 99.9% | 3.73 px | 25.07 ms | 3.95 s | 0.05 s |
+| 17, outdoor laps | 24.27 s | 100% | 3.93 px | 20.84 ms | 24.43 s, includes unknown | 1.14 s |
+| 18, town laps | 2.17 s | 100% | 1.34 px | 26.86 ms | 2.17 s | 0 |
+| 11, video recording enabled | 2.14 s | 97.9% | 2.80 px | 24.60 ms | 2.14 s | 0.54 s |
+
+These are sampled proxy-loss intervals, not measured control outages. Longest
+control loss remains **unmeasured**: this replay does not issue cruising actions
+and validate their responses, local visual steering, route-stage decisions,
+path clearance, or per-frame heading correctness. Small XY error and smooth
+output cannot certify autonomous route completion. Conversely, temporary map
+uncertainty need not interrupt cruising if local visual guidance remains usable.
+
+Run14's former 0.13 s headline counted only nonfresh output. Its 4.21 s wrong-layer
+episode contains 92 scored outputs, 90 marked fresh and TRACK. The endpoint is
+recording termination, not successful recovery. Free-roam remains without verified
+acquisition through recording end on nine of ten sessions under this protocol;
+unknown reference spans are explicitly recorded rather than treated as correct.
 
 Fresh means a measured XY output on a processed frame; it does not certify
 correctness. The complete machine report includes fresh output against all
