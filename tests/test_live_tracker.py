@@ -586,13 +586,13 @@ class TwoRateTrackerTests(unittest.TestCase):
 
             def track(self, observation, mask, timestamp_ns=None):
                 return {
-                    "measurement_accepted": False,
+                    "measurement_accepted": True,
                     "pose_available": True,
-                    "held": True,
+                    "held": False,
                     "x": self.previous_xy[0],
                     "y": self.previous_xy[1],
-                    "score": 0.0,
-                    "decision": "held-no-map-measurement",
+                    "score": 0.8,
+                    "decision": "accepted-current-frame-map-pose",
                 }
 
         visual = VisualTracker()
@@ -615,13 +615,14 @@ class TwoRateTrackerTests(unittest.TestCase):
             tracker.last_global_ns = 1
 
             first = Future()
-            first.set_result(GlobalFix(80.0, 70.0, 15.0, 1.0, 0.9, 0.2, 2.0))
+            first.set_result(GlobalFix(12.0, 21.0, 15.0, 1.0, 0.9, 0.2, 2.0))
             tracker._global_future = first
             tracker.update(frame, 2)
             self.assertEqual(visual.seed_calls, [])
+            self.assertEqual(len(tracker._recovery_hypotheses), 1)
 
             second = Future()
-            second.set_result(GlobalFix(81.0, 70.0, 15.0, 1.0, 0.9, 0.2, 2.0))
+            second.set_result(GlobalFix(13.0, 21.0, 15.0, 1.0, 0.9, 0.2, 2.0))
             tracker._global_future = second
             result = tracker.update(frame, 3)
 

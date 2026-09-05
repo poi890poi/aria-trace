@@ -1337,7 +1337,6 @@ class TwoRateRealtimeTracker:
                         route_result["x"], route_result["y"], quality
                     )
                     self._local_rejections = 0
-                    self._recovery_hypotheses = []
                 else:
                     self._local_rejections += 1
             except Exception as exc:
