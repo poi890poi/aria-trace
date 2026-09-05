@@ -1,5 +1,8 @@
 # Tracking correction experiments
 
+Completed comparisons and confidence decisions are in
+[Tracking candidate results](TRACKING_CANDIDATE_RESULTS_20260905.md).
+
 Type: benchmark-only causal experiment. Production defaults remain unchanged
 until a candidate has supporting full-loop evidence. Frozen baseline revision:
 1386101. Atlas and cached references are those in the rebuilt-atlas report.
