@@ -1,5 +1,8 @@
 # Map-stitching benchmark
 
+Latest decision report:
+[Full-map stitching benchmark — 2026-09-05](STITCHING_BENCHMARK_20260905.md).
+
 This benchmark asks two separate questions:
 
 1. are the source viewports placed consistently; and
