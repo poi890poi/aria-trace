@@ -41,8 +41,12 @@ class MapStitchingTests(unittest.TestCase):
         mask = np.full(template.shape[:2], 255, np.uint8)
         response = _masked_oriented_gradient_zncc(source, template, mask)
         _, score, _, location = cv2.minMaxLoc(response)
+        self.assertLessEqual(float(np.max(response)), 1.0)
+        self.assertGreaterEqual(float(np.min(response)), -1.0)
         self.assertGreater(score, 0.65)
-        self.assertEqual(location, (5, 20))
+        # The source deliberately contains two identical positive-polarity
+        # edges; either is an equally valid maximum.
+        self.assertIn(location, ((5, 20), (50, 20)))
         self.assertLess(float(response[20, 65]), 0.0)
 
     def test_scale_consensus_selects_largest_consistent_reference_cluster(self):

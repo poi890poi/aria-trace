@@ -39,7 +39,7 @@ def _oriented_gradient_channels(image: np.ndarray):
 def _masked_oriented_gradient_zncc(
     source: np.ndarray, template: np.ndarray, mask: np.ndarray
 ) -> np.ndarray:
-    """Correlate signed edge directions with weighted zero-mean normalization."""
+    """Correlate signed edge directions with a bounded normalized dot product."""
     source_channels = _oriented_gradient_channels(source)
     template_channels = _oriented_gradient_channels(template)
     weights = (mask.astype(np.float32) / 255.0).clip(0.0, 1.0)
@@ -55,13 +55,10 @@ def _masked_oriented_gradient_zncc(
         channel_numerator = cv2.matchTemplate(
             source_channel, centered_template, cv2.TM_CCORR
         )
-        source_sum = cv2.matchTemplate(source_channel, weights, cv2.TM_CCORR)
         source_square_sum = cv2.matchTemplate(
             source_channel * source_channel, weights, cv2.TM_CCORR
         )
-        channel_source_energy = np.maximum(
-            source_square_sum - source_sum * source_sum / weight_sum, 0.0
-        )
+        channel_source_energy = np.maximum(source_square_sum, 0.0)
         numerator = (
             channel_numerator
             if numerator is None
@@ -73,9 +70,15 @@ def _masked_oriented_gradient_zncc(
             else source_energy + channel_source_energy
         )
         template_energy += float(np.sum(centered_template * centered_template))
-    denominator = np.sqrt(np.maximum(source_energy * template_energy, 1.0e-12))
-    response = numerator / denominator
-    return np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
+    minimum_source_energy = max(template_energy * 1.0e-6, 1.0e-6)
+    valid = source_energy >= minimum_source_energy
+    denominator = np.sqrt(
+        np.maximum(source_energy * template_energy, 1.0e-12)
+    )
+    response = np.full(numerator.shape, -1.0, np.float32)
+    np.divide(numerator, denominator, out=response, where=valid)
+    response = np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
+    return np.clip(response, -1.0, 1.0)
 
 
 def _correlation_heatmap(response, best_location, second_location) -> np.ndarray:
@@ -774,7 +777,7 @@ def _build_localization_derivative(
             "reprojection_p95_original_map_px": estimate["reprojection_p95_px"],
             "gradient_correlation_score": float(score),
             "gradient_correlation_margin": float(score - second_score),
-            "gradient_correlation_method": "masked_oriented_gradient_zero_mean_normalized_cross_correlation",
+            "gradient_correlation_method": "masked_oriented_gradient_zero_mean_template_normalized_cross_correlation",
             "gradient_correlation_minimum_score": ORIENTED_GRADIENT_MIN_SCORE,
             "gradient_correlation_minimum_margin": ORIENTED_GRADIENT_MIN_MARGIN,
             "sift_correlation_center_agreement_localization_px": center_agreement,
