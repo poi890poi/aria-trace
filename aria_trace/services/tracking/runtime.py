@@ -622,6 +622,7 @@ class TwoRateRealtimeTracker:
         else:
             self._representation_executor = None
         self._representation_future = None
+        self._representation_position_sigma = 0.0
         self.initial_consensus_count = max(1, int(initial_consensus_count))
         self._initial_hypotheses = []
         if cursor_pose_estimator is not None and cursor_pose_process_config is not None:
@@ -854,6 +855,7 @@ class TwoRateRealtimeTracker:
             canonical_xy = observation.get("canonical_xy_read_only")
             controller_result = self.transition_controller.update(
                 observation.get("likelihoods") or {},
+                position_uncertainty_px=self._representation_position_sigma,
                 canonical_xy=(
                     tuple(float(value) for value in canonical_xy)
                     if canonical_xy is not None
@@ -1446,6 +1448,7 @@ class TwoRateRealtimeTracker:
             search_radius = float(
                 np.clip(state.position_sigma_m * 3.0, 40.0, 150.0)
             )
+            self._representation_position_sigma = float(state.position_sigma_m)
             self._representation_future = self._representation_executor.submit(
                 self.localizer.observe_modes,
                 minimap.copy(),

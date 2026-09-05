@@ -14,6 +14,23 @@ from tests import test_live_tracker as fixtures
 
 
 class AtlasTrackingIntegrationTests(unittest.TestCase):
+    def test_transition_uses_uncertainty_from_observed_frame(self):
+        tracker = object.__new__(TwoRateRealtimeTracker)
+        tracker.transition_controller = TransitionController({
+            "source_mode_id": "world", "target_mode_id": "town",
+            "transition_zones": [{"zone_id": "tiny", "center_xy": [0, 0], "radius_px": 1.65}],
+            "runtime": {"confirmation_count": 2, "minimum_mode_margin": .2},
+        }, confirmation_count=2)
+        tracker.transition_controller.set_active_mode("town")
+        tracker.route_visual_tracker = None
+        tracker._representation_position_sigma = 3.0
+        tracker.fusion = SimpleNamespace(state=SimpleNamespace(position_sigma_m=100))
+        future = Future()
+        future.set_result({"valid": True, "likelihoods": {"world": 1, "town": 0}, "canonical_xy_read_only": [2.48, 0]})
+        tracker._representation_future = future
+        tracker._consume_representation_observation(1)
+        self.assertTrue(tracker._last_representation_observation["controller"]["transition_armed"])
+
     def test_atlas_tracking_needs_no_route_and_does_not_accumulate_scene_motion(self):
         class Localizer(fixtures.ImmediateLocalizer):
             def refine_near(self, observation, mask, center, **kwargs):
