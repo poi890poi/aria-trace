@@ -225,6 +225,7 @@ class RouteVisualTracker:
         self.recovery_top_k = max(1, int(recovery_top_k))
         self.previous_xy = None
         self.previous_time_ns = None
+        self._trained_transition = None
         motion = package.manifest.get("motion_envelope") or {}
         speed_p99 = (motion.get("speed_px_s") or {}).get("p99")
         self.continuity_speed_limit_px_s = max(
@@ -236,6 +237,100 @@ class RouteVisualTracker:
         self.previous_time_ns = (
             int(timestamp_ns) if timestamp_ns is not None else None
         )
+        self._trained_transition = None
+
+    def arm_trained_transition(
+        self, source_mode_id: str, target_mode_id: str
+    ) -> Optional[dict]:
+        """Hold XY and select the nearest trained post-transition search anchor."""
+
+        if self.previous_xy is None:
+            return None
+        source_mode_id = str(source_mode_id)
+        target_mode_id = str(target_mode_id)
+        if self._trained_transition is not None:
+            pending = self._trained_transition
+            if (
+                pending["source_mode_id"] == source_mode_id
+                and pending["target_mode_id"] == target_mode_id
+            ):
+                return dict(pending)
+        matches = [
+            item
+            for item in self.package.transitions
+            if str(item.get("source_mode_id")) == source_mode_id
+            and str(item.get("target_mode_id")) == target_mode_id
+        ]
+        if not matches:
+            return None
+
+        def source_position(item):
+            explicit = item.get("last_source_canonical_xy")
+            if explicit is not None:
+                return tuple(float(value) for value in explicit)
+            index = int(
+                item.get(
+                    "last_source_state_index",
+                    item.get("first_state_index", 0),
+                )
+            )
+            return tuple(
+                float(value) for value in self.package.states[index]["canonical_xy"]
+            )
+
+        selected = min(
+            matches,
+            key=lambda item: math.hypot(
+                source_position(item)[0] - self.previous_xy[0],
+                source_position(item)[1] - self.previous_xy[1],
+            ),
+        )
+        target_index = int(
+            selected.get(
+                "first_target_state_index",
+                selected.get("center_state_index"),
+            )
+        )
+        target_xy = selected.get("first_target_canonical_xy")
+        if target_xy is None:
+            target_xy = self.package.states[target_index]["canonical_xy"]
+        self._trained_transition = {
+            "transition_index": int(selected.get("transition_index", 0)),
+            "source_mode_id": source_mode_id,
+            "target_mode_id": target_mode_id,
+            "target_state_index": target_index,
+            "target_canonical_xy": [float(value) for value in target_xy],
+            "target_layer_confirmed": False,
+        }
+        return dict(self._trained_transition)
+
+    def confirm_trained_transition_layer(self, target_mode_id: str) -> bool:
+        pending = self._trained_transition
+        if pending is None or pending["target_mode_id"] != str(target_mode_id):
+            return False
+        pending["target_layer_confirmed"] = True
+        return True
+
+    def cancel_trained_transition(self) -> None:
+        self._trained_transition = None
+
+    def _held_transition_result(self) -> dict:
+        pending = dict(self._trained_transition or {})
+        return {
+            "valid": False,
+            "measurement_accepted": False,
+            "pose_available": self.previous_xy is not None,
+            "held": self.previous_xy is not None,
+            "x": self.previous_xy[0] if self.previous_xy is not None else None,
+            "y": self.previous_xy[1] if self.previous_xy is not None else None,
+            "score": 0.0,
+            "decision": "held:trained-map-transition",
+            "route_role": "trained-transition-search-proposal-only",
+            "continuity_rejected": False,
+            "transition_waiting": True,
+            "continuity_speed_limit_px_s": self.continuity_speed_limit_px_s,
+            "trained_transition": pending,
+        }
 
     def _refine(self, observation, mask, center, radius, source, state_index=None):
         refiner = getattr(
@@ -284,7 +379,24 @@ class RouteVisualTracker:
 
     def track(self, observation, mask, timestamp_ns=None) -> dict:
         result = None
-        if self.previous_xy is not None:
+        pending_transition = self._trained_transition
+        if pending_transition is not None and not pending_transition[
+            "target_layer_confirmed"
+        ]:
+            return self._held_transition_result()
+        if pending_transition is not None:
+            result = self._refine(
+                observation,
+                mask,
+                pending_transition["target_canonical_xy"],
+                max(
+                    self.local_radius_px,
+                    float(self.package.manifest.get("corridor_radius_px") or 0.0),
+                ),
+                "route-transition-anchor",
+                int(pending_transition["target_state_index"]),
+            )
+        elif self.previous_xy is not None:
             result = self._refine(
                 observation,
                 mask,
@@ -292,7 +404,9 @@ class RouteVisualTracker:
                 self.local_radius_px,
                 "continuous-local",
             )
-        if result is None or not result.get("valid"):
+        if pending_transition is None and (
+            result is None or not result.get("valid")
+        ):
             recovered = self._recover(observation, mask)
             if recovered is not None:
                 result = recovered
@@ -324,6 +438,8 @@ class RouteVisualTracker:
                 continuity_rejected = True
         if measurement_accepted:
             self.previous_xy = (float(result["x"]), float(result["y"]))
+            if pending_transition is not None:
+                self._trained_transition = None
         if measurement_accepted and timestamp_ns is not None:
             self.previous_time_ns = int(timestamp_ns)
         pose_available = self.previous_xy is not None
@@ -339,6 +455,8 @@ class RouteVisualTracker:
                 "decision": (
                     "accepted-current-frame-map-pose"
                     if measurement_accepted
+                    else "held:trained-transition-awaiting-visual-confirmation"
+                    if pending_transition is not None
                     else "held:continuity-jump"
                     if continuity_rejected
                     else "held-no-map-measurement"
@@ -347,7 +465,15 @@ class RouteVisualTracker:
                 ),
                 "route_role": "bounded-search-proposal-only",
                 "continuity_rejected": continuity_rejected,
+                "transition_waiting": bool(
+                    pending_transition is not None and not measurement_accepted
+                ),
                 "continuity_speed_limit_px_s": self.continuity_speed_limit_px_s,
+                "trained_transition": (
+                    dict(self._trained_transition)
+                    if self._trained_transition is not None
+                    else None
+                ),
             }
         )
         return public

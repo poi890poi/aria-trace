@@ -853,11 +853,37 @@ class TwoRateRealtimeTracker:
             )
         self._last_representation_observation = dict(observation)
         self._last_representation_observation["controller"] = controller_result
+        route_transition = self.route_visual_tracker
+        if controller_result and route_transition is not None:
+            arm = getattr(route_transition, "arm_trained_transition", None)
+            cancel = getattr(route_transition, "cancel_trained_transition", None)
+            if (
+                controller_result.get("within_observed_zone")
+                and controller_result.get("transition_zone_id") is not None
+                and callable(arm)
+            ):
+                arm(
+                    self._active_map_mode_id,
+                    controller_result.get("competing_mode_id"),
+                )
+            elif (
+                not controller_result.get("transition_armed")
+                and not controller_result.get("switched")
+                and callable(cancel)
+            ):
+                cancel()
         if not controller_result or not controller_result.get("switched"):
             return True
         previous_mode = self._active_map_mode_id
         next_mode = str(controller_result["active_mode_id"])
         self._activate_map_mode(next_mode, update_scale=True)
+        confirm_route_transition = getattr(
+            self.route_visual_tracker,
+            "confirm_trained_transition_layer",
+            None,
+        )
+        if callable(confirm_route_transition):
+            confirm_route_transition(next_mode)
         self.previous_minimap = None
         self._last_map_transition = {
             "from_mode_id": previous_mode,
@@ -978,7 +1004,11 @@ class TwoRateRealtimeTracker:
             local_motion_applied = True
             self._local_rejections = 0
             self._recovery_hypotheses = []
-        elif self.fusion._state is not None and self.sequence:
+        elif (
+            self.fusion._state is not None
+            and self.sequence
+            and self.route_visual_tracker is None
+        ):
             self._local_rejections += 1
 
         cursor_pose_fresh = False
@@ -1338,7 +1368,8 @@ class TwoRateRealtimeTracker:
                     )
                     self._local_rejections = 0
                 else:
-                    self._local_rejections += 1
+                    if not route_result.get("transition_waiting"):
+                        self._local_rejections += 1
             except Exception as exc:
                 self._last_route_tracking = {
                     "measurement_accepted": False,

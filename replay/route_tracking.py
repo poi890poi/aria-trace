@@ -156,10 +156,14 @@ def compile_route_tracking_package(
                 "first_state_index": left,
                 "center_state_index": index,
                 "last_state_index": right,
+                "last_source_state_index": index - 1,
+                "first_target_state_index": index,
+                "last_source_canonical_xy": states[index - 1]["canonical_xy"],
+                "first_target_canonical_xy": states[index]["canonical_xy"],
                 "start_route_distance_px": states[left]["route_distance_px"],
                 "end_route_distance_px": states[right]["route_distance_px"],
                 "position_semantics": "continuous_no_displacement",
-                "runtime_policy": "hold_pose_then_switch_layer_and_reset_reference",
+                "runtime_policy": "hold_pose_search_trained_target_then_resume_on_visual_confirmation",
             }
         )
 

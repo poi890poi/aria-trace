@@ -159,6 +159,74 @@ class RouteTrackerTests(unittest.TestCase):
             self.assertTrue(result["measurement_accepted"])
             self.assertEqual(map_localizer.active_calls, 1)
 
+    def test_visual_tracker_holds_then_confirms_at_trained_transition_anchor(self):
+        class TransitionMap:
+            def __init__(self):
+                self.centers = []
+                self.valid = True
+
+            def refine_near(
+                self, observation, mask, center, search_radius_px, score_min
+            ):
+                self.centers.append((tuple(center), float(search_radius_px)))
+                return {
+                    "valid": self.valid,
+                    "x": float(center[0]) + 2.0,
+                    "y": float(center[1]) + 1.0,
+                    "score": 0.9,
+                    "margin": 0.2,
+                    "selected_mode_id": "town",
+                    "pose_authority": "current-frame-map-correlation",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            package, images = self._package(Path(temporary) / "route")
+            map_localizer = TransitionMap()
+            tracker = RouteVisualTracker(package, map_localizer)
+            tracker.seed(50.0, 0.0, timestamp_ns=1_000_000_000)
+
+            pending = tracker.arm_trained_transition("world", "town")
+            held = tracker.track(
+                images[6],
+                np.full((64, 64), 255, np.uint8),
+                timestamp_ns=1_100_000_000,
+            )
+
+            self.assertEqual(pending["target_state_index"], 6)
+            self.assertEqual(pending["target_canonical_xy"], [60.0, 0.0])
+            self.assertTrue(held["held"])
+            self.assertEqual(held["decision"], "held:trained-map-transition")
+            self.assertEqual((held["x"], held["y"]), (50.0, 0.0))
+            self.assertEqual(map_localizer.centers, [])
+
+            self.assertTrue(tracker.confirm_trained_transition_layer("town"))
+            map_localizer.valid = False
+            awaiting = tracker.track(
+                images[6],
+                np.full((64, 64), 255, np.uint8),
+                timestamp_ns=1_200_000_000,
+            )
+
+            self.assertTrue(awaiting["transition_waiting"])
+            self.assertEqual(
+                awaiting["decision"],
+                "held:trained-transition-awaiting-visual-confirmation",
+            )
+            self.assertEqual(len(map_localizer.centers), 1)
+
+            map_localizer.valid = True
+            confirmed = tracker.track(
+                images[6],
+                np.full((64, 64), 255, np.uint8),
+                timestamp_ns=1_300_000_000,
+            )
+
+            self.assertTrue(confirmed["measurement_accepted"])
+            self.assertEqual(confirmed["source"], "route-transition-anchor")
+            self.assertEqual(map_localizer.centers, [((60.0, 0.0), 20.0)] * 2)
+            self.assertEqual((confirmed["x"], confirmed["y"]), (62.0, 1.0))
+            self.assertIsNone(confirmed["trained_transition"])
+
     def test_visual_tracker_holds_prior_pose_on_implausible_jump(self):
         class JumpingMap:
             def __init__(self):

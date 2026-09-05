@@ -34,6 +34,15 @@ active scale only when the current canonical position lies inside a learned
 zone. A switch holds continuous XY, changes the scale, and resets only the local
 image reference.
 
+In route-assisted mode, entering a learned transition zone also arms the
+matching demonstrated route transition. The tracker holds its last verified XY
+while the representation is ambiguous. After the target layer is confirmed,
+the first trained target state supplies a bounded search center; it is not a
+pose measurement. Tracking resumes only when current-frame target-layer map
+correlation validates a position near that center. Existing route packages use
+their transition center state as the compatible target anchor; newly compiled
+packages record the last source and first target states explicitly.
+
 Models without spatial evidence retain likelihood-only behavior solely for
 legacy compatibility. New learned models always write `transition_zones` and
 also retain `canonical_boundary` while old readers exist.

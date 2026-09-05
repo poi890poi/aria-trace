@@ -449,10 +449,48 @@ class TwoRateTrackerTests(unittest.TestCase):
             tracker.close()
 
     def test_scale_transition_switches_layer_without_pose_jump(self):
+        class TransitionRoute:
+            def __init__(self):
+                self.previous_xy = None
+                self.arm_calls = []
+                self.confirm_calls = []
+
+            def seed(self, x, y):
+                self.previous_xy = (float(x), float(y))
+
+            def arm_trained_transition(self, source_mode_id, target_mode_id):
+                self.arm_calls.append((source_mode_id, target_mode_id))
+
+            def confirm_trained_transition_layer(self, target_mode_id):
+                self.confirm_calls.append(target_mode_id)
+                return True
+
+            def cancel_trained_transition(self):
+                return None
+
+            def track(self, observation, mask, timestamp_ns=None):
+                return {
+                    "measurement_accepted": False,
+                    "pose_available": True,
+                    "held": True,
+                    "x": self.previous_xy[0],
+                    "y": self.previous_xy[1],
+                    "score": 0.0,
+                    "decision": "held:trained-map-transition",
+                    "transition_waiting": True,
+                }
+
         class ScaleTransitionLocalizer:
             transition_model = {
                 "source_mode_id": "world",
                 "target_mode_id": "town",
+                "transition_zones": [
+                    {
+                        "zone_id": "route-crossing",
+                        "center_xy": [80.0, 70.0],
+                        "radius_px": 4.0,
+                    }
+                ],
                 "runtime": {
                     "confirmation_count": 2,
                     "minimum_mode_margin": 0.20,
@@ -508,6 +546,7 @@ class TwoRateTrackerTests(unittest.TestCase):
                 return 2.64 if mode_id == "world" else 0.88
 
         localizer = ScaleTransitionLocalizer()
+        route = TransitionRoute()
         tracker = TwoRateRealtimeTracker(
             np.full((160, 180, 3), 40, np.uint8),
             {"crop_xywh": [0, 0, 80, 80]},
@@ -519,6 +558,7 @@ class TwoRateTrackerTests(unittest.TestCase):
             relocalize_after_rejections=1,
             recovery_consensus_count=2,
             representation_interval_s=0.001,
+            route_visual_tracker=route,
         )
         frame = np.random.RandomState(15).randint(
             0, 255, (100, 100, 3), dtype=np.uint8
@@ -550,6 +590,9 @@ class TwoRateTrackerTests(unittest.TestCase):
             self.assertAlmostEqual(tracker.map_scale, 0.88)
             self.assertAlmostEqual(result["map_scale"], 0.88)
             self.assertEqual(localizer.active_mode_id, "town")
+            self.assertIn(("world", "town"), route.arm_calls)
+            self.assertEqual(route.confirm_calls, ["town"])
+            self.assertEqual(tracker._local_rejections, 0)
             self.assertEqual(
                 result["map_representation_observation"]["pose_authority"],
                 "none",
