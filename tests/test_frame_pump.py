@@ -44,9 +44,33 @@ class LatestFramePumpTests(unittest.TestCase):
         pump.start()
         try:
             value = pump.read_latest(0.2)
+            deadline = time.monotonic() + 0.2
+            while (
+                value.host_capture_time_ns not in observed
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.001)
             self.assertIn(value.host_capture_time_ns, observed)
             self.assertIsNone(pump.observer_error)
         finally:
+            pump.stop()
+
+    def test_observer_does_not_delay_current_frame_delivery(self):
+        source = FastSource()
+        observer_started = threading.Event()
+        release_observer = threading.Event()
+
+        def block(_packet):
+            observer_started.set()
+            release_observer.wait(1.0)
+
+        pump = LatestFramePump(source, observer=block)
+        pump.start()
+        try:
+            self.assertTrue(observer_started.wait(0.2))
+            self.assertIsNotNone(pump.read_latest(0.05))
+        finally:
+            release_observer.set()
             pump.stop()
 
     def test_observer_failure_does_not_stop_capture(self):

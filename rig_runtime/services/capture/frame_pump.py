@@ -48,6 +48,12 @@ class LatestFramePump(Generic[T]):
                 if packet is None:
                     self._stop.wait(0.001)
                     continue
+                with self._condition:
+                    if self._latest_sequence > self._delivered_sequence:
+                        self.dropped_before_processing += 1
+                    self._latest = packet
+                    self._latest_sequence += 1
+                    self._condition.notify_all()
                 if self.observer is not None:
                     try:
                         self.observer(packet)
@@ -57,12 +63,6 @@ class LatestFramePump(Generic[T]):
                         self._observer_error = "{}: {}".format(
                             type(exc).__name__, exc
                         )
-                with self._condition:
-                    if self._latest_sequence > self._delivered_sequence:
-                        self.dropped_before_processing += 1
-                    self._latest = packet
-                    self._latest_sequence += 1
-                    self._condition.notify_all()
         except Exception as exc:
             with self._condition:
                 self._error = "{}: {}".format(type(exc).__name__, exc)
