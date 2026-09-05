@@ -193,7 +193,14 @@ class LiveTrackingEvidenceRecorder:
                 self._dropped_records += 1
             return False
 
-    def close(self, status="stopped", error=None, processed_frames=None) -> dict:
+    def close(
+        self,
+        status="stopped",
+        error=None,
+        processed_frames=None,
+        final_metadata=None,
+        extra_files=None,
+    ) -> dict:
         if self._closed:
             return self.summary
         self._closed = True
@@ -213,6 +220,10 @@ class LiveTrackingEvidenceRecorder:
                     "processed_frames": processed_frames,
                 }
             )
+            if final_metadata:
+                self.manifest["metadata"].update(_json_value(final_metadata))
+            if extra_files:
+                self.manifest["files"].update(_json_value(extra_files))
         _atomic_json(self.output_path / "live_tracking.json", self.manifest)
         return self.summary
 

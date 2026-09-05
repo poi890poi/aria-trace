@@ -60,6 +60,7 @@ class RouteTraceVideoRecorder:
         self._latest_state = {}
         self._summary_lock = threading.Lock()
         self._closed = False
+        self._status = "running"
         self._error = None
         self._source_frames = 0
         self._written_frames = 0
@@ -80,9 +81,7 @@ class RouteTraceVideoRecorder:
     def summary(self) -> dict:
         with self._summary_lock:
             return {
-                "status": "failed" if self._error else (
-                    "complete" if self._closed else "running"
-                ),
+                "status": "failed" if self._error else self._status,
                 "video_file": self._video_file,
                 "manifest_file": self._manifest_path.name,
                 "source_frames": self._source_frames,
@@ -143,11 +142,12 @@ class RouteTraceVideoRecorder:
                     pass
                 with self._summary_lock:
                     self._dropped_frames += 1
-        self._thread.join(timeout=20.0)
+        self._thread.join(timeout=65.0)
         with self._summary_lock:
             if self._thread.is_alive() and self._error is None:
-                self._error = "Video worker did not stop within 20 seconds"
+                self._error = "Video worker did not stop within 65 seconds"
             final_status = "failed" if self._error else str(status)
+            self._status = final_status
         self._write_manifest(final_status, error=error)
         return self.summary
 
@@ -189,6 +189,19 @@ class RouteTraceVideoRecorder:
                 if item is None:
                     break
                 image, timestamp_ns, state = item
+                if sink is not None:
+                    target_index = max(
+                        0,
+                        int(math.floor(
+                            (timestamp_ns - first_timestamp_ns)
+                            * self.fps
+                            / 1.0e9
+                        )),
+                    )
+                    with self._summary_lock:
+                        written = self._written_frames
+                    if target_index < written:
+                        continue
                 composed = self.renderer(image, state)
                 height, width = composed.shape[:2]
                 if self.encoding == "h264" and (width % 2 or height % 2):

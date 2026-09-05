@@ -45,6 +45,54 @@ def make_handler(state):
                 ).encode("utf-8"),
             )
 
+        def _send_file(self, content_type: str, path: Path) -> None:
+            size = path.stat().st_size
+            if size <= 0:
+                raise ValueError("Recorded video is empty")
+            start, end = 0, max(0, size - 1)
+            status = 200
+            requested = self.headers.get("Range")
+            if requested:
+                if not requested.startswith("bytes=") or "," in requested:
+                    raise ValueError("Unsupported byte range")
+                bounds = requested[6:].split("-", 1)
+                if bounds[0]:
+                    start = int(bounds[0])
+                    end = int(bounds[1]) if bounds[1] else end
+                elif bounds[1]:
+                    length = min(size, int(bounds[1]))
+                    start = size - length
+                if start < 0 or end < start or start >= size:
+                    raise ValueError("Byte range is outside the video")
+                end = min(end, size - 1)
+                status = 206
+            length = max(0, end - start + 1)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(length))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header(
+                    "Content-Disposition", 'inline; filename="{}"'.format(path.name)
+                )
+                if status == 206:
+                    self.send_header(
+                        "Content-Range", "bytes {}-{}/{}".format(start, end, size)
+                    )
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                with path.open("rb") as stream:
+                    stream.seek(start)
+                    remaining = length
+                    while remaining:
+                        chunk = stream.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                self.close_connection = True
+
         def _body(self) -> dict:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 0 or length > 65536:
@@ -135,6 +183,13 @@ def make_handler(state):
                         query.get("name", [""])[0],
                     )
                     self._send(200, content_type, body)
+                elif path == "/api/live-tracking/video":
+                    query = parse_qs(parsed.query)
+                    content_type, video_path = state.live_tracking_video_path(
+                        query.get("game_id", [""])[0],
+                        query.get("tracking_id", [""])[0],
+                    )
+                    self._send_file(content_type, video_path)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"Not found")
             except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:

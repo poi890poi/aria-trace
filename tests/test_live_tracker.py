@@ -1386,6 +1386,10 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                             "tracking_mode": "route-locked",
                             "tracking_profile": "fast",
                             "cursor_pose_method": "fast_grid",
+                            "record_route_video": True,
+                            "auto_stop_at_route_finish": False,
+                            "route_video_encoding": "mjpeg",
+                            "route_video_fps": 10,
                             "frame_source": {
                                 "adapter": "windows_window",
                                 "window_title": "Genshin Impact",
@@ -1447,6 +1451,33 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                         cv2.IMREAD_UNCHANGED,
                     )
                     self.assertEqual(guide.shape[2], 4)
+                    self.assertTrue(runtime["record_route_video"])
+                    self.assertFalse(runtime["auto_stop_at_route_finish"])
+                    state.stop_live_tracker()
+                    for _ in range(200):
+                        runtime = state.descriptor()["live_tracker"]
+                        if runtime["status"] == "stopped":
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual("stopped", runtime["status"])
+                    run_root = (
+                        artifact_root
+                        / "live_tracking"
+                        / game_id
+                        / runtime["tracking_id"]
+                    )
+                    manifest = json.loads(
+                        (run_root / "live_tracking.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    video_name = manifest["files"]["route_trace_video"]
+                    self.assertTrue((run_root / video_name).is_file())
+                    content_type, video_path = state.live_tracking_video_path(
+                        game_id, runtime["tracking_id"]
+                    )
+                    self.assertEqual("video/x-msvideo", content_type)
+                    self.assertEqual(run_root / video_name, video_path)
             finally:
                 source.stop()
                 if state._tracker_running():

@@ -51,8 +51,10 @@ from aria_trace.services.tracking.runtime import (
     TwoRateRealtimeTracker,
     render_map_overlay,
     render_minimap_route_overlay,
+    render_route_trace_video_frame,
 )
 from aria_trace.evidence.tracking import LiveTrackingEvidenceRecorder
+from aria_trace.evidence.route_video import RouteTraceVideoRecorder
 from rig_runtime.services.calibration.minimap.calibration import (
     ORDINARY_MOTION_SEGMENT_LABELS,
     calibrate_segment_sessions,
@@ -63,7 +65,11 @@ from aria_trace.evidence.poc_catalog import build_poc_evidence_index
 from rig_runtime.adapters.filesystem.profiles import ProfileCatalog
 from rig_runtime.workflows.recording import AcquisitionRecorder
 from aria_trace.workflows.route import compile_route_session
-from aria_trace.services.localization.route.tracker import RouteCandidateAdvisor, RouteVisualTracker
+from aria_trace.services.localization.route.tracker import (
+    RouteCandidateAdvisor,
+    RouteFinishGate,
+    RouteVisualTracker,
+)
 from rig_runtime.adapters.filesystem.session import SessionReader, input_capture_health
 from rig_runtime.services.calibration.scene_yaw import calibrate_scene_yaw_session
 from aria_trace.services.tracking.profiles import resolve_tracking_profile
@@ -87,7 +93,13 @@ class WorkbenchLiveTrackingMixin:
             return {
                 key: value
                 for key, value in self._live_tracker.items()
-                if key not in ("thread", "stop", "evidence_recorder")
+                if key not in (
+                    "thread",
+                    "stop",
+                    "evidence_recorder",
+                    "route_video_recorder",
+                    "route_finish_gate",
+                )
             }
 
     def _live_tracking_root(self, game_profile_id: str) -> Path:
@@ -183,6 +195,16 @@ class WorkbenchLiveTrackingMixin:
             )
             if tracking_mode not in ("free-roam", "route-assisted"):
                 raise ValueError("Tracking mode must be free-roam or route-assisted")
+            record_route_video = bool(value.get("record_route_video"))
+            auto_stop_at_route_finish = bool(
+                value.get("auto_stop_at_route_finish", record_route_video)
+            )
+            if tracking_mode != "route-assisted" and (
+                record_route_video or auto_stop_at_route_finish
+            ):
+                raise ValueError(
+                    "Route video recording and finish detection require route-assisted mode"
+                )
             minimap = self._read_tracker_artifact(
                 self._minimap_calibration_root(game_profile_id),
                 "calibration.json",
@@ -375,6 +397,16 @@ class WorkbenchLiveTrackingMixin:
                 ),
             )
             stop = threading.Event()
+            route_points = (
+                [state["canonical_xy"] for state in route_package.states]
+                if route_package is not None
+                else None
+            )
+            route_finish_gate = (
+                RouteFinishGate(route_package)
+                if auto_stop_at_route_finish and route_package is not None
+                else None
+            )
             runtime = {
                 "status": "starting",
                 "detail": "Starting the selected capture source.",
@@ -418,8 +450,14 @@ class WorkbenchLiveTrackingMixin:
                 "processed_frames": 0,
                 "error": None,
                 "route_similarity": None,
+                "record_route_video": record_route_video,
+                "auto_stop_at_route_finish": auto_stop_at_route_finish,
+                "route_video": None,
+                "route_finish": None,
+                "stop_reason": None,
                 "stop": stop,
                 "thread": None,
+                "route_finish_gate": route_finish_gate,
             }
             tracking_id = "{}-{}".format(
                 datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"),
@@ -447,29 +485,71 @@ class WorkbenchLiveTrackingMixin:
                     "frame_source": frame_config,
                 },
             )
+            route_video_recorder = None
+            try:
+                if record_route_video:
+                    route_video_recorder = RouteTraceVideoRecorder(
+                        evidence_output,
+                        lambda image, state: render_route_trace_video_frame(
+                            image,
+                            mosaic,
+                            state,
+                            route_points,
+                            minimap,
+                            minimap_config["crop_xywh"],
+                            panel_opacity=float(
+                                value.get("route_video_panel_opacity", 0.68)
+                            ),
+                        ),
+                        fps=float(value.get("route_video_fps", 30.0)),
+                        encoding=str(value.get("route_video_encoding") or "h264"),
+                        ffmpeg=value.get("route_video_ffmpeg"),
+                        crf=int(value.get("route_video_crf", 20)),
+                        preset=str(value.get("route_video_preset") or "veryfast"),
+                        queue_capacity=int(
+                            value.get("route_video_queue_capacity", 24)
+                        ),
+                    )
+            except Exception as exc:
+                error = "{}: {}".format(type(exc).__name__, exc)
+                evidence_recorder.close(status="failed", error=error)
+                engine.close()
+                raise RuntimeError(
+                    "Could not initialize route video recording: {}".format(error)
+                )
             runtime["tracking_id"] = tracking_id
             runtime["artifact_relative_path"] = str(
                 evidence_output.relative_to(self.artifact_root)
             )
             runtime["evidence"] = evidence_recorder.summary
             runtime["evidence_recorder"] = evidence_recorder
+            runtime["route_video"] = (
+                route_video_recorder.summary if route_video_recorder else None
+            )
+            runtime["route_video_recorder"] = route_video_recorder
             with self._live_tracker_lock:
                 self._live_tracker = runtime
                 self._live_tracker_engine = engine
                 self._live_tracker_mosaic = mosaic
-                self._live_tracker_route_points = (
-                    [state["canonical_xy"] for state in route_package.states]
-                    if route_package is not None
-                    else None
-                )
+                self._live_tracker_route_points = route_points
             self._last_error = None
 
         def work() -> None:
             recent_times = []
             recent_pose_samples = []
             recent_control_samples = []
-            frame_pump = LatestFramePump(frame_source)
+            frame_pump = LatestFramePump(
+                frame_source,
+                observer=(
+                    lambda packet: route_video_recorder.submit(
+                        packet.image, packet.host_capture_time_ns
+                    )
+                )
+                if route_video_recorder is not None
+                else None,
+            )
             run_error = None
+            auto_finished = False
             try:
                 frame_pump.start()
                 with self._live_tracker_lock:
@@ -583,6 +663,13 @@ class WorkbenchLiveTrackingMixin:
                     latest["control_deadline_66_7ms_met"] = bool(
                         control_latency_ms <= (1000.0 / 15.0)
                     )
+                    if route_video_recorder is not None:
+                        route_video_recorder.update_state(latest)
+                    finish_state = (
+                        route_finish_gate.update(latest)
+                        if route_finish_gate is not None
+                        else None
+                    )
                     recent_control_samples.append(
                         {
                             "time": now,
@@ -691,9 +778,22 @@ class WorkbenchLiveTrackingMixin:
                         ]
                         if latest["sequence"] % 30 == 0:
                             runtime["evidence"] = evidence_recorder.summary
+                            if route_video_recorder is not None:
+                                runtime["route_video"] = (
+                                    route_video_recorder.summary
+                                )
+                        runtime["route_finish"] = finish_state
                     evidence_recorder.record(
                         packet.image, minimap, latest, diagnostics
                     )
+                    if finish_state and finish_state.get("reached"):
+                        auto_finished = True
+                        with self._live_tracker_lock:
+                            runtime["stop_reason"] = "route-finish-confirmed"
+                            runtime["detail"] = (
+                                "Route finish visually confirmed; finalizing video."
+                            )
+                        stop.set()
             except Exception as exc:
                 error = "{}: {}".format(type(exc).__name__, exc)
                 run_error = error
@@ -707,10 +807,58 @@ class WorkbenchLiveTrackingMixin:
                 except Exception:
                     pass
                 engine.close()
+                route_video_summary = None
+                if route_video_recorder is not None:
+                    route_video_summary = route_video_recorder.close(
+                        status=(
+                            "failed"
+                            if run_error
+                            else "complete"
+                            if auto_finished
+                            else "stopped"
+                        ),
+                        error=run_error,
+                    )
+                video_error = (
+                    route_video_summary.get("error")
+                    if route_video_summary is not None
+                    else None
+                )
+                final_error = run_error or video_error
                 evidence_summary = evidence_recorder.close(
-                    status="failed" if run_error else "stopped",
-                    error=run_error,
+                    status=(
+                        "failed"
+                        if final_error
+                        else "complete"
+                        if auto_finished
+                        else "stopped"
+                    ),
+                    error=final_error,
                     processed_frames=runtime.get("processed_frames"),
+                    final_metadata={
+                        "stop_reason": (
+                            "route-finish-confirmed"
+                            if auto_finished
+                            else "failed"
+                            if run_error
+                            else "user-stop"
+                        ),
+                        "route_finish": runtime.get("route_finish"),
+                        "route_video": route_video_summary,
+                    },
+                    extra_files=(
+                        {
+                            "route_trace_video": route_video_summary.get(
+                                "video_file"
+                            ),
+                            "route_trace_video_manifest": (
+                                "route_trace_video.json"
+                            ),
+                        }
+                        if route_video_summary
+                        and route_video_summary.get("video_file")
+                        else None
+                    ),
                 )
                 route_similarity = None
                 if route_package is not None:
@@ -727,13 +875,27 @@ class WorkbenchLiveTrackingMixin:
                         }
                 with self._live_tracker_lock:
                     runtime["evidence"] = evidence_summary
+                    runtime["route_video"] = route_video_summary
                     runtime["route_similarity"] = route_similarity
-                    runtime["status"] = "failed" if run_error else "stopped"
+                    runtime["status"] = (
+                        "failed"
+                        if final_error
+                        else "complete"
+                        if auto_finished
+                        else "stopped"
+                    )
                     runtime["detail"] = (
-                        run_error
-                        if run_error
+                        final_error
+                        if final_error
+                        else "Route finish visually confirmed; video finalized."
+                        if auto_finished
                         else "Live tracking stopped by the user."
                     )
+                    if video_error and not run_error:
+                        runtime["error"] = video_error
+                        self._last_error = (
+                            "Route video recording failed: {}".format(video_error)
+                        )
 
         thread = threading.Thread(
             target=work, name="acquisition-live-tracker", daemon=True

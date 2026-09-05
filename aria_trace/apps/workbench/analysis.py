@@ -1176,6 +1176,30 @@ class WorkbenchAnalysisMixin:
         content_type = "image/jpeg" if name.lower().endswith(".jpg") else "image/png"
         return content_type, (root / name).read_bytes()
 
+    def live_tracking_video_path(
+        self, game_profile_id: str, tracking_id: str
+    ):
+        if safe_id(game_profile_id) != game_profile_id:
+            raise ValueError("Invalid game profile ID")
+        if safe_id(tracking_id) != tracking_id:
+            raise ValueError("Invalid live-tracking ID")
+        root = self._live_tracking_root(game_profile_id) / tracking_id
+        descriptor = json.loads(
+            (root / "live_tracking.json").read_text(encoding="utf-8")
+        )
+        name = (descriptor.get("files") or {}).get("route_trace_video")
+        if not name or Path(name).name != name:
+            raise ValueError("This tracking run has no finalized route video")
+        path = root / name
+        if not path.is_file():
+            raise ValueError("The declared route video does not exist")
+        content_type = (
+            "video/x-matroska"
+            if path.suffix.lower() == ".mkv"
+            else "video/x-msvideo"
+        )
+        return content_type, path
+
     def run_teleport_analysis(self, value: dict, progress=None) -> dict:
         if progress:
             progress("Checking teleport session and spatial artifacts")
