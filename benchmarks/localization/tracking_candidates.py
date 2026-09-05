@@ -6,16 +6,32 @@ references are injected. Combined variants apply the same edits cumulatively.
 """
 
 import argparse
+import ast
 from contextlib import contextmanager
 import hashlib
 import inspect
 import json
 from pathlib import Path
 import textwrap
+import subprocess
+from functools import lru_cache
 
 from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker
 from aria_trace.services.localization.route.tracker import RouteVisualTracker
 from benchmarks.localization.run_workbench_replay import run
+
+
+@lru_cache(maxsize=None)
+def baseline_method(cls, name):
+    """Keep the measured 1386101 baseline reproducible as production evolves."""
+    root = Path(__file__).resolve().parents[2]
+    path = Path(inspect.getfile(cls)).resolve().relative_to(root).as_posix()
+    source = subprocess.check_output(
+        ["git", "show", "1386101:" + path], cwd=root, text=True, encoding="utf-8")
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == cls.__name__)
+    method = next(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    start = min([method.lineno] + [n.lineno for n in method.decorator_list])
+    return textwrap.dedent("".join(source.splitlines(keepends=True)[start-1:method.end_lineno]))
 
 
 CANDIDATES = {
@@ -42,9 +58,12 @@ def candidate_sources(letters):
     unknown = set(letters)-set(CANDIDATES)
     if unknown:
         raise ValueError("Unknown candidates: " + str(unknown))
-    methods = {}
+    methods = {(cls, name): baseline_method(cls, name) for cls, names in (
+        (TwoRateRealtimeTracker, ("__init__", "update", "_consume_representation_observation", "_mean_fix")),
+        (RouteVisualTracker, ("track", "arm_trained_transition")),
+    ) for name in names}
     def get(cls, name):
-        return methods.get((cls, name), textwrap.dedent(inspect.getsource(getattr(cls, name))))
+        return methods[(cls, name)]
     def put(cls, name, source):
         methods[(cls, name)] = source
     if "A" in letters:
@@ -195,6 +214,10 @@ def main():
     args.cache = Path("artifacts/benchmark_cache/atlas_references")
     args.references_only = False
     args.loss_error_limit_px = None
+    if args.variant == "production":
+        args.experiment = {"variant": "production", "changes": {}, "methods": []}
+        run(args)
+        return
     letters = "" if args.variant == "baseline" else "".join(sorted(set(args.variant)))
     with installed_candidates(letters, args.output/"candidate-source") as metadata:
         args.experiment = metadata
