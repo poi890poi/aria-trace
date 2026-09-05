@@ -64,6 +64,7 @@ def build(root):
                 enriched.append(row)
             (cohort/f"scored_probe{number:02d}.jsonl").write_text("".join(json.dumps(r)+"\n" for r in enriched))
             probes.append(dict(original, cohort=cohort.name, variant=metadata["variant"], feature_scale=metadata["feature_scale"] if "feature_scale" in metadata else 1,
+                input_mask=metadata.get("input_mask", "none"), mask_region=metadata.get("mask_region", "both"),
                 reference_known_samples=known, reference_accepted_error_px=distribution(errors), wrong_reference_modes=wrong_modes,
                 rejections=dict(Counter(reason for r in rows for reason in r["reasons"]))))
     for path in sorted(root.glob("*/run*/report.json")):

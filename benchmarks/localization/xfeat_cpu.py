@@ -68,12 +68,29 @@ def mnn_matches(query, target):
     return list(cv2.BFMatcher(cv2.NORM_L2, crossCheck=True).match(query, target))
 
 
+def mask_feature_input(gray, mask, fill="none", region="both"):
+    """Remove excluded query pixels before extraction; never change pose inputs."""
+    if fill == "none":
+        return gray
+    excluded = mask == 0
+    if region != "both":
+        _, labels = cv2.connectedComponents(excluded.astype(np.uint8), connectivity=8)
+        edge_labels = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+        outside = excluded & np.isin(labels, edge_labels)
+        excluded = outside if region == "outside" else excluded & ~outside
+    value = int(round(float(np.mean(gray[mask > 0])))) if fill == "mean" and np.any(mask > 0) else 0
+    result = gray.copy()
+    result[excluded] = value
+    return result
+
+
 @contextmanager
-def installed(variant, output, upstream, threads=1, feature_scale=1):
+def installed(variant, output, upstream, threads=1, feature_scale=1, input_mask="none", mask_region="both"):
     output.mkdir(parents=True, exist_ok=True)
     (output / "harness.py").write_text(Path(__file__).read_text(encoding="utf-8"), encoding="utf-8")
     model = None
-    metadata = {"variant": variant, "feature_scale": feature_scale, "base": BASE, "python": platform.python_version(),
+    metadata = {"variant": variant, "feature_scale": feature_scale, "input_mask": input_mask,
+                "mask_region": mask_region, "base": BASE, "python": platform.python_version(),
                 "opencv": cv2.__version__, "opencv_threads": cv2.getNumThreads(),
                 "implementation": identity(__file__), "methods": [], "setup": []}
     if variant != "sift":
@@ -120,6 +137,10 @@ def installed(variant, output, upstream, threads=1, feature_scale=1):
                              "matcher_load_ms": (time.perf_counter()-started)*1000,
                              "matcher_parameters": sum(p.numel() for p in model.lighterglue.parameters())})
     sources = {name: frozen_method(name) for name in ("__init__", "localize")}
+    if input_mask != "none":
+        sources["localize"] = replace_once(sources["localize"],
+            "points, descriptors = self.sift.detectAndCompute(observation_gray, mask)",
+            "points, descriptors = self.sift.detectAndCompute(_xfeat_mask_input(observation_gray, mask), mask)")
     if model is not None:
         sources["__init__"] = replace_once(sources["__init__"],
             'self.sift = cv2.SIFT_create(\n        nfeatures=8000, contrastThreshold=0.005, edgeThreshold=15\n    )',
@@ -139,7 +160,8 @@ def installed(variant, output, upstream, threads=1, feature_scale=1):
         _, _, indices = model.match_lighterglue(data(points, descriptors, shape), data(map_points, map_descriptors, map_shape))
         return [cv2.DMatch(int(a), int(b), 0.0) for a,b in indices]
     namespace = dict(vars(runtime), _xfeat_factory=lambda: XFeatAdapter(model, feature_scale=feature_scale),
-                     _xfeat_mnn=mnn_matches, _xfeat_glue=glue)
+                     _xfeat_mnn=mnn_matches, _xfeat_glue=glue,
+                     _xfeat_mask_input=lambda gray, mask: mask_feature_input(gray, mask, input_mask, mask_region))
     try:
         for name, source in sources.items():
             filename = output / (name + ".py")
@@ -240,6 +262,8 @@ def main():
     parser.add_argument("--rate", type=float, default=1.0)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--feature-scale", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--input-mask", choices=["none", "zero", "mean"], default="none")
+    parser.add_argument("--mask-region", choices=["both", "cursor", "outside"], default="both")
     parser.add_argument("--mode", choices=["free-roam", "route-assisted"], default="free-roam")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--upstream", type=Path, default=Path(".tools/xfeat-upstream"))
@@ -252,7 +276,8 @@ def main():
     args.references = Path("artifacts/poc/workbench-rebuilt-atlas-20260905/references/references.json")
     args.references_only = args.record_video = False
     args.loss_error_limit_px = None
-    with installed(args.variant, args.output/"candidate-source", args.upstream, args.threads, args.feature_scale) as metadata:
+    with installed(args.variant, args.output/"candidate-source", args.upstream, args.threads,
+                   args.feature_scale, args.input_mask, args.mask_region) as metadata:
         args.experiment = metadata
         if args.action == "probe":
             probe(args)

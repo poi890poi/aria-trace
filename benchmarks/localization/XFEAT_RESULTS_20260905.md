@@ -1,5 +1,9 @@
 # CPU XFeat versus the current tracking methods
 
+Follow-up: [explicit cursor/exterior input masking](XFEAT_MASK_RESULTS_20260906.md)
+tests the pixel masking that was absent from this initial feature-location-only
+comparison.
+
 Keep the current SIFT global initializer and current-image atlas refinement.
 None of the tested XFeat configurations improves this system. Native-resolution
 XFeat never initializes in either 45-second E2E clip. The best partial XFeat
