@@ -14,6 +14,87 @@ def _angle_difference(first: float, second: float) -> float:
     return ((float(first) - float(second) + 180.0) % 360.0) - 180.0
 
 
+class RouteFinishGate:
+    """Confirm arrival from consecutive accepted visual map measurements.
+
+    The demonstrated endpoint defines only the finish region. Route timing,
+    progress, input, and state-index estimates never count as arrival evidence.
+    The gate first observes the player outside that region, preventing an
+    immediate stop when a lap starts and finishes at the same location.
+    """
+
+    def __init__(
+        self,
+        package: RouteTrackingPackage,
+        *,
+        radius_px: Optional[float] = None,
+        consecutive_measurements: int = 3,
+    ) -> None:
+        final_state = package.states[-1]
+        self.endpoint_xy = tuple(
+            float(value) for value in final_state["canonical_xy"]
+        )
+        corridor = float(package.manifest.get("corridor_radius_px") or 35.0)
+        self.radius_px = float(
+            radius_px
+            if radius_px is not None
+            else max(6.0, min(18.0, corridor * 0.4))
+        )
+        self.departure_radius_px = max(12.0, self.radius_px * 2.0)
+        self.final_mode_id = str(final_state.get("mode_id") or "")
+        self.required_measurements = max(1, int(consecutive_measurements))
+        self.armed = False
+        self.confirmations = 0
+        self.reached = False
+
+    def update(self, state: dict) -> dict:
+        pose = state.get("pose") or {}
+        route = state.get("route_tracking") or {}
+        accepted = bool(
+            state.get("route_tracking_fresh")
+            and route.get("measurement_accepted")
+            and pose.get("x") is not None
+            and pose.get("y") is not None
+        )
+        distance = None
+        mode_matches = False
+        if pose.get("x") is not None and pose.get("y") is not None:
+            distance = math.hypot(
+                float(pose["x"]) - self.endpoint_xy[0],
+                float(pose["y"]) - self.endpoint_xy[1],
+            )
+            active_mode = str(
+                state.get("active_map_mode_id")
+                or route.get("active_mode_id")
+                or ""
+            )
+            mode_matches = not self.final_mode_id or active_mode == self.final_mode_id
+        if accepted and distance is not None:
+            if not self.armed and distance > self.departure_radius_px:
+                self.armed = True
+            inside = bool(
+                self.armed and mode_matches and distance <= self.radius_px
+            )
+            self.confirmations = self.confirmations + 1 if inside else 0
+            self.reached = self.confirmations >= self.required_measurements
+        elif state.get("route_tracking_fresh"):
+            self.confirmations = 0
+        return {
+            "endpoint_xy": list(self.endpoint_xy),
+            "endpoint_mode_id": self.final_mode_id or None,
+            "distance_px": distance,
+            "radius_px": self.radius_px,
+            "departure_radius_px": self.departure_radius_px,
+            "armed": self.armed,
+            "measurement_accepted": accepted,
+            "mode_matches": mode_matches,
+            "confirmations": self.confirmations,
+            "required_confirmations": self.required_measurements,
+            "reached": self.reached,
+            "evidence_policy": "consecutive-current-frame-map-measurements",
+        }
+
+
 class RouteGlobalLocalizer:
     """Fast initial/recovery localization restricted to demonstrated states."""
 
