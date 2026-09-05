@@ -7,9 +7,11 @@ import numpy as np
 from poc.benchmark_route_tracer import (
     CausalRouteTracer,
     INITIALIZATION_POLICIES,
+    TraceResult,
     _attach_reference_errors,
     _correlation_feature,
     _loss_metrics,
+    _reference_mode_metrics,
 )
 
 
@@ -107,6 +109,20 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
         _attach_reference_errors(rows, package, "session")
 
         self.assertAlmostEqual(rows[0]["reference_error_px"], 0.5)
+        self.assertEqual(rows[0]["reference_mode_id"], "town")
+
+    def test_reference_mode_metrics_separate_mode_error_from_xy_error(self):
+        rows = [
+            {"valid": True, "mode_id": "world", "reference_mode_id": "world"},
+            {"valid": True, "mode_id": "world", "reference_mode_id": "town"},
+            {"valid": False, "mode_id": "world", "reference_mode_id": "town"},
+        ]
+
+        metrics = _reference_mode_metrics(rows)
+
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["mismatch_count"], 1)
+        self.assertAlmostEqual(metrics["agreement_rate"], 0.5)
 
     def test_route_query_never_uses_demo_progress_or_mode(self):
         package = _Package()
@@ -157,6 +173,73 @@ class RouteTracerBenchmarkTests(unittest.TestCase):
         self.assertEqual((result.x, result.y), (51.0, 60.0))
         self.assertEqual(result.source, "local")
         self.assertEqual(package.calls, [])
+
+    def test_transition_zone_policy_uses_all_layers_only_near_zone(self):
+        package = _Package()
+        atlas = Mock()
+        atlas.localizers = {"world": object(), "town": object()}
+        atlas.transition_model = {
+            "transition_zones": [
+                {"zone_id": "gate", "center_xy": [100.0, 50.0], "radius_px": 2.0}
+            ]
+        }
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "continuous_gated",
+            mode_policy="transition_zone",
+            transition_zone_radius_floor_px=12.0,
+        )
+        tracer.previous_mode_id = "world"
+        tracer.previous_xy = (80.0, 50.0)
+
+        self.assertEqual(tracer._transition_zone_mode_ids(), ["world"])
+        tracer.previous_xy = (90.0, 50.0)
+        self.assertIsNone(tracer._transition_zone_mode_ids())
+
+    def test_transition_zone_policy_confirms_mode_switch(self):
+        package = _Package()
+        atlas = Mock(localizers={"world": object(), "town": object()})
+        atlas.transition_model = {
+            "transition_zones": [
+                {"zone_id": "gate", "center_xy": [100.0, 50.0], "radius_px": 2.0}
+            ]
+        }
+        tracer = CausalRouteTracer(
+            package,
+            atlas,
+            "continuous_gated",
+            mode_policy="transition_zone",
+            transition_confirmation_count=2,
+        )
+        tracer.previous_mode_id = "world"
+        tracer.previous_xy = (100.0, 50.0)
+        tracer._armed_transition_zone_id = "gate"
+        candidate = TraceResult(
+            True,
+            101.0,
+            50.0,
+            0.8,
+            0.2,
+            "local",
+            mode_id="town",
+            measurement_accepted=True,
+            primary_candidate_produced=True,
+            primary_measurement_accepted=True,
+        )
+
+        first = tracer._confirm_transition_mode(candidate)
+        second = tracer._confirm_transition_mode(candidate)
+
+        self.assertFalse(first.measurement_accepted)
+        self.assertTrue(second.measurement_accepted)
+        self.assertEqual(len(tracer.transition_switches), 1)
+        tracer.previous_mode_id = "town"
+        tracer.previous_xy = (101.0, 50.0)
+        self.assertEqual(tracer._transition_zone_mode_ids(), ["town"])
+        tracer.previous_xy = (141.0, 50.0)
+        self.assertEqual(tracer._transition_zone_mode_ids(), ["town"])
+        self.assertIsNone(tracer._completed_transition_zone_id)
 
     def test_continuity_gate_holds_previous_pose_on_large_jump(self):
         package = _Package()

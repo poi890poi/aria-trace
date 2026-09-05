@@ -35,7 +35,7 @@ VARIANTS = (
 )
 CORRELATION_FEATURES = ("gradient", "intensity", "canny", "laplacian")
 LOCAL_MATCHERS = ("ccorr_normed", "phase_correlation")
-MODE_POLICIES = ("all", "sticky")
+MODE_POLICIES = ("all", "sticky", "transition_zone")
 INITIALIZATION_POLICIES = ("route", "global", "known_start")
 CONTINUITY_CLOCKS = ("frame", "accepted")
 RECOVERY_POLICIES = ("route", "global_consensus")
@@ -128,6 +128,9 @@ class CausalRouteTracer:
         continuity_speed_multiplier: float = 4.0,
         recovery_policy: str = "route",
         local_matcher: str = "ccorr_normed",
+        transition_zone_radius_floor_px: float = 12.0,
+        transition_exit_radius_px: float = 40.0,
+        transition_confirmation_count: int = 2,
     ) -> None:
         if variant not in VARIANTS:
             raise ValueError("Unknown route tracer variant: {}".format(variant))
@@ -148,6 +151,38 @@ class CausalRouteTracer:
             raise ValueError("Unknown local matcher: {}".format(local_matcher))
         self.local_matcher = local_matcher
         self.mode_policy = mode_policy
+        self.transition_zone_radius_floor_px = max(
+            0.0, float(transition_zone_radius_floor_px)
+        )
+        self.transition_exit_radius_px = max(
+            self.transition_zone_radius_floor_px,
+            float(transition_exit_radius_px),
+        )
+        self.transition_confirmation_count = max(
+            1, int(transition_confirmation_count)
+        )
+        transition_model = getattr(atlas, "transition_model", None)
+        if not isinstance(transition_model, dict):
+            transition_model = {}
+        zones = tuple(transition_model.get("transition_zones") or ())
+        legacy_zone = transition_model.get("canonical_boundary")
+        if not zones and legacy_zone:
+            zones = (legacy_zone,)
+        self.transition_zones = tuple(
+            {
+                "zone_id": str(
+                    zone.get("zone_id") or "legacy-transition-zone"
+                ),
+                "center_xy": tuple(float(value) for value in zone["center_xy"]),
+                "radius_px": max(0.0, float(zone.get("radius_px") or 0.0)),
+            }
+            for zone in zones
+        )
+        self._armed_transition_zone_id = None
+        self._completed_transition_zone_id = None
+        self._pending_mode_id = None
+        self._pending_mode_wins = 0
+        self.transition_switches = []
         if continuity_clock not in CONTINUITY_CLOCKS:
             raise ValueError(
                 "Unknown continuity clock: {}".format(continuity_clock)
@@ -185,6 +220,108 @@ class CausalRouteTracer:
         # No previous_state_index: the replay may pause, reverse, deviate, or
         # travel at a completely different rate from the demonstration.
         return self.package.candidates(descriptor, top_k=top_k)
+
+    def _transition_zone_mode_ids(self):
+        """Choose active-only or all-layer search from causal spatial evidence."""
+
+        if (
+            self.previous_xy is None
+            or self.previous_mode_id not in self.atlas.localizers
+            or not self.transition_zones
+        ):
+            return None
+        point = np.asarray(self.previous_xy, dtype=np.float64)
+        distance, zone = min(
+            (
+                float(
+                    np.linalg.norm(
+                        point - np.asarray(item["center_xy"], dtype=np.float64)
+                    )
+                ),
+                item,
+            )
+            for item in self.transition_zones
+        )
+        entry_radius = max(
+            float(zone["radius_px"]), self.transition_zone_radius_floor_px
+        )
+        exit_radius = max(entry_radius, self.transition_exit_radius_px)
+        if self._completed_transition_zone_id == zone["zone_id"]:
+            if distance <= exit_radius:
+                return [self.previous_mode_id]
+            self._completed_transition_zone_id = None
+        if self._armed_transition_zone_id == zone["zone_id"]:
+            if distance <= exit_radius:
+                return None
+            self._armed_transition_zone_id = None
+            self._pending_mode_id = None
+            self._pending_mode_wins = 0
+        if distance <= entry_radius:
+            self._armed_transition_zone_id = zone["zone_id"]
+            return None
+        return [self.previous_mode_id]
+
+    def _confirm_transition_mode(self, result: TraceResult) -> TraceResult:
+        if (
+            self.mode_policy != "transition_zone"
+            or not result.valid
+            or not result.measurement_accepted
+            or self.previous_xy is None
+            or self.previous_mode_id is None
+            or result.mode_id is None
+        ):
+            return result
+        if result.mode_id == self.previous_mode_id:
+            self._pending_mode_id = None
+            self._pending_mode_wins = 0
+            return result
+        if self._armed_transition_zone_id is None:
+            return TraceResult(
+                True,
+                self.previous_xy[0],
+                self.previous_xy[1],
+                result.score,
+                result.margin,
+                "unarmed_mode_change_hold",
+                result.route_state_index,
+                self.previous_mode_id,
+                measurement_accepted=False,
+                primary_candidate_produced=True,
+                primary_measurement_accepted=True,
+                final_gate_rejected=True,
+            )
+        if self._pending_mode_id == result.mode_id:
+            self._pending_mode_wins += 1
+        else:
+            self._pending_mode_id = result.mode_id
+            self._pending_mode_wins = 1
+        if self._pending_mode_wins < self.transition_confirmation_count:
+            return TraceResult(
+                True,
+                self.previous_xy[0],
+                self.previous_xy[1],
+                result.score,
+                result.margin,
+                "transition_confirmation_hold",
+                result.route_state_index,
+                self.previous_mode_id,
+                measurement_accepted=False,
+                primary_candidate_produced=True,
+                primary_measurement_accepted=True,
+                final_gate_rejected=True,
+            )
+        self.transition_switches.append(
+            {
+                "from_mode_id": self.previous_mode_id,
+                "to_mode_id": result.mode_id,
+                "zone_id": self._armed_transition_zone_id,
+            }
+        )
+        self._completed_transition_zone_id = self._armed_transition_zone_id
+        self._armed_transition_zone_id = None
+        self._pending_mode_id = None
+        self._pending_mode_wins = 0
+        return result
 
     def _refine_centers(
         self,
@@ -383,12 +520,15 @@ class CausalRouteTracer:
             else:
                 result = TraceResult(False, None, None, 0.0, 0.0, "local")
                 if self.previous_xy is not None:
-                    mode_ids = (
-                        [self.previous_mode_id]
-                        if self.mode_policy == "sticky"
+                    if (
+                        self.mode_policy == "sticky"
                         and self.previous_mode_id in self.atlas.localizers
-                        else None
-                    )
+                    ):
+                        mode_ids = [self.previous_mode_id]
+                    elif self.mode_policy == "transition_zone":
+                        mode_ids = self._transition_zone_mode_ids()
+                    else:
+                        mode_ids = None
                     result = self._refine_centers(
                         feature,
                         mask,
@@ -421,6 +561,7 @@ class CausalRouteTracer:
                         primary_candidate_produced=False,
                         primary_measurement_accepted=False,
                     )
+        result = self._confirm_transition_mode(result)
         if (
             self.variant == "local_primary_gated"
             and result.valid
@@ -572,12 +713,14 @@ def _attach_reference_errors(rows, reference_package, session_id) -> None:
     maximum_bracket_gap_ns = 1.5 * nominal_interval_ns
     for row in rows:
         row["reference_error_px"] = None
+        row["reference_mode_id"] = None
         if not row["valid"]:
             continue
         timestamp = float(row["session_time_ns"])
         insertion = int(np.searchsorted(times, timestamp))
         if insertion < len(times) and times[insertion] == timestamp:
             reference = np.asarray([xs[insertion], ys[insertion]])
+            reference_mode_id = modes[insertion]
         elif insertion == 0 or insertion >= len(times):
             continue
         else:
@@ -596,9 +739,40 @@ def _attach_reference_errors(rows, reference_package, session_id) -> None:
                     ys[left] + fraction * (ys[right] - ys[left]),
                 ]
             )
+            reference_mode_id = modes[left]
         row["reference_error_px"] = float(
             np.linalg.norm(np.asarray([row["x"], row["y"]]) - reference)
         )
+        row["reference_mode_id"] = reference_mode_id
+
+
+def _reference_mode_metrics(rows):
+    supported = [
+        row
+        for row in rows
+        if row.get("reference_mode_id") is not None and row.get("valid")
+    ]
+    if not supported:
+        return None
+    mismatches = [
+        row
+        for row in supported
+        if str(row.get("mode_id")) != str(row["reference_mode_id"])
+    ]
+    mismatch_flags = [
+        str(row.get("mode_id")) != str(row["reference_mode_id"])
+        for row in supported
+    ]
+    return {
+        "role": "offline-sparse-reference-mode-agreement",
+        "sample_count": len(supported),
+        "mismatch_count": len(mismatches),
+        "mismatch_rate": len(mismatches) / float(len(supported)),
+        "agreement_rate": 1.0 - len(mismatches) / float(len(supported)),
+        "mismatch_episodes": _loss_metrics(
+            [not value for value in mismatch_flags]
+        ),
+    }
 
 
 def _reference_errors(rows, reference_package, session_id, *, fresh_only=False):
@@ -682,6 +856,9 @@ def benchmark_session(
     recovery_policy: str = "route",
     initialization: str = "route",
     local_matcher: str = "ccorr_normed",
+    transition_zone_radius_floor_px: float = 12.0,
+    transition_exit_radius_px: float = 40.0,
+    transition_confirmation_count: int = 2,
     reference_package_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
 ) -> dict:
@@ -707,6 +884,9 @@ def benchmark_session(
         continuity_speed_multiplier=continuity_speed_multiplier,
         recovery_policy=recovery_policy,
         local_matcher=local_matcher,
+        transition_zone_radius_floor_px=transition_zone_radius_floor_px,
+        transition_exit_radius_px=transition_exit_radius_px,
+        transition_confirmation_count=transition_confirmation_count,
     )
     if initialization not in INITIALIZATION_POLICIES:
         raise ValueError("Unknown initialization policy: {}".format(initialization))
@@ -733,7 +913,10 @@ def benchmark_session(
         for record in records:
             decode_started = time.perf_counter_ns()
             ok, frame = capture.read()
-            decode_times.append((time.perf_counter_ns() - decode_started) / 1.0e6)
+            decode_elapsed_ms = (
+                time.perf_counter_ns() - decode_started
+            ) / 1.0e6
+            decode_times.append(decode_elapsed_ms)
             if not ok:
                 raise RuntimeError(
                     "Video ended before frame {}".format(record["frame_index"])
@@ -820,6 +1003,7 @@ def benchmark_session(
                     ),
                 }
             core_elapsed_ms = extraction_elapsed_ms + elapsed_ms
+            end_to_end_serial_elapsed_ms = decode_elapsed_ms + core_elapsed_ms
             rows.append(
                 {
                     "frame_index": int(record["frame_index"]),
@@ -843,8 +1027,10 @@ def benchmark_session(
                     "route_state_index": result.route_state_index,
                     "mode_id": result.mode_id,
                     "algorithm_elapsed_ms": elapsed_ms,
+                    "decode_elapsed_ms": decode_elapsed_ms,
                     "extraction_elapsed_ms": extraction_elapsed_ms,
                     "localization_core_elapsed_ms": core_elapsed_ms,
+                    "end_to_end_serial_elapsed_ms": end_to_end_serial_elapsed_ms,
                     "initialization_frame": bool(
                         route_initializing or known_start_initializing
                     ),
@@ -869,10 +1055,12 @@ def benchmark_session(
             )
     algorithm_times = [row["algorithm_elapsed_ms"] for row in rows]
     core_times = [row["localization_core_elapsed_ms"] for row in rows]
+    end_to_end_times = [row["end_to_end_serial_elapsed_ms"] for row in rows]
     fresh_flags = np.asarray(
         [row["measurement_accepted"] for row in rows], dtype=bool
     )
     core_time_array = np.asarray(core_times, dtype=np.float64)
+    end_to_end_time_array = np.asarray(end_to_end_times, dtype=np.float64)
     source_counts = {}
     for row in rows:
         source_counts[row["source"]] = source_counts.get(row["source"], 0) + 1
@@ -922,6 +1110,11 @@ def benchmark_session(
             "continuity_clock": tracer.continuity_clock,
             "initialization": initialization,
             "local_matcher": tracer.local_matcher,
+            "transition_zone_radius_floor_px": (
+                tracer.transition_zone_radius_floor_px
+            ),
+            "transition_exit_radius_px": tracer.transition_exit_radius_px,
+            "transition_confirmation_count": tracer.transition_confirmation_count,
         },
         "initialization": initialization_result,
         "algorithm_latency_ms": _percentiles(algorithm_times),
@@ -931,6 +1124,7 @@ def benchmark_session(
         "decode_latency_ms": _percentiles(decode_times),
         "extraction_latency_ms": _percentiles(extraction_times),
         "localization_core_latency_ms": _percentiles(core_times),
+        "end_to_end_serial_latency_ms": _percentiles(end_to_end_times),
         "continuity": _loss_metrics([row["valid"] for row in rows]),
         "visual_measurement_continuity": _loss_metrics(
             [row["measurement_accepted"] for row in rows]
@@ -955,8 +1149,22 @@ def benchmark_session(
             "fresh_within_66_7ms_rate": float(
                 np.mean(fresh_flags & (core_time_array <= (1000.0 / 15.0)))
             ),
+            "fresh_e2e_within_33_3ms_rate": float(
+                np.mean(
+                    fresh_flags
+                    & (end_to_end_time_array <= (1000.0 / 30.0))
+                )
+            ),
+            "fresh_e2e_within_66_7ms_rate": float(
+                np.mean(
+                    fresh_flags
+                    & (end_to_end_time_array <= (1000.0 / 15.0))
+                )
+            ),
             "held_states_count_as_fresh": False,
         },
+        "reference_mode_agreement": _reference_mode_metrics(rows),
+        "transition_switches": list(tracer.transition_switches),
         "source_frame_counts": source_counts,
         "adjacent_pose_jump_px": _percentiles(adjacent_jumps),
         "route_compliance": route_similarity_report(
@@ -1041,6 +1249,9 @@ def _parse_args():
     parser.add_argument(
         "--local-matcher", choices=LOCAL_MATCHERS, default="ccorr_normed"
     )
+    parser.add_argument("--transition-zone-radius-floor-px", type=float, default=12.0)
+    parser.add_argument("--transition-exit-radius-px", type=float, default=40.0)
+    parser.add_argument("--transition-confirmation-count", type=int, default=2)
     parser.add_argument("--reference-package", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
@@ -1066,6 +1277,9 @@ def main():
         continuity_speed_multiplier=args.continuity_speed_multiplier,
         recovery_policy=args.recovery_policy,
         local_matcher=args.local_matcher,
+        transition_zone_radius_floor_px=args.transition_zone_radius_floor_px,
+        transition_exit_radius_px=args.transition_exit_radius_px,
+        transition_confirmation_count=args.transition_confirmation_count,
         reference_package_path=args.reference_package,
         output_path=args.output,
     )
