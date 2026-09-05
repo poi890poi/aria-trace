@@ -309,7 +309,8 @@ class WorkbenchStateMixin:
             armed = self._armed
             active = self._active
             notice = self._hud_notice
-            tracker = self._live_tracker
+            with self._live_tracker_lock:
+                tracker = self._live_tracker_descriptor()
             if tracker and tracker.get("status") in ("starting", "running"):
                 latest = tracker.get("latest") or {}
                 pose = latest.get("pose") or {}

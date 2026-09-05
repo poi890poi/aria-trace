@@ -187,6 +187,9 @@ class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, Workbenc
         self._compile_state = "not_ready"
         self._compile_result = None
         self._analysis_jobs = AnalysisJobManager(lock=self._lock)
+        # Live control must never wait behind the catalog/session scans performed
+        # by the one-second Workbench state refresh.
+        self._live_tracker_lock = threading.RLock()
         self._live_tracker = None
         self._live_tracker_engine = None
         self._live_tracker_mosaic = None

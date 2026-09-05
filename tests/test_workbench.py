@@ -254,6 +254,38 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_live_tracker_publication_does_not_wait_for_catalog_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = AcquisitionWorkbench(
+                root / "sessions",
+                root / "artifacts",
+                desktop_api=ArbitraryDesktop(),
+            )
+            state._live_tracker = {"status": "running", "processed_frames": 0}
+            catalog_lock_held = threading.Event()
+            release_catalog = threading.Event()
+
+            def hold_catalog_lock():
+                with state._lock:
+                    catalog_lock_held.set()
+                    release_catalog.wait(1.0)
+
+            blocker = threading.Thread(target=hold_catalog_lock)
+            blocker.start()
+            self.assertTrue(catalog_lock_held.wait(1.0))
+            started = time.perf_counter()
+            with state._live_tracker_lock:
+                state._live_tracker["processed_frames"] = 1
+            elapsed = time.perf_counter() - started
+            release_catalog.set()
+            blocker.join(1.0)
+
+            self.assertLess(elapsed, 0.05)
+            self.assertEqual(
+                state._live_tracker_descriptor()["processed_frames"], 1
+            )
+
     def test_client_disconnects_are_not_server_failures(self):
         self.assertTrue(is_client_disconnect(BrokenPipeError()))
         self.assertTrue(is_client_disconnect(ConnectionResetError()))

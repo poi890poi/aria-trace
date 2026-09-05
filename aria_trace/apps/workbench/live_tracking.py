@@ -81,13 +81,14 @@ from .common import _require_ready_map_localization
 
 class WorkbenchLiveTrackingMixin:
     def _live_tracker_descriptor(self) -> Optional[dict]:
-        if self._live_tracker is None:
-            return None
-        return {
-            key: value
-            for key, value in self._live_tracker.items()
-            if key not in ("thread", "stop", "evidence_recorder")
-        }
+        with self._live_tracker_lock:
+            if self._live_tracker is None:
+                return None
+            return {
+                key: value
+                for key, value in self._live_tracker.items()
+                if key not in ("thread", "stop", "evidence_recorder")
+            }
 
     def _live_tracking_root(self, game_profile_id: str) -> Path:
         return self.artifact_root / "live_tracking" / safe_id(game_profile_id)
@@ -452,14 +453,15 @@ class WorkbenchLiveTrackingMixin:
             )
             runtime["evidence"] = evidence_recorder.summary
             runtime["evidence_recorder"] = evidence_recorder
-            self._live_tracker = runtime
-            self._live_tracker_engine = engine
-            self._live_tracker_mosaic = mosaic
-            self._live_tracker_route_points = (
-                [state["canonical_xy"] for state in route_package.states]
-                if route_package is not None
-                else None
-            )
+            with self._live_tracker_lock:
+                self._live_tracker = runtime
+                self._live_tracker_engine = engine
+                self._live_tracker_mosaic = mosaic
+                self._live_tracker_route_points = (
+                    [state["canonical_xy"] for state in route_package.states]
+                    if route_package is not None
+                    else None
+                )
             self._last_error = None
 
         def work() -> None:
@@ -470,7 +472,7 @@ class WorkbenchLiveTrackingMixin:
             run_error = None
             try:
                 frame_pump.start()
-                with self._lock:
+                with self._live_tracker_lock:
                     runtime["status"] = "running"
                     runtime["detail"] = (
                         "High-rate visual tracking is active; absolute map searches "
@@ -617,7 +619,7 @@ class WorkbenchLiveTrackingMixin:
                     fresh_xy_count = sum(
                         item["fresh_xy"] for item in recent_control_samples
                     )
-                    with self._lock:
+                    with self._live_tracker_lock:
                         runtime["latest"] = latest
                         runtime["processed_frames"] = latest["sequence"]
                         runtime["high_rate_fps"] = high_rate_fps
@@ -695,7 +697,7 @@ class WorkbenchLiveTrackingMixin:
             except Exception as exc:
                 error = "{}: {}".format(type(exc).__name__, exc)
                 run_error = error
-                with self._lock:
+                with self._live_tracker_lock:
                     runtime["error"] = error
                     self._last_error = "Live tracker failed: {}".format(error)
             finally:
@@ -723,7 +725,7 @@ class WorkbenchLiveTrackingMixin:
                             "feeds_tracker": False,
                             "error": "{}: {}".format(type(exc).__name__, exc),
                         }
-                with self._lock:
+                with self._live_tracker_lock:
                     runtime["evidence"] = evidence_summary
                     runtime["route_similarity"] = route_similarity
                     runtime["status"] = "failed" if run_error else "stopped"
@@ -736,13 +738,13 @@ class WorkbenchLiveTrackingMixin:
         thread = threading.Thread(
             target=work, name="acquisition-live-tracker", daemon=True
         )
-        with self._lock:
+        with self._live_tracker_lock:
             runtime["thread"] = thread
         thread.start()
         return self.descriptor()
 
     def stop_live_tracker(self) -> dict:
-        with self._lock:
+        with self._live_tracker_lock:
             runtime = self._live_tracker
             if not runtime or runtime.get("status") not in ("starting", "running"):
                 raise RuntimeError("The live tracker is not running")
@@ -751,7 +753,7 @@ class WorkbenchLiveTrackingMixin:
         return self.descriptor()
 
     def live_tracker_overlay_image(self, compact: bool = False) -> bytes:
-        with self._lock:
+        with self._live_tracker_lock:
             if self._live_tracker_mosaic is None or self._live_tracker is None:
                 raise ValueError("No live tracker overlay is available")
             latest = dict(self._live_tracker.get("latest") or {})
@@ -769,7 +771,7 @@ class WorkbenchLiveTrackingMixin:
         return encoded.tobytes()
 
     def live_tracker_minimap_route_overlay_image(self) -> bytes:
-        with self._lock:
+        with self._live_tracker_lock:
             if self._live_tracker is None or self._live_tracker_route_points is None:
                 raise ValueError("No demonstrated route guide is available")
             latest = dict(self._live_tracker.get("latest") or {})

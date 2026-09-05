@@ -1438,7 +1438,8 @@ class WorkbenchCaptureMixin:
     def close(self) -> None:
         with self._lock:
             active = self._active
-            tracker = self._live_tracker
+            with self._live_tracker_lock:
+                tracker = self._live_tracker
         if active is not None:
             active["cancel"].set()
             active["stop"].set()
