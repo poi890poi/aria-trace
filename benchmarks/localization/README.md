@@ -1,5 +1,10 @@
 # Localization real-time benchmark
 
+Latest production-path evaluation:
+[Rebuilt-atlas E2E results](REBUILT_ATLAS_E2E_20260905.md). It replays the actual
+Workbench loop over ten recordings and distinguishes free-roam, route-assisted,
+and video-recording behavior. It also documents reusable slow-reference caching.
+
 This package standardizes the high-rate XY localization comparison. It keeps
 initial absolute localization separate from the chronological local tracker.
 
