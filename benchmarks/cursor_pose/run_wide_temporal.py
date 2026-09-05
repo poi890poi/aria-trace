@@ -155,6 +155,64 @@ def _read_jsonl(path):
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line]
 
 
+def _raw_cache_identity(args, reader, session_id):
+    session = Path(args.session_root) / session_id
+    return {
+        "schema_version": "1.0",
+        "session_id": session_id,
+        "candidates": list(CANDIDATES),
+        "calibration_sha256": _sha(args.calibration),
+        "frames_sha256": _sha(session / "frames.jsonl"),
+        "video_sha256": _sha(reader.video_path("main")),
+        "estimator_source_sha256": _sha(
+            Path(__file__).with_name("run_candidate_e2e.py")
+        ),
+    }
+
+
+def _load_raw_cache(cache_root, identity):
+    manifest_path = Path(cache_root) / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("identity") != identity:
+            return None
+        result = {
+            name: _read_jsonl(Path(cache_root) / (name + ".jsonl"))
+            for name in CANDIDATES
+        }
+        lengths = {len(rows) for rows in result.values()}
+        if len(lengths) != 1 or not lengths or next(iter(lengths)) <= 0:
+            return None
+        return result
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _write_raw_cache(cache_root, identity, by_method):
+    cache_root = Path(cache_root)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for name in CANDIDATES:
+        path = cache_root / (name + ".jsonl")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            for row in by_method[name]:
+                stream.write(json.dumps(row, separators=(",", ":")) + "\n")
+        temporary.replace(path)
+    manifest_path = cache_root / "manifest.json"
+    temporary = manifest_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "identity": identity,
+                "row_count": len(by_method[CANDIDATES[0]]),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(manifest_path)
+
+
 def run(args):
     output = args.output.resolve(); output.mkdir(parents=True, exist_ok=True)
     prior = json.loads(args.prior_results.read_text(encoding="utf-8"))
@@ -167,27 +225,36 @@ def run(args):
     )
     thresholds = prior["confidence_thresholds"]
     wide_raw = {}
+    raw_cache = {}
     for session_id in ("run_17", "run_18"):
         reader = SessionReader(args.session_root / session_id)
         records = list(reader.frames_by_stream["main"])
-        estimators = {name: _candidate_factory(args.calibration, name) for name in CANDIDATES}
-        capture = cv2.VideoCapture(str(reader.video_path("main")))
-        by_method = {name: [] for name in CANDIDATES}
-        try:
-            for ordinal, record in enumerate(records):
-                ok, frame = capture.read()
-                if not ok: break
-                for name, estimator in estimators.items():
-                    started = time.perf_counter_ns(); result = estimator.estimate(frame)
-                    elapsed = (time.perf_counter_ns() - started) / 1e6
-                    angle = result.get("angle_screen_deg") if result.get("detected") else None
-                    by_method[name].append({"frame_index": int(record["frame_index"]), "session_time_ns": int(record["session_time_ns"]), "angle_deg": None if angle is None else float(angle), "confidence": float(result.get("confidence") or 0.0), "latency_ms": elapsed})
-        finally:
-            capture.release()
-        for index in range(min(map(len, by_method.values()))):
-            for name in CANDIDATES:
-                others = [by_method[other][index]["angle_deg"] for other in CANDIDATES if other != name and by_method[other][index]["angle_deg"] is not None]
-                by_method[name][index]["leave_one_out_consensus_deg"] = _circular_mean(others) if others else None
+        identity = _raw_cache_identity(args, reader, session_id)
+        cache_root = output / "raw" / session_id
+        by_method = _load_raw_cache(cache_root, identity)
+        if by_method is None:
+            estimators = {name: _candidate_factory(args.calibration, name) for name in CANDIDATES}
+            capture = cv2.VideoCapture(str(reader.video_path("main")))
+            by_method = {name: [] for name in CANDIDATES}
+            try:
+                for ordinal, record in enumerate(records):
+                    ok, frame = capture.read()
+                    if not ok: break
+                    for name, estimator in estimators.items():
+                        started = time.perf_counter_ns(); result = estimator.estimate(frame)
+                        elapsed = (time.perf_counter_ns() - started) / 1e6
+                        angle = result.get("angle_screen_deg") if result.get("detected") else None
+                        by_method[name].append({"frame_index": int(record["frame_index"]), "session_time_ns": int(record["session_time_ns"]), "angle_deg": None if angle is None else float(angle), "confidence": float(result.get("confidence") or 0.0), "latency_ms": elapsed})
+            finally:
+                capture.release()
+            for index in range(min(map(len, by_method.values()))):
+                for name in CANDIDATES:
+                    others = [by_method[other][index]["angle_deg"] for other in CANDIDATES if other != name and by_method[other][index]["angle_deg"] is not None]
+                    by_method[name][index]["leave_one_out_consensus_deg"] = _circular_mean(others) if others else None
+            _write_raw_cache(cache_root, identity, by_method)
+            raw_cache[session_id] = "miss-written"
+        else:
+            raw_cache[session_id] = "hit"
         wide_raw[session_id] = by_method
 
     forward_rows = list(csv.DictReader(args.prior_primary.open(encoding="utf-8")))
@@ -213,7 +280,7 @@ def run(args):
                     "scene_turn_response": evaluate_reversal_response(scene_rows, signal, alignment_sample_hz=30.0),
                 }
             results.append(entry)
-    result = {"schema_version": "1.0", "generated_utc": datetime.now(timezone.utc).isoformat(), "contract": {"target": "30 fresh pose fixes/s; estimator <=33.3ms", "forward_absolute_reference": "forward-only whole-session E2E direction", "wide_accuracy_reference": "leave-one-out cross-method agreement only; not truth", "input_and_klt": "evaluation-only temporal response evidence", "physical_gate": "calibration-derived p99 turning envelope; rejected frames hold and are not fresh", "turn_rate_limit_deg_s": turn_rate_limit}, "results": results, "traceability": {"benchmark_sha256": _sha(__file__), "prior_results_sha256": _sha(args.prior_results), "prior_primary_sha256": _sha(args.prior_primary)}}
+    result = {"schema_version": "1.0", "generated_utc": datetime.now(timezone.utc).isoformat(), "contract": {"target": "30 fresh pose fixes/s; estimator <=33.3ms", "forward_absolute_reference": "forward-only whole-session E2E direction", "wide_accuracy_reference": "leave-one-out cross-method agreement only; not truth", "input_and_klt": "evaluation-only temporal response evidence", "physical_gate": "calibration-derived p99 turning envelope; rejected frames hold and are not fresh", "turn_rate_limit_deg_s": turn_rate_limit}, "results": results, "traceability": {"benchmark_sha256": _sha(__file__), "prior_results_sha256": _sha(args.prior_results), "prior_primary_sha256": _sha(args.prior_primary), "raw_measurement_cache": raw_cache}}
     (output / "results.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 

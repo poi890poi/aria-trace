@@ -1,10 +1,40 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-from benchmarks.cursor_pose.run_wide_temporal import _apply, _summary
+from benchmarks.cursor_pose.run_wide_temporal import (
+    CANDIDATES,
+    _apply,
+    _load_raw_cache,
+    _summary,
+    _write_raw_cache,
+)
 from benchmarks.localization.run_wide_temporal import _temporal
 
 
 class WideLiveControlBenchmarkTests(unittest.TestCase):
+    def test_pose_raw_cache_is_identity_checked(self):
+        identity = {"schema_version": "1.0", "source": "fixture"}
+        rows = {
+            name: [
+                {
+                    "session_time_ns": 1,
+                    "angle_deg": 10.0,
+                    "confidence": 1.0,
+                    "latency_ms": 1.0,
+                }
+            ]
+            for name in CANDIDATES
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write_raw_cache(root, identity, rows)
+
+            self.assertEqual(_load_raw_cache(root, identity), rows)
+            self.assertIsNone(
+                _load_raw_cache(root, {**identity, "source": "changed"})
+            )
+
     def test_pose_ema_uses_shortest_circular_path(self):
         rows = [
             {"session_time_ns": 0, "angle_deg": 359.0, "confidence": 1.0},

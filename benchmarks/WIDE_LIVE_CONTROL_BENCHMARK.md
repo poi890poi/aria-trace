@@ -37,3 +37,7 @@ Run `benchmarks.localization.run_wide_temporal`, then
 `benchmarks.build_wide_live_control_report`. Each command requires explicit
 session, calibration, atlas/reference, and output paths. Machine-readable
 results and chronological telemetry are written under the requested output.
+Raw pose measurements are cached under the output's `raw/` directory. The
+cache is reused only when the session frames/video, calibration, candidate set,
+and estimator implementation hashes all match; temporal policies and reports
+are always recomputed.
