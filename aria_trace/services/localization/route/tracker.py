@@ -324,7 +324,7 @@ class RouteVisualTracker:
                 continuity_rejected = True
         if measurement_accepted:
             self.previous_xy = (float(result["x"]), float(result["y"]))
-        if (measurement_accepted or continuity_rejected) and timestamp_ns is not None:
+        if measurement_accepted and timestamp_ns is not None:
             self.previous_time_ns = int(timestamp_ns)
         pose_available = self.previous_xy is not None
         public = dict(result or {})

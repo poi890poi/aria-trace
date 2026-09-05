@@ -203,6 +203,49 @@ class RouteTrackerTests(unittest.TestCase):
             self.assertEqual((second["x"], second["y"]), (21.0, 20.0))
             self.assertEqual((second["measured_x"], second["measured_y"]), (70.0, 20.0))
 
+    def test_visual_tracker_continuity_uses_time_since_last_accepted_pose(self):
+        class DelayedMap:
+            def refine_near(
+                self, observation, mask, center, search_radius_px, score_min
+            ):
+                return {
+                    "valid": True,
+                    "x": 70.0,
+                    "y": 20.0,
+                    "score": 0.85,
+                    "margin": 0.2,
+                    "selected_mode_id": "world",
+                    "pose_authority": "current-frame-map-correlation",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            package, images = self._package(Path(temporary) / "route")
+            tracker = RouteVisualTracker(package, DelayedMap())
+            tracker.continuity_speed_limit_px_s = 120.0
+            tracker.seed(20.0, 20.0, timestamp_ns=1_000_000_000)
+            mask = np.full((64, 64), 255, np.uint8)
+
+            for timestamp_ns in (
+                1_010_000_000,
+                1_100_000_000,
+                1_200_000_000,
+                1_300_000_000,
+                1_400_000_000,
+            ):
+                held = tracker.track(
+                    images[0], mask, timestamp_ns=timestamp_ns
+                )
+                self.assertTrue(held["continuity_rejected"])
+                self.assertEqual((held["x"], held["y"]), (20.0, 20.0))
+
+            accepted = tracker.track(
+                images[0], mask, timestamp_ns=1_500_000_000
+            )
+
+            self.assertTrue(accepted["measurement_accepted"])
+            self.assertAlmostEqual(accepted["continuity_step_limit_px"], 60.0)
+            self.assertEqual((accepted["x"], accepted["y"]), (70.0, 20.0))
+
     def test_state_estimator_advances_locally_and_projects_to_route(self):
         with tempfile.TemporaryDirectory() as temporary:
             package, images = self._package(Path(temporary) / "route")
