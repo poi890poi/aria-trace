@@ -89,7 +89,7 @@ def score(rows, source, reference):
         record = source_by_time[row["host_time_ns"]]
         row.update(record)
         pose = row.get("pose")
-        fresh = bool(row.get("xy_measurement_fresh_accepted"))
+        fresh = bool(pose) and bool(row.get("xy_measurement_fresh_accepted"))
         row["output_provenance"] = "fresh" if fresh else "held" if pose else "unavailable"
         if first_pose is not None and row["host_time_ns"] >= first_pose:
             if not fresh and loss is None:
@@ -132,7 +132,7 @@ def score(rows, source, reference):
         "duration_s": duration, "processed_fps": len(rows)/duration,
         "initialization_s": (first_pose-source.origin-source.frames[0]["session_time_ns"])/1e9 if first_pose else None,
         "steady_fresh_rate": fresh/max(len(steady), 1),
-        "all_source_fresh_rate": sum(bool(r.get("xy_measurement_fresh_accepted")) for r in rows)/len(source.rows),
+        "all_source_fresh_rate": sum(bool(r.get("pose")) and bool(r.get("xy_measurement_fresh_accepted")) for r in rows)/len(source.rows),
         "held_frames": sum(r["output_provenance"] == "held" for r in enriched),
         "unavailable_frames": sum(r["output_provenance"] == "unavailable" for r in enriched),
         "loss_episodes": losses, "longest_loss_s": max((r["seconds"] for r in losses), default=0),

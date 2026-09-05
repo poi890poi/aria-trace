@@ -57,7 +57,7 @@ class ReplayScoreTests(unittest.TestCase):
             rows=[]
             for i in (0,1,2,3,5,6):
                 rows.append({"host_time_ns": source_rows[i]["host_time_ns"], "pose": None if i==0 else {"x": 0,"y":0},
-                             "xy_measurement_fresh_accepted": i in (1,2,6), "capture_to_control_publish_ms": 10,
+                             "xy_measurement_fresh_accepted": i in (0,1,2,6), "capture_to_control_publish_ms": 10,
                              "update_elapsed_ms": 5, "active_map_mode_id": "world"})
             enriched, result = score(rows, source, reference)
             self.assertEqual(result["unavailable_frames"], 1)
