@@ -25,6 +25,8 @@ CANDIDATES = {
     "D": "Preserve global recovery consensus across accepted local-motion updates while recovery is latched.",
     "F": "Remove the automatic hold on transition arming; keep current-layer tracking until visual layer confirmation.",
     "G": "Consume cursor after XY work, without waiting on its own; with E, defer the bounded wait too.",
+    "I": "Remove relative-motion accumulation in free-roam; use current-image atlas matching with no route states or proposals.",
+    "J": "Use the existing wider recovery radius only for the first image refinement after a global seed.",
     "H": "Remove full-scene KLT and camera-derived minimap rotation trials from free-roam tracking.",
     "E": "Submit then consume same-frame cursor result within the remaining 33.3 ms source deadline; retain asynchronous fallback.",
 }
@@ -112,6 +114,25 @@ def candidate_sources(letters):
 '''
         source = source[:consume_start] + submit + wait + consume + source[cursor_end:]
         put(TwoRateRealtimeTracker, "update", source)
+    if "I" in letters:
+        source = get(TwoRateRealtimeTracker, "__init__")
+        source += """
+    if self.route_visual_tracker is None:
+        from types import SimpleNamespace
+        from aria_trace.services.localization.route.tracker import RouteVisualTracker
+        empty_reference = SimpleNamespace(
+            manifest={"motion_envelope": {}}, states=[], transitions=[],
+            candidates=lambda *args, **kwargs: [])
+        self.route_visual_tracker = RouteVisualTracker(
+            empty_reference, self.localizer, score_min=0.0,
+            local_radius_px=12.0, recovery_radius_px=55.0)
+"""
+        put(TwoRateRealtimeTracker, "__init__", source)
+    if "J" in letters:
+        source = get(RouteVisualTracker, "track")
+        source = replace_once(source, '            self.local_radius_px,\n            "continuous-local",',
+                              '            self.recovery_radius_px if self.previous_time_ns is None else self.local_radius_px,\n            "continuous-local",')
+        put(RouteVisualTracker, "track", source)
     if "G" in letters:
         source = get(TwoRateRealtimeTracker, "update")
         consume_start = source.index('    cursor_pose_fresh = False\n')

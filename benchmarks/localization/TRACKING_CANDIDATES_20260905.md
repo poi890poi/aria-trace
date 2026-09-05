@@ -17,6 +17,8 @@ References are evaluation-only except the declared Run11 route proposals.
 | F | Remove the automatic XY hold when a transition is merely armed | Preserve valid source-layer measurements until visual confirmation | Source matching can be wrong during the actual scale change; test alone and with AB |
 | G | Consume cursor after XY work; no wait alone, defer E's wait when combined | Overlap work and include XY processing in the wait budget | Without E the worker may miss the same frame; EG may still overrun at publication |
 | H | Remove scene KLT and camera-derived map rotation from free-roam | Reduce discarded computation and contamination of north-fixed map motion | The minority of selected nonzero rotations could be useful; test accuracy and timing |
+| I | Remove accumulated relative XY in free-roam; reuse current-image atlas matching with an empty route package | Prevent drift while retaining observation-driven XY and existing global initialization | No route proposals exist; a delayed global seed can fall outside the normal local search |
+| J | Use existing recovery radius for the first refinement after a global seed, then return to local radius | Recover current XY from a delayed coarse seed | Wider image search can select a wrong peak; it remains a measurement, not a forced pose |
 
 The experiment runner installs explicit edited methods on the real production
 classes before constructing AcquisitionWorkbench. Saved generated method source,
@@ -45,6 +47,13 @@ AE's first Run14 replay has XY P95 36.7 ms: E waits before subsequent XY work.
 This motivates G alone and EG, then integration with A. H is an explicit user-
 requested removal experiment; baseline chose zero scene-derived compensation
 on about 98% of the outdoor frames while still paying for scene KLT.
+
+H reduces free-roam publication P95 to 22-23 ms but gives mixed accuracy (Run17
+P95 126.7 px versus its fresh baseline's 69.5 px). CDH remains inaccurate too.
+This motivates I: remove relative accumulation itself, with no route guidance.
+Compare I and IJ on the same full recordings. J is separately exercised on the
+route-assisted path and in a delayed-seed behavioral regression. Integration
+with A and the supported heading scheduling variant follows only if warranted.
 
 Combination effects require their constituent singles and baseline. A component
 that is ineffective alone can remain useful if its paired comparison establishes

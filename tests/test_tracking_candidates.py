@@ -17,7 +17,7 @@ from tests import test_live_tracker as fixtures
 class TrackingCandidateTests(unittest.TestCase):
     def test_all_declared_edits_compile_and_restore_production_methods(self):
         original = TwoRateRealtimeTracker.update
-        for variant in ("A", "B", "C", "D", "E", "F", "G", "H", "AB", "CD", "ABCDE", "ABF", "CDH", "AG", "AEG"):
+        for variant in ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "AB", "CD", "ABCDE", "ABF", "CDH", "AG", "AEG", "AIJEG"):
             for key, source in candidate_sources(variant).items():
                 compile(source, str(key), "exec")
             with installed_candidates(variant):
@@ -146,6 +146,47 @@ class TrackingCandidateTests(unittest.TestCase):
             result, timestamp = exercise(variant)
             self.assertTrue(result["cursor_pose_fresh"])
             self.assertEqual(result["cursor_pose"]["session_time_ns"], timestamp)
+
+    def test_unassisted_direct_matcher_has_no_route_proposals(self):
+        class Localizer(fixtures.ImmediateLocalizer):
+            def refine_near(self, observation, mask, center, **kwargs):
+                return {"valid":True,"x":center[0]+1,"y":center[1],"score":.9}
+        with installed_candidates("I"):
+            tracker = fixtures.TwoRateTrackerTests._tracker(Localizer())
+            try:
+                tracker.fusion.initialize(Pose2D(10,20,0))
+                result = tracker.update(np.zeros((100,100,3), np.uint8), 1)
+                self.assertTrue(result["route_tracking"]["measurement_accepted"])
+                self.assertFalse(result["local_motion"]["applied"])
+                self.assertEqual(tracker.route_visual_tracker.package.states, [])
+                self.assertEqual(tracker.route_visual_tracker.package.candidates(None), [])
+                self.assertAlmostEqual(result["pose"]["x"], 11)
+            finally:
+                tracker.close()
+
+    def test_wider_seed_search_uses_current_measurement_then_returns_to_local_radius(self):
+        def exercise(variant):
+            tracker = object.__new__(RouteVisualTracker)
+            tracker.previous_xy = (10,20)
+            tracker.previous_time_ns = None
+            tracker.local_radius_px, tracker.recovery_radius_px = 12, 55
+            tracker.continuity_speed_limit_px_s = 120
+            tracker._trained_transition = None
+            radii = []
+            def refine(observation, mask, center, radius, *args):
+                radii.append(radius)
+                return {"valid":abs(45-center[0]) <= radius,"x":45,"y":20,"score":.9}
+            tracker._refine = refine
+            tracker._recover = lambda *args:None
+            with installed_candidates(variant):
+                first = tracker.track(None,None,timestamp_ns=1_000_000_000)
+                tracker.track(None,None,timestamp_ns=2_000_000_000)
+            return first, radii
+        self.assertTrue(exercise("")[0]["held"])
+        first, radii = exercise("J")
+        self.assertTrue(first["measurement_accepted"])
+        self.assertEqual(first["x"], 45)
+        self.assertEqual(radii, [55,12])
 
 
 if __name__ == "__main__":
