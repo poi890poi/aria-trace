@@ -25,4 +25,4 @@ landing decision.
 Current protocols:
 
 - [Cursor pose causal E2E benchmark](cursor_pose/README.md)
-
+- [Full-map placement and seam benchmark](mapping/README.md)
