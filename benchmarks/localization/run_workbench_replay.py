@@ -174,7 +174,22 @@ def run(args):
     mini_config = profiles.game(game)["minimap_calibration"]
     references = {}
     runs = list(dict.fromkeys(([11] if args.mode == "route-assisted" else []) + args.runs))
+    frozen = getattr(args, "references", None)
+    if frozen:
+        references = {int(k): Path(v) for k,v in json.loads(Path(frozen).read_text()).items()}
+        for entry in references.values():
+            manifest = json.loads((entry/"manifest.json").read_text())
+            if manifest["atlas_id"] != args.atlas:
+                raise ValueError("Frozen reference atlas differs from replay atlas")
+            marker = json.loads((entry/"cache.json").read_text())
+            for item in marker["outputs"]:
+                if identity(entry/item["name"])["sha256"] != item["sha256"]:
+                    raise ValueError("Damaged frozen reference: " + str(entry))
     for number in runs:
+        if frozen:
+            if number not in references:
+                raise ValueError("Missing frozen reference for run " + str(number))
+            continue
         session = root / "sessions/workbench/recordings-genshin-impact-pc" / f"run_{number:02d}"
         entry, hit = ensure_reference(root, session, atlas, calibration, mini_config, args.cache, rate=5.0 if number == 11 else 2.0)
         references[number] = entry
@@ -231,6 +246,7 @@ def run(args):
                             "implementation": [identity(p) for directory in ("aria_trace", "rig_runtime", "replay", "benchmarks/localization") for p in sorted((root/directory).rglob("*.py"))],
                             "measurement_boundary": "recorded source schedule through actual Workbench publication; excludes physical capture and browser/display",
                             "record_video": args.record_video})
+            summary["experiment"] = getattr(args, "experiment", None)
             (target / "scored_telemetry.jsonl").write_text("".join(json.dumps(r)+"\n" for r in enriched))
             (target / "source_telemetry.jsonl").write_text("".join(json.dumps(r)+"\n" for r in source.rows))
             (target / "report.json").write_text(json.dumps(summary, indent=2))
@@ -251,6 +267,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=Path("artifacts/benchmark_cache/atlas_references"))
     parser.add_argument("--references-only", action="store_true")
+    parser.add_argument("--references", type=Path, help="Frozen, hash-verified cached reference index for paired experiments")
     parser.add_argument("--record-video", action="store_true")
     parser.add_argument("--max-seconds", type=float)
     parser.add_argument("--loss-error-limit-px", type=float,
