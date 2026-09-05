@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from aria_trace.services.tracking import FusionConfig, Pose2D, PoseFusionGate
-from rig_runtime.services.vision import KltAngularYawEstimator, camera_matrix
+from rig_runtime.services.vision import KltAngularYawEstimator, YawEstimate, camera_matrix
 
 from rig_runtime.services.calibration.cursor.pose import CursorPoseEstimator
 from rig_runtime.services.calibration.cursor.worker import CursorPoseProcessExecutor
@@ -897,8 +897,22 @@ class TwoRateRealtimeTracker:
     def update(self, frame: np.ndarray, host_time_ns: Optional[int] = None) -> dict:
         started = time.perf_counter()
         timestamp_ns = int(host_time_ns or time.perf_counter_ns())
-        self._ensure_scene_estimator(frame)
-        yaw = self.scene_estimator.update(frame)
+        if self.route_visual_tracker is not None:
+            # Route-assisted XY is measured directly against the north-fixed map.
+            # Its local-motion branch is bypassed below, so full-frame scene KLT
+            # has no consumer and must not occupy the live control path.
+            yaw = YawEstimate(
+                0.0,
+                0.0,
+                0,
+                0,
+                0.0,
+                0.0,
+                "bypassed:route-map-correlation",
+            )
+        else:
+            self._ensure_scene_estimator(frame)
+            yaw = self.scene_estimator.update(frame)
         minimap, mask = self.extractor.extract(frame)
         representation_observation_fresh = self._consume_representation_observation(
             timestamp_ns

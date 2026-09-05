@@ -323,6 +323,46 @@ class TwoRateTrackerTests(unittest.TestCase):
             localizer.release.set()
             tracker.close()
 
+    def test_route_map_tracking_does_not_run_unused_scene_klt(self):
+        class RouteVisual:
+            previous_xy = None
+
+            def seed(self, x, y, timestamp_ns=None):
+                self.previous_xy = (x, y)
+
+            def track(self, observation, mask, timestamp_ns=None):
+                return {
+                    "measurement_accepted": True,
+                    "pose_available": True,
+                    "x": self.previous_xy[0],
+                    "y": self.previous_xy[1],
+                    "score": 1.0,
+                }
+
+        visual = RouteVisual()
+        tracker = TwoRateRealtimeTracker(
+            np.full((160, 180, 3), 40, np.uint8),
+            {"crop_xywh": [0, 0, 80, 80]},
+            {"outer_boundary": {"center_x": 40, "center_y": 40, "radius": 34}},
+            {"focal_ratio": 0.9, "config": {"excluded_rects": []}},
+            localizer=ImmediateLocalizer(),
+            initial_consensus_count=1,
+            route_visual_tracker=visual,
+        )
+        tracker.fusion.initialize(Pose2D(80.0, 70.0, 0.0))
+        tracker.scene_estimator = SimpleNamespace(
+            update=lambda _frame: self.fail("unused scene KLT was called")
+        )
+        try:
+            result = tracker.update(np.zeros((100, 100, 3), np.uint8), 1)
+            self.assertEqual(
+                result["scene_yaw"]["status"],
+                "bypassed:route-map-correlation",
+            )
+            self.assertTrue(result["xy_measurement_fresh_accepted"])
+        finally:
+            tracker.close()
+
     def test_implausible_local_shift_holds_the_last_pose(self):
         tracker = self._tracker(ImmediateLocalizer())
         tracker.fusion.initialize(Pose2D(80.0, 70.0, 15.0))
