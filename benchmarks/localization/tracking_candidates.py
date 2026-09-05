@@ -16,7 +16,7 @@ import textwrap
 import subprocess
 from functools import lru_cache
 
-from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker
+from aria_trace.services.tracking.runtime import TwoRateRealtimeTracker, GlobalMapLocalizer
 from aria_trace.services.localization.route.tracker import RouteVisualTracker
 from benchmarks.localization.run_workbench_replay import run
 
@@ -61,6 +61,7 @@ def candidate_sources(letters):
     methods = {(cls, name): baseline_method(cls, name) for cls, names in (
         (TwoRateRealtimeTracker, ("__init__", "update", "_consume_representation_observation", "_mean_fix")),
         (RouteVisualTracker, ("track", "arm_trained_transition")),
+        (GlobalMapLocalizer, ("localize",)),
     ) for name in names}
     def get(cls, name):
         return methods[(cls, name)]
