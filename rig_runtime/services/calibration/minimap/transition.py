@@ -225,6 +225,14 @@ class TransitionController:
         self.minimum_margin = float(
             (model.get("runtime") or {}).get("minimum_mode_margin", 0.0)
         )
+        self.armed_exit_radius_px = max(
+            0.0,
+            float(
+                (model.get("runtime") or {}).get(
+                    "armed_exit_radius_px", 40.0
+                )
+            ),
+        )
         zones = tuple(model.get("transition_zones") or ())
         legacy_boundary = model.get("canonical_boundary")
         if not zones and legacy_boundary:
@@ -239,6 +247,7 @@ class TransitionController:
         )
         self.active_mode_id = self.source_mode_id
         self._competing_wins = 0
+        self._armed_zone_id = None
 
     def set_active_mode(self, mode_id: str) -> None:
         value = str(mode_id)
@@ -246,6 +255,7 @@ class TransitionController:
             raise ValueError("Unknown transition mode: {}".format(value))
         self.active_mode_id = value
         self._competing_wins = 0
+        self._armed_zone_id = None
 
     def _matching_zone(
         self,
@@ -286,7 +296,26 @@ class TransitionController:
         zone, zone_distance, spatially_eligible = self._matching_zone(
             canonical_xy, position_uncertainty_px
         )
-        if spatially_eligible and competing - active >= self.minimum_margin:
+        within_observed_zone = spatially_eligible
+        if not self.transition_zones:
+            transition_armed = True
+        elif within_observed_zone:
+            self._armed_zone_id = zone["zone_id"]
+            transition_armed = True
+        else:
+            transition_armed = bool(
+                zone
+                and self._armed_zone_id == zone["zone_id"]
+                and zone_distance
+                <= max(
+                    float(zone["radius_px"])
+                    + max(0.0, float(position_uncertainty_px)),
+                    self.armed_exit_radius_px,
+                )
+            )
+            if not transition_armed:
+                self._armed_zone_id = None
+        if transition_armed and competing - active >= self.minimum_margin:
             self._competing_wins += 1
         else:
             self._competing_wins = 0
@@ -294,11 +323,12 @@ class TransitionController:
         if switched:
             self.active_mode_id = competing_mode_id
             self._competing_wins = 0
+            self._armed_zone_id = None
         return {
             "active_mode_id": self.active_mode_id,
             "state": (
                 "outside_transition_zone"
-                if not spatially_eligible
+                if not transition_armed
                 else "transitioning"
                 if self._competing_wins
                 else (
@@ -313,7 +343,10 @@ class TransitionController:
             "target_confirmation_count": self._competing_wins,
             "competing_mode_id": competing_mode_id,
             "mode_margin": competing - active,
-            "spatially_eligible": spatially_eligible,
+            "spatially_eligible": transition_armed,
+            "within_observed_zone": within_observed_zone,
+            "transition_armed": transition_armed,
+            "armed_exit_radius_px": self.armed_exit_radius_px,
             "transition_zone_id": zone["zone_id"] if zone else None,
             "transition_zone_distance_px": zone_distance,
         }

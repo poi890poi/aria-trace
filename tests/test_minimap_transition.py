@@ -85,6 +85,50 @@ class MinimapTransitionTests(unittest.TestCase):
         self.assertFalse(second["switched"])
         self.assertEqual(second["active_mode_id"], "world")
 
+    def test_controller_keeps_transition_armed_while_evidence_leaves_tiny_zone(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        model.setdefault("runtime", {})["armed_exit_radius_px"] = 40.0
+        controller = TransitionController(model, confirmation_count=2)
+        center = tuple(model["transition_zones"][0]["center_xy"])
+
+        armed = controller.update(
+            {"world": 0.8, "town": 0.2}, canonical_xy=center
+        )
+        first = controller.update(
+            {"world": 0.2, "town": 0.8},
+            canonical_xy=(center[0] - 21.0, center[1]),
+        )
+        switched = controller.update(
+            {"world": 0.1, "town": 0.9},
+            canonical_xy=(center[0] - 35.0, center[1]),
+        )
+
+        self.assertTrue(armed["within_observed_zone"])
+        self.assertTrue(first["transition_armed"])
+        self.assertFalse(first["within_observed_zone"])
+        self.assertTrue(switched["switched"])
+        self.assertEqual(switched["active_mode_id"], "town")
+
+    def test_controller_drops_arming_outside_exit_corridor(self):
+        model = learn_transition_model(self._observations(), "world", "town")
+        model.setdefault("runtime", {})["armed_exit_radius_px"] = 40.0
+        controller = TransitionController(model, confirmation_count=2)
+        center = tuple(model["transition_zones"][0]["center_xy"])
+
+        controller.update({"world": 0.8, "town": 0.2}, canonical_xy=center)
+        outside = controller.update(
+            {"world": 0.1, "town": 0.9},
+            canonical_xy=(center[0] - 41.0, center[1]),
+        )
+        repeated = controller.update(
+            {"world": 0.1, "town": 0.9},
+            canonical_xy=(center[0] - 41.0, center[1]),
+        )
+
+        self.assertFalse(outside["transition_armed"])
+        self.assertEqual(repeated["state"], "outside_transition_zone")
+        self.assertFalse(repeated["switched"])
+
     def test_transition_bounds_exclude_long_stable_endpoints(self):
         observations = []
         scores = [(0.95, 0.05)] * 8 + [
