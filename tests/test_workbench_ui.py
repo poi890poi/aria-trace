@@ -107,6 +107,11 @@ class WorkbenchRouteTracerUiTests(unittest.TestCase):
         self.assertIn("None · build a single-scale atlas", self.source)
         self.assertIn("automatically uses the current stitch", self.source)
 
+    def test_map_review_reports_rejected_torn_captures(self):
+        self.assertIn("Rejected torn captures", self.source)
+        self.assertIn("spatially_incoherent_frame_count", self.source)
+        self.assertIn("spatially_incoherent_registrations", self.source)
+
     def test_capture_inventory_uses_compact_progressive_disclosure(self):
         self.assertEqual(self.parser.locations["sourceInventoryPanel"], None)
         self.assertIn("<details id=\"sourceInventoryPanel\">", self.source)

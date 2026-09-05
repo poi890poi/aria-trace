@@ -1,8 +1,15 @@
 # Map atlas contract
 
 The atlas starts with one sharp, highest-detail master stitch in canonical map
-pixel coordinates. Rendered mini-map scales are derived views of that master,
-not independently stitched maps and never enlarged substitutes.
+pixel coordinates. Workbench selects the current master automatically using
+comparable observed world coverage, then source detail. Rendered mini-map
+scales are derived views of that master, not independently stitched maps and
+never enlarged substitutes.
+
+Generated history remains on disk for traceability. Routine selectors hide a
+stitch when its source session UUID no longer matches the current recording in
+that run folder, and show only the newest ready atlas for each master plus
+transition provenance pair. Explicit artifact IDs remain accepted by the API.
 
 ## Build modes
 
@@ -36,7 +43,8 @@ also retain `canonical_boundary` while old readers exist.
 1. In Workbench, run **Map stitching** for the highest-detail full-map session.
    This calls `WorkbenchAnalysisMixin.run_map_stitch` and must report bounded
    gradient correlation in `[-1, 1]`.
-2. Under **Canonical multi-scale atlas**, choose that master stitch.
+2. Under **Canonical multi-scale atlas**, review the automatically selected
+   master summary.
 3. Select no transition for a single-scale atlas, or select a reviewed
    transition recording to derive the observed scales and spatial switch zone.
 4. Recompile route packages against the new atlas before live route tracking.
