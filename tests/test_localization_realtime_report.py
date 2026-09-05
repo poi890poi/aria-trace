@@ -27,6 +27,7 @@ class LocalizationRealtimeReportTests(unittest.TestCase):
                     "primary_candidate_produced": True,
                     "final_gate_rejected": False,
                     "localization_core_elapsed_ms": 4.0,
+                    "end_to_end_serial_elapsed_ms": 7.0,
                     "reference_error_px": 1.0,
                 },
                 {
@@ -35,6 +36,7 @@ class LocalizationRealtimeReportTests(unittest.TestCase):
                     "primary_candidate_produced": True,
                     "final_gate_rejected": True,
                     "localization_core_elapsed_ms": 4.0,
+                    "end_to_end_serial_elapsed_ms": 8.0,
                     "reference_error_px": 7.0,
                 },
             ]
@@ -52,6 +54,10 @@ class LocalizationRealtimeReportTests(unittest.TestCase):
             self.assertEqual(
                 candidate["served_e2e_reference_error_px"]["worst"], 7.0
             )
+            self.assertEqual(
+                candidate["serial_decode_to_xy_latency_ms"]["worst"], 8.0
+            )
+            self.assertEqual(candidate["worst_replay_fresh_rate"], 0.5)
             self.assertIsNone(result["recommendation"]["candidate"])
 
 

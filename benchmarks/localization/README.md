@@ -15,6 +15,11 @@ minimum tier uses 66.7 ms (15 FPS). The measured core includes mini-map
 extraction and local matching, but not live capture, worker scheduling,
 fusion, rendering, or publication.
 
+When replay rows contain decode timing, the report additionally measures a
+serial recorded-video path from decode through mini-map extraction to the XY
+result. This is stronger than core-only timing, but it is still not camera/GDI
+capture-to-consumer latency; that requires live timestamp instrumentation.
+
 Experimental matchers remain in `poc/benchmark_route_tracer.py`. Production
 must not import this benchmark package.
 

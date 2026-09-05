@@ -82,6 +82,17 @@ def _aggregate_candidate(name: str, runs: list[dict]) -> dict:
     latency = np.asarray(
         [float(row["localization_core_elapsed_ms"]) for row in rows]
     )
+    serial_latency = np.asarray(
+        [
+            float(
+                row.get(
+                    "end_to_end_serial_elapsed_ms",
+                    row["localization_core_elapsed_ms"],
+                )
+            )
+            for row in rows
+        ]
+    )
     fresh_errors = [
         float(row["reference_error_px"])
         for row in rows
@@ -98,6 +109,40 @@ def _aggregate_candidate(name: str, runs: list[dict]) -> dict:
         for run in runs
         if run["report"].get("initialization")
     ]
+    per_replay = []
+    for run in runs:
+        replay_rows = [
+            row
+            for row in run["rows"]
+            if not row.get("initialization_frame", False)
+        ]
+        replay_fresh = np.asarray(
+            [bool(row["measurement_accepted"]) for row in replay_rows]
+        )
+        replay_serial = np.asarray(
+            [
+                float(
+                    row.get(
+                        "end_to_end_serial_elapsed_ms",
+                        row["localization_core_elapsed_ms"],
+                    )
+                )
+                for row in replay_rows
+            ]
+        )
+        per_replay.append(
+            {
+                "session_id": run["report"]["session"]["session_id"],
+                "fresh_measurement_accepted_rate": float(np.mean(replay_fresh)),
+                "fresh_serial_within_33_3ms_rate": float(
+                    np.mean(replay_fresh & (replay_serial <= TARGET_DEADLINE_MS))
+                ),
+                "serial_decode_to_xy_latency_ms": _summary(replay_serial),
+                "reference_role": (
+                    (run["report"].get("reference_pose_error") or {}).get("role")
+                ),
+            }
+        )
     result = {
         "candidate": name,
         "replay_count": len(runs),
@@ -112,19 +157,36 @@ def _aggregate_candidate(name: str, runs: list[dict]) -> dict:
         "fresh_within_66_7ms_rate": float(
             np.mean(fresh & (latency <= MINIMUM_DEADLINE_MS))
         ),
+        "fresh_serial_within_33_3ms_rate": float(
+            np.mean(fresh & (serial_latency <= TARGET_DEADLINE_MS))
+        ),
+        "fresh_serial_within_66_7ms_rate": float(
+            np.mean(fresh & (serial_latency <= MINIMUM_DEADLINE_MS))
+        ),
         "localization_core_latency_ms": _summary(latency),
+        "serial_decode_to_xy_latency_ms": _summary(serial_latency),
         "fresh_reference_error_px": _summary(fresh_errors),
         "served_e2e_reference_error_px": _summary(served_errors),
         "initialization_latency_ms": _summary(init_times),
         "sessions": [run["report"]["session"]["session_id"] for run in runs],
         "parameters": runs[0]["report"]["parameters"],
         "methods": [run["report"]["method_traceability"] for run in runs],
+        "per_replay": per_replay,
+        "worst_replay_fresh_rate": min(
+            item["fresh_measurement_accepted_rate"] for item in per_replay
+        ),
+        "worst_replay_fresh_serial_within_33_3ms_rate": min(
+            item["fresh_serial_within_33_3ms_rate"] for item in per_replay
+        ),
     }
     result["meets_30fps_compute_and_95pct_fresh"] = bool(
         result["fresh_within_33_3ms_rate"] >= 0.95
     )
     result["meets_15fps_compute_and_95pct_fresh"] = bool(
         result["fresh_within_66_7ms_rate"] >= 0.95
+    )
+    result["meets_recorded_video_serial_30fps"] = bool(
+        result["worst_replay_fresh_serial_within_33_3ms_rate"] >= 0.95
     )
     return result
 
@@ -134,6 +196,8 @@ def _recommend(candidates: list[dict]) -> tuple[str | None, str]:
         row
         for row in candidates
         if row["meets_30fps_compute_and_95pct_fresh"]
+        and row["meets_recorded_video_serial_30fps"]
+        and row["worst_replay_fresh_rate"] >= 0.95
         and row["fresh_reference_error_px"]["sample_count"]
     ]
     if not eligible:
@@ -163,6 +227,7 @@ def _report_lines(result: dict) -> list[str]:
         "",
         "Target: 30 fresh XY fixes per second.",
         "Target compute deadline: 33.3 ms from extracted frame to XY fix.",
+        "Recorded-video E2E: serial decode -> mini-map extraction -> XY publication candidate.",
         "Minimum: 15 fresh XY fixes per second; 66.7 ms compute deadline.",
         "Held positions are control continuity, not fresh localization.",
         "Initial absolute localization is measured separately from the high-rate core.",
@@ -175,8 +240,8 @@ def _report_lines(result: dict) -> list[str]:
         "",
         "EVIDENCE BOUNDARY",
         "",
-        "Measured: mini-map extraction plus localization-core latency, fresh acceptance, gate rejection, and chronological map-reference error.",
-        "Excluded: live capture, worker scheduling, fusion, overlay rendering, and publication.",
+        "Measured: serial recorded-video decode through XY result, fresh acceptance, gate rejection, and chronological map-reference error.",
+        "Excluded: camera/GDI capture age, worker scheduling, yaw fusion, overlay rendering, IPC, and consumer publication.",
         "The saved sparse map reference is post-run evidence and never feeds the tested estimator.",
         "",
         "CANDIDATES",
@@ -184,6 +249,7 @@ def _report_lines(result: dict) -> list[str]:
     ]
     for row in result["candidates"]:
         latency = row["localization_core_latency_ms"]
+        serial_latency = row["serial_decode_to_xy_latency_ms"]
         fresh_error = row["fresh_reference_error_px"]
         served_error = row["served_e2e_reference_error_px"]
         lines.extend(
@@ -191,6 +257,9 @@ def _report_lines(result: dict) -> list[str]:
                 row["candidate"],
                 "Fresh accepted  {}".format(
                     _percent(row["fresh_measurement_accepted_rate"])
+                ),
+                "Worst replay fresh  {}".format(
+                    _percent(row["worst_replay_fresh_rate"])
                 ),
                 "Fresh within 33.3 / 66.7 ms  {} / {}".format(
                     _percent(row["fresh_within_33_3ms_rate"]),
@@ -200,6 +269,14 @@ def _report_lines(result: dict) -> list[str]:
                     _number(latency["median"], " ms"),
                     _number(latency["p95"], " ms"),
                     _number(latency["worst"], " ms"),
+                ),
+                "Serial decode-to-XY median / P95 / worst  {} / {} / {}".format(
+                    _number(serial_latency["median"], " ms"),
+                    _number(serial_latency["p95"], " ms"),
+                    _number(serial_latency["worst"], " ms"),
+                ),
+                "Worst replay fresh inside 33.3 ms  {}".format(
+                    _percent(row["worst_replay_fresh_serial_within_33_3ms_rate"])
                 ),
                 "Layer-1 candidate produced  {}".format(
                     _percent(row["primary_candidate_produced_rate"])
@@ -236,7 +313,7 @@ def _report_lines(result: dict) -> list[str]:
                 else "Candidate  NONE"
             ),
             "Reason  {}".format(result["recommendation"]["reason"]),
-            "Production remains unchanged until this compute result is verified capture-to-publication in the live tracker.",
+            "Production remains unchanged until camera/GDI capture-to-consumer publication is measured in the live tracker.",
             "",
             "TRACEABILITY",
             "",
@@ -288,7 +365,7 @@ def build(input_root: Path, output_path: Path) -> dict:
             "minimum_compute_deadline_ms": MINIMUM_DEADLINE_MS,
             "held_counts_as_fresh": False,
         },
-        "measurement_scope": "offline extraction plus localization core",
+        "measurement_scope": "serial recorded-video decode through XY result",
         "candidates": candidates,
         "recommendation": {"candidate": candidate, "reason": reason},
         "source_reports": sources,
