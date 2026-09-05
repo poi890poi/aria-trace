@@ -1253,8 +1253,8 @@ def stitch_map_frames(
         (viewport_width, viewport_height), cv2.CV_32F
     )
     feather = np.maximum(feather, 0.08)
-    for index in selected:
-        origin = positions[index] - minimum
+    for index, selected_position in zip(selected, selected_positions):
+        origin = selected_position - minimum
         base = np.floor(origin).astype(int)
         ox, oy = int(base[0]), int(base[1])
         fraction = origin - base

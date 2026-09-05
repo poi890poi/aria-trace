@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -226,6 +227,37 @@ class MapStitchingTests(unittest.TestCase):
             for item in result["evidence"]:
                 self.assertGreater((output / item["name"]).stat().st_size, 0)
             self.assertTrue((output / "map_stitch.json").is_file())
+
+    def test_compositor_uses_optimized_selected_positions(self):
+        frames = [
+            np.full((100, 100, 3), value, np.uint8)
+            for value in (50, 100, 150)
+        ]
+        rigid = {
+            "shift_xy_px": [-30.0, 0.0],
+            "response": 1.0,
+            "translation_spread_px": 0.0,
+            "band_observations": [],
+            "spatially_coherent": True,
+        }
+        optimized = np.asarray([[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]])
+        placement = {
+            "method": "test-optimized-placement",
+            "status": "applied",
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "aria_trace.services.mapping.stitching._estimate_rigid_translation",
+            return_value=rigid,
+        ), patch(
+            "aria_trace.services.mapping.stitching._optimize_selected_translation_poses",
+            return_value=(optimized, placement, None),
+        ):
+            output = Path(temporary)
+            stitch_map_frames(frames, output)
+            mosaic = cv2.imread(str(output / "mosaic.png"))
+
+        self.assertEqual(mosaic.shape[1], 168)
+        self.assertTrue(np.all(mosaic[40, 134] == 150))
 
     def test_rigid_translation_detects_a_horizontal_capture_tear(self):
         rng = np.random.RandomState(37)
