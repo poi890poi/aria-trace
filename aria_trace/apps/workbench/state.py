@@ -305,7 +305,7 @@ class WorkbenchStateMixin:
 
     def hud_descriptor(self) -> dict:
         """Return a lightweight status contract for the in-game overlay."""
-        with self._lock:
+        with self._capture_status_lock:
             armed = self._armed
             active = self._active
             notice = self._hud_notice

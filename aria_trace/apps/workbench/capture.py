@@ -328,7 +328,7 @@ class WorkbenchCaptureMixin:
             if start_delay_s < 0.0 or start_delay_s > 30.0:
                 raise ValueError("Recording start delay must be between 0 and 30 seconds")
 
-            self._armed = {
+            armed = {
                 "experiment_id": experiment_id,
                 "game_profile_id": game_id,
                 "route_profile_id": route_profile_id,
@@ -351,10 +351,12 @@ class WorkbenchCaptureMixin:
                 "input_source": input_config,
                 "armed_utc": datetime.now(timezone.utc).isoformat(),
             }
+            with self._capture_status_lock:
+                self._armed = armed
+                self._hud_notice = None
             self._last_error = None
             self._compile_state = "not_ready"
             self._compile_result = None
-            self._hud_notice = None
             self._persist_state()
         return self.descriptor()
 
@@ -362,8 +364,9 @@ class WorkbenchCaptureMixin:
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("Cancel the active take before changing configuration")
-            self._armed = None
-            self._hud_notice = None
+            with self._capture_status_lock:
+                self._armed = None
+                self._hud_notice = None
             self._persist_state()
         return self.descriptor()
 
@@ -859,7 +862,8 @@ class WorkbenchCaptureMixin:
             if run_index < 1:
                 raise ValueError("Run index must be positive")
             if run_index > int(self._armed.get("target_runs") or 1):
-                self._armed["target_runs"] = run_index
+                with self._capture_status_lock:
+                    self._armed["target_runs"] = run_index
                 self._persist_state()
             config = dict(self._armed)
             config["frame_source"] = dict(self._armed["frame_source"])
@@ -890,9 +894,10 @@ class WorkbenchCaptureMixin:
                 "android_control_events": [],
                 "android_control_thread": None,
             }
-            self._active = active
+            with self._capture_status_lock:
+                self._active = active
+                self._hud_notice = None
             self._android_control = None
-            self._hud_notice = None
             self._last_error = None
             self._last_capture_diagnostics = None
 
@@ -949,7 +954,7 @@ class WorkbenchCaptureMixin:
                     },
                 )
                 def sources_started() -> None:
-                    with self._lock:
+                    with self._capture_status_lock:
                         if self._active is active:
                             active["input_eligible_host_time_ns"] = (
                                 time.perf_counter_ns()
@@ -958,12 +963,12 @@ class WorkbenchCaptureMixin:
                             active["phase"] = "settling_queue_input"
 
                 def input_eligible() -> None:
-                    with self._lock:
+                    with self._capture_status_lock:
                         if self._active is active:
                             active["phase"] = "waiting_for_first_input"
 
                 def recording_started(packet) -> None:
-                    with self._lock:
+                    with self._capture_status_lock:
                         if self._active is active:
                             started_ns = (
                                 packet.host_time_ns
@@ -981,7 +986,7 @@ class WorkbenchCaptureMixin:
                             active["phase"] = "recording_uninterrupted_take"
 
                 def input_recorded(_packet) -> None:
-                    with self._lock:
+                    with self._capture_status_lock:
                         if self._active is active:
                             active["recorded_input_events"] += 1
 
@@ -1006,7 +1011,7 @@ class WorkbenchCaptureMixin:
                 control_thread = active.get("android_control_thread")
                 if control_thread is not None:
                     control_thread.join(timeout=6)
-                with self._lock:
+                with self._capture_status_lock:
                     if self._active is active:
                         active["phase"] = "finalizing_capture"
 
@@ -1143,9 +1148,10 @@ class WorkbenchCaptureMixin:
                                 )
                             )
                 with self._lock:
-                    if self._active is active:
-                        self._active = None
-                    self._hud_notice = hud_result
+                    with self._capture_status_lock:
+                        if self._active is active:
+                            self._active = None
+                        self._hud_notice = hud_result
         active["thread"] = threading.Thread(
             target=work,
             name="acquisition-uninterrupted-take",
@@ -1261,7 +1267,8 @@ class WorkbenchCaptureMixin:
             game_profile_id = context.get("game_profile_id")
             if game_profile_id:
                 self._refresh_poc_evidence_index(game_profile_id)
-            self._hud_notice = None
+            with self._capture_status_lock:
+                self._hud_notice = None
             self._last_error = None
         return self.descriptor()
 
@@ -1363,7 +1370,8 @@ class WorkbenchCaptureMixin:
                 self._refresh_poc_evidence_index(
                     self._armed["game_profile_id"]
                 )
-            self._hud_notice = None
+            with self._capture_status_lock:
+                self._hud_notice = None
         return self.descriptor()
 
     def compile_and_evaluate(self) -> dict:

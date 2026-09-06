@@ -180,6 +180,9 @@ class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, Workbenc
             raw_input_api=raw_input_api,
         )
         self._lock = threading.RLock()
+        # Per-input recorder callbacks and the HUD must not wait for disk-backed
+        # catalog polling. Only short capture-status updates hold this lock.
+        self._capture_status_lock = threading.RLock()
         self._armed = None
         self._active = None
         self._last_error = None

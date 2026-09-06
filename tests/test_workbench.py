@@ -254,6 +254,90 @@ def write_catalog(root):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_recording_timeout_and_hud_do_not_wait_for_catalog_polling(self):
+        from rig_runtime.workflows.recording import AcquisitionRecorder
+
+        for hold_catalog in (False, True):
+            with self.subTest(hold_catalog=hold_catalog), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_catalog(root / "profiles")
+                state = AcquisitionWorkbench(
+                    root / "sessions", root / "artifacts",
+                    profiles=ProfileCatalog(root / "profiles"),
+                    desktop_api=ArbitraryDesktop(),
+                    raw_input_api=SettlingRawInputApi(),
+                )
+                started = threading.Event()
+                resume = threading.Event()
+                saved = threading.Event()
+                hud_ready = threading.Event()
+                hud_values = []
+
+                class ObservedRecorder(AcquisitionRecorder):
+                    def run(self, **kwargs):
+                        callback = kwargs["on_recording_started"]
+
+                        def on_start(packet):
+                            callback(packet)
+                            started.set()
+                            resume.wait(5)
+
+                        kwargs["on_recording_started"] = on_start
+                        result = super().run(**kwargs)
+                        saved.set()
+                        return result
+
+                def read_hud():
+                    hud_values.append(state.hud_descriptor())
+                    hud_ready.set()
+
+                hud_thread = threading.Thread(target=read_hud)
+                try:
+                    state.INPUT_SETTLE_DELAY_S = 0.1
+                    state.arm({
+                        "game_profile_id": "game-a",
+                        "experiment_id": "catalog-contention",
+                        "capture_kind": "full_map",
+                        "capture_id": "game-a-full-map",
+                        "window_title": "Popular Game A",
+                        "capture_duration_s": 5,
+                        "input_source": {"adapter": "windows_raw_keyboard_mouse"},
+                    })
+                    state._armed["capture_duration_s"] = 0.2
+                    with patch("aria_trace.apps.workbench.capture.AcquisitionRecorder", ObservedRecorder):
+                        state.queue_next_take()
+                        self.assertTrue(started.wait(3))
+                        worker = state._active["thread"]
+                        if hold_catalog:
+                            state._lock.acquire()
+                        try:
+                            resume.set()
+                            hud_thread.start()
+                            hud_unblocked = hud_ready.wait(0.4)
+                            saved_unblocked = saved.wait(2)
+                        finally:
+                            if hold_catalog:
+                                state._lock.release()
+                        worker.join(5)
+                        hud_thread.join(3)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(
+                        (hud_unblocked, saved_unblocked), (True, True),
+                        "catalog polling blocked HUD / timeout-finalization",
+                    )
+                    self.assertEqual(hud_values[0]["state"], "recording")
+                    path = root / "sessions" / "catalog-contention" / "run_01"
+                    reader = SessionReader(path)
+                    self.assertEqual(reader.manifest["status"], "complete")
+                    self.assertTrue(reader.inputs)
+                    self.assertTrue(reader.frames_by_stream["main"])
+                    self.assertIsNone(state._last_error)
+                finally:
+                    resume.set()
+                    state.close()
+                    if hud_thread.ident is not None:
+                        hud_thread.join(3)
+
     def test_live_tracker_publication_does_not_wait_for_catalog_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
