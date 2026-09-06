@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .session_bundles import SessionBundles
+
 
 def _strict_json_value(value):
     """Return browser-compatible JSON data without NaN or infinity tokens."""
@@ -20,6 +22,7 @@ def _strict_json_value(value):
 
 def make_handler(state):
     static_path = Path(__file__).resolve().parent / "static" / "recorder.html"
+    bundles = SessionBundles(state) if state is not None else None
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, content_type: str, body: bytes) -> None:
@@ -45,7 +48,7 @@ def make_handler(state):
                 ).encode("utf-8"),
             )
 
-        def _send_file(self, content_type: str, path: Path) -> None:
+        def _send_file(self, content_type: str, path: Path, *, attachment=False) -> None:
             size = path.stat().st_size
             if size <= 0:
                 raise ValueError("Recorded video is empty")
@@ -73,7 +76,10 @@ def make_handler(state):
                 self.send_header("Content-Length", str(length))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header(
-                    "Content-Disposition", 'inline; filename="{}"'.format(path.name)
+                    "Content-Disposition", '{}; filename="{}"'.format(
+                        "attachment" if attachment else "inline",
+                        "aria-trace-sessions.zip" if attachment else path.name,
+                    )
                 )
                 if status == 206:
                     self.send_header(
@@ -117,6 +123,9 @@ def make_handler(state):
                     self._json(200, state.descriptor())
                 elif path == "/api/instance":
                     self._json(200, state.instance_descriptor())
+                elif path == "/api/sessions/download":
+                    query = parse_qs(parsed.query)
+                    self._send_file("application/zip", bundles.download(query.get("token", [""])[0]), attachment=True)
                 elif path == "/api/android/devices":
                     self._json(200, state.android_devices())
                 elif path == "/api/capture-sources":
@@ -204,8 +213,20 @@ def make_handler(state):
         def do_POST(self):
             path = urlparse(self.path).path
             try:
+                if path == "/api/sessions/upload":
+                    # Upload directly to disk; JSON endpoints keep their 64 KiB limit.
+                    self.connection.settimeout(120)
+                    result = bundles.upload(self.rfile, int(self.headers.get("Content-Length", "0")))
+                    self._json(200, result)
+                    return
                 value = self._body()
-                if path == "/api/arm":
+                if path == "/api/sessions/export":
+                    result = bundles.export(value.get("session_keys"))
+                elif path == "/api/sessions/import":
+                    result = bundles.import_sessions(value.get("token"), value.get("session_keys"))
+                elif path == "/api/sessions/discard":
+                    result = bundles.discard(value.get("token"))
+                elif path == "/api/arm":
                     result = state.arm(value)
                 elif path == "/api/disarm":
                     result = state.disarm()
