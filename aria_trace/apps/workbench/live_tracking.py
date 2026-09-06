@@ -249,7 +249,8 @@ class WorkbenchLiveTrackingMixin:
                     != atlas["coordinate_space_id"]
                 ):
                     raise ValueError("Route package uses another canonical map space")
-                localizer = LayeredGlobalLocalizer(atlas_root)
+                factory = self._atlas_localizer_factory or LayeredGlobalLocalizer
+                localizer = factory(atlas_root)
             else:
                 stitch_root = self._map_stitch_root(game_profile_id)
                 stitch = self._read_tracker_artifact(

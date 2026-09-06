@@ -573,6 +573,7 @@ class TwoRateRealtimeTracker:
                 confirmation_count=int(
                     runtime_transition.get("confirmation_count", 2)
                 ),
+                spatial_gating=getattr(self.localizer, "spatial_transition_gating", True),
             )
             if transition_model is not None
             else None
@@ -880,6 +881,7 @@ class TwoRateRealtimeTracker:
             cancel = getattr(route_transition, "cancel_trained_transition", None)
             if (
                 controller_result.get("within_observed_zone")
+                and controller_result.get("spatial_gating_enabled", True)
                 and controller_result.get("transition_zone_id") is not None
                 and callable(arm)
             ):

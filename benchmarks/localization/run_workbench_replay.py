@@ -211,7 +211,10 @@ def run(args):
         if (target / "report.json").exists():
             raise RuntimeError("Refusing to overwrite completed run " + str(target))
         source = RecordedSource(root / "sessions/workbench/recordings-genshin-impact-pc" / f"run_{number:02d}", args.max_seconds)
-        state = AcquisitionWorkbench(output / "empty_sessions", output, profiles=profiles)
+        state = AcquisitionWorkbench(
+            output / "empty_sessions", output, profiles=profiles,
+            atlas_localizer_factory=getattr(args, "atlas_localizer_factory", None),
+        )
         state._minimap_calibration_root = lambda game: artifacts / "minimap_calibrations" / game
         state._scene_yaw_root = lambda game: artifacts / "scene_yaw_calibrations" / game
         state._map_atlas_root = lambda game: artifacts / "map_atlases" / game

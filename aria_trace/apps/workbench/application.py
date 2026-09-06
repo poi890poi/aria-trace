@@ -166,6 +166,7 @@ class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, Workbenc
         xinput_api=None,
         raw_input_api=None,
         folder_opener=None,
+        atlas_localizer_factory=None,
     ) -> None:
         self.session_root = Path(session_root)
         self.artifact_root = Path(artifact_root)
@@ -174,6 +175,9 @@ class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, Workbenc
         self.profiles = profiles or ProfileCatalog()
         self.desktop_api = desktop_api
         self._folder_opener = folder_opener
+        # Programmatic dependency injection for recorded-source verification;
+        # HTTP requests and saved live profiles cannot select a candidate.
+        self._atlas_localizer_factory = atlas_localizer_factory
         self.sources = SourceFactory(
             desktop_api=desktop_api,
             xinput_api=xinput_api,

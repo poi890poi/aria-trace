@@ -217,8 +217,11 @@ def learn_transition_model(
 class TransitionController:
     """Debounce a learned directed mode switch without changing position."""
 
-    def __init__(self, model: Mapping, confirmation_count: int = 3) -> None:
+    def __init__(
+        self, model: Mapping, confirmation_count: int = 3, *, spatial_gating: bool = True
+    ) -> None:
         self.model = dict(model)
+        self.spatial_gating = bool(spatial_gating)
         self.source_mode_id = str(model["source_mode_id"])
         self.target_mode_id = str(model["target_mode_id"])
         self.confirmation_count = max(2, int(confirmation_count))
@@ -292,6 +295,8 @@ class TransitionController:
         method retains the tighter authority to decide an actual switch.
         """
 
+        if not self.spatial_gating:
+            return True
         zone, zone_distance, _within_observed_zone = self._matching_zone(
             canonical_xy, position_uncertainty_px
         )
@@ -325,7 +330,7 @@ class TransitionController:
             canonical_xy, position_uncertainty_px
         )
         within_observed_zone = spatially_eligible
-        if not self.transition_zones:
+        if not self.spatial_gating or not self.transition_zones:
             transition_armed = True
         elif within_observed_zone:
             self._armed_zone_id = zone["zone_id"]
@@ -372,6 +377,7 @@ class TransitionController:
             "competing_mode_id": competing_mode_id,
             "mode_margin": competing - active,
             "spatially_eligible": transition_armed,
+            "spatial_gating_enabled": self.spatial_gating,
             "within_observed_zone": within_observed_zone,
             "transition_armed": transition_armed,
             "armed_exit_radius_px": self.armed_exit_radius_px,

@@ -153,7 +153,16 @@ def main():
     p.add_argument("--prefetch",action="store_true",help="Release causally from a bounded decode-ahead recorded source")
     p.add_argument("--reset-transition",action="store_true")
     p.add_argument("--hold-ambiguous-transition",action="store_true")
+    p.add_argument("--tracker-implementation", choices=["default", "visual-transitions"], default="default",
+                   help="Select reusable tracker service implementations for recorded-source evaluation only")
     args=p.parse_args()
+    if args.tracker_implementation != "default":
+        if args.action != "replay" or args.representation != "existing" or args.reset_transition or args.hold_ambiguous_transition:
+            p.error("Integrated tracker evaluation requires existing/replay without transition patches")
+        if args.start_policy not in ("none", "verified"):
+            p.error("Integrated tracker evaluation requires unknown or image-verified startup")
+        from aria_trace.services.mapping.candidates import VisualTransitionLocalizer
+        args.atlas_localizer_factory = VisualTransitionLocalizer
     if args.output.exists():
         raise RuntimeError("Use a new output directory")
     args.atlas,args.calibration=ATLAS,CALIBRATION
@@ -170,6 +179,7 @@ def main():
     candidate = (installed(args.representation,args.output/"candidate-source") if args.representation!="existing"
                  else nullcontext({"variant":"existing","setup":[],"base":"f607fa6"}))
     with candidate as metadata:
+        metadata["tracker_implementation"] = args.tracker_implementation
         metadata["known_start"]={"policy":args.start_policy,"hint":hint,"radius_px":args.start_radius}
         if hint:
             args.output.mkdir(parents=True,exist_ok=True)
