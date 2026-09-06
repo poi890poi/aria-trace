@@ -153,7 +153,7 @@ def main():
     p.add_argument("--prefetch",action="store_true",help="Release causally from a bounded decode-ahead recorded source")
     p.add_argument("--reset-transition",action="store_true")
     p.add_argument("--hold-ambiguous-transition",action="store_true")
-    p.add_argument("--tracker-implementation", choices=["default", "visual-transitions"], default="default",
+    p.add_argument("--tracker-implementation", choices=["default", "visual-transitions", "scale-aware"], default="default",
                    help="Select reusable tracker service implementations for recorded-source evaluation only")
     args=p.parse_args()
     if args.tracker_implementation != "default":
@@ -162,7 +162,9 @@ def main():
         if args.start_policy not in ("none", "verified"):
             p.error("Integrated tracker evaluation requires unknown or image-verified startup")
         from aria_trace.services.mapping.candidates import VisualTransitionLocalizer
-        args.atlas_localizer_factory = VisualTransitionLocalizer
+        from aria_trace.services.mapping.scale_aware import ScaleAwareLocalizer
+        args.atlas_localizer_factory = (ScaleAwareLocalizer if args.tracker_implementation == "scale-aware"
+                                        else VisualTransitionLocalizer)
     if args.output.exists():
         raise RuntimeError("Use a new output directory")
     args.atlas,args.calibration=ATLAS,CALIBRATION
