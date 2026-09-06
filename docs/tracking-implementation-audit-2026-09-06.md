@@ -7,6 +7,11 @@ the live tracker.
 
 ## Latest experiment decision
 
+Latest user-verified route completion: [19:27 milestone](route-tracking-milestone-2026-09-06-1927.md),
+tag `route-tracking-known-good-20260906-1927`. The next free-roam test exposes
+sustained town holds; live timing also deteriorates substantially in town.
+Those are the current priorities, ahead of occasional transitions.
+
 The subsequent [scale-cost experiments](../benchmarks/localization/SCALE_COST_RESULTS_20260906.md)
 support implementing bounded parallel scale matching and a separate correction
 to recorded-source deadline waits. The late mode-consumption hook did not improve
