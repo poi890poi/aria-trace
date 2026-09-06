@@ -162,6 +162,14 @@ def score(rows, source, reference, *, loss_error_limit_px=None, loss_calibration
     }
 
 
+def validate_reference_inputs(entry):
+    marker = json.loads((Path(entry)/"cache.json").read_text())
+    for item in marker["protocol"]["inputs"]:
+        if identity(item["path"])["sha256"] != item["sha256"]:
+            raise ValueError("Frozen reference input changed; rebuild before replay: " + item["path"])
+    return marker["protocol"]["inputs"]
+
+
 def run(args):
     root = Path.cwd()
     artifacts = root / "artifacts/workbench"
@@ -189,6 +197,7 @@ def run(args):
         if frozen:
             if number not in references:
                 raise ValueError("Missing frozen reference for run " + str(number))
+            validate_reference_inputs(references[number])
             continue
         session = root / "sessions/workbench/recordings-genshin-impact-pc" / f"run_{number:02d}"
         entry, hit = ensure_reference(root, session, atlas, calibration, mini_config, args.cache, rate=5.0 if number == 11 else 2.0)
@@ -212,6 +221,7 @@ def run(args):
         request = {"game_profile_id": game, "minimap_calibration_id": args.calibration,
                    "scene_yaw_calibration_id": args.scene_yaw, "map_atlas_id": args.atlas,
                    "tracking_profile": "real-time", "tracking_mode": args.mode,
+                   "route_start_policy": getattr(args,"route_start_policy","unknown-position"),
                    "route_package_id": references[11].name if args.mode == "route-assisted" else None,
                    "record_route_video": args.record_video, "auto_stop_at_route_finish": False,
                    "frame_source": {"adapter": "windows_window", "window_title": "RECORDED SOURCE", "fps": 30}}

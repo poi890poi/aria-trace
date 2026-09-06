@@ -4,6 +4,8 @@ This changes the recorded-source adapter, not physical capture or the tracker.
 Startup priming is reported separately and never presented as an engine speedup.
 """
 import argparse
+from contextlib import nullcontext
+import inspect
 import queue
 import threading
 import time
@@ -99,19 +101,28 @@ def main():
     p.add_argument("--runs",nargs="+",type=int,required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--max-seconds",type=float)
+    p.add_argument("--references",type=Path,default=Path("artifacts/poc/workbench-rebuilt-atlas-20260905/references/references.json"))
     p.add_argument("--mode",default="free-roam",choices=["free-roam","route-assisted"])
     p.add_argument("--record-video",action="store_true")
+    p.add_argument("--route-start-policy",choices=["unknown-position","demonstrated-start"],default="unknown-position")
+    p.add_argument("--reset-transition",action="store_true")
+    p.add_argument("--hold-ambiguous-transition",action="store_true")
     args=p.parse_args()
     args.atlas="08b6f2d6-820a-4bfd-875a-6a55d1986a4e"
     args.calibration="segments-df624035-833-bd07601f-708"
     args.scene_yaw="01dbaa74-8e00-4763-a215-9ea37e18b1b2"
     args.cache=Path("artifacts/benchmark_cache/atlas_references")
-    args.references=Path("artifacts/poc/workbench-rebuilt-atlas-20260905/references/references.json")
     args.references_only=False
     args.loss_error_limit_px=None
     args.experiment={"variant":"decode-ahead", "buffer_frames":30,
         "scope":"recorded-source adapter only; production tracker unchanged"}
-    with patch.object(replay,"RecordedSource",PrefetchedSource):
+    from benchmarks.localization.transition_reset import installed as transition_reset
+    args.experiment["reset_transition"] = args.reset_transition
+    args.experiment["hold_ambiguous_transition"] = args.hold_ambiguous_transition
+    if args.reset_transition or args.hold_ambiguous_transition:
+        args.output.mkdir(parents=True,exist_ok=True)
+        (args.output/"transition_reset_source.py").write_text(Path(inspect.getfile(transition_reset)).read_text(),encoding="utf-8")
+    with patch.object(replay,"RecordedSource",PrefetchedSource), transition_reset(args.reset_transition,args.hold_ambiguous_transition) if args.reset_transition or args.hold_ambiguous_transition else nullcontext():
         replay.run(args)
 
 

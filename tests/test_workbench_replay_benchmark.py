@@ -5,12 +5,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from benchmarks.localization.reference_cache import ensure_reference
-from benchmarks.localization.run_workbench_replay import score
+from benchmarks.localization.reference_cache import ensure_reference, identity
+from benchmarks.localization.run_workbench_replay import score, validate_reference_inputs
 from benchmarks.localization.build_workbench_report import heading_publication_latency
 
 
 class ReferenceCacheTests(unittest.TestCase):
+    def test_changed_calibration_is_rejected_before_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calibration = root/"calibration.json"
+            calibration.write_text('{"radius": 67}')
+            (root/"cache.json").write_text(json.dumps({"protocol":{"inputs":[identity(calibration)]}}))
+            validate_reference_inputs(root)
+            calibration.write_text('{"radius": 69}')
+            with self.assertRaisesRegex(ValueError, "rebuild before replay"):
+                validate_reference_inputs(root)
+
     def test_reuses_identical_inputs_invalidates_atlas_and_detects_damage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

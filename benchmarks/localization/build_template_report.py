@@ -12,10 +12,29 @@ from benchmarks.localization.run_workbench_replay import distribution, read_rows
 def build(root):
     comparisons = []
     checked = {}
+    revalidation_path = root/"revalidated_references.json"
+    revalidated = json.loads(revalidation_path.read_text()) if revalidation_path.exists() else {}
+    revalidation = {}
     for path in sorted(root.glob("*/run*/report.json")):
         report = json.loads(path.read_text())
         reference = Path(report["reference"])
         marker = json.loads((reference/"cache.json").read_text())
+        # Preserve original evidence while accepting only explicitly rebuilt,
+        # independently hash-checked references with identical scoring geometry.
+        for item in marker["outputs"]:
+            if identity(reference/item["name"])["sha256"] != item["sha256"]:
+                raise RuntimeError("Frozen reference output changed")
+        if str(report["session"]) in revalidated:
+            current = Path(revalidated[str(report["session"])])
+            keys = ("source_frame_index", "session_time_ns", "canonical_xy", "mode_id", "map_scale", "map_alignment_deg")
+            before = [{k:r.get(k) for k in keys} for r in read_rows(reference/"route_states.jsonl")]
+            after = [{k:r.get(k) for k in keys} for r in read_rows(current/"route_states.jsonl")]
+            if before != after or json.loads((reference/"manifest.json").read_text())["reference_rate_hz"] != json.loads((current/"manifest.json").read_text())["reference_rate_hz"]:
+                raise RuntimeError("Rebuilt reference differs; explicitly rescore the raw telemetry")
+            revalidation[str(report["session"])] = {"original":identity(reference/"cache.json"),
+                "current":identity(current/"cache.json"), "equal_scoring_states":len(after)}
+            reference = current
+            marker = json.loads((reference/"cache.json").read_text())
         # Verify actual capture, atlas and calibration inputs as well as cache outputs.
         for item in marker["protocol"]["inputs"]:
             if item["path"] not in checked:
@@ -43,13 +62,16 @@ def build(root):
                   "first_fresh_xy_s": (fresh[0]["session_time_ns"]-first_ns)/1e9 if fresh else None,
                   "first_frame": {k:first.get(k) for k in (
                       "frame_index", "xy_measurement_fresh_accepted", "pose", "reference_error_px",
-                      "capture_to_control_publish_ms", "cursor_pose_measurement_fresh_accepted", "known_start")},
+                      "capture_to_control_publish_ms", "cursor_pose_measurement_fresh_accepted", "known_start", "route_start")},
                   "output_counts": dict(Counter(r["output_provenance"] for r in rows)),
                   "tracking_loss": loss,
                   "global_fresh_results": sum(bool(r.get("global_fix_fresh")) for r in rows),
                   "frames_with_global_running": sum(bool(r.get("global_localization_running")) for r in rows),
                   "all_source_fresh_xy_rate": len(fresh)/len(source),
                   "all_source_joint_xy_heading_33ms_rate": len(joint)/len(source),
+                  "prefetch_setup_ms": source[0].get("prefetch_setup_ms"),
+                  "prefetch_wait_ms": distribution([r["prefetch_wait_ms"] for r in source if "prefetch_wait_ms" in r]),
+                  "longest_nonfresh_xy_s": report["longest_nonfresh_xy_s"],
                   "local_template_ms": distribution([(r.get("route_tracking") or {})["elapsed_ms"]
                       for r in rows if r.get("route_tracking_fresh") and "elapsed_ms" in (r.get("route_tracking") or {})]),
                   "reference_error_px": report["reference_error_px"],
@@ -59,7 +81,7 @@ def build(root):
                   "release_lateness_ms": report["source_release_lateness_ms"]}
         comparisons.append(result)
     result = {"reference_role": "same-atlas SIFT-derived proxy; demonstrated start is explicitly also an inference prior",
-              "verified_inputs": list(checked.values()), "replays": comparisons}
+              "verified_inputs": list(checked.values()), "revalidated_references":revalidation, "replays": comparisons}
     (root/"comparison.json").write_text(json.dumps(result, indent=2))
     lines = ["# Known-start template replay comparison", "",
              "Source-time acquisition is distinct from first-frame publication latency. Loss uses inferred references; unknown intervals remain unknown.", "",

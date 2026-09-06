@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import platform
 import time
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -142,19 +143,22 @@ def main():
     p.add_argument("--runs",nargs="+",type=int,required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--max-seconds",type=float)
+    p.add_argument("--references",type=Path,default=Path("artifacts/poc/workbench-rebuilt-atlas-20260905/references/references.json"))
     p.add_argument("--rate",type=float,default=1.0)
     p.add_argument("--mode",default="free-roam",choices=["free-roam","route-assisted"])
-    p.add_argument("--start-policy",choices=["none","search","prior"],default="none")
+    p.add_argument("--start-policy",choices=["none","search","prior","verified"],default="none")
     p.add_argument("--start-route",type=int,default=11)
     p.add_argument("--start-offset",nargs=2,type=float,default=[0.,0.])
     p.add_argument("--start-radius",type=float,default=90.)
+    p.add_argument("--prefetch",action="store_true",help="Release causally from a bounded decode-ahead recorded source")
+    p.add_argument("--reset-transition",action="store_true")
+    p.add_argument("--hold-ambiguous-transition",action="store_true")
     args=p.parse_args()
     if args.output.exists():
         raise RuntimeError("Use a new output directory")
     args.atlas,args.calibration=ATLAS,CALIBRATION
     args.scene_yaw="01dbaa74-8e00-4763-a215-9ea37e18b1b2"
     args.cache=Path("artifacts/benchmark_cache/atlas_references")
-    args.references=Path("artifacts/poc/workbench-rebuilt-atlas-20260905/references/references.json")
     args.references_only=args.record_video=False
     args.loss_error_limit_px=None
     hint=None
@@ -171,8 +175,19 @@ def main():
             args.output.mkdir(parents=True,exist_ok=True)
             (args.output/"known_start_source.py").write_text(Path(inspect.getfile(read_start)).read_text(),encoding="utf-8")
         args.experiment=metadata
-        with installed_start(hint,args.start_policy,args.start_radius) if hint else nullcontext():
-            probe(args) if args.action=="probe" else run(args)
+        from benchmarks.localization import run_workbench_replay as replay
+        from benchmarks.localization.prefetched_replay import PrefetchedSource
+        metadata["source_delivery"] = "bounded-decode-ahead" if args.prefetch else "decode-at-release"
+        source_context = patch.object(replay,"RecordedSource",PrefetchedSource) if args.prefetch else nullcontext()
+        from benchmarks.localization.transition_reset import installed as transition_reset
+        metadata["reset_transition"] = args.reset_transition
+        metadata["hold_ambiguous_transition"] = args.hold_ambiguous_transition
+        if args.reset_transition or args.hold_ambiguous_transition:
+            args.output.mkdir(parents=True,exist_ok=True)
+            (args.output/"transition_reset_source.py").write_text(Path(inspect.getfile(transition_reset)).read_text(),encoding="utf-8")
+        with source_context, transition_reset(args.reset_transition,args.hold_ambiguous_transition) if args.reset_transition or args.hold_ambiguous_transition else nullcontext():
+            with installed_start(hint,args.start_policy,args.start_radius) if hint else nullcontext():
+                probe(args) if args.action=="probe" else run(args)
 
 
 if __name__=="__main__":

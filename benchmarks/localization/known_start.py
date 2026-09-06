@@ -39,6 +39,10 @@ def installed_start(hint,policy,radius=90.0):
     def update(self,*args,**kwargs):
         if not getattr(self,"_known_start_applied",False):
             self._known_start_applied=True
+            if policy=="verified":
+                self.set_route_start({"canonical_xy":hint["center_xy"],
+                    "mode_id":hint["mode_id"],"map_alignment_deg":hint["map_alignment_deg"],
+                    "state_index":hint["source_state_index"]})
             if policy=="prior" and self.fusion._state is None:
                 self.fusion.initialize(Pose2D(*hint["center_xy"],hint["map_alignment_deg"]))
                 self._activate_map_mode(hint["mode_id"],update_scale=True)
