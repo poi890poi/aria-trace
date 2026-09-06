@@ -102,6 +102,17 @@ complete sessions containing frames and inputs after the catalog lock releases.
 - `python -m unittest tests.test_workbench tests.test_acquisition
   tests.test_workbench_ui tests.test_live_tracker -q`: 112 tests passed.
 
-No live game recording or visible Windows HUD check was performed after the fix.
-The existing Workbench process has not been restarted and still runs its old
-loaded code. Restart and an in-game timed capture are the remaining device gate.
+At the time of the fix, no post-fix live game recording or visible HUD check had
+been performed. On September 6 the user subsequently reported that the session
+recording test passed. The retained successful run 20 has session ID
+`ae32d060-6b92-4311-a59e-69427d3c667d`, starts at 14:18:29 local time, and finishes
+at 14:22:30. Its complete manifest reports 240.193 seconds, 5,931 frames, 12,422
+input events, and no reported frame or input drops. This closes the user-operated
+recording gate; HUD behavior is covered by that user report, not a separate
+agent-observed screen check. The recording does not embed the process revision.
+
+The recording synchronization fix is already committed as `5c5e461`. The
+`session-recording-known-good-20260906` milestone records this subsequent user
+verification without duplicating that code change. Run 20 also supplies a new
+narrow-lap localization and scale-transition benchmark; recording success alone
+does not establish tracking accuracy or a sustained 30 Hz capture rate.
