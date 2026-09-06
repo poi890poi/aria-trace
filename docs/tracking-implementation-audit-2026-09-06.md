@@ -5,7 +5,15 @@ Historical experiment reports describe their state at the time; they are not
 the current implementation plan. “Committed” alone does not mean enabled in
 the live tracker.
 
-## Current implementation round
+## Latest experiment decision
+
+The subsequent [scale-cost experiments](../benchmarks/localization/SCALE_COST_RESULTS_20260906.md)
+support implementing bounded parallel scale matching and a separate correction
+to recorded-source deadline waits. The late mode-consumption hook did not improve
+full-lap loss and is not recommended. These are implementation recommendations;
+normal Workbench tracking has not been switched to these experimental methods.
+
+## Last completed implementation round
 
 Completed: reusable visual-transition policy (`63f3654`) and combined
 scale/subpixel localizer (`cdb671a`) in service code, explicitly selectable through
@@ -100,8 +108,8 @@ spike; color graph-cut seams improved seam metrics but created visible tonality
 blocks. Keep both as lower-priority research, not confident implementation wins.
 The existing hard source owner plus corrected global placement remains preferred.
 
-Reduce scale-search cost while preserving the committed combined candidate;
-test coherent XY/scale publication; test atlas-owned soft scheduling priors;
+The cost experiments now support parallel matching; that integration is the
+next recommended change. Test coherent XY/scale publication and atlas-owned soft scheduling priors;
 learn repeatable scene landmarks and demonstrated screen bearings; implement
 and evaluate target handoff before any steering. Acquire fresh holdouts when
 available. These are remaining tasks, not completed features.
