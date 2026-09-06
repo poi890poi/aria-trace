@@ -622,6 +622,7 @@ class TwoRateRealtimeTracker:
                 None, self.localizer, score_min=0.0, local_radius_px=12.0,
             )
         self._last_route_tracking = None
+        self._route_start = None
         self._last_route_assistance = None
         observe_modes = getattr(self.localizer, "observe_modes", None)
         if self.transition_controller is not None and callable(observe_modes):
@@ -945,6 +946,47 @@ class TwoRateRealtimeTracker:
             _circular_mean_deg([item.yaw_deg for item in rows]),
         )
 
+    def set_route_start(self, state: dict) -> None:
+        """Use a demonstrated start as a proposal, without publishing its pose."""
+        if self.sequence or self.fusion._state is not None:
+            raise ValueError("Route start must be selected before tracking begins")
+        if self.route_visual_tracker is None or not callable(getattr(self.localizer, "refine_active_near", None)):
+            raise ValueError("Route start requires local atlas template matching")
+        xy = tuple(float(value) for value in state["canonical_xy"])
+        alignment = float(state.get("map_alignment_deg", 0.0))
+        if len(xy) != 2 or not all(math.isfinite(v) for v in (*xy, alignment)):
+            raise ValueError("Route start needs finite XY and map alignment")
+        mode_id = str(state["mode_id"])
+        if mode_id not in getattr(self.localizer, "localizers", {}):
+            raise ValueError("Route start layer is absent from the selected atlas")
+        self._route_start = {
+            "canonical_xy": list(xy), "map_alignment_deg": alignment,
+            "mode_id": mode_id, "state_index": state.get("state_index", 0),
+            "role": "demonstrated-start-search-proposal", "status": "awaiting-image",
+        }
+        self._activate_map_mode(mode_id, update_scale=True)
+
+    def _measure_route_start(self, minimap, mask, timestamp_ns):
+        start = self._route_start
+        result = dict(self.localizer.refine_active_near(
+            minimap, mask, start["canonical_xy"],
+            search_radius_px=self.route_visual_tracker.recovery_radius_px,
+            score_min=0.55,
+        ))
+        accepted = bool(result.get("valid"))
+        result.update({
+            "source": "demonstrated-start", "route_state_index": start["state_index"],
+            "measurement_accepted": accepted, "pose_available": accepted, "held": False,
+            "decision": "accepted-current-frame-map-pose" if accepted else "awaiting-route-start-image",
+            "route_role": "start-search-proposal-only",
+        })
+        if accepted:
+            self.fusion.initialize(Pose2D(result["x"], result["y"], start["map_alignment_deg"]))
+            self.route_visual_tracker.seed(result["x"], result["y"], timestamp_ns)
+            start["status"] = "image-acquired"
+            start["acquired_host_time_ns"] = timestamp_ns
+        return result
+
     def update(self, frame: np.ndarray, host_time_ns: Optional[int] = None) -> dict:
         started = time.perf_counter()
         timestamp_ns = int(host_time_ns or time.perf_counter_ns())
@@ -1238,7 +1280,17 @@ class TwoRateRealtimeTracker:
             }
 
         route_tracking_fresh = False
-        if self.route_visual_tracker is not None and self.fusion._state is not None:
+        if self._route_start is not None and self.fusion._state is None:
+            try:
+                self._last_route_tracking = self._measure_route_start(minimap, mask, timestamp_ns)
+            except Exception as exc:
+                self._last_route_tracking = {
+                    "measurement_accepted": False, "pose_available": False, "held": False,
+                    "decision": "awaiting-route-start-image",
+                    "error": "{}: {}".format(type(exc).__name__, exc),
+                }
+            route_tracking_fresh = True
+        elif self.route_visual_tracker is not None and self.fusion._state is not None:
             if self.route_visual_tracker.previous_xy is None:
                 state = self.fusion.state
                 self.route_visual_tracker.seed(state.pose.x, state.pose.y)
@@ -1270,7 +1322,7 @@ class TwoRateRealtimeTracker:
                 route_tracking_fresh = True
                 self._local_rejections += 1
         global_search_needed = (
-            self.fusion._state is None or self._recovery_requested()
+            (self.fusion._state is None and self._route_start is None) or self._recovery_requested()
         )
         due = (
             self.last_global_ns is None
@@ -1579,6 +1631,7 @@ class TwoRateRealtimeTracker:
             "control_ready_host_time_ns": control_ready_host_time_ns,
             "capture_to_control_ready_ms": capture_to_control_ready_ms,
             "xy_measurement_fresh_accepted": xy_measurement_fresh_accepted,
+            "route_start": dict(self._route_start) if self._route_start is not None else None,
             "control_output_available": pose is not None,
             "mode": mode,
             "pose": pose,

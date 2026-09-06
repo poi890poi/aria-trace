@@ -195,6 +195,11 @@ class WorkbenchLiveTrackingMixin:
             )
             if tracking_mode not in ("free-roam", "route-assisted"):
                 raise ValueError("Tracking mode must be free-roam or route-assisted")
+            route_start_policy = str(value.get("route_start_policy") or "unknown-position")
+            if route_start_policy not in ("unknown-position", "demonstrated-start"):
+                raise ValueError("Choose unknown-position or demonstrated-start startup")
+            if route_start_policy == "demonstrated-start" and tracking_mode != "route-assisted":
+                raise ValueError("Demonstrated-start startup requires route-assisted mode")
             record_route_video = bool(value.get("record_route_video"))
             auto_stop_at_route_finish = bool(
                 value.get("auto_stop_at_route_finish", record_route_video)
@@ -396,6 +401,12 @@ class WorkbenchLiveTrackingMixin:
                     else None
                 ),
             )
+            if route_start_policy == "demonstrated-start":
+                try:
+                    engine.set_route_start(route_package.states[0])
+                except Exception:
+                    engine.close()
+                    raise
             stop = threading.Event()
             route_points = (
                 [state["canonical_xy"] for state in route_package.states]
@@ -417,6 +428,7 @@ class WorkbenchLiveTrackingMixin:
                 "map_atlas_id": atlas_id or None,
                 "route_package_id": route_package_id or None,
                 "tracking_mode": tracking_mode,
+                "route_start_policy": route_start_policy,
                 "route_policy": (
                     "current-frame-map-correlation"
                     if tracking_mode == "route-assisted"
@@ -475,6 +487,7 @@ class WorkbenchLiveTrackingMixin:
                     "map_atlas_id": atlas_id or None,
                     "route_package_id": route_package_id or None,
                     "tracking_mode": tracking_mode,
+                    "route_start_policy": route_start_policy,
                     "route_policy": (
                         "current-frame-map-correlation"
                         if tracking_mode == "route-assisted"

@@ -1078,6 +1078,9 @@ class FakeLiveFrameSource:
 
 
 class FakeLiveEngine:
+    def set_route_start(self, state):
+        self.route_start_state = dict(state)
+
     def __init__(self, *args, **kwargs):
         self.sequence = 0
         self.closed = False
@@ -1287,6 +1290,12 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                 state.close()
 
     def test_route_locked_mode_loads_atlas_and_compiled_route(self):
+        self._exercise_route_start("unknown-position")
+
+    def test_demonstrated_start_is_passed_from_selected_package_to_engine(self):
+        self._exercise_route_start("demonstrated-start")
+
+    def _exercise_route_start(self, route_start_policy):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifact_root = root / "artifacts"
@@ -1398,6 +1407,7 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                             "map_atlas_id": "atlas-a",
                             "route_package_id": "route-a",
                             "tracking_mode": "route-locked",
+                            "route_start_policy": route_start_policy,
                             "tracking_profile": "fast",
                             "cursor_pose_method": "fast_grid",
                             "record_route_video": True,
@@ -1419,6 +1429,12 @@ class WorkbenchLiveTrackerTests(unittest.TestCase):
                     self.assertEqual(runtime["route_package_id"], "route-a")
                     self.assertEqual(runtime["tracking_profile"], "fast")
                     engine = state._live_tracker_engine
+                    self.assertEqual(runtime["route_start_policy"], route_start_policy)
+                    if route_start_policy == "demonstrated-start":
+                        self.assertEqual(engine.route_start_state["canonical_xy"], [0.0, 0.0])
+                        self.assertEqual(engine.route_start_state["mode_id"], "world")
+                    else:
+                        self.assertFalse(hasattr(engine, "route_start_state"))
                     self.assertIsInstance(
                         engine.kwargs["localizer"], LayeredGlobalLocalizer
                     )
