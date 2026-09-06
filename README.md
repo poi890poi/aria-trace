@@ -20,6 +20,9 @@ This is not timed macro playback. Reliable route completion is the objective; lo
 
 Genshin Impact PC is the first POC game. The Acquisition Workbench records an unrestricted number of sessions, then lets the operator classify each one from a short label list: ordinary cruise, rotation-only, slow horizontal 360° scene turn, movement-only, straight-forward/no-turn, full-map coverage, or route demonstration. The workbench calibrates the circular mini-map and scene-relative yaw, verifies pose and shift evidence, stitches the observed map, and can run a two-rate live tracker using low-rate absolute map fixes plus high-rate relative shift and rotation. It persists selected-source provenance, quality metrics, and task-specific visual evidence for review.
 
+See the [tracking implementation status](docs/tracking-implementation-audit-2026-09-06.md)
+for recent enabled changes, benchmark candidates, evidence, and remaining work.
+
 Start the integrated PC acquisition flow from the repository root:
 
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
