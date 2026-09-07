@@ -142,6 +142,16 @@ class RecalibrationContractTests(unittest.TestCase):
         self.assertFalse((path.parent / "game_readiness.json").exists())
         self.assertFalse((path.parent / "hikcam_adapter.py").exists())
 
+    def test_changed_phone_dimensions_still_block_incompatible_geometry(self):
+        before = self.registry.active_revision_ids()
+        path = self.rig_file("wrong-dimensions", 1)
+        document = json.loads(path.read_text())
+        document["phone"]["natural_screen_size_px"] = [100, 240]
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ProfileResolutionError, "incompatible.*raster"):
+            self.headless(path)
+        self.assertEqual(before, self.registry.active_revision_ids())
+
     def test_frame_delivery_failure_preserves_active_graph(self):
         class FailedCamera(FakeAdapter):
             def read(self):
@@ -173,25 +183,122 @@ class RecalibrationContractTests(unittest.TestCase):
         receipt = json.loads((self.root / "reuse/reused_calibration.json").read_text())
         self.assertEqual("ready", receipt["game_readiness"]["status"])
 
-    def test_required_color_cannot_silently_downgrade(self):
-        self.registry.publish("rig_game_color", self.context, {
+    def test_displacement_reuses_color_and_never_blocks_headless_success(self):
+        color = self.registry.publish("rig_game_color", self.context, {
             "hik_bayer_conversion": {"status": "selected", "gamma": 1,
                                     "ccm_rgb_3x3": np.eye(3).tolist()}},
             dependencies={"rig": self.initial["revision_id"]}, review_state="accepted", activate=True)
-        before = self.registry.active_revision_ids()
         path = self.rig_file("changed-color-rig", 1)
-        with self.assertRaisesRegex(ProfileResolutionError, "game-matched color"):
-            self.headless(path)
-        self.assertEqual(before, self.registry.active_revision_ids())
-        # Also reject old installations whose rig/color dependencies already diverged.
-        staged = publish_rig_calibration(path, registry=self.registry, activate=False)
-        from rig_runtime.workflows.profile_management import reconcile_active_rig_dependents
-        dependents = reconcile_active_rig_dependents(staged, registry=self.registry, activate=False)
-        self.registry.activate_many([staged["revision_id"]] + [
-            item["revision_id"] for group in dependents["recomposed"].values() for item in group])
-        with self.assertRaisesRegex(ProfileResolutionError, "No active game-color"):
-            self.registry.resolve_adapter(self.context, AdapterRequest(
-                mode="full", color_policy="game_matched"))
+        self.assertEqual(0, self.headless(path))
+        self.assert_streams_work(1)
+        resolved = self.registry.resolve_adapter(self.context, AdapterRequest(
+            mode="full", color_policy="game_matched"))
+        self.assertEqual(color["revision_id"], resolved["profiles"]["rig_game_color"])
+        self.assertEqual("game_matched", resolved["adapter_plan"]["color_policy"])
+        self.assertNotEqual(self.initial["revision_id"], resolved["profiles"]["rig"])
+        # The source fit and its measurement provenance remain immutable.
+        self.assertEqual(self.initial["revision_id"], self.registry.revision(color["revision_id"])["dependencies"]["rig"])
+        adapter = FakeAdapter()
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", return_value=adapter):
+            with self.camera("dual", color_policy="game_matched") as camera:
+                self.assertTrue(camera.get_frames())
+        self.assertEqual([(1.0, np.eye(3).tolist())], adapter.bayer_conversion_calls)
+
+    def test_missing_color_falls_back_even_when_game_matched_was_requested(self):
+        self.assertEqual(0, self.headless(self.rig_file("no-color", 1)))
+        adapter = FakeAdapter()
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", return_value=adapter):
+            with self.camera("dual", color_policy="game_matched") as camera:
+                self.assertTrue(camera.get_frames())
+                self.assertEqual("rig_locked", camera.resolved_config["adapter_plan"]["color_policy"])
+        self.assertEqual([], adapter.bayer_conversion_calls)
+
+    def test_broken_optional_color_does_not_block_publication_or_output(self):
+        color = self.registry.publish("rig_game_color", self.context,
+                                      {"hik_bayer_conversion": {"status": "selected", "gamma": "invalid"}},
+                                      dependencies={"rig": self.initial["revision_id"]}, activate=True)
+        self.assertEqual(0, self.headless(self.rig_file("bad-color", 1)))
+        resolved = self.registry.resolve_adapter(self.context, AdapterRequest(mode="full", color_policy="game_matched"))
+        self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+        (Path(color["revision_directory"]) / "profile.json").unlink()
+        self.assertEqual(0, self.headless(self.rig_file("missing-color-file", 2)))
+        resolved = self.registry.resolve_adapter(self.context, AdapterRequest(mode="full", color_policy="game_matched"))
+        self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+
+    def test_missing_manual_color_revision_is_non_blocking(self):
+        resolved = self.registry.resolve_adapter(self.context, AdapterRequest(mode="full", color_policy="game_matched"),
+                                                 profile_revisions={"rig_game_color": "missing-color"})
+        self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+
+    def test_missing_optional_orientation_does_not_block_working_geometry(self):
+        with patch("rig_runtime.workflows.profile_management.recompose_active_rig_game_orientation_profiles", return_value=[]):
+            published = publish_rig_calibration(self.rig_file("no-orientation", 1), registry=self.registry)
+        self.assertEqual("ready", published["readiness"]["status"])
+        self.assertTrue(published["readiness"]["notices"])
+        self.assert_streams_work(1)
+
+    def test_unreconstructable_legacy_orientation_does_not_block_rebuilding(self):
+        context = ProfileContext(game_id="legacy-game", camera_id="CAM-1", phone_id="PHONE-1",
+                                 panel_display=self.context.panel_display, game_display=self.context.game_display)
+        self.registry.publish("rig_game_orientation", context,
+                              {"camera_adapter_image_quarter_turns_clockwise_from_calibration_display": 1}, activate=True)
+        published = publish_rig_calibration(self.rig_file("legacy-orientation", 1), registry=self.registry)
+        self.assertEqual("ready", published["readiness"]["status"])
+        self.assert_streams_work(1)
+
+    def test_bad_optional_axes_do_not_block_boundary_rebuilding(self):
+        from rig_runtime.workflows.profile_management import recompose_active_rig_game_profiles
+        import copy
+        payload = copy.deepcopy(self.payload)
+        payload["outer_boundary"]["orientation_frame"]["up_unit_xy"] = [0, 0]
+        self.registry.publish("phone_game", self.context, payload, activate=True)
+        # Establish this source as the selected game before rebuilding the rig.
+        previous = self.registry.resolve("rig_game", self.context)
+        rig = self.registry.revision(previous["dependencies"]["rig"])
+        with patch("rig_runtime.workflows.profile_management._portable_sources_for_rig", return_value=[
+                self.registry.resolve("phone_game", self.context)]):
+            recompose_active_rig_game_profiles(rig, registry=self.registry)
+        published = publish_rig_calibration(self.rig_file("bad-axes", 1), registry=self.registry)
+        self.assertEqual("ready", published["readiness"]["status"])
+        self.assertTrue(any("axes" in notice for notice in published["readiness"]["notices"]))
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", return_value=FakeAdapter()):
+            with self.camera("dual") as camera:
+                camera.get_frames()
+                self.assertTrue(camera.get_minimap_geometry("minimap")["available_in_stream_space"])
+
+    def test_missing_game_identity_does_not_make_color_a_requirement(self):
+        context = ProfileContext(camera_id="CAM-1", phone_id="PHONE-1", panel_display=self.context.panel_display)
+        resolved = self.registry.resolve_adapter(context, AdapterRequest(mode="full", color_policy="game_matched"))
+        self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+
+    def test_sdk_color_failure_reopens_without_correction(self):
+        self.registry.publish("rig_game_color", self.context, {
+            "hik_bayer_conversion": {"status": "selected", "gamma": 1.2, "ccm_rgb_3x3": np.eye(3).tolist()}},
+            dependencies={"rig": self.initial["revision_id"]}, activate=True)
+
+        class MissingColorSdk(FakeAdapter):
+            def set_bayer_conversion(self, gamma, ccm):
+                raise RuntimeError("fused color conversion unsupported")
+
+        failed, fallback = MissingColorSdk(), FakeAdapter()
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", side_effect=[failed, fallback]):
+            with self.camera("dual", color_policy="game_matched") as camera:
+                self.assertTrue(camera.get_frames())
+                self.assertEqual("rig_locked", camera.resolved_config["adapter_plan"]["color_policy"])
+                self.assertIn("unsupported", camera.resolved_config["game_color_fallback"])
+        self.assertTrue(failed.closed)
+        self.assertEqual([], fallback.bayer_conversion_calls)
+
+    def test_color_file_lost_between_resolution_and_open_is_non_blocking(self):
+        color = self.registry.publish("rig_game_color", self.context, {
+            "hik_bayer_conversion": {"status": "selected", "gamma": 1.2, "ccm_rgb_3x3": np.eye(3).tolist()}},
+            dependencies={"rig": self.initial["revision_id"]}, activate=True)
+        camera = self.camera("dual", color_policy="game_matched")
+        (Path(color["revision_directory"]) / "profile.json").unlink()
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", return_value=FakeAdapter()):
+            with camera:
+                self.assertTrue(camera.get_frames())
+                self.assertEqual("rig_locked", camera.resolved_config["adapter_plan"]["color_policy"])
 
     def test_active_graph_recovers_as_a_unit_without_database(self):
         publish_rig_calibration(self.rig_file("portable", 1), registry=self.registry)

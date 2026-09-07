@@ -46,36 +46,31 @@ class _PlanningFrames:
 
 
 def validate_rig_configuration(rig, reconciliation, *, registry, adapter=None):
-    stale_color = reconciliation["requires_fresh_evidence"].get("rig_game_color") or []
-    if stale_color:
-        raise ProfileResolutionError(
-            "Rig configuration is not ready: game-matched color for {} needs a fit "
-            "against the new rig. Candidate {} was saved but the previous active "
-            "configuration was preserved.".format(
-                ", ".join(sorted({str(item["game_id"]) for item in stale_color})),
-                rig["revision_id"],
-            )
-        )
+    # Color is optional. Geometry readiness must never require a fresh game
+    # color fit just because the camera-to-phone transform changed.
     orientations = reconciliation["recomposed"]["rig_game_orientation"]
     reports = []
+    notices = []
     for game in reconciliation["recomposed"]["rig_game"]:
         context = ProfileContext.from_dict(game["context"])
         orientation = next((item for item in orientations
                             if ProfileContext.from_dict(item["context"]).game_id == context.game_id
                             and ProfileContext.from_dict(item["context"]).game_display_signature
                             == context.game_display_signature), None)
+        orientation_payload = orientation["payload"] if orientation else {}
+        turns = int(orientation_payload.get(
+            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display", 0))
         if orientation is None:
-            raise ProfileResolutionError("Game {!r} has no composed orientation".format(context.game_id))
-        turns = int(orientation["payload"][
-            "camera_adapter_image_quarter_turns_clockwise_from_calibration_display"])
+            notices.append("Game {!r}: no optional game orientation; using calibration-display orientation".format(context.game_id))
         payload = game["payload"]
         for mode in ("full", "minimap", "dual"):
             camera = ProfiledHikGameCamera(
                 registry.runtime_file(rig, "hik_camera_calibration"),
                 Path(game["revision_directory"]) / "profile.json",
                 mode=mode, adapter=adapter if adapter is not None else _PlanningFrames(),
+                apply_game_color=False,
                 output_quarter_turns_clockwise=turns,
-                runtime_surface_quarter_turns_clockwise_from_natural=orientation["payload"].get(
+                runtime_surface_quarter_turns_clockwise_from_natural=orientation_payload.get(
                     "game_surface_quarter_turns_clockwise_from_phone_natural"),
             )
             try:
@@ -102,7 +97,9 @@ def validate_rig_configuration(rig, reconciliation, *, registry, adapter=None):
                             raise ValueError("{} center is outside {} output".format(label, stream))
                     if (payload.get("outer_boundary") or {}).get("orientation_frame"):
                         if not boundary.get("orientation_frame"):
-                            raise ValueError("game axes unavailable: {}".format(boundary.get("orientation_reason")))
+                            notice = "Game {!r}: optional game axes unavailable: {}".format(context.game_id, boundary.get("orientation_reason"))
+                            if notice not in notices:
+                                notices.append(notice)
                 reports.append({"game_id": context.game_id, "mode": mode,
                                 "phone_game_revision": game["dependencies"]["phone_game"]})
             except Exception as exc:
@@ -113,4 +110,5 @@ def validate_rig_configuration(rig, reconciliation, *, registry, adapter=None):
             finally:
                 camera.release()
     return {"status": "ready", "validation": "camera_frames" if adapter is not None else "software_geometry",
-            "games": reports}
+            "games": reports, "notices": notices, "color_policy": "best_effort_non_gating",
+            "retained_color_profiles": reconciliation.get("retained", {}).get("rig_game_color", [])}

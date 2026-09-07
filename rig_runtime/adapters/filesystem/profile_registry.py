@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -92,6 +93,20 @@ def _hash_file(path: Path) -> str:
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     atomic_write_text(path, json.dumps(value, indent=2))
+
+
+def _usable_game_color(profile: Mapping[str, Any]) -> bool:
+    """A broken optional color payload must not prevent opening geometry."""
+    try:
+        conversion = profile["payload"]["hik_bayer_conversion"]
+        gamma = float(conversion["gamma"])
+        matrix = conversion["ccm_rgb_3x3"]
+        return (conversion.get("status") == "selected" and math.isfinite(gamma)
+                and 0.1 <= gamma <= 4.0 and len(matrix) == 3
+                and all(len(row) == 3 and all(math.isfinite(float(value)) and abs(float(value)) <= 8
+                                            for value in row) for row in matrix))
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+        return False
 
 
 def default_profile_root(explicit: Optional[Path] = None) -> Path:
@@ -1253,7 +1268,8 @@ class ProfileRegistry:
                 "Unsupported manual profile kinds: {}".format(", ".join(unsupported))
             )
         for kind, revision in selected_revisions.items():
-            self.resolve_revision(revision, context, expected_kind=kind)
+            if kind != "rig_game_color":
+                self.resolve_revision(revision, context, expected_kind=kind)
 
         def selected(kind: str) -> Dict[str, Any]:
             revision_id = selected_revisions.get(kind)
@@ -1266,7 +1282,6 @@ class ProfileRegistry:
         rig_game = phone_game = rig_game_color = rig_game_orientation = None
         game_model = None
         resolution_warnings = []
-        stale_game_color_fallback = False
         include_geometry = request.requires_minimap_profile or "rig_game" in selected_revisions or bool(
             context.game_id and self.list_candidates("rig_game", context, active_only=True)
         )
@@ -1388,41 +1403,55 @@ class ProfileRegistry:
                 rig_game_orientation = candidate
 
         if request.color_policy in ("auto", "game_matched") and context.game_id:
-            candidate, stale_color_ids = selected_for_resolved_rig(
-                "rig_game_color"
-            )
-            if candidate is None and stale_color_ids:
-                stale_game_color_fallback = True
-                resolution_warnings.append(
-                    "Active game-color revisions {} do not depend on resolved rig {}; "
-                    "the adapter is using rig-locked color.".format(
-                        ", ".join(stale_color_ids), rig["revision_id"]
-                    )
-                )
-            elif candidate is not None:
+            # A color fit is radiometric evidence, not a camera-to-phone
+            # transform. Its rig dependency records where it was measured;
+            # displacement alone does not invalidate the fit.
+            color_candidates = []
+            try:
+                if "rig_game_color" in selected_revisions:
+                    color_candidates = [selected("rig_game_color")]
+                else:
+                    for row in self._active_rows("rig_game_color", context):
+                        try:
+                            color_candidates.append(self.revision(row["revision_id"]))
+                        except (OSError, ValueError, KeyError) as exc:
+                            resolution_warnings.append("Optional color profile unavailable: {}".format(exc))
+            except (ProfileResolutionError, OSError, ValueError, KeyError) as exc:
+                resolution_warnings.append("Optional color selection unavailable: {}".format(exc))
+            rig_context = ProfileContext.from_dict(rig["context"])
+            color_candidates.sort(key=lambda item: (
+                item.get("dependencies", {}).get("rig") == rig["revision_id"], item["created_utc"]
+            ), reverse=True)
+            for candidate in color_candidates:
+                color_context = ProfileContext.from_dict(candidate.get("context") or {})
+                if (color_context.camera_id != rig_context.camera_id
+                        or color_context.platform != rig_context.platform
+                        or color_context.game_id != context.game_id
+                        or (rig_context.phone_id and color_context.phone_id != rig_context.phone_id)):
+                    continue
+                if not _usable_game_color(candidate):
+                    resolution_warnings.append("Optional color profile {} has no usable fit; ignoring it".format(candidate["revision_id"]))
+                    continue
                 rig_game_color = candidate
-        elif request.requires_game_color:
-            raise ProfileResolutionError(
-                "Game-matched color requires a game_id"
-            )
+                if candidate.get("dependencies", {}).get("rig") != rig["revision_id"]:
+                    resolution_warnings.append(
+                        "Reusing game-color profile {} measured with rig {}; geometry revision changes "
+                        "do not invalidate color. No new color measurement was made.".format(
+                            candidate["revision_id"], candidate.get("dependencies", {}).get("rig")))
+                break
 
         # Older accepted rig-game revisions may carry the color payload. Keep
         # them readable while new color calibration publishes an independent
         # rig_game_color revision.
         legacy_color_profile = None
         if rig_game is not None:
-            conversion = (rig_game.get("payload") or {}).get(
-                "hik_bayer_conversion"
-            )
-            if isinstance(conversion, Mapping) and conversion.get("status") == "selected":
+            if _usable_game_color(rig_game):
                 legacy_color_profile = rig_game
         selected_color_profile = rig_game_color or legacy_color_profile
-        if (
-            request.requires_game_color
-            and selected_color_profile is None
-        ):
-            raise ProfileResolutionError(
-                "No active game-color calibration matches the resolved rig and game"
+        if request.color_policy in ("auto", "game_matched") and selected_color_profile is None:
+            resolution_warnings.append(
+                "No usable game-color fit is available; using rig-locked color without game color correction. "
+                "Color availability does not block camera output."
             )
         calibration_path = self.runtime_file(rig, "hik_camera_calibration")
         rig_game_path = (
@@ -1436,7 +1465,7 @@ class ProfileRegistry:
             else None
         )
         effective_color_policy = request.color_policy
-        if request.color_policy == "auto" or stale_game_color_fallback:
+        if request.color_policy in ("auto", "game_matched"):
             effective_color_policy = (
                 "game_matched" if selected_color_profile is not None else "rig_locked"
             )

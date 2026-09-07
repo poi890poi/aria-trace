@@ -1204,6 +1204,17 @@ def create_camera_adapter() -> HikMvsCameraAdapter:
     return HikMvsCameraAdapter()
 
 
+class GameColorUnavailableError(RuntimeError):
+    """Optional game-color setup failed; reopen without it on a fresh handle."""
+
+
+def configure_game_color(adapter, conversion):
+    try:
+        adapter.set_bayer_conversion(float(conversion["gamma"]), conversion["ccm_rgb_3x3"])
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise GameColorUnavailableError("Game-color conversion unavailable: {}".format(exc)) from exc
+
+
 class RectifiedHikCamera:
     """Small `cv2.VideoCapture`-like reader backed by a saved HIK calibration."""
 
@@ -1297,10 +1308,7 @@ class RectifiedHikCamera:
             wb["ratio_red"], wb["ratio_green"], wb["ratio_blue"]
         )
         if self._bayer_conversion.get("status") == "selected":
-            self.adapter.set_bayer_conversion(
-                float(self._bayer_conversion["gamma"]),
-                self._bayer_conversion["ccm_rgb_3x3"],
-            )
+            configure_game_color(self.adapter, self._bayer_conversion)
         effective_roi = self.adapter.set_roi(camera["hardware_roi_xywh"])
         validate_hik_coordinate_contract(self.config, effective_roi)
         normalization = self.config["normalization"]

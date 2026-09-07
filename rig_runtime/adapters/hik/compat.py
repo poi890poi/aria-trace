@@ -31,6 +31,7 @@ import numpy as np
 
 from .driver import (
     HikMvsCameraAdapter,
+    GameColorUnavailableError,
     RectifiedHikCamera,
     rotate_quarter_turns_clockwise,
 )
@@ -534,6 +535,12 @@ class HikCamera:
 
     get_all_cams = get_cams
 
+    def _disable_game_color(self, reason):
+        self.resolved_config["adapter_plan"]["color_policy"] = "rig_locked"
+        self.config["color_policy"] = "rig_locked"
+        self.resolved_config["game_color_fallback"] = str(reason)
+        warnings.warn("{}; continuing without game color correction".format(reason), RuntimeWarning, stacklevel=2)
+
     def _new_reader(self):
         factory = self.config.get("reader_factory")
         if factory is not None:
@@ -547,13 +554,15 @@ class HikCamera:
             "unadjusted",
         )
         if game_color_path and use_game_color:
-            document = json.loads(
-                Path(game_color_path).read_text(encoding="utf-8")
-            )
-            payload = document.get("payload")
-            if isinstance(payload, Mapping):
-                document = {**document, **dict(payload)}
-            game_color = dict(document.get("hik_bayer_conversion") or {})
+            try:
+                document = json.loads(Path(game_color_path).read_text(encoding="utf-8"))
+                payload = document.get("payload")
+                if isinstance(payload, Mapping):
+                    document = {**document, **dict(payload)}
+                game_color = dict(document.get("hik_bayer_conversion") or {})
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
+                self._disable_game_color("Optional game-color file unavailable: {}".format(exc))
+                use_game_color = False
         if minimap_calibration is not None:
             from .game_camera import ProfiledHikGameCamera
 
@@ -592,7 +601,16 @@ class HikCamera:
             self._initialize_image_orientation()
         reader = self._new_reader()
         try:
-            opened = reader.open()
+            try:
+                opened = reader.open()
+            except GameColorUnavailableError as exc:
+                try:
+                    reader.release()
+                finally:
+                    self._disable_game_color(str(exc))
+                # A fresh handle discards partially applied SDK gamma/CCM state.
+                reader = self._new_reader()
+                opened = reader.open()
             self._reader = opened if opened is not None else reader
             self.is_open = True
             self._capture_geometry_postmortem()

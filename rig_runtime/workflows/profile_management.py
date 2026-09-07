@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -332,7 +333,13 @@ def _rig_game_payload_from_phone_game(
         space = raster_space(RigSpaceId.ANDROID_PHONE_NATURAL, natural)
         for name, kind in (("outer_boundary", "circle"), ("rotation_center", "point")):
             if isinstance(phone_payload.get(name), Mapping):
-                phone_payload[name] = normalize_legacy_geometry(phone_payload[name], kind, space)
+                shape = dict(phone_payload[name])
+                axes = shape.pop("orientation_frame", None) if kind == "circle" else None
+                phone_payload[name] = normalize_legacy_geometry(shape, kind, space)
+                if axes is not None:
+                    # Optional axes have their own runtime status. They must
+                    # not invalidate a usable boundary during rebuilding.
+                    phone_payload[name]["orientation_frame"] = axes
         if isinstance(phone_payload.get("cursor_geometry"), Mapping):
             cursor = dict(phone_payload["cursor_geometry"])
             if isinstance(cursor.get("rotation_center"), Mapping):
@@ -745,7 +752,11 @@ def recompose_active_rig_game_orientation_profiles(
     for item in registry.list_revisions(
         kind="rig_game_orientation", active_only=True
     ):
-        source = registry.revision(str(item["revision_id"]))
+        try:
+            source = registry.revision(str(item["revision_id"]))
+        except (OSError, ValueError, KeyError) as exc:
+            warnings.warn("Optional orientation profile unavailable; using calibration orientation: {}".format(exc), RuntimeWarning)
+            continue
         source_context = ProfileContext.from_dict(source.get("context") or {})
         if only_game_id and source_context.game_id != only_game_id:
             continue
@@ -765,12 +776,12 @@ def recompose_active_rig_game_orientation_profiles(
         composed_variants.add(target_variant)
         context = _rig_phone_game_context(rig_context, source_context)
         source_payload = dict(source.get("payload") or {})
-        source_image_turns = int(
-            source_payload.get(
-                "camera_adapter_image_quarter_turns_clockwise_from_calibration_display",
-                0,
-            )
-        ) % 4
+        try:
+            source_image_turns = int(source_payload.get(
+                "camera_adapter_image_quarter_turns_clockwise_from_calibration_display", 0)) % 4
+        except (TypeError, ValueError):
+            warnings.warn("Optional orientation has invalid turns; using calibration orientation", RuntimeWarning)
+            continue
         source_rig_revision = str(
             (source.get("dependencies") or {}).get("rig") or ""
         )
@@ -779,22 +790,24 @@ def recompose_active_rig_game_orientation_profiles(
         )
         if portable_surface_turns is None:
             if not source_rig_revision:
-                raise ProfileResolutionError(
-                    "Game-orientation profile {} has neither a portable game "
-                    "surface orientation nor its source rig dependency".format(
-                        source["revision_id"]
-                    )
-                )
-            source_rig = registry.revision(source_rig_revision)
-            source_display_turns = _rig_calibration_display_turns(
-                source_rig, registry
-            )
+                warnings.warn("Optional orientation profile {} has no reconstructable source; using calibration orientation".format(source["revision_id"]), RuntimeWarning)
+                continue
+            try:
+                source_rig = registry.revision(source_rig_revision)
+                source_display_turns = _rig_calibration_display_turns(source_rig, registry)
+            except (ProfileResolutionError, OSError, ValueError, KeyError) as exc:
+                warnings.warn("Optional orientation source unavailable; using calibration orientation: {}".format(exc), RuntimeWarning)
+                continue
             portable_surface_turns = (
                 source_image_turns + source_display_turns
             ) % 4
             portable_basis = "derived_from_legacy_source_rig_and_relative_turn"
         else:
-            portable_surface_turns = int(portable_surface_turns) % 4
+            try:
+                portable_surface_turns = int(portable_surface_turns) % 4
+            except (TypeError, ValueError):
+                warnings.warn("Optional surface orientation has invalid turns; using calibration orientation", RuntimeWarning)
+                continue
             source_display_turns = None
             portable_basis = "stored_portable_game_surface_orientation"
         target_image_turns = (
@@ -887,9 +900,13 @@ def reconcile_active_rig_dependents(
     """Reconcile every active game profile affected by one new rig revision."""
 
     rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
-    stale_color = []
+    retained_color = []
     for item in registry.list_revisions(kind="rig_game_color", active_only=True):
-        source = registry.revision(str(item["revision_id"]))
+        try:
+            source = registry.revision(str(item["revision_id"]))
+        except (OSError, ValueError, KeyError):
+            # Missing optional color evidence must not block rig publication.
+            continue
         source_context = ProfileContext.from_dict(source.get("context") or {})
         if source_context.platform != rig_context.platform:
             continue
@@ -902,15 +919,14 @@ def reconcile_active_rig_dependents(
         source_rig = str((source.get("dependencies") or {}).get("rig") or "")
         if source_rig == str(rig_profile["revision_id"]):
             continue
-        stale_color.append(
+        retained_color.append(
             {
                 "profile_revision": source["revision_id"],
                 "game_id": source_context.game_id,
                 "source_rig_revision": source_rig or None,
                 "target_rig_revision": rig_profile["revision_id"],
                 "action": (
-                    "activation_blocked_until_fresh_synchronized_"
-                    "game_calibration_publishes_a_local_hik_fit"
+                    "reuse_existing_color_fit_independently_of_rig_geometry"
                 ),
             }
         )
@@ -925,7 +941,8 @@ def reconcile_active_rig_dependents(
                 rig_profile, registry=registry, activate=activate
             ),
         },
-        "requires_fresh_evidence": {"rig_game_color": stale_color},
+        "retained": {"rig_game_color": retained_color},
+        "requires_fresh_evidence": {"rig_game_color": []},
     }
 
 

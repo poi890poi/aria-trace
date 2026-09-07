@@ -19,9 +19,12 @@ changes were preserved. No physical camera or phone was operated.
   three modes. Fresh readiness is recorded in `game_readiness.json`; reuse
   records it in `reused_calibration.json`. Software-only publication identifies
   its limited evidence separately from camera frame validation.
-- Explicit game-matched color requests reject missing compatible fits. A new
-  rig that would invalidate an active game-color fit is saved as a candidate
-  without activation. Automatic color refitting remains unimplemented.
+- Color policy was subsequently corrected per the user's explicit requirement:
+  color never gates rig publication. Displacement retains the previous fit for
+  the same camera/phone/game; missing or unusable fits fall back to rig-locked
+  output, including explicit game-matched requests. See
+  [the color P0 correction](iris-color-nonblocking-2026-09-07.md). The historical
+  color findings below describe the earlier, superseded strict contract.
 - The demo shows separate boundary, cursor, and axis reasons, including
   provider errors, disabled toggles, missing calibration, and coordinate-space
   mismatches. A bad optional orientation vector no longer hides a valid circle.

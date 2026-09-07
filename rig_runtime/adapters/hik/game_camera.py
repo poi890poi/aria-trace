@@ -33,6 +33,7 @@ from rig_runtime.services.calibration.rig.hik.algorithms import (
 )
 from .driver import (
     HikMvsCameraAdapter,
+    configure_game_color,
     quarter_turn_output_geometry,
     rotate_quarter_turns_clockwise,
     rotate_xywh_in_parent,
@@ -480,10 +481,7 @@ class ProfiledHikGameCamera:
             isinstance(conversion, Mapping)
             and conversion.get("status") == "selected"
         ):
-            self.adapter.set_bayer_conversion(
-                float(conversion["gamma"]),
-                conversion["ccm_rgb_3x3"],
-            )
+            configure_game_color(self.adapter, conversion)
 
     @staticmethod
     def _transform_xy(matrix: np.ndarray, point_xy: Sequence[float]) -> np.ndarray:

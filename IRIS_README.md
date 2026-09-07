@@ -90,12 +90,18 @@ adapter. Readiness is recorded in `game_readiness.json` for a fresh calibration
 and in `reused_calibration.json` for reuse. Software-only profile publication
 labels its checks `software_geometry`; it does not claim physical verification.
 
-Insufficient coverage, failed frame delivery, incompatible phone geometry, or a
-stale required game-color fit prevents activation with a specific error. The
+Insufficient coverage, failed frame delivery, or incompatible phone geometry
+prevents activation with a specific error. The
 previous active selections remain available for recovery. After physical rig
-movement, those old transforms still describe the old placement. Automatic
-refitting of game colors is not implemented; a new optical fit requires fresh
-synchronized evidence. `--no-profile` explicitly bypasses profile publication
+movement, those old transforms still describe the old placement. Game color is
+optional: displacement does not invalidate the previous fit for the same
+camera, phone, and game. Its original measurement provenance is retained.
+Rebuilding succeeds when streams and required geometry are usable; missing
+optional game orientation uses calibration-display orientation, and unavailable
+axis arrows produce notices while a valid boundary remains usable.
+Missing or unusable color falls back to rig-locked output without game color
+correction, even for a `game_matched` request. Color SDK setup failure also
+reopens the camera without the optional correction. `--no-profile` explicitly bypasses profile publication
 and its readiness contract.
 
 Full mode loads available game geometry just as dual mode does. The demo shows
