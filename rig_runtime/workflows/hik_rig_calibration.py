@@ -1746,8 +1746,8 @@ class HikRigCalibrationSession:
                     "Phone physical pixel pitch is unavailable; focus MTF will remain in cycles/display-pixel."
                 )
             self.progress(
-                "ChArUco atlas: {}x{} complete squares, {}x{} px board on {}x{} px "
-                "canonical rotation-0 display.".format(
+                "ChArUco atlas layout: {}x{} whole squares, {}x{} px board on {}x{} px "
+                "canonical rotation-0 display (generated target; camera detection follows).".format(
                     layout.squares_x,
                     layout.squares_y,
                     layout.board_size_px[0],
@@ -2796,27 +2796,53 @@ class HikRigCalibrationSession:
         layout = self._required(self.charuco_layout, "screen-filling ChArUco layout")
         self._set_preview_stage(
             "Final ChArUco verification",
-            exposure_mode="manual locked",
+            exposure_mode="automatically selected, locked",
             exposure_us=self.exposure.exposure_us if self.exposure else None,
             gain=self.exposure.gain if self.exposure else None,
         )
         shown = self.target.present_charuco()
         self._wait_painted(shown)
+        self.progress(
+            "Waiting for the ChArUco atlas to appear in camera frames under "
+            "automatically selected, locked exposure/gain/white balance..."
+        )
+        # A display acknowledgement does not drain the camera's frame queue.
+        # Use camera-visible target content, not stable brightness or host
+        # receive timestamps (which can also be assigned to queued frames).
+        acquisition_started = time.monotonic()
+        acquisition_timeout = float(self.options.operation_timeout_seconds)
+        acquisition_deadline = acquisition_started + acquisition_timeout
+        observed_at = None
+        discarded_frames = 0
+        last_detection_error = None
+        self.final_verification_sample = None
         corner_counts = []
         errors = []
         best_sample = None
         best_frame_p95 = float("inf")
         attempted = int(self.options.geometry_frames)
-        for _ in range(attempted):
+        while len(corner_counts) < attempted:
+            if observed_at is None and time.monotonic() >= acquisition_deadline:
+                break
             sample = self._read_camera()
             frame = sample.image
             self.last_frame = frame.copy()
             try:
                 detected = self._detect_charuco(frame, layout)
-            except RuntimeError:
-                corner_counts.append(0)
+            except RuntimeError as exc:
+                if observed_at is None:
+                    last_detection_error = str(exc)
+                    discarded_frames += 1
+                else:
+                    corner_counts.append(0)
                 self._preview_update(frame, sample.metadata, charuco_corners=0)
                 continue
+            if observed_at is None:
+                observed_at = time.monotonic()
+                self.progress(
+                    "ChArUco atlas observed by the camera after {} transition "
+                    "frame(s); starting final verification.".format(discarded_frames)
+                )
             self._preview_update(
                 frame,
                 sample.metadata,
@@ -2845,17 +2871,32 @@ class HikRigCalibrationSession:
                 )
         successful = sum(value > 0 for value in corner_counts)
         self.cv_verification = {
-            "attempted_frames": attempted,
+            "requested_frames": attempted,
+            "attempted_frames": len(corner_counts),
             "successful_frames": successful,
-            "detection_rate": successful / float(attempted),
+            "detection_rate": successful / float(len(corner_counts)) if corner_counts else 0.0,
             "corner_counts": corner_counts,
+            "target_acquisition": {
+                "status": "observed" if observed_at is not None else "not_observed",
+                "acknowledged_revision": int(shown.revision),
+                "discarded_frames": discarded_frames,
+                "duration_ms": ((observed_at if observed_at is not None else time.monotonic()) - acquisition_started) * 1000.0,
+                "timeout_seconds": acquisition_timeout,
+                "last_detection_error": last_detection_error,
+            },
             "reprojection_error_camera_px_p50": float(np.percentile(errors, 50)) if errors else None,
             "reprojection_error_camera_px_p95": float(np.percentile(errors, 95)) if errors else None,
             "algorithm": "existing_charuco_detector_and_saved_homography",
         }
         if not errors:
             raise RuntimeError(
-                "Final manual imaging produced no ChArUco detections; calibration is not usable"
+                "Final ChArUco verification timed out after {:.1f}s: phone acknowledged "
+                "target revision {}, but no camera frame contained detectable ChArUco "
+                "({} transition frames examined). The camera may still show the preceding "
+                "white/gray patch, or the atlas may be unreadable under the locked camera "
+                "settings. Last detector error: {}".format(
+                    acquisition_timeout, shown.revision, discarded_frames, last_detection_error
+                )
             )
         self.final_verification_sample = best_sample
         self.progress(
@@ -5050,6 +5091,7 @@ class HikRigCalibrationSession:
             "error_type": type(error).__name__,
             "error": str(error),
             "failed_stage": self._failed_stage,
+            "final_imaging_verification": self.cv_verification,
             "camera": dict(self.camera_metadata),
             "phone": self.phone_metrics.to_dict() if self.phone_metrics else None,
             "phone_calibration_display_brightness": self.phone_display_brightness,
