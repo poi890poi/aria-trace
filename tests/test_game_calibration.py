@@ -376,6 +376,37 @@ class GameCalibrationTests(unittest.TestCase):
             )
             self.assertNotIn("game_color", result["successful_capabilities"])
 
+    def test_color_resolution_failure_cannot_downgrade_completed_game_geometry(self):
+        from rig_runtime.adapters.filesystem.profile_registry import ProfileResolutionError
+
+        class Reader:
+            manifest = {"status": "complete", "context": {"game_id": "game"}}
+            frames_by_stream = {"android_phone": [{"frame_index": 0}], "hik_phone": [{"frame_index": 0}]}
+            inputs = []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session"
+            session.mkdir()
+            (session / "coordinate_spaces.yaml").write_text("schema_version: '1.0'\n")
+            with mock.patch("rig_runtime.workflows.game_calibration.SessionReader", return_value=Reader()), \
+                    mock.patch("rig_runtime.workflows.game_calibration._calibrate_available_minimap_boundary",
+                               return_value={"status": "accepted", "profiles": {"phone_game": "verified-geometry"}}), \
+                    mock.patch("rig_runtime.workflows.game_calibration._available_cursor_acquisition_series", return_value=[]), \
+                    mock.patch("rig_runtime.workflows.game_calibration.calibrate_portable_game_orientation_session",
+                               side_effect=ValueError("no optional orientation")), \
+                    mock.patch("rig_runtime.workflows.game_calibration.calibrate_game_color_session",
+                               side_effect=ProfileResolutionError("No game-matched color profile")):
+                result = calibrate_game_session(session, root / "output", profile_root=root / "profiles",
+                                                game_id="game", include_color=True, activate_color=True)
+            persisted = json.loads((root / "output/game_calibration_summary.json").read_text())
+            self.assertEqual("complete", result["status"])
+            self.assertEqual("complete", persisted["status"])
+            self.assertEqual(["minimap_boundary"], persisted["successful_capabilities"])
+            self.assertEqual("verified-geometry", persisted["capabilities"]["minimap_boundary"]["profiles"]["phone_game"])
+            self.assertEqual("optional_failed_non_gating", persisted["capabilities"]["game_color"]["status"])
+            self.assertIn("No game-matched color", persisted["capabilities"]["game_color"]["error"])
+
     def test_portable_orientation_uses_android_space_metadata_without_rig(self):
         class Reader:
             manifest = {

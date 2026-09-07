@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import warnings
 from pathlib import Path
 from typing import Dict, Mapping
 
@@ -79,8 +80,18 @@ def export_resolved_adapter(
     if minimap_path:
         blobs["rig_game_profile.json"] = Path(minimap_path).read_bytes()
     color_path = resolved["paths"].get("game_color_profile")
+    export_warnings = []
     if color_path and Path(color_path).resolve() != Path(minimap_path or "").resolve():
-        blobs["game_color_profile.json"] = Path(color_path).read_bytes()
+        try:
+            blobs["game_color_profile.json"] = Path(color_path).read_bytes()
+        except OSError as exc:
+            # Optional evidence can disappear after resolution. Export the
+            # usable geometry without claiming to have embedded that color fit.
+            reason = "Optional game-color file unavailable during export; using rig-locked color: {}".format(exc)
+            export_warnings.append(reason)
+            warnings.warn(reason, RuntimeWarning, stacklevel=2)
+            resolved["profiles"]["rig_game_color"] = None
+            resolved["adapter_plan"]["color_policy"] = "rig_locked"
     elif color_path:
         # One legacy profile can own both mini-map geometry and color.
         blobs["game_color_profile.json"] = blobs["rig_game_profile.json"]
@@ -181,14 +192,14 @@ class HikCamera(_HikCamera):
             effective["game_color_calibration"] = paths[
                 "game_color_profile.json"
             ]
-        elif effective.get("color_policy") == "game_matched":
-            raise ValueError("This embedded adapter has no game-color calibration")
         super().__init__(
             ip=ip,
             host_ip=host_ip,
             setting_items=setting_items,
             config=effective,
         )
+        if "game_color_profile.json" not in paths and effective.get("color_policy") == "game_matched":
+            self._disable_game_color("This embedded adapter has no optional game-color calibration")
 
 
 get_cam = HikCamera.get_cam
@@ -219,6 +230,7 @@ __all__ = [
         "embedded_files": sorted(blobs),
         "defaults": defaults,
         "registry_reads_at_runtime": 0,
+        "warnings": export_warnings,
     }
 
 

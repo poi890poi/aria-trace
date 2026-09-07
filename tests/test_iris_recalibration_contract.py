@@ -5,6 +5,7 @@ selection, composition, activation, ROI planning and geometry conversion are rea
 """
 import contextlib
 import io
+import importlib.util
 import json
 import shutil
 import sqlite3
@@ -24,6 +25,7 @@ from rig_runtime.adapters.hik.compat import HikCamera
 from rig_runtime.adapters.hik.game_camera import ProfiledHikGameCamera
 from rig_runtime.domain.spatial import bind_geometry, oriented_circle, raster_space
 from rig_runtime.workflows.profile_management import publish_rig_calibration
+from rig_runtime.workflows.adapter_export import export_resolved_adapter
 from tests.test_profile_manager import write_rig
 from tests.test_hik_game_camera import FakeAdapter
 
@@ -280,6 +282,50 @@ class RecalibrationContractTests(unittest.TestCase):
         resolved = self.registry.resolve_adapter(self.context, AdapterRequest(mode="full", color_policy="game_matched"),
                                                  profile_revisions={"rig_game_color": "missing-color"})
         self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
+
+    def test_embedded_adapter_game_matched_request_without_color_keeps_geometry(self):
+        output = self.root / "without_color.py"
+        export_resolved_adapter(output, registry=self.registry, context=self.context,
+                                request=AdapterRequest(mode="dual", color_policy="game_matched"))
+        specification = importlib.util.spec_from_file_location("without_color", output)
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", return_value=FakeAdapter()):
+            with module.HikCamera(config={"color_policy": "game_matched", "color_order": "BGR"}) as camera:
+                frames = camera.get_frames()
+                self.assertEqual("rig_locked", camera.resolved_config["adapter_plan"]["color_policy"])
+                self.assertIn("color", camera.resolved_config["game_color_fallback"])
+                for stream, frame in frames.items():
+                    geometry = camera.get_minimap_geometry(stream)
+                    self.assertTrue(geometry["available_in_stream_space"])
+                    x, y = map(round, geometry["center_xy_px"])
+                    np.testing.assert_array_equal(frame[y, x], [75, 30, 7])
+
+    def test_color_file_lost_during_export_does_not_block_working_adapter(self):
+        color = self.registry.publish("rig_game_color", self.context, {
+            "hik_bayer_conversion": {"status": "selected", "gamma": 1,
+                                    "ccm_rgb_3x3": np.eye(3).tolist()}},
+            dependencies={"rig": self.initial["revision_id"]}, activate=True)
+        color_path = Path(color["revision_directory"]) / "profile.json"
+        resolve = self.registry.resolve_adapter
+
+        def resolve_then_lose_color(*args, **kwargs):
+            result = resolve(*args, **kwargs)
+            color_path.unlink()
+            return result
+
+        output = self.root / "lost_color.py"
+        with patch.object(self.registry, "resolve_adapter", side_effect=resolve_then_lose_color):
+            result = export_resolved_adapter(output, registry=self.registry, context=self.context,
+                                            request=AdapterRequest(mode="dual", color_policy="game_matched"))
+        self.assertIsNone(result["profile_revisions"]["rig_game_color"])
+        specification = importlib.util.spec_from_file_location("lost_color", output)
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter", return_value=FakeAdapter()):
+            with module.HikCamera() as camera:
+                self.assertTrue(camera.get_frames())
+                self.assertEqual("rig_locked", camera.resolved_config["adapter_plan"]["color_policy"])
 
     def test_missing_optional_orientation_does_not_block_working_geometry(self):
         with patch("rig_runtime.workflows.profile_management.recompose_active_rig_game_orientation_profiles", return_value=[]):
