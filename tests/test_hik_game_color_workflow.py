@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ import yaml
 from rig_runtime.adapters.filesystem.profile_registry import (
     ProfileContext,
     ProfileRegistry,
+    ProfileResolutionError,
     context_from_rig_calibration,
 )
 from rig_runtime.adapters.filesystem.session import SessionReader, SessionWriter
@@ -129,6 +132,39 @@ class HikGameColorWorkflowTests(unittest.TestCase):
             self.assertTrue(keyword["activate"])
 
     def test_session_color_calibration_publishes_exact_rig_dependency(self):
+        self._exercise_color_calibration()
+
+    def test_displacement_does_not_invalidate_recorded_color_pairs(self):
+        self._exercise_color_calibration(displace=True)
+
+    def test_unavailable_color_returns_fallback_without_replacing_profiles(self):
+        for error in (ValueError("insufficient stable color samples"),
+                      RuntimeError("cannot decode optional HIK color video"),
+                      ProfileResolutionError("optional sampling profile unavailable")):
+            for prior in (False, True):
+                with self.subTest(error=str(error), prior=prior):
+                    self._exercise_color_calibration(displace=True, fit_error=error, prior_color=prior)
+
+    def test_missing_hik_color_frames_reuse_previous_fit_after_displacement(self):
+        self._exercise_color_calibration(displace=True, prior_color=True, missing_hik=True)
+
+    def test_unhelpful_fit_does_not_replace_previous_working_color(self):
+        self._exercise_color_calibration(displace=True, prior_color=True, identity_preferred=True)
+
+    def test_cli_reports_optional_fallback_without_requesting_fit_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main([str(root / "missing-session"), str(root / "output"),
+                             "--profile-root", str(root / "profiles"), "--game-id", "game-1"])
+            self.assertEqual(0, code)
+            self.assertIn("Optional color: uncorrected", output.getvalue())
+            self.assertNotIn("Validation RGB MAE", output.getvalue())
+            self.assertFalse(json.loads((root / "output/game_color_calibration.json").read_text())["fresh_color_measurement"])
+
+    def _exercise_color_calibration(self, *, displace=False, fit_error=None, prior_color=False,
+                                    missing_hik=False, identity_preferred=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             rig = root / "rig" / "hik_camera_calibration.json"
@@ -258,6 +294,22 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                     "selected_validation": {"rgb_mae_dn": 4.0},
                 },
             }
+            previous = None
+            if prior_color:
+                previous = registry.publish("rig_game_color", phone_game_context,
+                                            {"hik_bayer_conversion": conversion},
+                                            dependencies={"rig": rig_profile["revision_id"]}, activate=True)
+            if displace:
+                moved_path = root / "moved_rig.json"
+                moved_document = json.loads(json.dumps(rig_document))
+                moved_document["normalization"]["full_sensor_camera_to_output_3x3"][0][2] = 1
+                moved_path.write_text(json.dumps(moved_document))
+                registry.publish("rig", context_from_rig_calibration(moved_document), {"generation": 2},
+                                 runtime_files={"hik_camera_calibration": moved_path}, activate=True)
+            before = registry.active_revision_ids()
+            if missing_hik:
+                (session / "frames.jsonl").write_text("".join(
+                    json.dumps(row) + "\n" for row in rows if row["stream_id"] != "hik_phone"))
             with patch(
                 "rig_runtime.workflows.hik_game_color_calibration._decode_indices",
                 side_effect=[android_frames, hik_frames],
@@ -265,11 +317,33 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                 "rig_runtime.workflows.hik_game_color_calibration.optimize_mvs_bayer_conversion",
                 return_value=(conversion, {"review.png": hik_frames[0]}),
             ) as optimize:
+                if fit_error is not None:
+                    optimize.side_effect = fit_error
+                if identity_preferred:
+                    optimize.return_value = ({**conversion, "status": "identity_preferred"}, {})
                 result = calibrate_game_color_session(
                     session,
                     root / "output",
                     profile_root=root / "profiles",
                 )
+            if fit_error is not None or missing_hik or identity_preferred:
+                self.assertEqual("optional_fallback", result["status"])
+                self.assertTrue(result["non_gating"])
+                self.assertFalse(result["fresh_color_measurement"])
+                if fit_error is not None:
+                    self.assertIn(str(fit_error), result["reason"])
+                if missing_hik:
+                    self.assertIn("no hik_phone frames", result["reason"])
+                    optimize.assert_not_called()
+                self.assertEqual(before, registry.active_revision_ids())
+                self.assertEqual(previous["revision_id"] if previous else None, result["profile_revision"])
+                self.assertEqual("reuse_existing" if previous else "uncorrected", result["fallback"])
+                if previous:
+                    self.assertEqual(conversion, result["hik_bayer_conversion"])
+                    self.assertEqual(rig_profile["revision_id"], registry.revision(previous["revision_id"])["dependencies"]["rig"])
+                persisted = json.loads((root / "output/game_color_calibration.json").read_text())
+                self.assertEqual(result, persisted)
+                return
             profile = registry.revision(result["profile_revision"])
             portable_color = registry.revision(
                 result["portable_phone_game_color_revision"]

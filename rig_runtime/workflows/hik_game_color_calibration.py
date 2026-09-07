@@ -18,6 +18,8 @@ from rig_runtime.adapters.filesystem.profile_registry import (
     AdapterRequest,
     ProfileContext,
     ProfileRegistry,
+    ProfileResolutionError,
+    _usable_game_color,
     context_from_rig_calibration,
 )
 from rig_runtime.adapters.filesystem.session import SessionReader
@@ -476,6 +478,52 @@ session_game_context = _session_game_context
 sha256_file = _sha256
 
 
+def _captured_rig_revision(registry, context, calibration_sha256):
+    """Find capture provenance, including inactive rigs, without requiring it."""
+    for item in registry.list_revisions(kind="rig"):
+        if (item["camera_id"], item["phone_id"]) != (context.camera_id, context.phone_id):
+            continue
+        try:
+            profile = registry.revision(item["revision_id"])
+            if _sha256(registry.runtime_file(profile, "hik_camera_calibration")) == calibration_sha256:
+                return profile["revision_id"]
+        except (OSError, ValueError, KeyError):
+            continue
+    return None
+
+
+def _color_fallback(session, output, registry, context, reason):
+    """Keep an existing fit for the same device/game or use uncorrected color."""
+    previous = None
+    if context is not None and context.camera_id and context.phone_id and context.game_id:
+        for item in registry.list_revisions(kind="rig_game_color", active_only=True):
+            if (item["camera_id"], item["phone_id"], item["game_id"]) != (
+                    context.camera_id, context.phone_id, context.game_id):
+                continue
+            try:
+                candidate = registry.revision(item["revision_id"])
+                candidate_context = ProfileContext.from_dict(candidate["context"])
+                if candidate_context.platform == context.platform and _usable_game_color(candidate):
+                    previous = candidate
+                    break
+            except (OSError, ValueError, KeyError):
+                continue
+    summary = {
+        "schema_version": "1.0", "status": "optional_fallback", "non_gating": True,
+        "calibration_kind": "hik_game_color", "session": str(session),
+        "reason": str(reason), "fresh_color_measurement": False,
+        "fallback": "reuse_existing" if previous else "uncorrected",
+        "profile_context": context.as_dict() if context else None,
+        "profile_revision": previous["revision_id"] if previous else None,
+        "portable_phone_game_color_revision": (previous or {}).get("dependencies", {}).get("phone_game_color"),
+        "rig_revision": (previous or {}).get("dependencies", {}).get("rig"),
+        "hik_bayer_conversion": previous["payload"]["hik_bayer_conversion"] if previous else {"status": "unavailable"},
+    }
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "game_color_calibration.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def calibrate_game_color_session(
     session: Path,
     output: Path,
@@ -486,141 +534,136 @@ def calibrate_game_color_session(
     activate: bool = True,
     phone_game_revision: Optional[str] = None,
 ) -> Mapping[str, object]:
-    """Fit and publish one immutable rig-game color profile."""
+    """Fit optional color using capture geometry; reuse prior color or fall back."""
 
     session = Path(session).resolve()
     output = Path(output).resolve()
-    reader = SessionReader(session)
-    if reader.manifest.get("status") != "complete":
-        raise ValueError("Game color calibration requires a complete capture session")
-    for stream_id in ("android_phone", "hik_phone"):
-        if not reader.frames_by_stream.get(stream_id):
-            raise ValueError("Session has no {} frames".format(stream_id))
-
-    coordinate_file = session / "coordinate_spaces.yaml"
-    if not coordinate_file.is_file():
-        raise FileNotFoundError(
-            "Synchronized session has no coordinate_spaces.yaml: {}".format(session)
-        )
-    spaces = yaml.safe_load(coordinate_file.read_text(encoding="utf-8"))
-    matrix = (spaces.get("conversions") or {}).get(
-        "adb_to_hik_phone_video_3x3"
-    )
-    if matrix is None:
-        raise ValueError("Session does not define ADB-to-HIK video conversion")
-    hik_stream = (spaces.get("streams") or {}).get("hik_phone") or {}
-    content_size = hik_stream.get("content_size_px")
-
-    calibration_value = ((reader.manifest.get("context") or {}).get("hik_capture") or {}).get(
-        "rig_calibration"
-    )
-    if not calibration_value:
-        raise ValueError("Session does not identify the rig calibration used for HIK capture")
-    rig_calibration = Path(str(calibration_value)).resolve()
-    if not rig_calibration.is_file():
-        raise FileNotFoundError(
-            "Session rig calibration is unavailable: {}".format(rig_calibration)
-        )
-    rig_document = json.loads(rig_calibration.read_text(encoding="utf-8"))
-    context = _session_game_context(reader, rig_document, game_id=game_id)
     registry = ProfileRegistry(profile_root)
-    active_rig = registry.resolve(
-        "rig",
-        ProfileContext(
-            camera_id=context.camera_id,
-            phone_id=context.phone_id,
-            phone_model=context.phone_model,
-            panel_display=context.panel_display,
-        ),
-    )
-    active_rig_file = registry.runtime_file(
-        active_rig, "hik_camera_calibration"
-    ).resolve()
-    if _sha256(active_rig_file) != _sha256(rig_calibration):
-        raise ValueError(
-            "Session HIK frames were not captured with the active rig revision; "
-            "capture fresh synchronized frames before publishing game color"
+    context = None
+    try:
+        reader = SessionReader(session)
+        calibration_value = ((reader.manifest.get("context") or {}).get("hik_capture") or {}).get(
+            "rig_calibration"
+        )
+        if not calibration_value:
+            raise ValueError("Session does not identify the rig calibration used for HIK capture")
+        rig_calibration = Path(str(calibration_value)).resolve()
+        if not rig_calibration.is_file():
+            raise FileNotFoundError(
+                "Session rig calibration is unavailable: {}".format(rig_calibration)
+            )
+        rig_document = json.loads(rig_calibration.read_text(encoding="utf-8"))
+        context = _session_game_context(reader, rig_document, game_id=game_id)
+        if reader.manifest.get("status") != "complete":
+            raise ValueError("Game color calibration requires a complete capture session")
+        for stream_id in ("android_phone", "hik_phone"):
+            if not reader.frames_by_stream.get(stream_id):
+                raise ValueError("Session has no {} frames".format(stream_id))
+
+        coordinate_file = session / "coordinate_spaces.yaml"
+        if not coordinate_file.is_file():
+            raise FileNotFoundError(
+                "Synchronized session has no coordinate_spaces.yaml: {}".format(session)
+            )
+        spaces = yaml.safe_load(coordinate_file.read_text(encoding="utf-8"))
+        matrix = (spaces.get("conversions") or {}).get(
+            "adb_to_hik_phone_video_3x3"
+        )
+        if matrix is None:
+            raise ValueError("Session does not define ADB-to-HIK video conversion")
+        hik_stream = (spaces.get("streams") or {}).get("hik_phone") or {}
+        content_size = hik_stream.get("content_size_px")
+
+        capture_sha256 = _sha256(rig_calibration)
+        captured_rig_revision = _captured_rig_revision(registry, context, capture_sha256)
+
+        android_records = list(reader.frames_by_stream["android_phone"])
+        hik_records = list(reader.frames_by_stream["hik_phone"])
+        android_times = np.asarray(
+            [int(record["host_capture_time_ns"]) for record in android_records],
+            dtype=np.int64,
+        )
+        hik_times = np.asarray(
+            [int(record["host_capture_time_ns"]) for record in hik_records],
+            dtype=np.int64,
+        )
+        selected = synchronized_frame_pairs(
+            android_times, hik_times, maximum_pairs=maximum_pairs
+        )
+        if len(selected) < 4:
+            raise ValueError("Fewer than four synchronized ADB/HIK frame pairs")
+        selected_android = [android_records[a] for a, _h, _delta in selected]
+        selected_hik = [hik_records[h] for _a, h, _delta in selected]
+        android_frames = _decode_session_records(
+            reader, "android_phone", selected_android
+        )
+        hik_frames = _decode_session_records(
+            reader,
+            "hik_phone",
+            selected_hik,
+            content_size_px=content_size,
+        )
+        selected_android_times = np.asarray(
+            [int(record["host_capture_time_ns"]) for record in selected_android],
+            dtype=np.int64,
+        )
+        selected_hik_times = np.asarray(
+            [int(record["host_capture_time_ns"]) for record in selected_hik],
+            dtype=np.int64,
         )
 
-    android_records = list(reader.frames_by_stream["android_phone"])
-    hik_records = list(reader.frames_by_stream["hik_phone"])
-    android_times = np.asarray(
-        [int(record["host_capture_time_ns"]) for record in android_records],
-        dtype=np.int64,
-    )
-    hik_times = np.asarray(
-        [int(record["host_capture_time_ns"]) for record in hik_records],
-        dtype=np.int64,
-    )
-    selected = synchronized_frame_pairs(
-        android_times, hik_times, maximum_pairs=maximum_pairs
-    )
-    if len(selected) < 4:
-        raise ValueError("Fewer than four synchronized ADB/HIK frame pairs")
-    selected_android = [android_records[a] for a, _h, _delta in selected]
-    selected_hik = [hik_records[h] for _a, h, _delta in selected]
-    android_frames = _decode_session_records(
-        reader, "android_phone", selected_android
-    )
-    hik_frames = _decode_session_records(
-        reader,
-        "hik_phone",
-        selected_hik,
-        content_size_px=content_size,
-    )
-    selected_android_times = np.asarray(
-        [int(record["host_capture_time_ns"]) for record in selected_android],
-        dtype=np.int64,
-    )
-    selected_hik_times = np.asarray(
-        [int(record["host_capture_time_ns"]) for record in selected_hik],
-        dtype=np.int64,
-    )
-
-    adb_mask, sampling_geometry = _logical_minimap_sampling_mask(
-        registry,
-        context,
-        [android_frames.shape[2], android_frames.shape[1]],
-        phone_game_revision=phone_game_revision,
-    )
-
-    mask_path = session / "cross_source_check" / "valid_mask.png"
-    valid_hik_mask = (
-        cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if mask_path.is_file()
-        else None
-    )
-    if valid_hik_mask is None or valid_hik_mask.shape != hik_frames.shape[1:3]:
-        valid_hik_mask = np.full(hik_frames.shape[1:3], 255, np.uint8)
-    hik_map_mask = cv2.warpPerspective(
-        adb_mask,
-        np.asarray(matrix, np.float64),
-        (hik_frames.shape[2], hik_frames.shape[1]),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    mask = cv2.bitwise_and(valid_hik_mask, hik_map_mask)
-    if np.count_nonzero(mask) == 0:
-        raise ValueError(
-            "Projected mini-map has no valid HIK pixels for color fitting"
+        adb_mask, sampling_geometry = _logical_minimap_sampling_mask(
+            registry,
+            context,
+            [android_frames.shape[2], android_frames.shape[1]],
+            phone_game_revision=phone_game_revision,
         )
-    spatial_alignment = _check_color_spatial_alignment(
-        android_frames,
-        hik_frames,
-        np.asarray(matrix, np.float64),
-        mask,
-        output,
-    )
-    conversion, evidence = optimize_mvs_bayer_conversion(
-        android_frames,
-        selected_android_times,
-        hik_frames,
-        selected_hik_times,
-        matrix,
-        mask,
-        maximum_pairs=maximum_pairs,
-    )
+
+        mask_path = session / "cross_source_check" / "valid_mask.png"
+        valid_hik_mask = (
+            cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if mask_path.is_file()
+            else None
+        )
+        if valid_hik_mask is None or valid_hik_mask.shape != hik_frames.shape[1:3]:
+            valid_hik_mask = np.full(hik_frames.shape[1:3], 255, np.uint8)
+        hik_map_mask = cv2.warpPerspective(
+            adb_mask,
+            np.asarray(matrix, np.float64),
+            (hik_frames.shape[2], hik_frames.shape[1]),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        mask = cv2.bitwise_and(valid_hik_mask, hik_map_mask)
+        if np.count_nonzero(mask) == 0:
+            raise ValueError(
+                "Projected mini-map has no valid HIK pixels for color fitting"
+            )
+        spatial_alignment = _check_color_spatial_alignment(
+            android_frames,
+            hik_frames,
+            np.asarray(matrix, np.float64),
+            mask,
+            output,
+        )
+        conversion, evidence = optimize_mvs_bayer_conversion(
+            android_frames,
+            selected_android_times,
+            hik_frames,
+            selected_hik_times,
+            matrix,
+            mask,
+            maximum_pairs=maximum_pairs,
+        )
+
+        if not _usable_game_color({"payload": {"hik_bayer_conversion": conversion}}):
+            raise ValueError("Fresh color fit did not select a usable correction; retaining existing color")
+        adb_color_reference = _adb_color_statistics(android_frames, adb_mask)
+    except (ProfileResolutionError, OSError, ValueError, RuntimeError, KeyError,
+            TypeError, AttributeError, yaml.YAMLError, cv2.error) as exc:
+        return _color_fallback(session, output, registry, context,
+                               "{}: {}".format(type(exc).__name__, exc))
 
     evidence = dict(evidence)
     evidence["adb_minimap_color_sampling_mask.png"] = adb_mask
@@ -640,14 +683,17 @@ def calibrate_game_color_session(
         raise RuntimeError("Cannot write portable ADB game-color reference")
     if not cv2.imwrite(str(adb_reference_mask_path), adb_mask):
         raise RuntimeError("Cannot write portable ADB game-color reference mask")
-    adb_color_reference = _adb_color_statistics(android_frames, adb_mask)
     summary = {
         "schema_version": "1.0",
         "status": "calibrated_pending_publication",
         "calibration_kind": "hik_game_color",
         "session": str(session),
         "profile_context": context.as_dict(),
-        "rig_revision": active_rig["revision_id"],
+        "rig_revision": captured_rig_revision,
+        "capture_rig_sha256": capture_sha256,
+        "capture_rig_calibration": str(rig_calibration),
+        "fresh_color_measurement": True,
+        "non_gating": True,
         "hik_bayer_conversion": conversion,
         "adb_game_color_reference": adb_color_reference,
         "sampling_geometry": sampling_geometry,
@@ -706,11 +752,13 @@ def calibrate_game_color_session(
             },
         },
         dependencies={
-            "rig": active_rig["revision_id"],
+            **({"rig": captured_rig_revision} if captured_rig_revision else {}),
             "phone_game_color": phone_color_profile["revision_id"],
         },
         provenance={
             "game_color_calibration": str(summary_path),
+            "capture_rig_sha256": capture_sha256,
+            "capture_rig_calibration": str(rig_calibration),
             "session": str(session),
             "evidence": list(evidence)
             + list(spatial_alignment["evidence_files"]),
@@ -727,14 +775,19 @@ def calibrate_game_color_session(
     if activate:
         from rig_runtime.workflows.adapter_export import export_resolved_adapter
 
-        summary["standalone_camera_adapter"] = export_resolved_adapter(
-            output / "hikcam_adapter.py",
-            registry=registry,
-            context=context,
-            request=AdapterRequest(
-                mode="full", color_order="BGR", color_policy="game_matched"
-            ),
-        )
+        try:
+            summary["standalone_camera_adapter"] = export_resolved_adapter(
+                output / "hikcam_adapter.py",
+                registry=registry,
+                context=context,
+                request=AdapterRequest(
+                    mode="full", color_order="BGR", color_policy="game_matched"
+                ),
+            )
+        except (ProfileResolutionError, FileNotFoundError, ValueError) as exc:
+            summary["standalone_camera_adapter"] = {
+                "status": "unavailable", "reason": str(exc),
+            }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
@@ -794,8 +847,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         maximum_pairs=arguments.maximum_pairs,
         activate=not arguments.candidate,
     )
-    conversion = result["hik_bayer_conversion"]
     print("Game color calibration: {}".format(Path(arguments.output).resolve()))
+    if result.get("status") == "optional_fallback":
+        print("Optional color: {}. {}".format(result["fallback"], result["reason"]))
+        if result.get("profile_revision"):
+            print("Retained color profile: {} (no fresh color measurement)".format(result["profile_revision"]))
+        return 0
+    conversion = result["hik_bayer_conversion"]
     print("Profile: {}".format(result["profile_revision"]))
     print(
         "Validation RGB MAE: {:.3f} -> {:.3f} DN".format(

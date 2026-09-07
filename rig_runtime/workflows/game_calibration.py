@@ -740,6 +740,9 @@ def calibrate_game_session(
             capabilities["game_color"] = _outcome(
                 value["status"], calibration=str(output / "color" / "game_color_calibration.json"),
                 profile_revision=value["profile_revision"],
+                reason=value.get("reason"),
+                fallback=value.get("fallback"),
+                fresh_color_measurement=value.get("fresh_color_measurement"),
             )
 
     successful = [

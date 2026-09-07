@@ -255,6 +255,12 @@ python -m iris_tools minimap-calibration SESSION `
 python -m iris_tools game-color-calibration SESSION --game-id GAME_ID
 ```
 
+The direct color command is also optional: unavailable or unhelpful color
+evidence returns an explained fallback and a successful exit. It retains a
+usable previous fit for the same camera, phone, and game, or uses uncorrected
+color. Rig displacement does not invalidate color; recorded pairs use their
+original capture geometry and retain their original measurement provenance.
+
 ## Profile management
 
 ```powershell
