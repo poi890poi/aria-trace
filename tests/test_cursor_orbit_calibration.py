@@ -182,7 +182,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             space,
         )
         # Red is intentionally outside the legacy cyan HSV shape interval.
-        # Center geometry must still be recovered from temporal symmetry.
+        # Center geometry must still be recovered from the temporal cold core.
         pivot = np.asarray([112.0, 86.0])
         base = np.asarray([[-7.0, -5.0], [-7.0, 5.0], [10.0, 0.0]])
         frames = []
@@ -208,7 +208,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
                 1.5,
             )
             self.assertEqual(
-                "color_agnostic_temporal_centrosymmetry", fitted["method"]
+                "color_agnostic_temporal_cold_circle", fitted["method"]
             )
             self.assertEqual("rotation_center_only", result["result_level"])
             self.assertEqual("partial", result["status"])
@@ -224,7 +224,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
             )
             declared = {item["name"] for item in result["evidence"]}
             self.assertIn("cursor_center_heatmap.png", declared)
-            self.assertIn("cursor_center_symmetry.png", declared)
+            self.assertIn("cursor_center_hough.png", declared)
 
     def test_static_series_reports_shape_without_inventing_rotation_center(self):
         height, width = 180, 220

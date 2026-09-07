@@ -180,10 +180,13 @@ non-gating diagnostic evidence; it cannot override the image-space geometry.
 Legacy profiles without directed axes continue through the prior Surface/game
 orientation fallback instead of blocking unattended operation.
 
-Rotation-center fitting uses the color-agnostic temporal symmetry of those
-balanced samples. It does not require a predefined cursor HSV range or a cursor
-shape fit; an unavailable shape is reported separately while the center remains
-usable.
+Rotation-center fitting searches near the mini-map center for a small circle
+on the inward boundary of the temporal cold region. Direction samples must
+expose a curved boundary, but need not be balanced or form a complete disc.
+Repeating or reordering the same frames does not change the fit. It does not
+require a predefined cursor HSV range or a cursor shape fit; an unavailable
+shape is reported separately while the center remains usable. Missing temporal
+signal or an arc that cannot constrain the center produces an explicit reason.
 
 Configure the model before calibration when the default is wrong:
 

@@ -20,6 +20,7 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from rig_runtime.services.calibration.cursor.center import fit_temporal_cold_circle
 from rig_runtime.services.calibration.cursor.shape import fit_symmetric_polygon
 from rig_runtime.adapters.filesystem.session import SessionReader
 from rig_runtime.domain.spatial import (
@@ -671,201 +672,13 @@ def _cursor_components(
     return np.stack(masks), np.asarray(centroids), np.asarray(indices)
 
 
-def _normalized_temporal_channel(values: np.ndarray, region: np.ndarray) -> np.ndarray:
-    samples = np.asarray(values, dtype=np.float32)[region]
-    low = float(np.percentile(samples, 35.0))
-    high = float(np.percentile(samples, 98.0))
-    if high <= low + 1.0e-6:
-        return np.zeros_like(values, dtype=np.float32)
-    return np.clip((values.astype(np.float32) - low) / (high - low), 0.0, 1.0)
-
-
 def _cursor_temporal_center(
     movement_frames: np.ndarray, initial: np.ndarray, search_radius: float
 ) -> dict:
-    """Find a cursor pivot from temporal centrosymmetry without color priors.
-
-    Balanced direction samples make the rotating cursor's temporal envelope
-    approximately invariant under a 180-degree rotation about its pivot.  We
-    search near the mini-map center for the point that best aligns that
-    envelope with its opposite offsets.  Cursor pixels may have any hue,
-    saturation, or brightness.
-    """
-
-    height, width = movement_frames.shape[1:3]
-    yy, xx = np.ogrid[:height, :width]
-    analysis_radius = max(8, int(round(search_radius)))
-    local_radius = max(analysis_radius + 3, int(round(search_radius * 1.6)))
-    local_region = (
-        (xx - float(initial[0])) ** 2 + (yy - float(initial[1])) ** 2
-        <= float(local_radius) ** 2
-    )
-    background = np.median(movement_frames.astype(np.float32), axis=0)
-    median_deviation = np.median(
-        np.abs(movement_frames.astype(np.float32) - background[None, ...]),
-        axis=0,
-    ).mean(axis=2)
-    consecutive_difference = _stacked_difference_heatmap(movement_frames)
-    temporal = 0.5 * _normalized_temporal_channel(
-        median_deviation, local_region
-    ) + 0.5 * _normalized_temporal_channel(
-        consecutive_difference, local_region
-    )
-    temporal = cv2.GaussianBlur(temporal.astype(np.float32), (5, 5), 0.9)
-    temporal[~local_region] = 0.0
-    local_values = temporal[local_region]
-    signal_peak = float(np.percentile(local_values, 98.0))
-    signal_floor = float(np.percentile(local_values, 35.0))
-    if signal_peak <= signal_floor + 1.0e-5:
-        raise RuntimeError(
-            "Cursor rotation center has no observable temporal signal near the "
-            "mini-map center; no color or shape assumption was substituted"
-        )
-    temporal = np.maximum(temporal - signal_floor, 0.0)
-
-    offset_y, offset_x = np.mgrid[
-        -analysis_radius : analysis_radius + 1,
-        -analysis_radius : analysis_radius + 1,
-    ]
-    offset_mask = offset_x ** 2 + offset_y ** 2 <= analysis_radius ** 2
-    offset_x = offset_x[offset_mask]
-    offset_y = offset_y[offset_mask]
-    score_map = np.full((height, width), np.nan, dtype=np.float32)
-    center_x0, center_y0 = map(float, initial)
-    candidate_radius = int(math.ceil(search_radius))
-    candidates = []
-    for center_y in range(
-        max(analysis_radius, int(math.floor(center_y0)) - candidate_radius),
-        min(height - analysis_radius, int(math.ceil(center_y0)) + candidate_radius + 1),
-    ):
-        for center_x in range(
-            max(analysis_radius, int(math.floor(center_x0)) - candidate_radius),
-            min(width - analysis_radius, int(math.ceil(center_x0)) + candidate_radius + 1),
-        ):
-            if math.hypot(center_x - center_x0, center_y - center_y0) > search_radius:
-                continue
-            forward = temporal[center_y + offset_y, center_x + offset_x]
-            opposite = temporal[center_y - offset_y, center_x - offset_x]
-            energy = float(np.sqrt(np.sum(forward ** 2) * np.sum(opposite ** 2)))
-            if energy <= 1.0e-8:
-                symmetry = 0.0
-            else:
-                correlation = float(np.sum(forward * opposite) / energy)
-                overlap = float(
-                    2.0 * np.minimum(forward, opposite).sum()
-                    / (forward.sum() + opposite.sum() + 1.0e-8)
-                )
-                symmetry = float(np.clip(0.5 * correlation + 0.5 * overlap, 0.0, 1.0))
-            candidates.append((center_x, center_y, symmetry, energy))
-    if not candidates:
-        raise RuntimeError("Cursor rotation-center search region does not fit the frame")
-    maximum_energy = max(item[3] for item in candidates)
-    if maximum_energy <= 1.0e-8:
-        raise RuntimeError(
-            "Cursor rotation center has no paired temporal evidence near the "
-            "mini-map center"
-        )
-    scored = []
-    for center_x, center_y, symmetry, energy in candidates:
-        score = float(symmetry * math.sqrt(max(0.0, energy / maximum_energy)))
-        score_map[center_y, center_x] = score
-        scored.append((center_x, center_y, score))
-    best_x, best_y, best_score = max(scored, key=lambda item: item[2])
-    neighborhood = [
-        item for item in scored
-        if abs(item[0] - best_x) <= 2 and abs(item[1] - best_y) <= 2
-    ]
-    neighborhood_scores = np.asarray([item[2] for item in neighborhood])
-    weights = np.exp(20.0 * (neighborhood_scores - float(best_score)))
-    fitted_x = float(
-        np.average(np.asarray([item[0] for item in neighborhood]), weights=weights)
-    )
-    fitted_y = float(
-        np.average(np.asarray([item[1] for item in neighborhood]), weights=weights)
-    )
-    phase_response = 0.0
-    refinement = consecutive_difference[
-        best_y - analysis_radius : best_y + analysis_radius + 1,
-        best_x - analysis_radius : best_x + analysis_radius + 1,
-    ].astype(np.float32)
-    if min(refinement.shape) >= 9 and float(np.std(refinement)) > 1.0e-6:
-        phase_shift, phase_response = cv2.phaseCorrelate(
-            cv2.flip(refinement, -1), refinement
-        )
-        # Reflecting a feature about an origin doubles its displacement from
-        # that origin.  Half the registration shift therefore gives the
-        # sub-pixel symmetry center relative to the integer candidate.
-        if (
-            abs(float(phase_shift[0])) <= 4.0
-            and abs(float(phase_shift[1])) <= 4.0
-            and float(phase_response) > 0.0
-        ):
-            fitted_x = float(best_x + 0.5 * float(phase_shift[0]))
-            fitted_y = float(best_y + 0.5 * float(phase_shift[1]))
-
-    signal_y, signal_x = np.nonzero(local_region)
-    signal_weights = temporal[signal_y, signal_x]
-    signal_distances = np.hypot(signal_x - fitted_x, signal_y - fitted_y)
-    temporal_radius = float(
-        math.sqrt(
-            np.average(signal_distances ** 2, weights=signal_weights + 1.0e-8)
-        )
-    )
-    angles = np.mod(
-        np.arctan2(signal_y - fitted_y, signal_x - fitted_x), 2.0 * np.pi
-    )
-    angular_bins = np.floor(angles * 36.0 / (2.0 * np.pi)).astype(int) % 36
-    angular_energy = np.bincount(
-        angular_bins, weights=signal_weights, minlength=36
-    )
-    occupied = float(
-        np.mean(angular_energy >= 0.20 * float(np.max(angular_energy) or 1.0))
-    )
-    valid_scores = np.asarray([item[2] for item in scored], dtype=np.float64)
-    peak_margin = float(best_score - np.percentile(valid_scores, 90.0))
-    localized = np.asarray(
-        [[item[0], item[1]] for item in scored if item[2] >= best_score - 0.03],
-        dtype=np.float64,
-    )
-    localization_sigma = (
-        float(math.sqrt(np.var(localized[:, 0]) + np.var(localized[:, 1])))
-        if len(localized) else float("inf")
-    )
-    components = {
-        "temporal_signal": float(
-            np.clip((signal_peak - signal_floor) / max(signal_peak, 1.0e-6), 0.0, 1.0)
-        ),
-        "centrosymmetry": float(np.clip(best_score, 0.0, 1.0)),
-        "peak_separation": float(np.clip(peak_margin / 0.08, 0.0, 1.0)),
-        "angular_coverage": float(np.clip(occupied / 0.75, 0.0, 1.0)),
-        "localization": float(math.exp(-((localization_sigma / 3.0) ** 2))),
-        "subpixel_registration": float(np.clip(phase_response, 0.0, 1.0)),
-    }
-    confidence = float(
-        np.prod([max(value, 0.02) for value in components.values()])
-        ** (1.0 / len(components))
-    )
-    return {
-        "temporal_heatmap": temporal,
-        "symmetry_score_map": score_map,
-        "metrics": {
-            "x": fitted_x,
-            "y": fitted_y,
-            "method": "color_agnostic_temporal_centrosymmetry",
-            "centroid_orbit_radius_px": None,
-            "temporal_signal_radius_px": temporal_radius,
-            "analyzed_frames": int(len(movement_frames)),
-            "total_frames": int(len(movement_frames)),
-            "angular_coverage_10deg_bins": occupied,
-            "symmetry_score": float(best_score),
-            "symmetry_peak_margin": peak_margin,
-            "localization_sigma_px": localization_sigma,
-            "subpixel_registration_response": float(phase_response),
-            "confidence": confidence,
-            "confidence_level": _confidence_level(confidence),
-            "confidence_components": components,
-        },
-    }
+    result = fit_temporal_cold_circle(movement_frames, initial, search_radius)
+    metrics = result["metrics"]
+    metrics["confidence_level"] = _confidence_level(metrics["confidence"])
+    return result
 
 
 def _rotation_center(movement_frames: np.ndarray, boundary: dict, config: dict) -> dict:
@@ -1186,9 +999,9 @@ def _write_evidence(
         "center",
     )
     save(
-        "cursor_center_symmetry.png",
-        _color_heatmap(np.nan_to_num(center["symmetry_score_map"], nan=0.0)),
-        "Cursor rotation-center centrosymmetry score",
+        "cursor_center_hough.png",
+        _color_heatmap(np.nan_to_num(center["center_score_map"], nan=0.0)),
+        "Cursor cold-core circle Hough votes",
         "center",
     )
     orbit = movement_frames.mean(axis=0).astype(np.uint8)
@@ -1442,11 +1255,11 @@ def _write_cursor_orbit_evidence(
         "Color-agnostic cursor temporal heatmap",
         "center",
     )
-    score_map = np.nan_to_num(center["symmetry_score_map"], nan=0.0)
+    score_map = np.nan_to_num(center["center_score_map"], nan=0.0)
     save(
-        "cursor_center_symmetry.png",
+        "cursor_center_hough.png",
         _color_heatmap(score_map),
-        "Cursor rotation-center centrosymmetry score",
+        "Cursor cold-core circle Hough votes",
         "center",
     )
     orbit = frames.mean(axis=0).astype(np.uint8)
@@ -1470,7 +1283,7 @@ def _write_cursor_orbit_evidence(
     save(
         "cursor_center_orbit.png",
         orbit,
-        "Color-agnostic temporal envelope and fitted rotation center",
+        "Observed cold-core circle and fitted rotation center",
         "center",
     )
 
@@ -1592,7 +1405,7 @@ def calibrate_cursor_orbit_frames(
     if boundary["space"] != space:
         raise ValueError("Cursor-orbit frames and mini-map boundary must share one space")
     if progress:
-        progress("Fitting cursor rotation center from balanced joystick pulses")
+        progress("Fitting a small cold-core circle near the mini-map center")
     center = _rotation_center(frames, boundary, merged["cursor"])
     center["metrics"] = bind_geometry(center["metrics"], "point", space)
     require_same_space(boundary, center["metrics"])
