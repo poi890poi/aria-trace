@@ -433,11 +433,15 @@ class HikRigCalibrationSession:
         self._opened = False
         self._saved = False
         self.stage_timings: List[Dict[str, Any]] = []
+        self._failed_stage: Optional[str] = None
 
     def _timed_stage(self, name: str, operation):
         started = time.perf_counter_ns()
         try:
             return operation()
+        except Exception:
+            self._failed_stage = str(name)
+            raise
         finally:
             self.stage_timings.append(
                 {
@@ -4872,6 +4876,7 @@ class HikRigCalibrationSession:
             raise
 
     def run(self) -> Optional[Path]:
+        self._failed_stage = None
         self._timed_stage("open", self.open)
         try:
             try:
@@ -4930,9 +4935,24 @@ class HikRigCalibrationSession:
                         return self._timed_stage("save", self.save)
                     return None
             except Exception as exc:
-                evidence = self._write_failure_evidence(exc)
-                if evidence is not None:
-                    self.progress("Failure evidence saved for review: {}".format(evidence))
+                stage = " during {}".format(self._failed_stage) if self._failed_stage else ""
+                self.progress(
+                    "Rig calibration failed{}: {}{}".format(
+                        stage, type(exc).__name__, ": {}".format(exc) if str(exc) else ""
+                    )
+                )
+                try:
+                    evidence = self._write_failure_evidence(exc)
+                except Exception as evidence_exc:
+                    # Diagnostic I/O must not replace the calibration failure.
+                    self.progress(
+                        "Warning: could not save calibration failure evidence: {}: {}".format(
+                            type(evidence_exc).__name__, evidence_exc
+                        )
+                    )
+                else:
+                    if evidence is not None:
+                        self.progress("Failure evidence saved for review: {}".format(evidence))
                 raise
         finally:
             self._timed_stage("close", self.close)
@@ -5029,6 +5049,7 @@ class HikRigCalibrationSession:
         failure_document = {
             "error_type": type(error).__name__,
             "error": str(error),
+            "failed_stage": self._failed_stage,
             "camera": dict(self.camera_metadata),
             "phone": self.phone_metrics.to_dict() if self.phone_metrics else None,
             "phone_calibration_display_brightness": self.phone_display_brightness,
