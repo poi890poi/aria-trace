@@ -19,7 +19,7 @@ from rig_runtime.domain.spaces import (
 )
 
 from rig_runtime.adapters.rig.devices import CameraConfiguration
-from rig_runtime.domain.spatial import require_spatial_geometry
+from rig_runtime.domain.spatial import require_spatial_geometry, validate_orientation_frame
 from rig_runtime.services.calibration.rig.contracts import FrameSample
 from rig_runtime.services.calibration.rig.distortion import (
     distort_pixel_points,
@@ -375,6 +375,16 @@ class ProfiledHikGameCamera:
             if self.runtime_surface_quarter_turns_clockwise_from_natural is not None
             else stored_turns
         )
+        boundary = self.minimap.get("outer_boundary") or {}
+        if (
+            "canonical_phone_crop_xywh" in self.minimap
+            and (boundary.get("space") or {}).get("space_id") == RigSpaceId.ANDROID_PHONE_NATURAL
+        ):
+            # This crop and its fitted geometry are already in the same
+            # canonical phone space. Surface telemetry must not rotate just
+            # the crop again while leaving the boundary and cursor behind.
+            return [{"xywh": base, "surface_quarter_turns": stored_turns,
+                     "preferred": True, "phone_bounds_valid": True}]
         matrices = (
             [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
             [[0, -1, natural_height], [1, 0, 0], [0, 0, 1]],
@@ -569,7 +579,7 @@ class ProfiledHikGameCamera:
 
         canonical = dict(self.minimap.get("cursor_geometry") or {})
         if not canonical:
-            return {}
+            return {"available_in_stream_space": False, "reason": "Selected profile has no calibrated cursor geometry"}
         if not self._opened:
             raise RuntimeError("Camera must be open to query runtime cursor geometry")
         selected = str(stream_id)
@@ -635,9 +645,20 @@ class ProfiledHikGameCamera:
 
         canonical = self.minimap.get("outer_boundary")
         if not isinstance(canonical, Mapping):
-            return {}
+            return {"available_in_stream_space": False, "reason": "Selected profile has no calibrated mini-map boundary"}
+        # Optional axes have an independent capability status. A malformed
+        # legacy axis must not discard an otherwise usable fitted circle.
+        circle = dict(canonical)
+        orientation = circle.pop("orientation_frame", None)
+        orientation_error = None
+        if orientation is not None:
+            try:
+                orientation = validate_orientation_frame(orientation)
+            except (TypeError, ValueError) as exc:
+                orientation_error = str(exc)
+                orientation = None
         boundary = require_spatial_geometry(
-            canonical,
+            circle,
             "circle",
             expected_space_id=RigSpaceId.ANDROID_PHONE_NATURAL,
         )
@@ -653,7 +674,13 @@ class ProfiledHikGameCamera:
             "available": True,
             "canonical_phone": copy.deepcopy(dict(boundary)),
             "stream_id": selected,
+            "orientation_reason": orientation_error or (
+                "Selected profile has no calibrated game axes" if orientation is None else None
+            ),
         }
+        if orientation is not None:
+            boundary["orientation_frame"] = orientation
+            result["canonical_phone"]["orientation_frame"] = copy.deepcopy(orientation)
         if selected == "canonical_phone":
             return result
         if not self.rectify_minimap:

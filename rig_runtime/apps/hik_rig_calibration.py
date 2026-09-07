@@ -388,6 +388,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             precheck.get("reusable")
             and precheck.get("camera_adapter_is_calibrated")
         ):
+            # Physical reuse alone does not establish game readiness. Rebuild
+            # and validate the same portable sources, repairing stale dependents
+            # transactionally before writing a successful reuse receipt.
+            readiness = None
+            if not arguments.no_profile:
+                from rig_runtime.workflows.profile_management import publish_rig_calibration
+                checked = publish_rig_calibration(
+                    Path(str(precheck["calibration"])), profile_root=profile_root,
+                    activate=True, validation_adapter=camera,
+                )
+                readiness = checked.get("readiness")
             arguments.output.mkdir(parents=True, exist_ok=False)
             receipt = {
                 "schema_version": "1.0",
@@ -396,6 +407,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "selection": "active_profile_registry",
                 "precheck": str((precheck_output / "precheck.json").resolve()),
                 "comparison": precheck.get("comparison"),
+                "game_readiness": readiness,
             }
             (arguments.output / "reused_calibration.json").write_text(
                 json.dumps(receipt, indent=2), encoding="utf-8"
@@ -496,7 +508,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from rig_runtime.workflows.profile_management import publish_rig_calibration
 
         profile = publish_rig_calibration(
-            result, profile_root=profile_root, activate=True
+            result, profile_root=profile_root, activate=True, validation_adapter=camera
+        )
+        (Path(result) / "game_readiness.json").write_text(
+            json.dumps(profile.get("readiness"), indent=2), encoding="utf-8"
         )
         print(
             "Active rig profile: {} ({})".format(

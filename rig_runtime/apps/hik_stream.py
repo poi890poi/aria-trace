@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib
 import json
 import subprocess
 import time
+import textwrap
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
@@ -179,18 +180,14 @@ class LiveStreamTelemetry:
 
 
 def overlay_stream_telemetry(frame, telemetry: LiveStreamTelemetry):
-    rendered = frame.copy()
     label = telemetry.label()
     (text_width, text_height), baseline = cv2.getTextSize(
         label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
     )
-    cv2.rectangle(
-        rendered,
-        (4, 4),
-        (14 + text_width, 14 + text_height + baseline),
-        (12, 12, 12),
-        -1,
-    )
+    header_height = 20 + text_height + baseline
+    rendered = np.full((header_height + frame.shape[0],
+                        max(frame.shape[1], text_width + 18), 3), 12, np.uint8)
+    rendered[header_height:, :frame.shape[1]] = frame
     cv2.putText(
         rendered,
         label,
@@ -210,6 +207,9 @@ class GeometryOverlayState:
     minimap_boundary: bool = True
     cursor: bool = True
     game_axes: bool = True
+    status_by_stream: dict = field(default_factory=dict)
+    notice: Optional[str] = None
+    profile_label: Optional[str] = None
 
     def handle_key(self, key: int) -> Optional[str]:
         if key in (ord("g"), ord("G")):
@@ -238,22 +238,72 @@ def _space_matches_frame(geometry: Mapping[str, object], frame) -> bool:
     if not isinstance(image_space, Mapping):
         return False
     size = image_space.get("stored_size_px")
-    return (
-        isinstance(size, Sequence)
-        and len(size) == 2
-        and [int(size[0]), int(size[1])] == [int(frame.shape[1]), int(frame.shape[0])]
-    )
+    try:
+        return (isinstance(size, Sequence) and len(size) == 2
+                and list(map(int, size)) == [int(frame.shape[1]), int(frame.shape[0])])
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _runtime_geometry(camera, method_name: str, stream_name: str) -> Mapping[str, object]:
     getter = getattr(camera, method_name, None)
     if not callable(getter):
-        return {}
+        return {"reason": "This camera does not provide calibrated game geometry"}
     try:
         value = getter(stream_name)
-    except (RuntimeError, TypeError, ValueError):
-        return {}
-    return dict(value) if isinstance(value, Mapping) else {}
+    except (RuntimeError, TypeError, ValueError, KeyError) as exc:
+        return {"reason": "Geometry error: {}: {}".format(type(exc).__name__, exc)}
+    if not isinstance(value, Mapping):
+        return {"reason": "Invalid geometry response"}
+    value = dict(value)
+    try:
+        expected = _last_stream_metadata(camera, stream_name).get("image_space") or {}
+    except (RuntimeError, TypeError, ValueError, KeyError) as exc:
+        return {"reason": "Frame metadata error: {}: {}".format(type(exc).__name__, exc)}
+    actual = value.get("image_space") or {}
+    for key in ("space_id", "local_to_parent_3x3", "roi_in_parent_xywh", "orientation"):
+        if expected.get(key) is not None and value.get("available_in_stream_space"):
+            if actual.get(key) != expected[key]:
+                return {"reason": "Geometry coordinate space does not match the displayed frame ({})".format(key)}
+    return value
+
+
+def _geometry_reason(geometry, frame):
+    if not geometry.get("available_in_stream_space"):
+        return str(geometry.get("reason") or "Selected profile has no calibrated geometry")
+    if not _space_matches_frame(geometry, frame):
+        return "Geometry metadata does not match the displayed frame"
+    try:
+        center = geometry["center_xy_px"]
+        if len(center) != 2 or not np.isfinite(center).all():
+            return "Geometry has an invalid center"
+        if not (0 <= center[0] < frame.shape[1] and 0 <= center[1] < frame.shape[0]):
+            return "Calibrated geometry is outside the displayed camera view"
+    except (KeyError, TypeError, ValueError):
+        return "Geometry has an invalid center"
+    return None
+
+
+def _geometry_status_panel(rendered, stream_name, state, status):
+    if state.profile_label:
+        status = {"Profile": state.profile_label, **status}
+    if state.notice:
+        status = {"Output": state.notice, **status}
+    if state.status_by_stream.get(stream_name) != status:
+        print("{} annotations: {}".format(stream_name, "; ".join(
+            "{}: {}".format(name, value) for name, value in status.items())), flush=True)
+        state.status_by_stream[stream_name] = dict(status)
+    width = max(320, rendered.shape[1])
+    lines = []
+    for name, value in status.items():
+        lines.extend(textwrap.wrap("{}: {}".format(name, value), width=max(20, (width - 16) // 7)))
+    panel = np.full((len(lines) * 18 + 12, width, 3), 20, np.uint8)
+    for index, line in enumerate(lines):
+        cv2.putText(panel, line, (8, 18 + index * 18), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, (235, 235, 235), 1, cv2.LINE_AA)
+    canvas = np.zeros((rendered.shape[0], width, 3), np.uint8)
+    canvas[:, :rendered.shape[1]] = rendered
+    return np.concatenate((canvas, panel), axis=0)
 
 
 def overlay_stream_geometry(
@@ -265,17 +315,22 @@ def overlay_stream_geometry(
     """Draw only geometry explicitly converted into this runtime image space."""
 
     rendered = frame.copy()
+    status = {name: "disabled" for name in ("Boundary", "Cursor", "Game axes")}
     if not state.enabled:
-        return rendered
+        return _geometry_status_panel(rendered, stream_name, state, status)
     minimap_geometry = (
         _runtime_geometry(camera, "get_minimap_geometry", stream_name)
         if state.minimap_boundary or state.game_axes
         else {}
     )
-    minimap_geometry_available = bool(
-        minimap_geometry.get("available_in_stream_space")
-        and _space_matches_frame(minimap_geometry, frame)
-    )
+    reason = _geometry_reason(minimap_geometry, frame)
+    minimap_geometry_available = reason is None
+    if state.minimap_boundary:
+        status["Boundary"] = reason or "available"
+    if state.game_axes:
+        status["Game axes"] = reason or minimap_geometry.get("orientation_reason") or (
+            "available" if minimap_geometry.get("orientation_frame") else "Selected profile has no calibrated game axes"
+        )
     if minimap_geometry_available:
         center = tuple(
             int(round(value)) for value in minimap_geometry["center_xy_px"]
@@ -356,10 +411,11 @@ def overlay_stream_geometry(
                         )
     if state.cursor:
         geometry = _runtime_geometry(camera, "get_cursor_geometry", stream_name)
-        if (
-            geometry.get("available_in_stream_space")
-            and _space_matches_frame(geometry, frame)
-        ):
+        status["Cursor"] = _geometry_reason(geometry, frame) or (
+            "available" if geometry.get("rotating_cursor_envelope_size_xy_px")
+            else "center available; envelope size was not calibrated"
+        )
+        if _geometry_reason(geometry, frame) is None:
             center = tuple(int(round(value)) for value in geometry["center_xy_px"])
             size = geometry.get("rotating_cursor_envelope_size_xy_px")
             if isinstance(size, Sequence) and len(size) == 2:
@@ -392,7 +448,7 @@ def overlay_stream_geometry(
                 2,
                 cv2.LINE_AA,
             )
-    return rendered
+    return _geometry_status_panel(rendered, stream_name, state, status)
 
 
 def _last_stream_metadata(camera, stream_name: str) -> Mapping[str, object]:
@@ -731,6 +787,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     windows = []
     stream_started = False
     effective_mode = arguments.mode
+    fallback_reason = None
     try:
         if arguments.camera_library == "native":
             camera = open_native_mvs_source(
@@ -896,6 +953,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except MinimapRoiUnavailableError as exc:
                 if arguments.mode == "full" or arguments.camera_library != "adapter":
                     raise
+                fallback_reason = "Requested {} unavailable; showing full view. {}".format(arguments.mode, exc)
                 print(
                     "Mini-map ROI unavailable after checking all four game "
                     "orientations: {}. Continuing the demo with the full "
@@ -926,6 +984,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except MinimapRoiUnavailableError as exc:
                 if arguments.mode == "full":
                     raise
+                fallback_reason = "Requested {} unavailable; showing full view. {}".format(arguments.mode, exc)
                 print(
                     "Mini-map ROI unavailable after checking all four game "
                     "orientations: {}. Continuing the demo with the full "
@@ -984,7 +1043,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for window in windows:
             cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
         telemetry = LiveStreamTelemetry()
-        geometry_overlay = GeometryOverlayState()
+        resolved = getattr(camera, "resolved_config", {}) or {}
+        selected = resolved.get("profiles") or {}
+        context = resolved.get("context") or {}
+        profile_label = None
+        if selected.get("phone_game"):
+            profile_label = "{} | phone {} | game {} | rig {}".format(
+                (context.get("game") or {}).get("id"),
+                ((context.get("devices") or {}).get("phone") or {}).get("id"),
+                str(selected["phone_game"])[-10:], str(selected.get("rig"))[-10:],
+            )
+        geometry_overlay = GeometryOverlayState(notice=fallback_reason, profile_label=profile_label)
         while True:
             read_started_ns = time.perf_counter_ns()
             native_packet = None

@@ -244,6 +244,7 @@ def publish_rig_calibration(
     registry: Optional[ProfileRegistry] = None,
     profile_root: Optional[Path] = None,
     activate: bool = True,
+    validation_adapter=None,
 ) -> Dict[str, Any]:
     calibration_file = _rig_calibration_file(calibration)
     document = _load_json(calibration_file)
@@ -267,6 +268,7 @@ def publish_rig_calibration(
         if candidate.is_file():
             runtime_files[logical_name] = candidate
     store = registry or ProfileRegistry(profile_root)
+    expected_active = store.active_revision_ids()
     payload = {
         "profile_kind": "rig",
         "calibration_file": "hik_camera_calibration",
@@ -288,10 +290,10 @@ def publish_rig_calibration(
         runtime_files=runtime_files,
         provenance={"source_calibration": str(calibration_file)},
         review_state="accepted" if activate else "review_required",
-        activate=activate,
+        activate=False,
     )
     reconciliation = (
-        reconcile_active_rig_dependents(profile, registry=store, activate=True)
+        reconcile_active_rig_dependents(profile, registry=store, activate=False)
         if activate
         else {
             "recomposed": {"rig_game": [], "rig_game_orientation": []},
@@ -307,6 +309,16 @@ def publish_rig_calibration(
     profile["recomposed_rig_game_orientation_profiles"] = reconciliation[
         "recomposed"
     ]["rig_game_orientation"]
+    if activate:
+        from .rig_readiness import validate_rig_configuration
+        profile["readiness"] = validate_rig_configuration(
+            profile, reconciliation, registry=store, adapter=validation_adapter
+        )
+        revisions = [profile["revision_id"]] + [
+            item["revision_id"] for group in reconciliation["recomposed"].values()
+            for item in group
+        ]
+        store.activate_many(revisions, expected_active=expected_active)
     return profile
 
 
@@ -314,6 +326,18 @@ def _rig_game_payload_from_phone_game(
     phone_profile: Mapping[str, Any],
 ) -> Dict[str, Any]:
     phone_payload = dict(phone_profile.get("payload") or {})
+    context = ProfileContext.from_dict(phone_profile.get("context") or {})
+    natural = context.panel_display.get("natural_panel_px")
+    if natural:
+        space = raster_space(RigSpaceId.ANDROID_PHONE_NATURAL, natural)
+        for name, kind in (("outer_boundary", "circle"), ("rotation_center", "point")):
+            if isinstance(phone_payload.get(name), Mapping):
+                phone_payload[name] = normalize_legacy_geometry(phone_payload[name], kind, space)
+        if isinstance(phone_payload.get("cursor_geometry"), Mapping):
+            cursor = dict(phone_payload["cursor_geometry"])
+            if isinstance(cursor.get("rotation_center"), Mapping):
+                cursor["rotation_center"] = normalize_legacy_geometry(cursor["rotation_center"], "point", space)
+            phone_payload["cursor_geometry"] = cursor
     return {
         "profile_kind": "rig_game",
         "canonical_phone_crop_xywh": phone_payload.get(
@@ -584,6 +608,42 @@ def _compose_rig_game_orientation_profile(
     )
 
 
+def _portable_sources_for_rig(rig_profile, registry):
+    """Keep established phone/game sources; prefer this phone over portable peers."""
+    rig = ProfileContext.from_dict(rig_profile.get("context") or {})
+    established = set()
+    for item in registry.list_revisions(kind="rig_game", active_only=True):
+        previous = registry.revision(item["revision_id"])
+        context = ProfileContext.from_dict(previous["context"])
+        if (context.camera_id, context.phone_id, context.platform) == (
+            rig.camera_id, rig.phone_id, rig.platform
+        ):
+            revision = previous.get("dependencies", {}).get("phone_game")
+            if revision:
+                established.add(revision)
+    profiles = {item["revision_id"]: registry.revision(item["revision_id"])
+                for item in registry.list_revisions(kind="phone_game", active_only=True)}
+    for revision in established:
+        profiles[revision] = registry.revision(revision)
+    candidates = []
+    for profile in profiles.values():
+        context = ProfileContext.from_dict(profile["context"])
+        matches = context.platform == rig.platform and _portable_panel_geometry_matches(rig, context)
+        if not matches and profile["revision_id"] in established:
+            raise ProfileResolutionError(
+                "Working game {!r} profile {} is incompatible with the new phone raster; "
+                "the previous configuration was not replaced".format(context.game_id, profile["revision_id"])
+            )
+        if matches:
+            candidates.append(profile)
+    candidates.sort(key=lambda item: (
+        item["revision_id"] in established,
+        ProfileContext.from_dict(item["context"]).phone_id == rig.phone_id,
+        item["created_utc"],
+    ), reverse=True)
+    return candidates
+
+
 def recompose_active_rig_game_profiles(
     rig_profile: Mapping[str, Any],
     *,
@@ -595,8 +655,7 @@ def recompose_active_rig_game_profiles(
     rig_context = ProfileContext.from_dict(rig_profile.get("context") or {})
     recomposed = []
     composed_variants = set()
-    for item in registry.list_revisions(kind="phone_game", active_only=True):
-        phone_profile = registry.revision(str(item["revision_id"]))
+    for phone_profile in _portable_sources_for_rig(rig_profile, registry):
         phone_context = ProfileContext.from_dict(
             phone_profile.get("context") or {}
         )
@@ -652,8 +711,7 @@ def recompose_active_rig_game_orientation_profiles(
     recomposed = []
     composed_variants = set()
     composed_games = set()
-    for item in registry.list_revisions(kind="phone_game", active_only=True):
-        phone_profile = registry.revision(str(item["revision_id"]))
+    for phone_profile in _portable_sources_for_rig(rig_profile, registry):
         phone_context = ProfileContext.from_dict(
             phone_profile.get("context") or {}
         )
@@ -837,6 +895,8 @@ def reconcile_active_rig_dependents(
             continue
         if source_context.camera_id != rig_context.camera_id:
             continue
+        if source_context.phone_id != rig_context.phone_id:
+            continue
         if not _portable_panel_geometry_matches(rig_context, source_context):
             continue
         source_rig = str((source.get("dependencies") or {}).get("rig") or "")
@@ -849,7 +909,7 @@ def reconcile_active_rig_dependents(
                 "source_rig_revision": source_rig or None,
                 "target_rig_revision": rig_profile["revision_id"],
                 "action": (
-                    "adapter_falls_back_to_rig_locked_until_fresh_synchronized_"
+                    "activation_blocked_until_fresh_synchronized_"
                     "game_calibration_publishes_a_local_hik_fit"
                 ),
             }

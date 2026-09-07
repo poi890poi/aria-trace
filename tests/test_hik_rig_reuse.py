@@ -389,6 +389,7 @@ class HikRigReuseTests(unittest.TestCase):
                         "--save",
                         "--output",
                         str(root / "output"),
+                        "--profile-root", str(root / "profiles"),
                     ]
                 )
             self.assertEqual(0, result)

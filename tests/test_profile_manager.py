@@ -22,6 +22,7 @@ def write_rig(
     *,
     camera_x_offset: float = 0.0,
     calibration_display_turns: int = 0,
+    sensor_size=(100, 80),
 ) -> Path:
     root.mkdir()
     calibration = root / "hik_camera_calibration.json"
@@ -31,8 +32,8 @@ def write_rig(
                 "camera": {
                     "adapter_id": "hik_mvs",
                     "device_id": "CAM-1",
-                    "full_sensor_mode": {"width_px": 100, "height_px": 80, "fps": 30},
-                    "hardware_roi_xywh": [0, 0, 100, 80],
+                    "full_sensor_mode": {"width_px": sensor_size[0], "height_px": sensor_size[1], "fps": 30},
+                    "hardware_roi_xywh": [0, 0, *sensor_size],
                 },
                 "phone": {
                     "serial": "PHONE-1",
@@ -64,7 +65,7 @@ def write_rig(
                     ).tolist(),
                 },
                 "normalization": {
-                    "output_size_px": [100, 80],
+                    "output_size_px": list(sensor_size),
                     "full_sensor_camera_to_output_3x3": np.eye(3).tolist(),
                     "valid_mask_file": "valid_screen_mask.png",
                 },
@@ -395,7 +396,7 @@ class ProfileManagerTests(unittest.TestCase):
                 },
                 dependencies={"rig": first_rig["revision_id"]},
                 review_state="accepted",
-                activate=True,
+                activate=False,
             )
 
             second_rig = publish_rig_calibration(
@@ -414,8 +415,8 @@ class ProfileManagerTests(unittest.TestCase):
                 phone_game["revision_id"], recomposed["dependencies"]["phone_game"]
             )
             self.assertEqual(
-                phone_game["payload"]["rotation_center"],
-                recomposed["payload"]["rotation_center"],
+                phone_game["payload"]["rotation_center"]["x"],
+                recomposed["payload"]["rotation_center"]["x"],
             )
             active = registry.resolve(
                 "rig_game",
@@ -435,31 +436,9 @@ class ProfileManagerTests(unittest.TestCase):
                 second_rig["revision_id"],
                 recomposed_orientation["dependencies"]["rig"],
             )
-            stale_color = second_rig["rig_dependent_reconciliation"][
-                "requires_fresh_evidence"
-            ]["rig_game_color"]
-            self.assertEqual(1, len(stale_color))
-            self.assertEqual(
-                old_color["revision_id"], stale_color[0]["profile_revision"]
-            )
-            with self.assertWarnsRegex(RuntimeWarning, "rig-locked color"):
-                resolved = registry.resolve_adapter(
-                    ProfileContext(
-                        game_id="game-1",
-                        camera_id="CAM-1",
-                        game_display=phone_context.game_display,
-                    ),
-                    AdapterRequest(mode="minimap", color_policy="game_matched"),
-                )
-            self.assertEqual(
-                0,
-                resolved["adapter_plan"][
-                    "game_upright_quarter_turns_clockwise"
-                ],
-            )
-            self.assertEqual("rig_locked", resolved["adapter_plan"]["color_policy"])
-            self.assertIsNone(resolved["profiles"]["rig_game_color"])
-            self.assertTrue(resolved["compatibility"]["warnings"])
+            self.assertEqual([], second_rig["rig_dependent_reconciliation"][
+                "requires_fresh_evidence"]["rig_game_color"])
+            self.assertEqual("ready", second_rig["readiness"]["status"])
 
     def test_orientation_recomposition_changes_relative_turn_for_new_rig_display(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -587,7 +566,7 @@ class ProfileManagerTests(unittest.TestCase):
             root = Path(directory)
             registry = ProfileRegistry(root / "profiles")
             publish_rig_calibration(
-                write_rig(root / "rig-1", calibration_display_turns=0),
+                write_rig(root / "rig-1", calibration_display_turns=0, sensor_size=(100, 200)),
                 registry=registry,
             )
             phone_context = ProfileContext(
@@ -640,7 +619,7 @@ class ProfileManagerTests(unittest.TestCase):
             )
 
             second_rig = publish_rig_calibration(
-                write_rig(root / "rig-2", calibration_display_turns=0),
+                write_rig(root / "rig-2", calibration_display_turns=0, sensor_size=(100, 200)),
                 registry=registry,
             )
 

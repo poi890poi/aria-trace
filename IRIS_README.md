@@ -39,7 +39,8 @@ The profile root is relocatable. Move or copy the complete directory, update
 `IRIS_PROFILE_ROOT`, and start the application normally. Immutable revisions
 store runtime files by relative path. If a copy tool omits the `.registry`
 directory, IRIS reconstructs its SQLite index and active selections from the
-portable `profile.json` and `active.json` files. Absolute paths under
+portable `profile.json` files and the complete `active-profiles.json` snapshot
+(or per-profile `active.json` pointers for older roots). Absolute paths under
 `provenance` are audit history only and are never used to open the adapter.
 
 ## Initial rig calibration
@@ -78,6 +79,35 @@ is unavailable or disagrees with ChArUco, calibration continues with the ChArUco
 result and records the reason and review evidence. In `--no-rectify` mode, the
 adapter's frame metadata exposes the saved full-sensor panel-up vector as the
 reference for aligning downstream mini-map axes to Android display space.
+
+## Recalibration and annotation reliability
+
+Rig publication stages the new rig and its game dependents, preserves each
+established phone/game source revision, and checks full, mini-map, and dual
+output before activating the complete configuration in one transaction.
+Headless fresh and reuse paths also verify frame delivery through the camera
+adapter. Readiness is recorded in `game_readiness.json` for a fresh calibration
+and in `reused_calibration.json` for reuse. Software-only profile publication
+labels its checks `software_geometry`; it does not claim physical verification.
+
+Insufficient coverage, failed frame delivery, incompatible phone geometry, or a
+stale required game-color fit prevents activation with a specific error. The
+previous active selections remain available for recovery. After physical rig
+movement, those old transforms still describe the old placement. Automatic
+refitting of game colors is not implemented; a new optical fit requires fresh
+synchronized evidence. `--no-profile` explicitly bypasses profile publication
+and its readiness contract.
+
+Full mode loads available game geometry just as dual mode does. The demo shows
+the selected profile revisions and separate boundary, cursor, and game-axis
+status below the image. FPS appears above it, so neither panel hides calibrated
+geometry. Missing annotations are expected when overlays are disabled, the
+selected source has no game calibration, an optional capability was never
+calibrated (for example a static cursor has no verified rotation center), or
+unrectified projective output cannot represent the calibrated circle. Missing
+frame metadata is also expected before the first frame. During live rendering,
+geometry errors and coordinate-space mismatches are shown as reasons, rather
+than silently discarded. A malformed optional axis does not hide a valid circle.
 
 ## Game acquisition and calibration
 

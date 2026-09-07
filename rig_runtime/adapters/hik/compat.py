@@ -1447,7 +1447,7 @@ class HikCamera:
         reader = self._require_reader()
         method = getattr(reader, "get_cursor_geometry", None)
         if method is None:
-            return {}
+            return {"available_in_stream_space": False, "reason": "No phone/game geometry profile is loaded"}
         return copy.deepcopy(dict(method(stream_id)))
 
     def get_minimap_geometry(
@@ -1458,7 +1458,7 @@ class HikCamera:
         reader = self._require_reader()
         method = getattr(reader, "get_minimap_geometry", None)
         if method is None:
-            return {}
+            return {"available_in_stream_space": False, "reason": "No phone/game geometry profile is loaded"}
         return copy.deepcopy(dict(method(stream_id)))
 
     def get_aria_frame_metadata(

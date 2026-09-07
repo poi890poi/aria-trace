@@ -536,17 +536,14 @@ class HikAutoProfileTests(unittest.TestCase):
             activate=True,
         )
 
-        full = self.registry.resolve_adapter(
-            self.context, AdapterRequest(mode="full")
-        )
-        self.assertEqual(replacement["revision_id"], full["profiles"]["rig"])
-        with self.assertRaisesRegex(
-            ProfileResolutionError, "stale.*superseded active rig"
-        ):
-            self.registry.resolve_adapter(
-                self.context,
-                AdapterRequest(mode="dual", color_policy="rig_locked"),
-            )
+        for mode in ("full", "minimap", "dual"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                ProfileResolutionError, "stale.*superseded active rig"
+            ):
+                self.registry.resolve_adapter(
+                    self.context,
+                    AdapterRequest(mode=mode, color_policy="rig_locked"),
+                )
 
     def test_facade_rejects_transform_policy_it_cannot_enforce(self):
         with self.assertRaisesRegex(ValueError, "not implemented"):

@@ -621,45 +621,10 @@ class ProfileRegistry:
         their active selections.
         """
 
-        active_paths = list(self.root.rglob("active.json"))
         with self._connect() as connection:
             revision_count = int(
                 connection.execute("SELECT COUNT(*) FROM revisions").fetchone()[0]
             )
-            active_rows = {
-                str(row[0]): str(row[1])
-                for row in connection.execute(
-                    "SELECT revision_id, activated_utc FROM active_profiles"
-                ).fetchall()
-            }
-
-        pointer_documents = []
-        stale_authority = False
-        for path in active_paths:
-            try:
-                pointer = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            revision_id = str(pointer.get("active_revision_id") or "")
-            if not revision_id:
-                continue
-            pointer_documents.append((path, pointer, revision_id))
-            authority = pointer.get("registry_authority")
-            if authority:
-                try:
-                    stale_authority = (
-                        Path(str(authority)).resolve() != self.database.resolve()
-                    ) or stale_authority
-                except OSError:
-                    stale_authority = True
-
-        active_ids = {item[2] for item in pointer_documents}
-        index_incomplete = (
-            not database_existed
-            or revision_count == 0
-            or not active_ids.issubset(set(active_rows))
-            or stale_authority
-        )
         report = {
             "status": "not_needed",
             "profile_root": str(self.root),
@@ -668,8 +633,30 @@ class ProfileRegistry:
             "activations_recovered": 0,
             "active_pointers_rebound": 0,
         }
-        if not index_incomplete:
+        # A healthy live database wins over missing, stale, or damaged mirrors.
+        if database_existed and revision_count:
             return report
+
+        pointer_documents = []
+        snapshot_path = self.root / "active-profiles.json"
+        if snapshot_path.is_file():
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            for item in snapshot["profiles"]:
+                path = (self.root / item["path"]).resolve()
+                if not path.is_relative_to(self.root.resolve()) or path.name != "active.json":
+                    raise ValueError("Portable active profile path escapes the profile root")
+                pointer = item["pointer"]
+                pointer_documents.append((path, pointer, pointer["active_revision_id"]))
+        else:
+            # Legacy roots predate the complete active-configuration snapshot.
+            for path in self.root.rglob("active.json"):
+                try:
+                    pointer = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                revision_id = str(pointer.get("active_revision_id") or "")
+                if revision_id:
+                    pointer_documents.append((path, pointer, revision_id))
 
         manifest_paths = [
             path
@@ -975,65 +962,95 @@ class ProfileRegistry:
     def activate(
         self, revision_id: str, *, expected_current: Optional[str] = None
     ) -> Dict[str, Any]:
-        row = self._revision_row(revision_id)
+        self.activate_many([revision_id], expected_current=expected_current)
+        return self.revision(revision_id)
+
+    def active_revision_ids(self) -> list[str]:
+        with self._connect() as connection:
+            return sorted(row[0] for row in connection.execute(
+                "SELECT revision_id FROM active_profiles"
+            ))
+
+    def activate_many(
+        self, revision_ids: Sequence[str], *, expected_current: Optional[str] = None,
+        expected_active: Optional[Sequence[str]] = None,
+    ) -> None:
+        """Activate a validated configuration in one SQLite transaction.
+
+        The single portable snapshot prevents a partial set of per-profile
+        mirrors from becoming authoritative when the database is omitted on copy.
+        """
+        rows = [self._revision_row(value) for value in revision_ids]
+        identities = [tuple(row[key] for key in (
+            "kind", "owner_id", "game_id", "panel_signature", "game_signature"
+        )) for row in rows]
+        if len(set(identities)) != len(identities):
+            raise ValueError("A configuration cannot activate two revisions of one profile")
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            current = connection.execute(
-                """SELECT revision_id FROM active_profiles
-                   WHERE kind=? AND owner_id=? AND game_id=?
-                     AND panel_signature=? AND game_signature=?""",
-                (
-                    row["kind"], row["owner_id"], row["game_id"],
-                    row["panel_signature"], row["game_signature"],
-                ),
-            ).fetchone()
-            current_id = current["revision_id"] if current is not None else None
-            if expected_current is not None and current_id != expected_current:
-                raise RuntimeError(
-                    "Profile activation conflict: expected {}, found {}".format(
-                        expected_current, current_id
-                    )
+            active = sorted(row[0] for row in connection.execute(
+                "SELECT revision_id FROM active_profiles"
+            ))
+            if expected_active is not None and active != sorted(expected_active):
+                raise RuntimeError("Profiles changed during validation; retry publication")
+            for row in rows:
+                revision_id = row["revision_id"]
+                identity = tuple(row[key] for key in (
+                    "kind", "owner_id", "game_id", "panel_signature", "game_signature"
+                ))
+                current = connection.execute(
+                    "SELECT revision_id FROM active_profiles WHERE kind=? AND owner_id=? "
+                    "AND game_id=? AND panel_signature=? AND game_signature=?", identity
+                ).fetchone()
+                if expected_current is not None and (
+                    current is None or current[0] != expected_current
+                ):
+                    raise RuntimeError("Profile activation conflict: expected {}".format(expected_current))
+                connection.execute(
+                    "INSERT INTO active_profiles VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(kind, owner_id, game_id, panel_signature, game_signature) "
+                    "DO UPDATE SET revision_id=excluded.revision_id, activated_utc=excluded.activated_utc",
+                    identity + (revision_id, now),
                 )
-            connection.execute(
-                """INSERT INTO active_profiles
-                   (kind, owner_id, game_id, panel_signature, game_signature,
-                    revision_id, activated_utc)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(kind, owner_id, game_id, panel_signature, game_signature)
-                   DO UPDATE SET revision_id=excluded.revision_id,
-                                 activated_utc=excluded.activated_utc""",
-                (
-                    row["kind"], row["owner_id"], row["game_id"],
-                    row["panel_signature"], row["game_signature"],
-                    revision_id, now,
-                ),
-            )
-            connection.execute(
-                "UPDATE revisions SET review_state='accepted' WHERE revision_id=?",
-                (revision_id,),
-            )
-        pointer = {
-            "schema_version": SCHEMA_VERSION,
-            "registry_authority": str(self.database.resolve()),
-            "active_revision_id": revision_id,
-            "activated_utc": now,
-            "identity": {
-                "kind": row["kind"], "owner_id": row["owner_id"],
-                "game_id": row["game_id"],
-                "panel_signature": row["panel_signature"],
-                "game_display_signature": row["game_signature"],
-            },
-        }
-        profile_directory = self.root / Path(row["relative_directory"]).parents[1]
-        _atomic_json(profile_directory / "active.json", pointer)
-        write_commented_yaml(
-            profile_directory / "active.yaml",
-            pointer,
-            header="# Human-readable mirror; the SQLite registry is authoritative.",
-            section_comments={"identity": "Display-specific active profile key."},
-        )
-        return self.revision(revision_id)
+                connection.execute("UPDATE revisions SET review_state='accepted' WHERE revision_id=?",
+                                   (revision_id,))
+            # Commit the live graph before publishing its portable mirror. Take
+            # the write lock again so concurrent activations cannot publish an
+            # older snapshot after a newer one.
+            connection.commit()
+            connection.execute("BEGIN IMMEDIATE")
+            active_rows = connection.execute(
+                "SELECT r.*, a.activated_utc FROM active_profiles a "
+                "JOIN revisions r ON r.revision_id=a.revision_id"
+            ).fetchall()
+            snapshot = []
+            for row in active_rows:
+                directory = self.root / Path(row["relative_directory"]).parents[1]
+                pointer = {
+                    "schema_version": SCHEMA_VERSION,
+                    "registry_authority": str(self.database.resolve()),
+                    "active_revision_id": row["revision_id"],
+                    "activated_utc": row["activated_utc"],
+                    "identity": {key: row[source] for key, source in (
+                        ("kind", "kind"), ("owner_id", "owner_id"), ("game_id", "game_id"),
+                        ("panel_signature", "panel_signature"),
+                        ("game_display_signature", "game_signature"),
+                    )},
+                }
+                snapshot.append({"path": str((directory / "active.json").relative_to(self.root)),
+                                 "pointer": pointer})
+            # SQLite is the live authority. Mirrors cannot undo a committed graph.
+            try:
+                _atomic_json(self.root / "active-profiles.json", {"profiles": snapshot})
+                for item in snapshot:
+                    path = self.root / item["path"]
+                    _atomic_json(path, item["pointer"])
+                    write_commented_yaml(path.with_suffix(".yaml"), item["pointer"],
+                                         header="# SQLite registry is authoritative.")
+            except OSError as exc:
+                warnings.warn("Profiles activated; portable mirror could not be updated: {}".format(exc),
+                              RuntimeWarning, stacklevel=2)
 
     def _active_rows(
         self,
@@ -1237,6 +1254,8 @@ class ProfileRegistry:
             raise ProfileResolutionError(
                 "Unsupported manual profile kinds: {}".format(", ".join(unsupported))
             )
+        for kind, revision in selected_revisions.items():
+            self.resolve_revision(revision, context, expected_kind=kind)
 
         def selected(kind: str) -> Dict[str, Any]:
             revision_id = selected_revisions.get(kind)
@@ -1250,7 +1269,10 @@ class ProfileRegistry:
         game_model = None
         resolution_warnings = []
         stale_game_color_fallback = False
-        if request.requires_minimap_profile:
+        include_geometry = request.requires_minimap_profile or "rig_game" in selected_revisions or bool(
+            context.game_id and self.list_candidates("rig_game", context, active_only=True)
+        )
+        if include_geometry:
             if not context.game_id:
                 raise ProfileResolutionError(
                     "Adapter mode {} requires a game_id".format(request.mode)
@@ -1296,7 +1318,7 @@ class ProfileRegistry:
                     "Active rig-game profile {} is stale: it depends on superseded "
                     "active rig {}, while the current active rig is {}. Re-publish "
                     "the current rig calibration to recompose game profiles before "
-                    "opening minimap or dual mode.".format(
+                    "opening game output in full, minimap, or dual mode.".format(
                         rig_game["revision_id"],
                         dependent_rig_id,
                         active_rig["revision_id"],
@@ -1400,7 +1422,6 @@ class ProfileRegistry:
         if (
             request.requires_game_color
             and selected_color_profile is None
-            and not stale_game_color_fallback
         ):
             raise ProfileResolutionError(
                 "No active game-color calibration matches the resolved rig and game"

@@ -98,7 +98,8 @@ class HikStreamCliTests(unittest.TestCase):
         telemetry = stream.LiveStreamTelemetry()
         frame = np.zeros((80, 320, 3), np.uint8)
         rendered = stream.overlay_stream_telemetry(frame, telemetry)
-        self.assertEqual(frame.shape, rendered.shape)
+        self.assertGreater(rendered.shape[0], frame.shape[0])
+        np.testing.assert_array_equal(rendered[-frame.shape[0]:, :frame.shape[1]], frame)
         self.assertFalse(np.shares_memory(frame, rendered))
         self.assertEqual(0, int(frame.max()))
         self.assertGreater(int(rendered.max()), 0)
@@ -143,7 +144,9 @@ class HikStreamCliTests(unittest.TestCase):
             "stored_size_px": [99, 80]
         }
         rejected = stream.overlay_stream_geometry(frame, camera, "minimap", state)
-        self.assertEqual(0, int(rejected.max()))
+        self.assertEqual(0, int(rejected[:80, :100].max()))
+        self.assertIn("does not match", state.status_by_stream["minimap"]["Boundary"])
+        self.assertGreater(int(rejected[80:].max()), 0)
 
     def test_game_axes_remain_visible_when_boundary_is_hidden(self):
         frame = np.zeros((120, 160, 3), np.uint8)

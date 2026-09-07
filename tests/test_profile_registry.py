@@ -538,7 +538,7 @@ class ProfileRegistryTests(unittest.TestCase):
         )
         full = self.registry.resolve_adapter(context(), AdapterRequest(mode="full"))
         dual = self.registry.resolve_adapter(context(), AdapterRequest(mode="dual"))
-        self.assertIsNone(full["profiles"]["rig_game"])
+        self.assertEqual(rig_game["revision_id"], full["profiles"]["rig_game"])
         self.assertEqual(rig_game["revision_id"], dual["profiles"]["rig_game"])
         self.assertEqual(0, dual["adapter_plan"]["registry_reads_per_frame"])
         self.assertEqual("none", dual["adapter_plan"]["phone_operations"])
