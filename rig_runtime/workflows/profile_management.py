@@ -431,47 +431,53 @@ def _compose_rig_game_orientation_profile(
         else None
     )
     package = phone_context.package if phone_context is not None else None
-    model = dict(
-        game_model
-        or resolve_game_model(
-            registry,
-            game_id,
-            platform=rig_context.platform,
-            package=package,
-        )
-    )
+    fallback_reasons = []
+    try:
+        model = dict(game_model or resolve_game_model(
+            registry, game_id, platform=rig_context.platform, package=package,
+        ))
+    except (ProfileResolutionError, OSError, ValueError, TypeError, KeyError) as exc:
+        # A behavior model is optional evidence, not a geometry dependency.
+        model = dict(DEFAULT_GAME_MODEL)
+        fallback_reasons.append("Optional game model unavailable: {}".format(exc))
+    try:
+        model_orientation = normalize_game_orientation(model.get("game_orientation", "landscape"))
+    except ValueError as exc:
+        model_orientation = "landscape"
+        fallback_reasons.append("Optional model orientation ignored: {}".format(exc))
     phone_payload = dict((phone_profile or {}).get("payload") or {})
+    game_orientation = None
     if phone_payload.get("game_orientation") is not None:
-        game_orientation = normalize_game_orientation(
-            phone_payload["game_orientation"]
-        )
-    elif phone_context is not None:
+        try:
+            game_orientation = normalize_game_orientation(phone_payload["game_orientation"])
+        except ValueError as exc:
+            fallback_reasons.append("Optional phone-game orientation ignored: {}".format(exc))
+    if game_orientation is None and phone_context is not None:
         game_orientation = game_orientation_from_frame_size(
             phone_context.game_display.get("logical_frame_px") or [],
-            fallback=model.get("game_orientation", "landscape"),
+            fallback=model_orientation,
         )
-    else:
-        game_orientation = normalize_game_orientation(
-            model.get("game_orientation", "landscape")
-        )
-    portable_turns = phone_payload.get(
+    if game_orientation is None:
+        game_orientation = model_orientation
+
+    def optional_turns(value, label):
+        if value is None:
+            return None
+        try:
+            return int(value) % 4
+        except (TypeError, ValueError, OverflowError) as exc:
+            fallback_reasons.append("Optional {} ignored: {}".format(label, exc))
+            return None
+
+    portable_turns = optional_turns(phone_payload.get(
         "game_surface_quarter_turns_clockwise_from_phone_natural"
-    )
-    if portable_turns is not None:
-        portable_turns = int(portable_turns) % 4
-        basis = str(
-            phone_payload.get("orientation_source")
-            or "phone_game_portable_orientation"
-        )
-    elif (
-        phone_context is not None
-        and phone_context.game_display.get("rotation_quarter_turns") is not None
-    ):
-        portable_turns = int(
-            phone_context.game_display["rotation_quarter_turns"]
-        ) % 4
+    ), "portable surface turn")
+    basis = str(phone_payload.get("orientation_source") or "phone_game_portable_orientation")
+    if portable_turns is None and phone_context is not None:
+        portable_turns = optional_turns(
+            phone_context.game_display.get("rotation_quarter_turns"), "capture surface turn")
         basis = "phone_game_capture_surface_metadata"
-    else:
+    if portable_turns is None:
         portable_turns = default_surface_turns_for_game_orientation(game_orientation)
         basis = (
             "configured_game_model_assumption"
@@ -498,7 +504,7 @@ def _compose_rig_game_orientation_profile(
                     phone_natural_size_px=natural_size,
                     calibration_display_turns=display_turns,
                 )
-            except (ValueError, np.linalg.LinAlgError) as exc:
+            except (TypeError, ValueError, KeyError, np.linalg.LinAlgError) as exc:
                 # Migrated/hand-edited profiles must not break unattended rig
                 # recomposition.  Keep the invalid evidence visible and use the
                 # pre-existing surface/game-orientation fallback.
@@ -519,6 +525,7 @@ def _compose_rig_game_orientation_profile(
             else "surface_metadata_disagrees_with_canonical_minimap_frame"
         ),
         "non_gating": True,
+        "fallback_reasons": fallback_reasons,
         "surface_metadata_adapter_turns": int(surface_adapter_turns),
         "oriented_minimap_adapter_turns": (
             int(oriented_adapter_turns)
@@ -620,6 +627,9 @@ def _portable_sources_for_rig(rig_profile, registry):
     rig = ProfileContext.from_dict(rig_profile.get("context") or {})
     established = set()
     for item in registry.list_revisions(kind="rig_game", active_only=True):
+        # The index identifies unrelated devices even if their files are lost.
+        if (item["camera_id"], item["phone_id"]) != (rig.camera_id, rig.phone_id):
+            continue
         previous = registry.revision(item["revision_id"])
         context = ProfileContext.from_dict(previous["context"])
         if (context.camera_id, context.phone_id, context.platform) == (
@@ -628,10 +638,17 @@ def _portable_sources_for_rig(rig_profile, registry):
             revision = previous.get("dependencies", {}).get("phone_game")
             if revision:
                 established.add(revision)
-    profiles = {item["revision_id"]: registry.revision(item["revision_id"])
-                for item in registry.list_revisions(kind="phone_game", active_only=True)}
-    for revision in established:
-        profiles[revision] = registry.revision(revision)
+    # Required sources must remain readable; an unavailable optional portable
+    # candidate must not veto the established working configuration.
+    profiles = {revision: registry.revision(revision) for revision in established}
+    for item in registry.list_revisions(kind="phone_game", active_only=True):
+        revision = item["revision_id"]
+        if revision in profiles:
+            continue
+        try:
+            profiles[revision] = registry.revision(revision)
+        except (OSError, ValueError, KeyError) as exc:
+            warnings.warn("Optional portable profile {} unavailable: {}".format(revision, exc), RuntimeWarning)
     candidates = []
     for profile in profiles.values():
         context = ProfileContext.from_dict(profile["context"])
@@ -862,7 +879,13 @@ def recompose_active_rig_game_orientation_profiles(
     # default model is landscape with the USB edge on the right, but there is
     # no unknown game ID to invent when neither profile nor model exists.
     for item in registry.list_revisions(kind="game_model", active_only=True):
-        model_profile = registry.revision(str(item["revision_id"]))
+        if item["game_id"] in composed_games or (only_game_id and item["game_id"] != only_game_id):
+            continue
+        try:
+            model_profile = registry.revision(str(item["revision_id"]))
+        except (OSError, ValueError, KeyError) as exc:
+            warnings.warn("Optional game model unavailable: {}".format(exc), RuntimeWarning)
+            continue
         model_context = ProfileContext.from_dict(
             model_profile.get("context") or {}
         )

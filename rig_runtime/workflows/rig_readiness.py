@@ -58,6 +58,8 @@ def validate_rig_configuration(rig, reconciliation, *, registry, adapter=None):
                             and ProfileContext.from_dict(item["context"]).game_display_signature
                             == context.game_display_signature), None)
         orientation_payload = orientation["payload"] if orientation else {}
+        for reason in (orientation_payload.get("orientation_consistency") or {}).get("fallback_reasons", []):
+            notices.append("Game {!r}: {}".format(context.game_id, reason))
         turns = int(orientation_payload.get(
             "camera_adapter_image_quarter_turns_clockwise_from_calibration_display", 0))
         if orientation is None:

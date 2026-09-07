@@ -142,6 +142,57 @@ class RecalibrationContractTests(unittest.TestCase):
         self.assertFalse((path.parent / "game_readiness.json").exists())
         self.assertFalse((path.parent / "hikcam_adapter.py").exists())
 
+    def test_invalid_optional_orientation_hints_preserve_working_axes_and_pixels(self):
+        manifest = Path(self.phone["revision_directory"]) / "profile.json"
+        original = json.loads(manifest.read_text())
+        for field in ("game_orientation", "game_surface_quarter_turns_clockwise_from_phone_natural"):
+            with self.subTest(field=field):
+                document = json.loads(json.dumps(original))
+                document["payload"][field] = "unknown"
+                manifest.write_text(json.dumps(document))
+                self.assertEqual(0, self.headless(self.rig_file(field, 1)))
+                self.assert_streams_work(1)
+                orientation = self.registry.resolve("rig_game_orientation", self.context)
+                self.assertTrue(orientation["payload"]["orientation_consistency"]["fallback_reasons"])
+                report = json.loads((self.root / field / "game_readiness.json").read_text())
+                self.assertTrue(report["notices"])
+
+    def test_invalid_optional_game_model_does_not_block_rebuilding(self):
+        for field in ("game_orientation", "cursor_follows"):
+            with self.subTest(field=field):
+                self.registry.publish("game_model", ProfileContext(game_id="game-1"),
+                                      {field: "unknown"}, activate=True)
+                self.assertEqual(0, self.headless(self.rig_file("invalid-model-" + field, 1)))
+                self.assert_streams_work(1)
+
+    def test_unreadable_optional_game_model_does_not_block_rebuilding_or_reopen(self):
+        model = self.registry.publish("game_model", ProfileContext(game_id="game-1"), {}, activate=True)
+        (Path(model["revision_directory"]) / "profile.json").unlink()
+        self.assertEqual(0, self.headless(self.rig_file("missing-game-model", 1)))
+        self.assert_streams_work(1)
+
+    def test_unreadable_unrelated_profiles_do_not_block_working_game(self):
+        other = ProfileContext(game_id="other-game", camera_id="CAM-2", phone_id="PHONE-2",
+                               panel_display=self.context.panel_display, game_display=self.context.game_display)
+        for kind in ("rig_game", "phone_game"):
+            with self.subTest(kind=kind):
+                profile = self.registry.publish(kind, other, self.payload, activate=True)
+                manifest = Path(profile["revision_directory"]) / "profile.json"
+                content = manifest.read_text()
+                manifest.unlink()
+                try:
+                    self.assertEqual(0, self.headless(self.rig_file("unrelated-" + kind, 1)))
+                    self.assert_streams_work(1)
+                finally:
+                    manifest.write_text(content)
+
+    def test_missing_established_geometry_source_preserves_active_graph(self):
+        before = self.registry.active_revision_ids()
+        (Path(self.phone["revision_directory"]) / "profile.json").unlink()
+        with self.assertRaises((ProfileResolutionError, OSError)):
+            self.headless(self.rig_file("missing-required-source", 1))
+        self.assertEqual(before, self.registry.active_revision_ids())
+
     def test_changed_phone_dimensions_still_block_incompatible_geometry(self):
         before = self.registry.active_revision_ids()
         path = self.rig_file("wrong-dimensions", 1)

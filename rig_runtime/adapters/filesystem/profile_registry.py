@@ -1374,9 +1374,13 @@ class ProfileRegistry:
         if context.game_id:
             try:
                 game_model = selected("game_model")
-            except ProfileResolutionError as exc:
-                if not str(exc).startswith("No active game_model profile"):
+            except (ProfileResolutionError, OSError, ValueError, KeyError) as exc:
+                if "game_model" in selected_revisions:
                     raise
+                if not (isinstance(exc, ProfileResolutionError)
+                        and str(exc).startswith("No active game_model profile")):
+                    resolution_warnings.append(
+                        "Optional game model unavailable; using default behavior: {}".format(exc))
             candidate, stale_orientation_ids = selected_for_resolved_rig(
                 "rig_game_orientation"
             )
