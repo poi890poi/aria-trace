@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
 from .commented_yaml import write_commented_yaml
+from .atomic_write import atomic_write_text, replace_with_retry
 from rig_runtime.domain.configuration import (
     ADAPTER_DEFAULTS,
     ADAPTER_MODES,
@@ -90,10 +91,7 @@ def _hash_file(path: Path) -> str:
 
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
-    os.replace(str(temporary), str(path))
+    atomic_write_text(path, json.dumps(value, indent=2))
 
 
 def default_profile_root(explicit: Optional[Path] = None) -> Path:
@@ -916,7 +914,7 @@ class ProfileRegistry:
                 header=PROFILE_HEADER,
                 section_comments=PROFILE_COMMENTS,
             )
-            os.replace(str(temporary), str(final_directory))
+            replace_with_retry(temporary, final_directory)
         except Exception:
             shutil.rmtree(str(temporary), ignore_errors=True)
             raise

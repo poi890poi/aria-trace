@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .commented_yaml import write_commented_yaml
+from .atomic_write import atomic_write_text
 from .profile_registry import default_profile_root
 
 
@@ -109,21 +110,7 @@ def save_system_configuration(
     if policy is not None:
         document["rig_calibration"]["repeatability_policy"] = str(policy)
     document["updated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    paths["json"].parent.mkdir(parents=True, exist_ok=True)
-    temporary = paths["json"].with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(document, indent=2), encoding="utf-8")
-    last_error = None
-    for attempt in range(5):
-        try:
-            os.replace(str(temporary), str(paths["json"]))
-            break
-        except PermissionError as exc:
-            last_error = exc
-            time.sleep(0.05 * float(attempt + 1))
-    else:
-        raise PermissionError(
-            "Could not publish settings {}: {}".format(paths["json"], last_error)
-        )
+    atomic_write_text(paths["json"], json.dumps(document, indent=2))
     write_commented_yaml(
         paths["yaml"],
         document,

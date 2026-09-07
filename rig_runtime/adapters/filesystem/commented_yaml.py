@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import numpy as np
 import yaml
+
+from .atomic_write import atomic_write_text
 
 
 def _plain(value: Any) -> Any:
@@ -53,10 +54,7 @@ def write_commented_yaml(
         lines.append(line)
     text = str(header).rstrip() + "\n\n" + "\n".join(lines) + "\n"
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(str(temporary), str(path))
+    atomic_write_text(path, text)
     return path
 
 
