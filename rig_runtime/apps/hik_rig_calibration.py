@@ -197,8 +197,9 @@ def parser() -> argparse.ArgumentParser:
         choices=DISTORTION_CORRECTION_MODES,
         default=RIG_CALIBRATION_DEFAULTS.distortion_correction,
         help=(
-            "guided collects distinct ChArUco views and enables correction only "
-            "after independent holdout improvement; off keeps homography-only"
+            "auto measures the stationary display without operator input and "
+            "keeps correction only after held-out improvement (default); "
+            "guided explicitly requests manual multi-pose lens calibration; off disables correction"
         ),
     )
     value.add_argument(
@@ -206,7 +207,7 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=RIG_CALIBRATION_DEFAULTS.distortion_view_count,
         help=(
-            "guided ChArUco views including one independent holdout "
+            "automatic stationary frames, or guided poses, including one holdout "
             "(default: {})".format(RIG_CALIBRATION_DEFAULTS.distortion_view_count)
         ),
     )

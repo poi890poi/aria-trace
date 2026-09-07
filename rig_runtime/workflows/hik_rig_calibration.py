@@ -48,6 +48,7 @@ from rig_runtime.services.calibration.rig.distortion import (
     undistort_pixel_points,
 )
 from rig_runtime.services.calibration.rig.image_quality import measure_slanted_edge_esfr
+from rig_runtime.services.calibration.rig.fixed_plane_distortion import fit_fixed_plane_distortion, fixed_plane_pose_matches
 from rig_runtime.services.calibration.rig.contracts import FrameSample
 from rig_runtime.services.calibration.rig.hik.algorithms import (
     BlackLevelObservation,
@@ -319,9 +320,9 @@ class HikCalibrationOptions:
         if self.panel_scale_mode not in PANEL_SCALE_MODES:
             raise ValueError("Unknown panel scale mode")
         if self.distortion_correction not in DISTORTION_CORRECTION_MODES:
-            raise ValueError("Distortion correction must be off or guided")
+            raise ValueError("Distortion correction must be auto, off or guided")
         if self.distortion_view_count < 4:
-            raise ValueError("Guided distortion calibration needs at least four views")
+            raise ValueError("Distortion calibration needs at least four observations")
         if not 0.0 <= self.distortion_min_relative_p95_improvement <= 1.0:
             raise ValueError("Distortion holdout improvement must be within 0..1")
 
@@ -1941,10 +1942,13 @@ class HikRigCalibrationSession:
         )
 
     def calibrate_lens_distortion(self) -> None:
-        """Collect distinct ChArUco views and keep correction only on holdout gain."""
+        """Collect stationary frames automatically, or explicitly requested guided poses."""
 
         if self.options.distortion_correction == "off":
             self.lens_model = {"source": "unavailable", "reason": "disabled"}
+            return
+        if self.options.distortion_correction == "auto":
+            self._calibrate_fixed_plane_distortion()
             return
         if self.options.headless:
             raise RuntimeError(
@@ -2051,6 +2055,47 @@ class HikRigCalibrationSession:
                 )
             )
 
+    def _calibrate_fixed_plane_distortion(self) -> None:
+        self.lens_model = {"source": "unavailable", "reason": "automatic_collection_in_progress"}
+        layout = self._required(self.charuco_layout, "screen-filling ChArUco layout")
+        self._set_preview_stage("Automatic fixed-rig distortion", exposure_mode="camera auto")
+        self.progress("Measuring distortion from the stationary phone display; no movement or capture keys required.")
+        self._wait_painted(self.target.present_charuco())
+        camera_frames, screen_frames, timestamps = [], [], set()
+        requested = int(self.options.distortion_view_count)
+        # Bound unsuccessful detection and duplicate-frame retries as well as
+        # successful collection. Hardware/transport failures still propagate.
+        for _ in range(requested * 3):
+            sample = self._read_camera()
+            if sample.time_ns in timestamps:
+                continue
+            timestamps.add(sample.time_ns)
+            self.last_frame = sample.image.copy()
+            try:
+                detected = self._detect_charuco(sample.image, layout)
+            except RuntimeError:
+                continue
+            if int(detected["corner_count"]) < 36:
+                continue
+            camera_frames.append(np.asarray(detected["camera_points_xy"], dtype=np.float64))
+            screen_frames.append(np.asarray(detected["screen_points_xy"], dtype=np.float64))
+            if len(camera_frames) == requested:
+                break
+        self.lens_model = fit_fixed_plane_distortion(
+            camera_frames, screen_frames,
+            [int(self.camera_metadata["width_px"]), int(self.camera_metadata["height_px"])],
+            self.options.distortion_min_relative_p95_improvement,
+        )
+        self.lens_model["collection"] = {"requested_frames": requested, "detected_frames": len(camera_frames),
+                                          "distinct_acquired_frames": len(timestamps), "operator_input_required": False}
+        holdout = self.lens_model.get("holdout")
+        if self.lens_model.get("accepted"):
+            self.progress("Automatic distortion correction accepted: held-out p95 {:.3f} -> {:.3f} display px.".format(
+                holdout["baseline_homography_p95_screen_px"], holdout["candidate_p95_screen_px"]))
+        else:
+            self.progress("Automatic distortion correction not applied: {}. Using homography-only geometry.".format(
+                self.lens_model["reason"]))
+
     def calibrate_geometry(self) -> None:
         phone_metrics = self._required(self.phone_metrics, "phone metrics")
         self.progress("Showing ChArUco atlas and locating the camera-visible phone area...")
@@ -2065,6 +2110,13 @@ class HikRigCalibrationSession:
             self.last_frame = frame.copy()
             try:
                 detected = self._detect_charuco(frame, layout)
+                if (self.lens_model.get("source") == "measured"
+                        and self.lens_model.get("calibration_method") == "fixed_plane_joint_homography_radtan"
+                        and not fixed_plane_pose_matches(self.lens_model, detected["camera_points_xy"], detected["screen_points_xy"])):
+                    self.lens_model.update(source="unavailable", accepted=False,
+                                           reason="Display placement changed after automatic distortion collection")
+                    candidates.clear()
+                    self.progress("Distortion correction disabled because the display placement changed; fitting current homography-only geometry.")
                 if self.lens_model.get("source") == "measured":
                     detected["raw_camera_points_xy"] = np.asarray(
                         detected["camera_points_xy"], dtype=np.float64
@@ -4823,11 +4875,14 @@ class HikRigCalibrationSession:
         self._timed_stage("open", self.open)
         try:
             try:
-                self._timed_stage("lens_distortion", self.calibrate_lens_distortion)
+                if self.options.distortion_correction == "guided":
+                    self._timed_stage("lens_distortion", self.calibrate_lens_distortion)
                 if not self._timed_stage(
                     "positioning_confirmation", self.wait_for_positioning_confirmation
                 ):
                     return None
+                if self.options.distortion_correction != "guided":
+                    self._timed_stage("lens_distortion", self.calibrate_lens_distortion)
                 self._timed_stage("geometry", self.calibrate_geometry)
                 self._timed_stage("black_level", self.calibrate_black_level)
                 self._timed_stage("camera_once_auto", self.calibrate_once_auto_imaging)
@@ -4863,6 +4918,8 @@ class HikRigCalibrationSession:
                         self.white_balance_attempts = []
                         self.calibration_warnings = []
                         self.cv_verification = None
+                        if self.options.distortion_correction == "auto":
+                            self.calibrate_lens_distortion()
                         self.calibrate_geometry()
                         self.calibrate_once_auto_imaging()
                         self.calibrate_exposure()

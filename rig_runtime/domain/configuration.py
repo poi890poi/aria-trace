@@ -30,7 +30,7 @@ TARGET_PRESENTERS = ("native_app", "owned_http", "legacy_gallery")
 PANEL_SCALE_MODES = ("auto", "adb", "hik_charuco")
 SHUTTER_MULTIPLIERS = (2, 3)
 EXPOSURE_PERIOD_COUNTS = (1, 2, 3)
-DISTORTION_CORRECTION_MODES = ("off", "guided")
+DISTORTION_CORRECTION_MODES = ("auto", "off", "guided")
 FINAL_BENCHMARK_MODES = ("auto", "full", "reduced", "skip")
 ANDROID_CAPTURE_MODES = ("scrcpy", "adb-screenshot")
 ACQUISITION_MODES = ("zigzag", "micro-movement", "cursor-orbit")
@@ -193,7 +193,7 @@ class RigCalibrationDefaults:
     geometry_frames: int = 12
     visible_screen_margin_px: int = 8
     settle_frames: int = 3
-    distortion_correction: str = "off"
+    distortion_correction: str = "auto"
     distortion_view_count: int = 8
     distortion_min_relative_p95_improvement: float = 0.05
     final_benchmark_mode: str = "auto"

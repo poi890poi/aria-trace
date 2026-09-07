@@ -69,6 +69,21 @@ latency trials. Use `--final-benchmark full` for the complete benchmark,
 Rig calibration uses full-sensor frames. Hardware ROI belongs to the runtime
 adapter plan and is applied only after calibration and space conversion.
 
+Distortion correction defaults to `--distortion-correction auto`. It presents
+the ChArUco target and collects stationary camera frames automatically, including
+in headless mode. No phone movement, tilt, or capture key is required. Correction
+is kept only when a later frame and spatial corners excluded from fitting show
+better geometry. Insufficient, unstable, or unhelpful evidence produces an
+explicit reason and homography-only output. The decision and observations are
+saved under `optics.lens_model` in the rig calibration JSON.
+
+Automatic correction is specific to the fixed display plane; its camera matrix
+is a coordinate normalization, not measured physical intrinsics. Repositioning
+requires fresh calibration. Interactive recalibration refreshes the automatic
+measurement, and an unchanged-rig reuse retains the previously saved correction.
+`--distortion-correction off` disables collection. `guided` is an explicit opt-in
+to the older manual multi-pose lens diagnostic.
+
 ChArUco determines the coarse phone pose. IRIS then measures broad horizontal and
 vertical target edges as the standard high-precision panel-axis refinement. It runs
 automatically in headless calibration and appears as a temporally stabilized metric
