@@ -192,6 +192,10 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                         "ratio_blue": 1024,
                     },
                 },
+                "geometry": {
+                    "screen_to_full_sensor_camera_3x3": np.eye(3).tolist(),
+                    "full_sensor_camera_to_screen_3x3": np.eye(3).tolist(),
+                },
                 "normalization": {
                     "output_size_px": [8, 8],
                     "full_sensor_camera_to_output_3x3": [
@@ -230,7 +234,7 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                     "outer_boundary": bind_geometry(
                         {"center_x": 4.0, "center_y": 4.0, "radius": 3.0},
                         "circle",
-                        raster_space("android_logical_display_pixels", [16, 8]),
+                        raster_space("android_phone_natural_display_pixels", [8, 16]),
                     ),
                 },
                 review_state="accepted",

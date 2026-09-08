@@ -11,6 +11,10 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from rig_runtime.workflows.calibration_retention import (
+    calibration_cleanup_boundary, request_profile_cleanup,
+)
+
 from rig_runtime.adapters.filesystem.profile_registry import (
     AdapterRequest,
     PROFILE_KINDS,
@@ -239,6 +243,7 @@ def _rig_calibration_file(path: Path) -> Path:
     return value
 
 
+@calibration_cleanup_boundary
 def publish_rig_calibration(
     calibration: Path,
     *,
@@ -320,6 +325,7 @@ def publish_rig_calibration(
             for item in group
         ]
         store.activate_many(revisions, expected_active=expected_active)
+        request_profile_cleanup(store)
     return profile
 
 
@@ -1283,6 +1289,7 @@ def _profile_context_from_localization(
     )
 
 
+@calibration_cleanup_boundary
 def publish_minimap_profiles(
     localization_summary: Path,
     *,
@@ -1661,6 +1668,8 @@ def publish_minimap_profiles(
                 review_state="accepted" if activate else "review_required",
                 activate=activate,
             )
+    if activate:
+        request_profile_cleanup(store)
     return result
 
 
@@ -1825,6 +1834,7 @@ def parser() -> argparse.ArgumentParser:
     return value
 
 
+@calibration_cleanup_boundary
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     registry = ProfileRegistry(arguments.profile_root)

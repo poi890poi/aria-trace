@@ -89,18 +89,36 @@ data can exceed either limit; working profiles take precedence over a hard cap.
 Ordinary registry initialization/recovery still occurs when opening the CLI;
 preview itself removes no data.
 
-## Proposed automatic triggers
+## Automatic cleanup after successful calibration
 
-No automatic trigger is enabled in this change. Recommended integration:
+Accepted rig and mini-map publication, and accepted orientation/color calibration,
+request cleanup after activation. The shared calibration boundary coalesces those
+requests by profile root until the outer workflow exits. Multi-session game runs
+finish every component and summary first; the rig CLI also finishes readiness
+evidence and standalone adapter export before cleanup. Standalone publication of
+a calibrated profile uses the same boundary. Raw registry writes, imports,
+composition, adapter resolution and frame processing do not trigger retention.
 
-1. Run once after an entire successful calibration workflow has finished writing
-   evidence, publishing all profiles, and activating the complete profile graph.
-2. Add at most once-daily idle maintenance to clean failed-run evidence after its
-   grace period. Report cleanup failures separately from calibration success.
+The automatic path applies the existing default policy: 10 portable revisions,
+3 displacement-dependent revisions, 384 MB evidence, and a 24-hour grace period.
+Active revisions, portable activation pointers, runtime data and retained
+dependencies remain protected. CLI overrides still apply to manual invocations.
 
-Avoid triggering inside individual profile publication, composition, adapter
-resolution, or frame processing. Those are not safe workflow completion points.
-Use the same policy and entry point rather than separate deletion implementations.
+Partial runs with accepted, activated components trigger one cleanup; candidate
+or entirely failed runs with no accepted publication do not. Cleanup exceptions
+and partial-cleanup warnings are logged separately, preserving both successful
+calibration results and any original calibration exception. A subsequent
+successful calibration or manual apply retries deferred work. No daily timer is
+installed. Evidence from failed runs becomes eligible at the next successful
+calibration after its grace period.
+
+Impact: storage maintenance now happens automatically and may irreversibly remove
+eligible old history. Risks are premature cleanup inside multi-step workflows and
+cleanup failures masking calibration success; deferred boundaries, the existing
+retention protections/journal and separate error reporting address those risks.
+No retention rule, stored schema, calibration acceptance or runtime adapter
+behavior changes. Automatic tests use temporary registries only; this change does
+not purge the development workspace's profiles as part of verification.
 
 ## Verification
 

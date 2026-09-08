@@ -124,6 +124,25 @@ class RecalibrationContractTests(unittest.TestCase):
         self.assertEqual("camera_frames", report["validation"])
         self.assertEqual(3, len(report["games"]))
 
+    def test_headless_cleanup_waits_for_exports_in_fresh_and_reuse_paths(self):
+        from rig_runtime.workflows import calibration_retention as cleanup
+        real_purge = cleanup.purge_profiles
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                path = self.rig_file("cleanup-{}".format(reuse), 1)
+                output = self.root / "reuse" if reuse else path.parent
+                observed = []
+
+                def purge(registry, **kwargs):
+                    observed.append(((output / "hikcam_adapter.py").is_file(),
+                                     (output / ("reused_calibration.json" if reuse else "game_readiness.json")).is_file()))
+                    return real_purge(registry, **kwargs)
+
+                with patch.object(cleanup, "purge_profiles", side_effect=purge) as called:
+                    self.assertEqual(0, self.headless(path, reuse=reuse))
+                called.assert_called_once()
+                self.assertEqual([(True, True)], observed)
+
     def publish_updated_cursor(self, *, activate=True):
         session = self.root / "cursor-session"
         session.mkdir(exist_ok=True)

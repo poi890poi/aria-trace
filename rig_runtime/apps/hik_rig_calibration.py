@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
+from rig_runtime.workflows.calibration_retention import calibration_cleanup_boundary
+
 from rig_runtime.adapters.hik.driver import HikMvsCameraAdapter
 from rig_runtime.adapters.rig.devices import create_camera_adapter as create_plugin_camera_adapter
 from rig_runtime.adapters.android.phone import (
@@ -299,6 +301,7 @@ def _select(label: str, rows, description):
             return values[int(answer) - 1]
 
 
+@calibration_cleanup_boundary
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     settings = load_system_configuration(arguments.profile_root)

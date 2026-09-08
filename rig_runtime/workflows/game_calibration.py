@@ -12,6 +12,8 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.workflows.calibration_retention import calibration_cleanup_boundary
+
 from rig_runtime.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
 from rig_runtime.adapters.filesystem.session import SessionReader
 from rig_runtime.adapters.filesystem.system_configuration import (
@@ -487,6 +489,7 @@ def _outcome(status: str, **values) -> Mapping[str, object]:
     return {"status": status, **values}
 
 
+@calibration_cleanup_boundary
 def calibrate_game_session(
     session: Path,
     output: Path,
@@ -771,6 +774,7 @@ def calibrate_game_session(
     return summary
 
 
+@calibration_cleanup_boundary
 def calibrate_game_sessions(
     sessions: Sequence[Path],
     output: Path,

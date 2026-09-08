@@ -332,7 +332,9 @@ phone-game geometry with the active local rig.
 
 ### Limit profile storage
 
-While calibration and profile imports are idle, preview or apply retention:
+Successful calibrations automatically apply retention after publishing and
+activating their profiles. You can also preview or apply retention manually while
+calibration and profile imports are idle:
 
 ```powershell
 python -m iris_tools profiles purge
@@ -356,9 +358,13 @@ files can keep storage above budget; the report explains this and `--apply`
 returns exit code 1 for incomplete cleanup. Custom output folders and recorded
 sessions are outside this command's scope. Run again to retry locked files.
 
-No automatic trigger is enabled. The recommended trigger is after a complete
-successful calibration workflow has published and activated all profiles; an
-additional once-daily idle cleanup would cover accumulated failed-run evidence.
+Automatic cleanup runs once per profile root at the end of a rig, game, mini-map,
+orientation, or color calibration that activates a profile. Nested components and
+multiple game sessions defer cleanup until the complete workflow exits, including
+summary and adapter export. Successful components of a partial run also trigger
+cleanup. Candidate-only, unsaved, and wholly failed runs do not. Cleanup problems
+are logged separately and retried on the next successful calibration; they do not
+invalidate calibration success. No daily timer or adapter-frame trigger is enabled.
 See [retention sizing and recovery details](docs/iris-profile-retention-2026-09-08.md).
 
 ## Camera adapter

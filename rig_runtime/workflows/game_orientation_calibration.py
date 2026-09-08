@@ -10,6 +10,10 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.workflows.calibration_retention import (
+    calibration_cleanup_boundary, request_profile_cleanup,
+)
+
 from rig_runtime.adapters.filesystem.profile_registry import (
     ProfileContext,
     ProfileRegistry,
@@ -69,6 +73,7 @@ def _portable_game_context(
     )
 
 
+@calibration_cleanup_boundary
 def calibrate_portable_game_orientation_session(
     session: Path,
     output: Path,
@@ -247,6 +252,8 @@ def calibrate_portable_game_orientation_session(
     summary["profile_revision"] = profile["revision_id"]
     summary["profile_activated"] = bool(accepted and activate)
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if accepted and activate:
+        request_profile_cleanup(registry)
     return summary
 
 
@@ -275,6 +282,7 @@ def _stored_hik_to_calibration_display(
     return rotate_quarter_turns_clockwise(content, -turns)
 
 
+@calibration_cleanup_boundary
 def calibrate_game_orientation_session(
     session: Path,
     output: Path,
@@ -555,6 +563,8 @@ def calibrate_game_orientation_session(
     summary["profile_revision"] = profile["revision_id"]
     summary["profile_activated"] = bool(accepted and activate)
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if accepted and activate:
+        request_profile_cleanup(registry)
     return summary
 
 

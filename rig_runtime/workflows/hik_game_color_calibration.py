@@ -14,6 +14,10 @@ import cv2
 import numpy as np
 import yaml
 
+from rig_runtime.workflows.calibration_retention import (
+    calibration_cleanup_boundary, request_profile_cleanup,
+)
+
 from rig_runtime.adapters.filesystem.profile_registry import (
     AdapterRequest,
     ProfileContext,
@@ -524,6 +528,7 @@ def _color_fallback(session, output, registry, context, reason):
     return summary
 
 
+@calibration_cleanup_boundary
 def calibrate_game_color_session(
     session: Path,
     output: Path,
@@ -789,6 +794,8 @@ def calibrate_game_color_session(
                 "status": "unavailable", "reason": str(exc),
             }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if activate:
+        request_profile_cleanup(registry)
     return summary
 
 
