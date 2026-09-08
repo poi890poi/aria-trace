@@ -252,6 +252,8 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertIn("boundary_fitted_circle.png", declared)
             self.assertIn("boundary_evidence_overlay.png", declared)
             self.assertIn("cursor_center_orbit.png", declared)
+            self.assertIn("cursor_center_fit.png", declared)
+            self.assertEqual((402, 864, 3), cv2.imread(str(Path(temporary) / "cursor_center_fit.png")).shape)
             self.assertIn("cursor_shape_overlay.png", declared)
             self.assertIn("cursor_shape_polar_correlation.png", declared)
             self.assertIn("cursor_pose_gaussian_fits.png", declared)

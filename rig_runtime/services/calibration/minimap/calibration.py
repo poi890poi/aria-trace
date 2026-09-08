@@ -874,6 +874,67 @@ def _color_heatmap(values: np.ndarray) -> np.ndarray:
     return cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
 
 
+def _cursor_circle_overlay(image, center, origin=(0, 0), scale=1):
+    """Draw measured circles in the evidence raster, preserving subpixels."""
+    overlay = image.copy()
+    metrics = center["metrics"]
+    hough = center["hough_circle"]
+
+    def point(x, y):
+        return tuple(np.rint((np.array([x, y]) - origin) * scale * 256).astype(int))
+
+    # Dashed cyan distinguishes the discrete vote winner from the refined fit.
+    radius = round(hough["radius"] * scale * 256)
+    for angle in range(0, 360, 30):
+        cv2.ellipse(overlay, point(hough["x"], hough["y"]), (radius, radius),
+                    0, angle, angle + 16, (255, 255, 0), 1, cv2.LINE_AA, shift=8)
+    cv2.circle(overlay, point(metrics["x"], metrics["y"]),
+               round(metrics["cold_core_radius_px"] * scale * 256),
+               (0, 255, 0), 1, cv2.LINE_AA, shift=8)
+    pivot = tuple(np.rint((np.array([metrics["x"], metrics["y"]]) - origin) * scale).astype(int))
+    cv2.drawMarker(overlay, pivot, (0, 0, 255), cv2.MARKER_CROSS, 9, 1)
+    return overlay
+
+
+def _write_cursor_center_evidence(save, frames, center):
+    mean = frames.mean(axis=0).astype(np.uint8)
+    temporal = _color_heatmap(center["temporal_heatmap"])
+    votes = _color_heatmap(np.nan_to_num(center["center_score_map"], nan=0.0))
+    for name, image, title in (
+        ("cursor_center_heatmap.png", temporal, "Cursor temporal range with Hough and refined circles"),
+        ("cursor_center_hough.png", votes, "Cursor Hough votes with Hough and refined circles"),
+        ("cursor_center_orbit.png", mean, "Observed cold-core circle and fitted rotation center"),
+    ):
+        save(name, _cursor_circle_overlay(image, center), title, "center")
+
+    # Circles are only a few pixels across; render a zoom without hiding the
+    # original observation beneath annotations in the first panel.
+    metrics = center["metrics"]
+    height, width = mean.shape[:2]
+    side, scale = min(48, height, width), 6
+    x0 = int(np.clip(round(metrics["x"]) - side // 2, 0, width - side))
+    y0 = int(np.clip(round(metrics["y"]) - side // 2, 0, height - side))
+    panel = side * scale
+    view = np.full((panel + 114, max(864, panel * 3), 3), 18, np.uint8)
+    for index, (image, title) in enumerate(((mean, "Mean capture"), (temporal, "Temporal range"), (votes, "Hough votes"))):
+        zoom = cv2.resize(image[y0:y0 + side, x0:x0 + side], (panel, panel), interpolation=cv2.INTER_NEAREST)
+        if index:
+            # INTER_NEAREST maps pixel centers to the middle of each block.
+            zoom = _cursor_circle_overlay(zoom, center, (x0 - (scale - 1) / (2 * scale),
+                                                         y0 - (scale - 1) / (2 * scale)), scale)
+        view[30:30 + panel, index * panel:(index + 1) * panel] = zoom
+        cv2.putText(view, title, (index * panel + 8, 21), cv2.FONT_HERSHEY_SIMPLEX, .55, (240, 240, 240), 1, cv2.LINE_AA)
+    labels = (
+        "Cyan dashed: Hough circle   Green: refined circle   Red +: fitted pivot",
+        "Crop pixel pivot ({:.2f}, {:.2f}); radius {:.2f} px; {} frames".format(
+            metrics["x"], metrics["y"], metrics["cold_core_radius_px"], len(frames)),
+        "Circle fit is diagnostic; direction counts need not be balanced.",
+    )
+    for index, label in enumerate(labels):
+        cv2.putText(view, label, (8, panel + 53 + index * 23), cv2.FONT_HERSHEY_SIMPLEX, .52, (240, 240, 240), 1, cv2.LINE_AA)
+    save("cursor_center_fit.png", view, "Magnified Hough circle and refined pivot", "center")
+
+
 def _stacked_difference_heatmap(frames: np.ndarray) -> np.ndarray:
     """Accumulate actual consecutive-frame differences without a fitted model."""
     if len(frames) < 2:
@@ -991,35 +1052,7 @@ def _write_evidence(
         return files
 
     cm = center["metrics"]
-    orbit_heatmap = _color_heatmap(center["temporal_heatmap"])
-    save(
-        "cursor_center_heatmap.png",
-        orbit_heatmap,
-        "Color-agnostic cursor temporal heatmap",
-        "center",
-    )
-    save(
-        "cursor_center_hough.png",
-        _color_heatmap(np.nan_to_num(center["center_score_map"], nan=0.0)),
-        "Cursor cold-core circle Hough votes",
-        "center",
-    )
-    orbit = movement_frames.mean(axis=0).astype(np.uint8)
-    cv2.circle(
-        orbit,
-        (round(cm["x"]), round(cm["y"])),
-        max(1, round(cm["temporal_signal_radius_px"])),
-        (0,255,0),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.drawMarker(orbit, (round(cm["x"]), round(cm["y"])), (0,0,255), cv2.MARKER_CROSS, 12, 1)
-    save(
-        "cursor_center_orbit.png",
-        orbit,
-        "Color-agnostic temporal envelope and fitted pivot",
-        "center",
-    )
+    _write_cursor_center_evidence(save, movement_frames, center)
 
     persistence = shape["masks"].mean(axis=0)
     save("cursor_shape_persistence_heatmap.png", _color_heatmap(persistence), "Screen-fixed cursor persistence", "cursor_shape")
@@ -1249,43 +1282,7 @@ def _write_cursor_orbit_evidence(
         files.append({"name": name, "title": title, "category": category})
 
     metrics = center["metrics"]
-    save(
-        "cursor_center_heatmap.png",
-        _color_heatmap(center["temporal_heatmap"]),
-        "Color-agnostic cursor temporal heatmap",
-        "center",
-    )
-    score_map = np.nan_to_num(center["center_score_map"], nan=0.0)
-    save(
-        "cursor_center_hough.png",
-        _color_heatmap(score_map),
-        "Cursor cold-core circle Hough votes",
-        "center",
-    )
-    orbit = frames.mean(axis=0).astype(np.uint8)
-    display_radius = max(1, round(metrics["temporal_signal_radius_px"]))
-    cv2.circle(
-        orbit,
-        (round(metrics["x"]), round(metrics["y"])),
-        display_radius,
-        (0, 255, 0),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.drawMarker(
-        orbit,
-        (round(metrics["x"]), round(metrics["y"])),
-        (0, 0, 255),
-        cv2.MARKER_CROSS,
-        12,
-        1,
-    )
-    save(
-        "cursor_center_orbit.png",
-        orbit,
-        "Observed cold-core circle and fitted rotation center",
-        "center",
-    )
+    _write_cursor_center_evidence(save, frames, center)
 
     if shape is not None:
         probability = cv2.resize(
