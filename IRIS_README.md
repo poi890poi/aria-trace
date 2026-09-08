@@ -342,7 +342,7 @@ python -m iris_tools profiles purge --apply
 ```
 
 Defaults keep the latest **10 portable revisions** and **3 displacement-dependent
-revisions** per registry profile identity, with a **384 MB evidence budget**.
+revisions** per registry profile identity, with a **64 MB evidence budget**.
 Override these with `--keep-portable`, `--keep-rig`, and `--evidence-max-mb`.
 Color uses the portable count, including camera-specific color, because rig
 displacement does not invalidate it. Active revisions, portable activation
@@ -357,6 +357,12 @@ record. Recent evidence is protected for 24 hours (configurable through
 files can keep storage above budget; the report explains this and `--apply`
 returns exit code 1 for incomplete cleanup. Custom output folders and recorded
 sessions are outside this command's scope. Run again to retry locked files.
+
+New human-review plots and annotated calibration images use JPEG (quality 90,
+full chroma resolution where supported). Raw observations, decoder crops, masks,
+and machine-used color references remain lossless. Existing bundles are not
+transcoded. The 64 MB limit applies to eligible evidence, not the entire profile
+folder; retained runtime data and recent evidence can exceed it.
 
 Automatic cleanup runs once per profile root at the end of a rig, game, mini-map,
 orientation, or color calibration that activates a profile. Nested components and

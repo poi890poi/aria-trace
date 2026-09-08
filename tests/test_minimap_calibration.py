@@ -148,13 +148,13 @@ class MinimapCalibrationTests(unittest.TestCase):
             self.assertEqual(
                 declared,
                 {
-                    "minimap_stacked_difference_heatmap.png",
-                    "boundary_temporal_heatmap.png",
-                    "boundary_radial_heatmap.png",
-                    "boundary_points_binary.png",
-                    "boundary_fitted_circle.png",
-                    "boundary_evidence_overlay.png",
-                    "boundary_confidence.png",
+                    "minimap_stacked_difference_heatmap.jpg",
+                    "boundary_temporal_heatmap.jpg",
+                    "boundary_radial_heatmap.jpg",
+                    "boundary_points_binary.jpg",
+                    "boundary_fitted_circle.jpg",
+                    "boundary_evidence_overlay.jpg",
+                    "boundary_confidence.jpg",
                 },
             )
             self.assertFalse((Path(temporary) / "model.npz").exists())
@@ -248,16 +248,16 @@ class MinimapCalibrationTests(unittest.TestCase):
                     str(model["rotation_center_space_id"].item()),
                 )
             declared = {item["name"] for item in result["evidence"]}
-            self.assertIn("minimap_stacked_difference_heatmap.png", declared)
-            self.assertIn("boundary_fitted_circle.png", declared)
-            self.assertIn("boundary_evidence_overlay.png", declared)
-            self.assertIn("cursor_center_orbit.png", declared)
-            self.assertIn("cursor_center_fit.png", declared)
-            self.assertEqual((402, 864, 3), cv2.imread(str(Path(temporary) / "cursor_center_fit.png")).shape)
-            self.assertIn("cursor_shape_overlay.png", declared)
-            self.assertIn("cursor_shape_polar_correlation.png", declared)
-            self.assertIn("cursor_pose_gaussian_fits.png", declared)
-            self.assertIn("cursor_pose_polar_samples.png", declared)
+            self.assertIn("minimap_stacked_difference_heatmap.jpg", declared)
+            self.assertIn("boundary_fitted_circle.jpg", declared)
+            self.assertIn("boundary_evidence_overlay.jpg", declared)
+            self.assertIn("cursor_center_orbit.jpg", declared)
+            self.assertIn("cursor_center_fit.jpg", declared)
+            self.assertEqual((402, 864, 3), cv2.imread(str(Path(temporary) / "cursor_center_fit.jpg")).shape)
+            self.assertIn("cursor_shape_overlay.jpg", declared)
+            self.assertIn("cursor_shape_polar_correlation.jpg", declared)
+            self.assertIn("cursor_pose_gaussian_fits.jpg", declared)
+            self.assertIn("cursor_pose_polar_samples.jpg", declared)
             pose = result["cursor_pose_validation"]
             pose_benchmark = pose["pose_estimation_benchmark"]
             self.assertEqual(pose_benchmark["sample_count"], len(movement))

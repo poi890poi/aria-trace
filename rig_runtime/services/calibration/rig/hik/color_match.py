@@ -322,11 +322,11 @@ def optimize_mvs_bayer_conversion(
     before_difference = cv2.absdiff(target_crop, baseline_crop)
     after_difference = cv2.absdiff(target_crop, adjusted_crop)
     evidence = {
-        "bayer_color_match_target_adb_warped.png": target_crop,
-        "bayer_color_match_hik_identity.png": baseline_crop,
-        "bayer_color_match_hik_adjusted.png": adjusted_crop,
+        "bayer_color_match_target_adb_warped.jpg": target_crop,
+        "bayer_color_match_hik_identity.jpg": baseline_crop,
+        "bayer_color_match_hik_adjusted.jpg": adjusted_crop,
         "bayer_color_match_sampling_mask.png": crop_mask,
-        "bayer_color_match_review.png": np.hstack(
+        "bayer_color_match_review.jpg": np.hstack(
             (
                 _labeled_tile(target_crop, "ADB target"),
                 _labeled_tile(baseline_crop, "HIK identity"),

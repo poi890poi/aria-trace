@@ -7,6 +7,8 @@ from typing import Mapping
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from replay.session_tools import decode_frames
 
 from .transition import ModeObservation, learn_transition_model
@@ -190,7 +192,7 @@ def _render_timeline(samples, model, mode_scales, output: Path) -> None:
         1,
         cv2.LINE_AA,
     )
-    if not cv2.imwrite(str(output), canvas):
+    if not write_evidence_image(str(output), canvas):
         raise RuntimeError("Could not write mini-map transition timeline")
 
 
@@ -284,7 +286,7 @@ def analyze_transition_session(
         "switch_position_policy": "hold_continuous_pose",
         "reset_local_reference": True,
     }
-    evidence_file = "transition_scale_timeline.png"
+    evidence_file = "transition_scale_timeline.jpg"
     _render_timeline(samples, model, mode_scales, Path(output_path) / evidence_file)
     model["evidence_file"] = evidence_file
     return model

@@ -11,6 +11,8 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.domain.spatial import require_same_space, require_spatial_geometry
 from rig_runtime.services.calibration.minimap.spatial import (
     minimap_crop_space,
@@ -1232,7 +1234,7 @@ def _plot_angle_timeline(poses, output: Path) -> None:
     )
     detected = [pose for pose in poses if pose.get("detected")]
     if not detected:
-        cv2.imwrite(str(output), canvas)
+        write_evidence_image(str(output), canvas)
         return
     times = np.array([pose["session_time_ns"] for pose in detected], np.float64) / 1e9
     times -= times.min()
@@ -1259,7 +1261,7 @@ def _plot_angle_timeline(poses, output: Path) -> None:
         y2 = 380 - int(angles[index + 1] / 360 * 320)
         if abs(y2 - y1) < 150:
             cv2.line(canvas, (x1, y1), (x2, y2), (0, 220, 255), 1)
-    cv2.imwrite(str(output), canvas)
+    write_evidence_image(str(output), canvas)
 
 
 def _plot_confidence_timeline(poses, output: Path) -> None:
@@ -1290,7 +1292,7 @@ def _plot_confidence_timeline(poses, output: Path) -> None:
             cv2.line(canvas, (x1, yc1), (x2, yc2), (0, 220, 80), 1)
             cv2.line(canvas, (x1, ye1), (x2, ye2), (80, 100, 255), 1)
     cv2.putText(canvas, "green=confidence / red=|polar-centroid error| (0..45 deg)", (55,330), cv2.FONT_HERSHEY_SIMPLEX, .45, (210,210,210), 1, cv2.LINE_AA)
-    cv2.imwrite(str(output), canvas)
+    write_evidence_image(str(output), canvas)
 
 
 def _plot_gaussian_fits(poses, output: Path) -> None:
@@ -1334,7 +1336,7 @@ def _plot_gaussian_fits(poses, output: Path) -> None:
         )
         cv2.putText(canvas, label, (14, top + 20), cv2.FONT_HERSHEY_SIMPLEX, .44, (235,235,235), 1, cv2.LINE_AA)
     cv2.putText(canvas, "blue=polygon likelihood  yellow=Gaussian fit", (620, 20), cv2.FONT_HERSHEY_SIMPLEX, .38, (200,200,200), 1, cv2.LINE_AA)
-    cv2.imwrite(str(output), canvas)
+    write_evidence_image(str(output), canvas)
 
 
 def _plot_polar_samples(estimator, poses, output: Path) -> None:
@@ -1357,7 +1359,7 @@ def _plot_polar_samples(estimator, poses, output: Path) -> None:
         heatmap = cv2.resize(heatmap, (720, 72), interpolation=cv2.INTER_NEAREST)
         canvas[top + 28 : top + 100, 20:740] = heatmap
         cv2.putText(canvas, label, (20, top + 20), cv2.FONT_HERSHEY_SIMPLEX, .45, (235,235,235), 1, cv2.LINE_AA)
-    cv2.imwrite(str(output), canvas)
+    write_evidence_image(str(output), canvas)
 
 
 def _pose_overlays(poses, output: Path) -> None:
@@ -1388,7 +1390,7 @@ def _pose_overlays(poses, output: Path) -> None:
             (255,255,255), 1, cv2.LINE_AA
         )
         rows.append(crop)
-    cv2.imwrite(str(output), np.vstack(rows))
+    write_evidence_image(str(output), np.vstack(rows))
 
 
 def estimate_cursor_pose_sequence(
@@ -1462,12 +1464,12 @@ def estimate_cursor_pose_frames(
         x = int(round(shift / 360.0 * (correlation_image.shape[1] - 1)))
         y = int(round(row / max(1, len(detected) - 1) * (correlation_image.shape[0] - 1)))
         cv2.circle(correlation_image, (x, y), 1, (255, 255, 255), -1)
-    cv2.imwrite(str(output_path / "cursor_pose_correlation.png"), correlation_image)
-    _plot_angle_timeline(poses, output_path / "cursor_pose_angles.png")
-    _plot_gaussian_fits(poses, output_path / "cursor_pose_gaussian_fits.png")
-    _plot_polar_samples(estimator, poses, output_path / "cursor_pose_polar_samples.png")
-    _plot_confidence_timeline(poses, output_path / "cursor_pose_confidence.png")
-    _pose_overlays(poses, output_path / "cursor_pose_overlays.png")
+    write_evidence_image(str(output_path / "cursor_pose_correlation.jpg"), correlation_image)
+    _plot_angle_timeline(poses, output_path / "cursor_pose_angles.jpg")
+    _plot_gaussian_fits(poses, output_path / "cursor_pose_gaussian_fits.jpg")
+    _plot_polar_samples(estimator, poses, output_path / "cursor_pose_polar_samples.jpg")
+    _plot_confidence_timeline(poses, output_path / "cursor_pose_confidence.jpg")
+    _pose_overlays(poses, output_path / "cursor_pose_overlays.jpg")
     confidence = np.array([pose["confidence"] for pose in detected])
     agreement = np.array(
         [pose["centroid_agreement_error_deg"] for pose in detected]
@@ -1550,32 +1552,32 @@ def estimate_cursor_pose_frames(
         "measurement_file": "cursor_poses.jsonl",
         "evidence": [
             {
-                "name": "cursor_pose_correlation.png",
+                "name": "cursor_pose_correlation.jpg",
                 "title": "Movement symmetric-polygon angular likelihood",
                 "category": "cursor_pose",
             },
             {
-                "name": "cursor_pose_angles.png",
+                "name": "cursor_pose_angles.jpg",
                 "title": "Gaussian-fitted cursor screen-angle timeline",
                 "category": "cursor_pose",
             },
             {
-                "name": "cursor_pose_gaussian_fits.png",
+                "name": "cursor_pose_gaussian_fits.jpg",
                 "title": "Correlation lobes and circular Gaussian fits",
                 "category": "cursor_pose",
             },
             {
-                "name": "cursor_pose_polar_samples.png",
+                "name": "cursor_pose_polar_samples.jpg",
                 "title": "Cursor-centered polar template and movement samples",
                 "category": "cursor_pose",
             },
             {
-                "name": "cursor_pose_confidence.png",
+                "name": "cursor_pose_confidence.jpg",
                 "title": "Pose confidence and centroid cross-check",
                 "category": "cursor_pose",
             },
             {
-                "name": "cursor_pose_overlays.png",
+                "name": "cursor_pose_overlays.jpg",
                 "title": "Raw cursor samples with exterior direction arrows",
                 "category": "cursor_pose",
             },

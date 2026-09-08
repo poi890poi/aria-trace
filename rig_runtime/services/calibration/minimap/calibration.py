@@ -20,6 +20,8 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.services.calibration.cursor.center import fit_temporal_cold_circle
 from rig_runtime.services.calibration.cursor.shape import fit_symmetric_polygon
 from rig_runtime.adapters.filesystem.session import SessionReader
@@ -901,9 +903,9 @@ def _write_cursor_center_evidence(save, frames, center):
     temporal = _color_heatmap(center["temporal_heatmap"])
     votes = _color_heatmap(np.nan_to_num(center["center_score_map"], nan=0.0))
     for name, image, title in (
-        ("cursor_center_heatmap.png", temporal, "Cursor temporal range with Hough and refined circles"),
-        ("cursor_center_hough.png", votes, "Cursor Hough votes with Hough and refined circles"),
-        ("cursor_center_orbit.png", mean, "Observed cold-core circle and fitted rotation center"),
+        ("cursor_center_heatmap.jpg", temporal, "Cursor temporal range with Hough and refined circles"),
+        ("cursor_center_hough.jpg", votes, "Cursor Hough votes with Hough and refined circles"),
+        ("cursor_center_orbit.jpg", mean, "Observed cold-core circle and fitted rotation center"),
     ):
         save(name, _cursor_circle_overlay(image, center), title, "center")
 
@@ -932,7 +934,7 @@ def _write_cursor_center_evidence(save, frames, center):
     )
     for index, label in enumerate(labels):
         cv2.putText(view, label, (8, panel + 53 + index * 23), cv2.FONT_HERSHEY_SIMPLEX, .52, (240, 240, 240), 1, cv2.LINE_AA)
-    save("cursor_center_fit.png", view, "Magnified Hough circle and refined pivot", "center")
+    save("cursor_center_fit.jpg", view, "Magnified Hough circle and refined pivot", "center")
 
 
 def _stacked_difference_heatmap(frames: np.ndarray) -> np.ndarray:
@@ -962,7 +964,7 @@ def _write_evidence(
 
     def save(name, image, title, category):
         path = output / name
-        if not cv2.imwrite(str(path), image):
+        if not write_evidence_image(str(path), image):
             raise RuntimeError("Could not write calibration evidence: {}".format(path))
         files.append({"name": name, "title": title, "category": category})
 
@@ -971,13 +973,13 @@ def _write_evidence(
     observation = boundary["observation"]
     average = boundary["average"]
     save(
-        "minimap_stacked_difference_heatmap.png",
+        "minimap_stacked_difference_heatmap.jpg",
         _color_heatmap(_stacked_difference_heatmap(rotation_frames)),
         "Stacked consecutive-frame difference heatmap",
         "boundary",
     )
     save(
-        "boundary_temporal_heatmap.png",
+        "boundary_temporal_heatmap.jpg",
         _color_heatmap(boundary["temporal_std"]),
         "Boundary temporal heatmap",
         "boundary",
@@ -995,13 +997,13 @@ def _write_evidence(
         color = (255, 255, 255) if fit["accepted"][row] else (0, 0, 0)
         cv2.circle(radial, (x, row), 1, color, -1)
     cv2.putText(radial, "radius left-to-right / angle top-to-bottom", (8, 22), cv2.FONT_HERSHEY_SIMPLEX, .52, (255,255,255), 1, cv2.LINE_AA)
-    save("boundary_radial_heatmap.png", radial, "Boundary radial response", "boundary")
+    save("boundary_radial_heatmap.jpg", radial, "Boundary radial response", "boundary")
 
     point_binary = np.zeros_like(average)
     for accepted, point in zip(fit["accepted"], observation["points"]):
         if accepted:
             cv2.circle(point_binary, tuple(np.round(point).astype(int)), 1, (255,255,255), -1)
-    save("boundary_points_binary.png", point_binary, "Accepted boundary points", "boundary")
+    save("boundary_points_binary.jpg", point_binary, "Accepted boundary points", "boundary")
 
     fit_overlay = average.copy()
     fit_center = (round(bmetrics["center_x"]), round(bmetrics["center_y"]))
@@ -1023,7 +1025,7 @@ def _write_evidence(
         1,
     )
     save(
-        "boundary_fitted_circle.png",
+        "boundary_fitted_circle.jpg",
         fit_overlay,
         "Complete fitted mini-map boundary",
         "boundary",
@@ -1036,7 +1038,7 @@ def _write_evidence(
         cv2.circle(overlay, point, 1, color, -1)
     cv2.circle(overlay, (round(bmetrics["center_x"]), round(bmetrics["center_y"])), round(bmetrics["radius"]), (255,255,0), 1, cv2.LINE_AA)
     cv2.putText(overlay, "green accepted / red rejected / cyan fit", (4, overlay.shape[0]-6), cv2.FONT_HERSHEY_SIMPLEX, .38, (255,255,255), 1, cv2.LINE_AA)
-    save("boundary_evidence_overlay.png", overlay, "Boundary evidence overlay", "boundary")
+    save("boundary_evidence_overlay.jpg", overlay, "Boundary evidence overlay", "boundary")
 
     confidence = np.full((520, 760, 3), 18, np.uint8)
     cv2.putText(confidence, "Boundary confidence {:.3f} ({})".format(bmetrics["confidence"], bmetrics["confidence_level"]), (20,35), cv2.FONT_HERSHEY_SIMPLEX, .82, (245,245,245), 2, cv2.LINE_AA)
@@ -1046,7 +1048,7 @@ def _write_evidence(
         cv2.rectangle(confidence, (235,y-18), (665,y+5), (60,60,60), -1)
         cv2.rectangle(confidence, (235,y-18), (235+int(430*value),y+5), (30,190,235), -1)
         cv2.putText(confidence, "{:.2f}".format(value), (675,y+2), cv2.FONT_HERSHEY_SIMPLEX, .48, (245,245,245), 1)
-    save("boundary_confidence.png", confidence, "Boundary confidence breakdown", "quality")
+    save("boundary_confidence.jpg", confidence, "Boundary confidence breakdown", "quality")
 
     if boundary_only:
         return files
@@ -1055,15 +1057,15 @@ def _write_evidence(
     _write_cursor_center_evidence(save, movement_frames, center)
 
     persistence = shape["masks"].mean(axis=0)
-    save("cursor_shape_persistence_heatmap.png", _color_heatmap(persistence), "Screen-fixed cursor persistence", "cursor_shape")
+    save("cursor_shape_persistence_heatmap.jpg", _color_heatmap(persistence), "Screen-fixed cursor persistence", "cursor_shape")
     probability = _color_heatmap(shape["probability"])
     probability = cv2.resize(probability, (410,410), interpolation=cv2.INTER_NEAREST)
-    save("cursor_shape_probability.png", probability, "Cursor shape probability", "cursor_shape")
+    save("cursor_shape_probability.jpg", probability, "Cursor shape probability", "cursor_shape")
     binary = cv2.resize((shape["binary"]*255).astype(np.uint8), (410,410), interpolation=cv2.INTER_NEAREST)
-    save("cursor_shape_binary.png", binary, "Cursor shape binary", "cursor_shape")
+    save("cursor_shape_binary.jpg", binary, "Cursor shape binary", "cursor_shape")
     edges = cv2.Canny((shape["binary"]*255).astype(np.uint8), 50, 150)
     edges = cv2.resize(edges, (410,410), interpolation=cv2.INTER_NEAREST)
-    save("cursor_shape_edge.png", edges, "Cursor shape edge", "cursor_shape")
+    save("cursor_shape_edge.jpg", edges, "Cursor shape edge", "cursor_shape")
 
     overlay = np.zeros((410,410,3), np.uint8)
     overlay[binary > 0] = (235,235,235)
@@ -1074,7 +1076,7 @@ def _write_evidence(
     cv2.drawMarker(overlay, centroid, (255,255,0), cv2.MARKER_TILTED_CROSS, 18, 2)
     cv2.line(overlay, (205,205), farthest, (0,200,255), 2)
     cv2.circle(overlay, farthest, 5, (0,200,255), -1)
-    save("cursor_shape_overlay.png", overlay, "Cursor contour, pivot, and geometric tip", "cursor_shape")
+    save("cursor_shape_overlay.jpg", overlay, "Cursor contour, pivot, and geometric tip", "cursor_shape")
 
     symmetric = shape["symmetric_model"]
     symmetric_view = cv2.resize(
@@ -1098,7 +1100,7 @@ def _write_evidence(
     )
     cv2.drawMarker(symmetric_view, (205,205), (255,255,255), cv2.MARKER_CROSS, 18, 2)
     save(
-        "cursor_shape_symmetric_polygon.png",
+        "cursor_shape_symmetric_polygon.jpg",
         symmetric_view,
         "Symmetry-constrained rigid cursor polygon",
         "cursor_shape",
@@ -1109,7 +1111,7 @@ def _write_evidence(
         interpolation=cv2.INTER_NEAREST,
     )
     save(
-        "cursor_shape_symmetry_residual.png",
+        "cursor_shape_symmetry_residual.jpg",
         residual_view,
         "Cursor mirror-symmetry residual",
         "quality",
@@ -1120,7 +1122,7 @@ def _write_evidence(
         interpolation=cv2.INTER_NEAREST,
     )
     save(
-        "cursor_shape_symmetric_binary.png",
+        "cursor_shape_symmetric_binary.jpg",
         symmetric_binary_view,
         "Symmetrized cursor silhouette",
         "cursor_shape",
@@ -1129,13 +1131,13 @@ def _write_evidence(
     polar_rows = shape["polar_rows"] / (shape["polar_rows"].max(axis=1, keepdims=True) + 1e-6)
     polar_occupancy = _color_heatmap(np.sqrt(np.clip(polar_rows, 0, 1)))
     polar_occupancy = cv2.resize(polar_occupancy, (720, max(360, 2*len(polar_rows))), interpolation=cv2.INTER_NEAREST)
-    save("cursor_shape_polar_occupancy.png", polar_occupancy, "Cursor polar occupancy over time", "polar")
+    save("cursor_shape_polar_occupancy.jpg", polar_occupancy, "Cursor polar occupancy over time", "polar")
     template_polar = _color_heatmap(shape["template_polar"])
     template_polar = cv2.resize(template_polar, (500,720), interpolation=cv2.INTER_NEAREST)
-    save("cursor_shape_polar_template.png", template_polar, "Canonical cursor polar template", "polar")
+    save("cursor_shape_polar_template.jpg", template_polar, "Canonical cursor polar template", "polar")
     correlation = _color_heatmap(shape["correlations"])
     correlation = cv2.resize(correlation, (720, max(360, 2*len(shape["correlations"]))), interpolation=cv2.INTER_NEAREST)
-    save("cursor_shape_polar_correlation.png", correlation, "Cursor rotation correlation", "polar")
+    save("cursor_shape_polar_correlation.jpg", correlation, "Cursor rotation correlation", "polar")
 
     model_mask = np.zeros(average.shape[:2], dtype=np.uint8)
     cv2.circle(model_mask, (round(bmetrics["center_x"]), round(bmetrics["center_y"])), round(bmetrics["radius"]), 255, -1)
@@ -1277,7 +1279,7 @@ def _write_cursor_orbit_evidence(
 
     def save(name, image, title, category):
         path = output / name
-        if not cv2.imwrite(str(path), image):
+        if not write_evidence_image(str(path), image):
             raise RuntimeError("Could not write calibration evidence: {}".format(path))
         files.append({"name": name, "title": title, "category": category})
 
@@ -1300,15 +1302,15 @@ def _write_cursor_orbit_evidence(
             (410, 410),
             interpolation=cv2.INTER_NEAREST,
         )
-        save("cursor_shape_probability.png", probability, "Aligned cursor probability", "cursor_shape")
-        save("cursor_shape_binary.png", binary, "Aligned cursor binary shape", "cursor_shape")
-        save("cursor_shape_edge.png", edges, "Aligned cursor shape edge", "cursor_shape")
+        save("cursor_shape_probability.jpg", probability, "Aligned cursor probability", "cursor_shape")
+        save("cursor_shape_binary.jpg", binary, "Aligned cursor binary shape", "cursor_shape")
+        save("cursor_shape_edge.jpg", edges, "Aligned cursor shape edge", "cursor_shape")
 
         overlay = np.zeros((410, 410, 3), np.uint8)
         overlay[binary > 0] = (235, 235, 235)
         overlay[edges > 0] = (0, 255, 0)
         cv2.drawMarker(overlay, (205, 205), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-        save("cursor_shape_overlay.png", overlay, "Aligned cursor contour and pivot", "cursor_shape")
+        save("cursor_shape_overlay.jpg", overlay, "Aligned cursor contour and pivot", "cursor_shape")
 
         symmetric = shape["symmetric_model"]
         symmetric_view = cv2.resize(
@@ -1319,7 +1321,7 @@ def _write_cursor_orbit_evidence(
         polygon = np.round(symmetric["polygon_xy"] * 10).astype(np.int32)
         cv2.polylines(symmetric_view, [polygon], True, (0, 255, 0), 2, cv2.LINE_AA)
         save(
-            "cursor_shape_symmetric_polygon.png",
+            "cursor_shape_symmetric_polygon.jpg",
             symmetric_view,
             "Symmetry-constrained cursor polygon",
             "cursor_shape",
@@ -1334,8 +1336,8 @@ def _write_cursor_orbit_evidence(
             (720, max(360, 2 * len(shape["correlations"]))),
             interpolation=cv2.INTER_NEAREST,
         )
-        save("cursor_shape_polar_template.png", template_polar, "Cursor polar template", "polar")
-        save("cursor_shape_polar_correlation.png", correlation, "Cursor polar correlation", "polar")
+        save("cursor_shape_polar_template.jpg", template_polar, "Cursor polar template", "polar")
+        save("cursor_shape_polar_correlation.jpg", correlation, "Cursor polar correlation", "polar")
 
         angle_plot = np.full((240, 720, 3), 18, np.uint8)
         if alignment_angles:
@@ -1345,7 +1347,7 @@ def _write_cursor_orbit_evidence(
                 y = int(round(120 + ((angle + 180.0) % 360.0 - 180.0) * 0.55))
                 points.append([x, int(np.clip(y, 5, 234))])
             cv2.polylines(angle_plot, [np.asarray(points, np.int32)], False, (0, 220, 255), 2)
-        save("cursor_orbit_alignment.png", angle_plot, "Per-frame cursor alignment angle", "quality")
+        save("cursor_orbit_alignment.jpg", angle_plot, "Per-frame cursor alignment angle", "quality")
 
     model_mask = np.zeros(frames.shape[1:3], dtype=np.uint8)
     cv2.circle(
@@ -1589,14 +1591,14 @@ def calibrate_cursor_static_frames(
         1,
     )
     evidence_images = {
-        "cursor_static_probability.png": probability,
-        "cursor_static_binary.png": binary,
-        "cursor_static_edge.png": edge,
-        "cursor_static_shape_overlay.png": overlay,
+        "cursor_static_probability.jpg": probability,
+        "cursor_static_binary.jpg": binary,
+        "cursor_static_edge.jpg": edge,
+        "cursor_static_shape_overlay.jpg": overlay,
     }
     evidence = []
     for name, image in evidence_images.items():
-        if not cv2.imwrite(str(output_path / name), image):
+        if not write_evidence_image(str(output_path / name), image):
             raise RuntimeError("Could not write cursor evidence {}".format(name))
         evidence.append({"name": name, "category": "cursor_shape"})
     np.savez_compressed(

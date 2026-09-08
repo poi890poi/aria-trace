@@ -11,6 +11,8 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.services.calibration.rig.geometry import (
     CharucoLayout,
     charuco_board_metric_to_panel_pixels,
@@ -544,9 +546,9 @@ def run_reuse_precheck(
         overlay = _alignment_overlay(
             fresh, observations[representative_index], screen_to_camera
         )
-        if not cv2.imwrite(str(output / "fresh_full_sensor_frame.png"), fresh):
+        if not write_evidence_image(str(output / "fresh_full_sensor_frame.png"), fresh):
             raise OSError("Could not save full-sensor precheck frame")
-        if not cv2.imwrite(str(output / "charuco_alignment_overlay.png"), overlay):
+        if not write_evidence_image(str(output / "charuco_alignment_overlay.jpg"), overlay):
             raise OSError("Could not save ChArUco alignment overlay")
         fresh_review = _expanded_precheck_review(
             fresh_sample,
@@ -562,11 +564,11 @@ def run_reuse_precheck(
             overlay=overlay,
         )
         review_files = {
-            "fresh_full_sensor_expanded_review.png": fresh_review,
-            "charuco_alignment_expanded_review.png": alignment_review,
+            "fresh_full_sensor_expanded_review.jpg": fresh_review,
+            "charuco_alignment_expanded_review.jpg": alignment_review,
         }
         for name, review in review_files.items():
-            if not cv2.imwrite(str(output / name), review.image):
+            if not write_evidence_image(str(output / name), review.image):
                 raise OSError("Could not save {}".format(name))
         media = [
             rig_sample_media_record(
@@ -577,7 +579,7 @@ def run_reuse_precheck(
                 notes="Machine/source raster; use expanded review for human inspection.",
             ),
             rig_sample_media_record(
-                "charuco_alignment_overlay.png",
+                "charuco_alignment_overlay.jpg",
                 type(fresh_sample)(
                     image=overlay,
                     time_ns=fresh_sample.time_ns,
@@ -607,12 +609,12 @@ def run_reuse_precheck(
             effective_full_sensor_roi_xywh=full_roi,
             evidence={
                 "fresh_full_sensor_frame": "fresh_full_sensor_frame.png",
-                "charuco_alignment_overlay": "charuco_alignment_overlay.png",
+                "charuco_alignment_overlay": "charuco_alignment_overlay.jpg",
                 "fresh_full_sensor_expanded_review": (
-                    "fresh_full_sensor_expanded_review.png"
+                    "fresh_full_sensor_expanded_review.jpg"
                 ),
                 "charuco_alignment_expanded_review": (
-                    "charuco_alignment_expanded_review.png"
+                    "charuco_alignment_expanded_review.jpg"
                 ),
             },
             media=media,
@@ -633,8 +635,8 @@ def run_reuse_precheck(
             try:
                 sample = acquired_samples[-1]
                 raw_name = "fresh_full_sensor_frame.png"
-                review_name = "fresh_full_sensor_expanded_review.png"
-                if not cv2.imwrite(str(output / raw_name), sample.image):
+                review_name = "fresh_full_sensor_expanded_review.jpg"
+                if not write_evidence_image(str(output / raw_name), sample.image):
                     raise OSError("Could not save failed precheck camera frame")
                 review = _expanded_precheck_review(
                     sample,
@@ -642,7 +644,7 @@ def run_reuse_precheck(
                     screen_to_camera,
                     title="Rig reuse acquisition before precheck failure",
                 )
-                if not cv2.imwrite(str(output / review_name), review.image):
+                if not write_evidence_image(str(output / review_name), review.image):
                     raise OSError("Could not save failed precheck expanded review")
                 media = [
                     rig_sample_media_record(

@@ -9,6 +9,8 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.evidence.rig_alignment import (
     cross_source_alignment_evidence,
     cross_source_alignment_warning,
@@ -518,7 +520,7 @@ class GameCrossSourceEvidenceRecorder:
             json.dumps(result, indent=2), encoding="utf-8"
         )
         for name, image in (self._best_images or {}).items():
-            cv2.imwrite(str(self._path / name), image)
+            write_evidence_image(str(self._path / name), image)
         if self.orientation_match is not None:
             orientation_path = self._path / "orientation_match"
             orientation_path.mkdir(parents=True, exist_ok=True)
@@ -526,7 +528,7 @@ class GameCrossSourceEvidenceRecorder:
                 json.dumps(self.orientation_match, indent=2), encoding="utf-8"
             )
             for name, image in self.orientation_evidence_images.items():
-                cv2.imwrite(str(orientation_path / name), image)
+                write_evidence_image(str(orientation_path / name), image)
 
     def describe(self) -> dict:
         result = {

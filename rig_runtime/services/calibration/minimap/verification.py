@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.services.calibration.cursor.pose import (
     CursorPoseEstimator,
     circular_difference_degrees,
@@ -67,7 +69,7 @@ def benchmark_masked_shift(
 
 
 def _write_image(path: Path, image: np.ndarray) -> None:
-    if not cv2.imwrite(str(path), image):
+    if not write_evidence_image(str(path), image):
         raise RuntimeError("Could not write verification evidence: {}".format(path))
 
 
@@ -287,17 +289,17 @@ def verify_forward_session(
         {"name": "forward_start.png", "title": "Raw forward start observation", "category": "shift"},
         {"name": "forward_end.png", "title": "Raw forward end observation", "category": "shift"},
         {"name": "forward_shift_mask.png", "title": "Exact shift-estimation mask (white used, black excluded)", "category": "shift"},
-        {"name": "forward_registration_overlay.png", "title": "Aligned overlay and registration residual", "category": "shift"},
-        {"name": "forward_pose_shift.png", "title": "Cursor pose and map-shift relationship", "category": "pose_verification"},
+        {"name": "forward_registration_overlay.jpg", "title": "Aligned overlay and registration residual", "category": "shift"},
+        {"name": "forward_pose_shift.jpg", "title": "Cursor pose and map-shift relationship", "category": "pose_verification"},
     ]
     if progress:
         progress("Rendering shift, correlation, and pose evidence")
     _write_image(output_path / "forward_start.png", first_crop)
     _write_image(output_path / "forward_end.png", last_crop)
     _write_image(output_path / "forward_shift_mask.png", mask)
-    _write_image(output_path / "forward_registration_overlay.png", registration_review)
+    _write_image(output_path / "forward_registration_overlay.jpg", registration_review)
     _write_image(
-        output_path / "forward_pose_shift.png",
+        output_path / "forward_pose_shift.jpg",
         _verification_graphic(
             last_crop,
             estimator.pivot,

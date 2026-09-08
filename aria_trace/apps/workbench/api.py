@@ -9,6 +9,10 @@ from urllib.parse import parse_qs, urlparse
 from .session_bundles import SessionBundles
 
 
+def _image_content_type(name):
+    return "image/jpeg" if Path(name).suffix.lower() in (".jpg", ".jpeg") else "image/png"
+
+
 def _strict_json_value(value):
     """Return browser-compatible JSON data without NaN or infinity tokens."""
     if isinstance(value, float):
@@ -135,7 +139,7 @@ def make_handler(state):
                 elif path == "/api/minimap-calibration/image":
                     query = parse_qs(parsed.query)
                     body = state.minimap_calibration_image(query.get("game_id", [""])[0], query.get("calibration_id", [""])[0], query.get("name", [""])[0])
-                    self._send(200, "image/png", body)
+                    self._send(200, _image_content_type(query.get("name", [""])[0]), body)
                 elif path == "/api/map-stitch/image":
                     query = parse_qs(parsed.query)
                     body = state.map_stitch_image(
@@ -143,7 +147,7 @@ def make_handler(state):
                         query.get("stitch_id", [""])[0],
                         query.get("name", [""])[0],
                     )
-                    self._send(200, "image/png", body)
+                    self._send(200, _image_content_type(query.get("name", [""])[0]), body)
                 elif path == "/api/scene-yaw/image":
                     query = parse_qs(parsed.query)
                     body = state.scene_yaw_image(
@@ -151,7 +155,7 @@ def make_handler(state):
                         query.get("calibration_id", [""])[0],
                         query.get("name", [""])[0],
                     )
-                    self._send(200, "image/png", body)
+                    self._send(200, _image_content_type(query.get("name", [""])[0]), body)
                 elif path == "/api/map-atlas/image":
                     query = parse_qs(parsed.query)
                     body = state.map_atlas_image(
@@ -159,7 +163,7 @@ def make_handler(state):
                         query.get("atlas_id", [""])[0],
                         query.get("name", [""])[0],
                     )
-                    self._send(200, "image/png", body)
+                    self._send(200, _image_content_type(query.get("name", [""])[0]), body)
                 elif path == "/api/teleport-analysis/image":
                     query = parse_qs(parsed.query)
                     body = state.teleport_behavior_image(
@@ -167,7 +171,7 @@ def make_handler(state):
                         query.get("behavior_id", [""])[0],
                         query.get("name", [""])[0],
                     )
-                    self._send(200, "image/png", body)
+                    self._send(200, _image_content_type(query.get("name", [""])[0]), body)
                 elif path == "/api/tracker/overlay":
                     query = parse_qs(parsed.query)
                     self._send(

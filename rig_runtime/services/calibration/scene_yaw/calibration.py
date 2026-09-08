@@ -10,6 +10,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.services.vision import KltAngularYawEstimator, camera_matrix
 
 from rig_runtime.services.calibration.cursor.pose import timing_summary_ms
@@ -333,18 +335,18 @@ def calibrate_scene_yaw_frames(frames, output_path: Path, config=None, provenanc
         flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
     )
     evidence = [
-        {"name": "scene_yaw_curve.png", "title": "Accumulated relative yaw and full-turn closure", "category": "yaw"},
-        {"name": "scene_yaw_confidence.png", "title": "Per-frame scene tracking confidence", "category": "quality"},
-        {"name": "scene_yaw_loop_closure.png", "title": "First frame vs detected full-turn frame", "category": "closure"},
-        {"name": "scene_yaw_loop_matches.png", "title": "Loop-closure feature inliers", "category": "closure"},
+        {"name": "scene_yaw_curve.jpg", "title": "Accumulated relative yaw and full-turn closure", "category": "yaw"},
+        {"name": "scene_yaw_confidence.jpg", "title": "Per-frame scene tracking confidence", "category": "quality"},
+        {"name": "scene_yaw_loop_closure.jpg", "title": "First frame vs detected full-turn frame", "category": "closure"},
+        {"name": "scene_yaw_loop_matches.jpg", "title": "Loop-closure feature inliers", "category": "closure"},
     ]
     for name, image in (
-        ("scene_yaw_curve.png", curve),
-        ("scene_yaw_confidence.png", quality),
-        ("scene_yaw_loop_closure.png", blend),
-        ("scene_yaw_loop_matches.png", matches_image),
+        ("scene_yaw_curve.jpg", curve),
+        ("scene_yaw_confidence.jpg", quality),
+        ("scene_yaw_loop_closure.jpg", blend),
+        ("scene_yaw_loop_matches.jpg", matches_image),
     ):
-        if not cv2.imwrite(str(output_path / name), image):
+        if not write_evidence_image(str(output_path / name), image):
             raise RuntimeError("Could not write scene-yaw evidence: {}".format(name))
     with (output_path / "scene_yaw_estimates.jsonl").open("w", encoding="utf-8") as stream:
         for row in rows:

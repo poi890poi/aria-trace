@@ -17,6 +17,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.adapters.filesystem.commented_yaml import (
     HIK_CONFIG_COMMENTS,
     HIK_CONFIG_HEADER,
@@ -1379,20 +1381,20 @@ class HikRigCalibrationSession:
                 pattern_stem
             )
             if right > left and bottom > top:
-                if not cv2.imwrite(
+                if not write_evidence_image(
                     str(evidence / raw_crop_name),
                     camera_frame[top:bottom, left:right],
                 ):
                     raise OSError("Could not save {}".format(raw_crop_name))
             else:
                 raw_crop_name = None
-            if not cv2.imwrite(
+            if not write_evidence_image(
                 str(evidence / decoder_crop_name), failure["decode_image"]
             ):
                 raise OSError("Could not save {}".format(decoder_crop_name))
             row["camera_polygon_xy"] = polygon.astype(float).tolist()
             row["failure_evidence_files"] = {
-                "annotated_camera_frame": "{}-annotated-camera.png".format(stem),
+                "annotated_camera_frame": "{}-annotated-camera.jpg".format(stem),
                 "raw_camera_crop": raw_crop_name,
                 "rectified_decoder_crop": decoder_crop_name,
                 "rectified_camera_frame": "{}-rectified-camera.png".format(stem),
@@ -1421,12 +1423,12 @@ class HikRigCalibrationSession:
             presentation_entries.append(entry)
 
         images = {
-            "{}-annotated-camera.png".format(stem): annotated,
+            "{}-annotated-camera.jpg".format(stem): annotated,
             "{}-rectified-camera.png".format(stem): rectified_camera_frame,
             "{}-display-target.png".format(stem): target_image,
         }
         for name, image in images.items():
-            if not cv2.imwrite(str(evidence / name), image):
+            if not write_evidence_image(str(evidence / name), image):
                 raise OSError("Could not save {}".format(name))
         index_document = {
             "schema_version": 1,
@@ -4181,7 +4183,7 @@ class HikRigCalibrationSession:
                 screenshot = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
                 if screenshot is None or screenshot.size == 0:
                     raise RuntimeError("ADB screenshot is unavailable")
-            elif not cv2.imwrite(str(screenshot_path), screenshot):
+            elif not write_evidence_image(str(screenshot_path), screenshot):
                 raise OSError("Could not save full ADB screenshot evidence")
             camera_frame = self._capture_settled()
             camera_sample = self._required(
@@ -4209,15 +4211,15 @@ class HikRigCalibrationSession:
             )
             written = {"adb_full_screenshot": screenshot_path.name}
             for name, image in images.items():
-                if not cv2.imwrite(str(evidence_directory / name), image):
+                if not write_evidence_image(str(evidence_directory / name), image):
                     raise OSError("Could not save cross-source evidence {}".format(name))
                 written[name.rsplit(".", 1)[0]] = name
 
             expanded = self._expanded_camera_review(
                 camera_sample, "Cross-source alignment acquisition"
             )
-            expanded_name = "full_camera_and_projected_phone_review.png"
-            if not cv2.imwrite(
+            expanded_name = "full_camera_and_projected_phone_review.jpg"
+            if not write_evidence_image(
                 str(evidence_directory / expanded_name), expanded.image
             ):
                 raise OSError("Could not save {}".format(expanded_name))
@@ -4281,12 +4283,12 @@ class HikRigCalibrationSession:
             )
             comparison_records = [full_adb_record, adb_record, rectified_record]
             for name, operation in (
-                ("edge_overlay_adb_red_hik_cyan.png", "aligned_edge_comparison"),
+                ("edge_overlay_adb_red_hik_cyan.jpg", "aligned_edge_comparison"),
                 (
-                    "residual_translation_overlay.png",
+                    "residual_translation_overlay.jpg",
                     "multilevel_threshold_residual_translation",
                 ),
-                ("normalized_difference_heatmap.png", "aligned_difference_heatmap"),
+                ("normalized_difference_heatmap.jpg", "aligned_difference_heatmap"),
                 ("valid_mask.png", "rectification_validity_mask"),
             ):
                 comparison_records.append(
@@ -4307,7 +4309,7 @@ class HikRigCalibrationSession:
                 )
             comparison_records.append(
                 raster_record(
-                    "side_by_side_adb_then_hik.png",
+                    "side_by_side_adb_then_hik.jpg",
                     media_type="image",
                     stored_size_px=[width * 2, height],
                     space_id=RigSpaceId.DIAGNOSTIC_COMPOSITE,
@@ -4784,7 +4786,7 @@ class HikRigCalibrationSession:
                         if self.panel_axis_sample is not None else None
                     ),
                     "rectified_review_file": (
-                        "panel_axis_rectified_evidence.png"
+                        "panel_axis_rectified_evidence.jpg"
                         if self.panel_axis_evidence_image is not None else None
                     ),
                     "metadata_reference": (
@@ -4795,7 +4797,7 @@ class HikRigCalibrationSession:
             }
             if self.panel_axis_sample is not None:
                 axis_raw_name = "panel_axis_raw_hik.png"
-                if not cv2.imwrite(
+                if not write_evidence_image(
                     str(temporary / axis_raw_name),
                     self.panel_axis_sample.image,
                 ):
@@ -4812,8 +4814,8 @@ class HikRigCalibrationSession:
                     )
                 )
             if self.panel_axis_evidence_image is not None:
-                axis_review_name = "panel_axis_rectified_evidence.png"
-                if not cv2.imwrite(
+                axis_review_name = "panel_axis_rectified_evidence.jpg"
+                if not write_evidence_image(
                     str(temporary / axis_review_name),
                     self.panel_axis_evidence_image,
                 ):
@@ -4862,15 +4864,15 @@ class HikRigCalibrationSession:
                 )
             evidence_sample = self.final_verification_sample or self.last_sample
             if evidence_sample is not None:
-                if not cv2.imwrite(
+                if not write_evidence_image(
                     str(temporary / "last_camera_frame.png"), evidence_sample.image
                 ):
                     raise OSError("Could not save last_camera_frame.png")
                 review = self._expanded_camera_review(
                     evidence_sample, "Final rig calibration acquisition"
                 )
-                review_name = "last_camera_frame_expanded_review.png"
-                if not cv2.imwrite(str(temporary / review_name), review.image):
+                review_name = "last_camera_frame_expanded_review.jpg"
+                if not write_evidence_image(str(temporary / review_name), review.image):
                     raise OSError("Could not save {}".format(review_name))
                 additional_media.append(
                     expanded_review_media_record(
@@ -5016,7 +5018,7 @@ class HikRigCalibrationSession:
         additional_media = []
 
         def write_image(name: str, image: np.ndarray) -> None:
-            if not cv2.imwrite(str(evidence / name), image):
+            if not write_evidence_image(str(evidence / name), image):
                 raise OSError("Could not save {}".format(name))
 
         def remember_phone_image(name: str, image: np.ndarray, operation: str) -> None:
@@ -5048,7 +5050,7 @@ class HikRigCalibrationSession:
             review = self._expanded_camera_review(
                 self.last_sample, "Last HIK frame before calibration failure"
             )
-            review_name = "raw-hik-frame-expanded-review.png"
+            review_name = "raw-hik-frame-expanded-review.jpg"
             write_image(review_name, review.image)
             additional_media.append(
                 expanded_review_media_record(
@@ -5076,7 +5078,7 @@ class HikRigCalibrationSession:
             review = self._expanded_camera_review(
                 self.auto_result_sample, "HIK one-shot auto imaging result"
             )
-            review_name = "auto-neutral-hik-frame-expanded-review.png"
+            review_name = "auto-neutral-hik-frame-expanded-review.jpg"
             write_image(review_name, review.image)
             additional_media.append(
                 expanded_review_media_record(

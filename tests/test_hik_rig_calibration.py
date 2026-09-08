@@ -489,7 +489,7 @@ class HikAlgorithmTests(unittest.TestCase):
         metrics, evidence = cross_source_alignment_evidence(image, image.copy(), mask)
         self.assertGreater(metrics["confidence"], 0.99)
         self.assertGreater(metrics["edge_overlap"], 0.99)
-        self.assertIn("edge_overlay_adb_red_hik_cyan.png", evidence)
+        self.assertIn("edge_overlay_adb_red_hik_cyan.jpg", evidence)
 
     def test_cross_source_check_does_not_fit_away_a_bad_shift(self):
         image = np.zeros((120, 160, 3), np.uint8)
@@ -535,14 +535,14 @@ class HikAlgorithmTests(unittest.TestCase):
             self.assertEqual("measured", result["status"])
             self.assertGreater(result["confidence"], 0.99)
             self.assertTrue(
-                (output / "cross_source_check" / "edge_overlay_adb_red_hik_cyan.png")
+                (output / "cross_source_check" / "edge_overlay_adb_red_hik_cyan.jpg")
                 .is_file()
             )
             self.assertTrue(
                 (
                     output
                     / "cross_source_check"
-                    / "full_camera_and_projected_phone_review.png"
+                    / "full_camera_and_projected_phone_review.jpg"
                 ).is_file()
             )
             self.assertEqual(9, len(result["media"]))
@@ -2465,7 +2465,7 @@ class HikRectifiedStreamTests(unittest.TestCase):
                 {
                     "valid_screen_mask.png",
                     "panel_axis_raw_hik.png",
-                    "panel_axis_rectified_evidence.png",
+                    "panel_axis_rectified_evidence.jpg",
                 },
                 {row["file"] for row in config["media"]},
             )

@@ -293,7 +293,7 @@ class ProfileRetentionTests(unittest.TestCase):
         self.assertEqual(2, len(self.registry.list_revisions()))
 
     def test_policy_rejects_invalid_values(self):
-        self.assertEqual(384, RetentionPolicy().evidence_max_mb)
+        self.assertEqual(64, RetentionPolicy().evidence_max_mb)
         for kwargs in ({"keep_portable": 0}, {"keep_rig": 11}, {"evidence_max_mb": -1}, {"evidence_max_mb": float("nan")}, {"evidence_min_age_hours": -1}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 RetentionPolicy(**kwargs)

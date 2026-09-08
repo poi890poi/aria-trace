@@ -71,7 +71,7 @@ class CursorColdCircleTests(unittest.TestCase):
             self.assertEqual(space, result["rotation_center"]["space"])
             with np.load(Path(temporary) / "model.npz") as model:
                 self.assertLess(np.linalg.norm(model["rotation_center"] - pivot), 1.0)
-            self.assertIsNotNone(cv2.imread(str(Path(temporary) / "cursor_center_hough.png")))
+            self.assertIsNotNone(cv2.imread(str(Path(temporary) / "cursor_center_hough.jpg")))
 
     def test_fresh_pivots_sizes_and_missing_sectors(self):
         # Fixed after selecting cold-facing Hough votes on the development

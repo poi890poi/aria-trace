@@ -86,7 +86,7 @@ def build_hik_calibration_media_registry(
             else {}
         )
         cross_records = list(cross_document.get("media") or [])
-        persisted_cross_media = list(evidence_root.glob("*.png"))
+        persisted_cross_media = list(evidence_root.glob("*.png")) + list(evidence_root.glob("*.jpg"))
         if persisted_cross_media and not cross_records:
             raise RuntimeError(
                 "Cross-source rig evidence was persisted without producer records"
@@ -111,7 +111,7 @@ def build_hik_failure_media_registry(
 
     root = Path(root)
     records = []
-    for path in sorted(root.glob("*.png")):
+    for path in sorted([*root.glob("*.png"), *root.glob("*.jpg")]):
         size = image_size_px(path)
         name = path.name
         if name in camera_samples:
@@ -165,7 +165,7 @@ def build_data_matrix_media_registry(
             if filename:
                 file_metadata[str(filename)] = (role, failure, index)
     records = []
-    for path in sorted(root.glob("*.png")):
+    for path in sorted([*root.glob("*.png"), *root.glob("*.jpg")]):
         size = image_size_px(path)
         role, failure, index = file_metadata.get(
             path.name, ("diagnostic", {}, None)

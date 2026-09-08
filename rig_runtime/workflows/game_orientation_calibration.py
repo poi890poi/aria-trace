@@ -10,6 +10,8 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.workflows.calibration_retention import (
     calibration_cleanup_boundary, request_profile_cleanup,
 )
@@ -213,7 +215,7 @@ def calibrate_portable_game_orientation_session(
         records[0],
     )
     sample = decode_session_records(reader, stream_id, [sample_record])[0]
-    _write_image(output / "android_game_orientation_sample.png", sample)
+    _write_image(output / "android_game_orientation_sample.jpg", sample)
     summary = {
         "schema_version": "1.0",
         "calibration_kind": "portable_game_screen_orientation",
@@ -230,7 +232,7 @@ def calibrate_portable_game_orientation_session(
         "method": "android_per_frame_space_metadata_consensus",
         "quality": payload["orientation_quality"],
         "selected_observations": selected_observations,
-        "evidence": ["android_game_orientation_sample.png"],
+        "evidence": ["android_game_orientation_sample.jpg"],
     }
     summary_path = output / "game_orientation_calibration.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -259,7 +261,7 @@ def calibrate_portable_game_orientation_session(
 
 def _write_image(path: Path, image: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(path), image):
+    if not write_evidence_image(str(path), image):
         raise RuntimeError("Cannot write game-orientation evidence {}".format(path))
 
 
@@ -477,7 +479,7 @@ def calibrate_game_orientation_session(
     selected_preview = rotate_quarter_turns_clockwise(
         pair_images[best_pair_index][1], selected_turns
     )
-    _write_image(output / "review" / "selected_hik_game_upright.png", selected_preview)
+    _write_image(output / "review" / "selected_hik_game_upright.jpg", selected_preview)
 
     summary = {
         "schema_version": "1.0",
@@ -513,7 +515,7 @@ def calibrate_game_orientation_session(
         "selected_pairs": pair_results,
         "evidence": {
             "lossless_source_stills": "pairs/*.png",
-            "review": "review/*.png",
+            "review": "review/*",
             "best_pair_index": best_pair_index,
         },
     }

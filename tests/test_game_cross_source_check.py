@@ -142,7 +142,7 @@ class GameCrossSourceCheckTests(unittest.TestCase):
                 summary["selection_basis"],
             )
             self.assertIn(
-                "candidate_surface_1_adapter_0deg_side_by_side_adb_then_hik.png",
+                "candidate_surface_1_adapter_0deg_side_by_side_adb_then_hik.jpg",
                 images,
             )
 
@@ -242,7 +242,7 @@ class GameCrossSourceCheckTests(unittest.TestCase):
             self.assertEqual(1, summary["evaluated_pairs"])
             self.assertGreater(summary["metrics"]["confidence"], 0.99)
             self.assertTrue(
-                (session / "cross_source_check" / "side_by_side_adb_then_hik.png").is_file()
+                (session / "cross_source_check" / "side_by_side_adb_then_hik.jpg").is_file()
             )
             self.assertTrue(
                 (

@@ -12,6 +12,8 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.workflows.calibration_retention import calibration_cleanup_boundary
 
 from rig_runtime.adapters.filesystem.profile_registry import ProfileContext, ProfileRegistry
@@ -221,8 +223,8 @@ def _calibrate_available_minimap_boundary(
     discovery["selected_verified_hypothesis"] = selected_refinement
     discovery["crop_xywh"] = crop
     discovery["boundary_config"] = selected_refinement["boundary_config"]
-    cv2.imwrite(
-        str(evidence / "discovery_temporal_heatmap.png"),
+    write_evidence_image(
+        str(evidence / "discovery_temporal_heatmap.jpg"),
         cv2.applyColorMap(
             cv2.normalize(
                 diagnostics["temporal_heatmap"], None, 0, 255, cv2.NORM_MINMAX
@@ -230,7 +232,7 @@ def _calibrate_available_minimap_boundary(
             cv2.COLORMAP_TURBO,
         ),
     )
-    cv2.imwrite(str(evidence / "discovery_edges.png"), diagnostics["edges"])
+    write_evidence_image(str(evidence / "discovery_edges.jpg"), diagnostics["edges"])
     overlay = frames[len(frames) // 2].copy()
     boundary = result["outer_boundary"]
     cv2.rectangle(overlay, (x, y), (x + width, y + height), (255, 0, 255), 2)
@@ -242,7 +244,7 @@ def _calibrate_available_minimap_boundary(
         2,
         cv2.LINE_AA,
     )
-    cv2.imwrite(str(evidence / "discovery_source_overlay.png"), overlay)
+    write_evidence_image(str(evidence / "discovery_source_overlay.jpg"), overlay)
     summary = {
         "schema_version": "1.0",
         "status": "accepted" if activate else "review_required",
@@ -264,9 +266,9 @@ def _calibrate_available_minimap_boundary(
             "movement_required": False,
         },
         "evidence": list(result["evidence"]) + [
-            {"name": "discovery_temporal_heatmap.png", "category": "discovery"},
-            {"name": "discovery_edges.png", "category": "discovery"},
-            {"name": "discovery_source_overlay.png", "category": "discovery"},
+            {"name": "discovery_temporal_heatmap.jpg", "category": "discovery"},
+            {"name": "discovery_edges.jpg", "category": "discovery"},
+            {"name": "discovery_source_overlay.jpg", "category": "discovery"},
         ],
     }
     output.mkdir(parents=True, exist_ok=True)

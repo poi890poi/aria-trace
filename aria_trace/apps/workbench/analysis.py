@@ -466,7 +466,7 @@ class WorkbenchAnalysisMixin:
     def scene_yaw_image(
         self, game_profile_id: str, calibration_id: str, name: str
     ) -> bytes:
-        if Path(name).name != name or not name.lower().endswith(".png"):
+        if Path(name).name != name or Path(name).suffix.lower() not in (".png", ".jpg", ".jpeg"):
             raise ValueError("Invalid scene-yaw evidence image name")
         root = self._scene_yaw_root(game_profile_id) / safe_id(calibration_id)
         descriptor = json.loads(
@@ -478,7 +478,7 @@ class WorkbenchAnalysisMixin:
         return (root / name).read_bytes()
 
     def minimap_calibration_image(self, game_profile_id: str, calibration_id: str, name: str) -> bytes:
-        if Path(name).name != name or not name.lower().endswith(".png"):
+        if Path(name).name != name or Path(name).suffix.lower() not in (".png", ".jpg", ".jpeg"):
             raise ValueError("Invalid evidence image name")
         root = self._minimap_calibration_root(game_profile_id) / safe_id(calibration_id)
         descriptor = json.loads((root / "calibration.json").read_text(encoding="utf-8"))
@@ -556,7 +556,9 @@ class WorkbenchAnalysisMixin:
                 "forward_end.png",
                 "forward_shift_mask.png",
                 "forward_registration_overlay.png",
+                "forward_registration_overlay.jpg",
                 "forward_pose_shift.png",
+                "forward_pose_shift.jpg",
             }
             calibration["evidence"] = [
                 item
@@ -761,7 +763,7 @@ class WorkbenchAnalysisMixin:
     def map_stitch_image(
         self, game_profile_id: str, stitch_id: str, name: str
     ) -> bytes:
-        if Path(name).name != name or not name.lower().endswith(".png"):
+        if Path(name).name != name or Path(name).suffix.lower() not in (".png", ".jpg", ".jpeg"):
             raise ValueError("Invalid map-stitch evidence image name")
         root = self._map_stitch_root(game_profile_id) / safe_id(stitch_id)
         descriptor = json.loads(
@@ -982,7 +984,7 @@ class WorkbenchAnalysisMixin:
         if (
             relative.is_absolute()
             or ".." in relative.parts
-            or relative.suffix.lower() != ".png"
+            or relative.suffix.lower() not in (".png", ".jpg", ".jpeg")
         ):
             raise ValueError("Invalid map-atlas evidence image name")
         root = self._map_atlas_root(game_profile_id) / safe_id(atlas_id)
@@ -1285,7 +1287,7 @@ class WorkbenchAnalysisMixin:
     def teleport_behavior_image(
         self, game_profile_id: str, behavior_id: str, name: str
     ) -> bytes:
-        if Path(name).name != name or not name.lower().endswith(".png"):
+        if Path(name).name != name or Path(name).suffix.lower() not in (".png", ".jpg", ".jpeg"):
             raise ValueError("Invalid teleport evidence image name")
         root = self._teleport_behavior_root(game_profile_id) / safe_id(behavior_id)
         descriptor = json.loads(

@@ -2398,14 +2398,14 @@ class WorkbenchTests(unittest.TestCase):
             ):
                 self.assertEqual(ordinary_session_path, ordinary)
                 output.mkdir(parents=True, exist_ok=True)
-                (output / "cursor_pose_overlays.png").write_bytes(b"pose")
+                (output / "cursor_pose_overlays.jpg").write_bytes(b"pose")
                 return {
                     "schema_version": "1.0",
                     "generated_utc": "2026-08-27T12:00:00+00:00",
                     "status": "review_required",
                     "evidence": [
                         {
-                            "name": "cursor_pose_overlays.png",
+                            "name": "cursor_pose_overlays.jpg",
                             "title": "Cursor pose overlays",
                             "category": "pose",
                         }
@@ -2445,12 +2445,12 @@ class WorkbenchTests(unittest.TestCase):
                 def fake_verification(
                     _forward, _calibration, output, progress=None
                 ):
-                    (output / "forward_pose_shift.png").write_bytes(b"shift")
+                    (output / "forward_pose_shift.jpg").write_bytes(b"shift")
                     return {
                         "status": "review_required",
                         "evidence": [
                             {
-                                "name": "forward_pose_shift.png",
+                                "name": "forward_pose_shift.jpg",
                                 "title": "Cursor pose and map-shift relationship",
                                 "category": "pose_verification",
                             }
@@ -2481,14 +2481,14 @@ class WorkbenchTests(unittest.TestCase):
                     state.minimap_calibration_image(
                         "genshin-impact-pc",
                         calibration["calibration_id"],
-                        "forward_pose_shift.png",
+                        "forward_pose_shift.jpg",
                     ),
                     b"shift",
                 )
 
                 def fake_scene_yaw(_session, output, config=None, progress=None):
                     output.mkdir(parents=True, exist_ok=True)
-                    (output / "scene_yaw_curve.png").write_bytes(b"yaw")
+                    (output / "scene_yaw_curve.jpg").write_bytes(b"yaw")
                     return {
                         "schema_version": "1.0",
                         "generated_utc": "2026-08-27T12:10:00+00:00",
@@ -2496,7 +2496,7 @@ class WorkbenchTests(unittest.TestCase):
                         "closure_error_deg": 1.2,
                         "evidence": [
                             {
-                                "name": "scene_yaw_curve.png",
+                                "name": "scene_yaw_curve.jpg",
                                 "title": "Scene yaw curve",
                                 "category": "yaw",
                             }
@@ -2523,7 +2523,7 @@ class WorkbenchTests(unittest.TestCase):
                     state.scene_yaw_image(
                         "genshin-impact-pc",
                         scene_result["calibration_id"],
-                        "scene_yaw_curve.png",
+                        "scene_yaw_curve.jpg",
                     ),
                     b"yaw",
                 )
@@ -3368,7 +3368,7 @@ class WorkbenchTests(unittest.TestCase):
                     "aria_trace.apps.workbench.analysis.analyze_transition_session",
                     return_value={
                         "quality": {"confidence": 0.9},
-                        "evidence_file": "transition_scale_timeline.png",
+                        "evidence_file": "transition_scale_timeline.jpg",
                     },
                 ):
                     descriptor = state.run_map_atlas(

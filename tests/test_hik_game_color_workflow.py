@@ -61,7 +61,7 @@ class HikGameColorWorkflowTests(unittest.TestCase):
                 delta=1.0,
             )
             self.assertTrue(
-                (output / "spatial_alignment_residual_translation_overlay.png").is_file()
+                (output / "spatial_alignment_residual_translation_overlay.jpg").is_file()
             )
 
     def test_color_decoder_reads_adb_image_series_without_video(self):

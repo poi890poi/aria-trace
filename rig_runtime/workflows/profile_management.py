@@ -1743,7 +1743,7 @@ def parser() -> argparse.ArgumentParser:
     purge = subcommands.add_parser("purge", help="Preview or apply profile/evidence retention while calibration is idle")
     purge.add_argument("--keep-portable", type=int, default=10)
     purge.add_argument("--keep-rig", type=int, default=3)
-    purge.add_argument("--evidence-max-mb", type=float, default=384)
+    purge.add_argument("--evidence-max-mb", type=float, default=64)
     purge.add_argument("--evidence-min-age-hours", type=float, default=24,
                        help="Protect recently modified evidence (default: 24 hours)")
     purge_mode = purge.add_mutually_exclusive_group()

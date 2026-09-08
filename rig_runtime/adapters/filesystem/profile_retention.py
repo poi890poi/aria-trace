@@ -27,7 +27,7 @@ EVIDENCE_MARKERS = frozenset({
 class RetentionPolicy:
     keep_portable: int = 10
     keep_rig: int = 3
-    evidence_max_mb: float = 384
+    evidence_max_mb: float = 64
     evidence_min_age_hours: float = 24
 
     def __post_init__(self):

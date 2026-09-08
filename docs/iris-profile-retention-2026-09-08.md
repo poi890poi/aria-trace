@@ -15,7 +15,7 @@ The policy belongs to the filesystem profile registry. Defaults are:
 | --- | --- |
 | `game_model`, `phone_game`, `phone_game_color`, `rig_game_color` | Latest 10 per identity |
 | `rig`, `rig_game`, `rig_game_orientation` | Latest 3 per identity |
-| Recognized calibration output bundles and optional copied review files | Oldest first above 384 MB |
+| Recognized calibration output bundles and optional copied review files | Oldest first above 64 MB |
 
 Identity is the existing registry key: kind, owner, game, panel signature, and
 game display signature. Variants have separate histories. There is no standalone
@@ -40,19 +40,25 @@ all nine games; image dimensions and content affect compression.
 | Of that color output: generated standalone adapter | 7.10 |
 | Typical indexed rig revision in the local profile root | About 4 |
 
-Nine sets of minimap plus color outputs are approximately
-`9 × (15.1 + 17.32) = 292 MB`. A **384 MB** evidence allowance leaves about
-92 MB for failures and duplicate review files. The earlier 24.35 MB color-folder
-total also included shared rig/profile data, so it overestimated per-game output.
-Three typical rig revisions add about 12 MB outside the evidence allowance.
-Portable models, masks, required color references, and metadata add further
-runtime storage; the samples do not establish a reliable total for nine games
-with ten revisions each. 384 MB is an evidence budget, not a total disk cap.
+The default is now **64 MB**, replacing 384 MB at the user's request. This is
+usable by discarding older eligible evidence sooner, not by guaranteeing an
+entire historical evidence bundle for every game. The quota is global; copied
+optional review files share it with standalone bundles.
 
-A 256 MB budget is also usable if older evidence may be discarded sooner; it
-does not fit one complete sampled output set for every game. The quota is global,
-so neither size guarantees evidence for every game. Copied optional review files
-share this quota rather than bypassing it inside retained profile directories.
+JPEG quality 90 with full chroma resolution was measured in memory on these
+existing samples, without modifying the original bundles. Selected mini-map
+review plots decrease from 1.04–1.10 MB to 0.83–0.89 MB; four color-review images
+decrease from 10.22 MB to 2.40 MB. Nine comparable sets of those review images
+would take about 30 MB. Other retained files still consume space: conservatively
+keeping all other legacy sample files, complete bundles would be about 14.9 MB
+per mini-map set and 9.5 MB per color set. Thus 64 MB cannot guarantee nine
+complete such bundles. Measurements: `artifacts/jpeg-storage-estimate.json`.
+
+Three typical rig revisions add about 12 MB outside the evidence allowance.
+Portable models, masks, required color references and metadata add further
+runtime storage; these samples do not establish a total for nine games with ten
+revisions each. Active dependencies and the 24-hour evidence grace period can
+keep usage above budget. The policy protects working profiles over a hard cap.
 
 ## Deletion and recovery boundaries
 
@@ -100,7 +106,7 @@ a calibrated profile uses the same boundary. Raw registry writes, imports,
 composition, adapter resolution and frame processing do not trigger retention.
 
 The automatic path applies the existing default policy: 10 portable revisions,
-3 displacement-dependent revisions, 384 MB evidence, and a 24-hour grace period.
+3 displacement-dependent revisions, 64 MB evidence, and a 24-hour grace period.
 Active revisions, portable activation pointers, runtime data and retained
 dependencies remain protected. CLI overrides still apply to manual invocations.
 

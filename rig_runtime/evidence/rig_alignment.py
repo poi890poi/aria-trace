@@ -304,10 +304,10 @@ def cross_source_alignment_evidence(
     images = {
         "adb_visible_crop.png": adb_crop,
         "hik_rectified.png": hik_rectified,
-        "edge_overlay_adb_red_hik_cyan.png": overlay,
-        "residual_translation_overlay.png": translation_overlay,
-        "normalized_difference_heatmap.png": heatmap,
-        "side_by_side_adb_then_hik.png": side_by_side,
+        "edge_overlay_adb_red_hik_cyan.jpg": overlay,
+        "residual_translation_overlay.jpg": translation_overlay,
+        "normalized_difference_heatmap.jpg": heatmap,
+        "side_by_side_adb_then_hik.jpg": side_by_side,
         "valid_mask.png": np.asarray(valid_mask, dtype=np.uint8),
     }
     return metrics, images

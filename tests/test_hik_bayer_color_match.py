@@ -115,7 +115,7 @@ class HikBayerColorMatchTests(unittest.TestCase):
             ],
             result["fit"]["maximum_channel_clipping_fraction"],
         )
-        self.assertIn("bayer_color_match_review.png", evidence)
+        self.assertIn("bayer_color_match_review.jpg", evidence)
         self.assertIn("bayer_color_match_sampling_mask.png", evidence)
 
 

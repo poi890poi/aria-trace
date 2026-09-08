@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import yaml
 
+from rig_runtime.evidence.images import write_evidence_image
+
 from rig_runtime.workflows.calibration_retention import (
     calibration_cleanup_boundary, request_profile_cleanup,
 )
@@ -383,7 +385,7 @@ def _check_color_spatial_alignment(
         _rank, pair_index, images = representative
         for filename, image in images.items():
             evidence_name = "spatial_alignment_{}".format(filename)
-            if not cv2.imwrite(str(output / evidence_name), image):
+            if not write_evidence_image(str(output / evidence_name), image):
                 raise RuntimeError(
                     "Cannot write spatial-alignment evidence {}".format(
                         evidence_name
@@ -674,7 +676,7 @@ def calibrate_game_color_session(
     evidence["adb_minimap_color_sampling_mask.png"] = adb_mask
     evidence["hik_minimap_color_sampling_mask.png"] = mask
     for filename, image in evidence.items():
-        if not cv2.imwrite(str(output / filename), image):
+        if not write_evidence_image(str(output / filename), image):
             raise RuntimeError("Cannot write color evidence {}".format(filename))
     adb_reference_path = output / "adb_game_color_reference.png"
     adb_reference_mask_path = output / "adb_game_color_reference_mask.png"
@@ -684,9 +686,9 @@ def calibrate_game_color_session(
         android_frames[reference_index],
         mask=adb_mask,
     )
-    if not cv2.imwrite(str(adb_reference_path), masked_reference):
+    if not write_evidence_image(str(adb_reference_path), masked_reference):
         raise RuntimeError("Cannot write portable ADB game-color reference")
-    if not cv2.imwrite(str(adb_reference_mask_path), adb_mask):
+    if not write_evidence_image(str(adb_reference_mask_path), adb_mask):
         raise RuntimeError("Cannot write portable ADB game-color reference mask")
     summary = {
         "schema_version": "1.0",

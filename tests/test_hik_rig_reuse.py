@@ -158,10 +158,10 @@ class HikRigReuseTests(unittest.TestCase):
             self.assertFalse((root / "rig" / "last_camera_frame.png").exists())
             self.assertTrue((output / "fresh_full_sensor_frame.png").is_file())
             self.assertTrue(
-                (output / "fresh_full_sensor_expanded_review.png").is_file()
+                (output / "fresh_full_sensor_expanded_review.jpg").is_file()
             )
             self.assertTrue(
-                (output / "charuco_alignment_expanded_review.png").is_file()
+                (output / "charuco_alignment_expanded_review.jpg").is_file()
             )
             self.assertEqual(4, len(result["media"]))
             self.assertEqual(
@@ -249,7 +249,7 @@ class HikRigReuseTests(unittest.TestCase):
             self.assertIn("not detected", result["reason"])
             self.assertEqual(3, len(result["detection_failures"]))
             self.assertTrue(
-                (output / "fresh_full_sensor_expanded_review.png").is_file()
+                (output / "fresh_full_sensor_expanded_review.jpg").is_file()
             )
             self.assertEqual(2, len(result["media"]))
 

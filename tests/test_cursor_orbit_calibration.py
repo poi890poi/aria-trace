@@ -116,15 +116,15 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
                 result["cursor_shape"]["source"],
             )
             declared = {item["name"] for item in result["evidence"]}
-            self.assertIn("cursor_center_orbit.png", declared)
-            self.assertIn("cursor_center_fit.png", declared)
-            fit_view = cv2.imread(str(Path(temporary) / "cursor_center_fit.png"))
+            self.assertIn("cursor_center_orbit.jpg", declared)
+            self.assertIn("cursor_center_fit.jpg", declared)
+            fit_view = cv2.imread(str(Path(temporary) / "cursor_center_fit.jpg"))
             self.assertEqual((402, 864, 3), fit_view.shape)
-            hough_view = cv2.imread(str(Path(temporary) / "cursor_center_hough.png"))
+            hough_view = cv2.imread(str(Path(temporary) / "cursor_center_hough.jpg"))
             # The vote heatmap itself contains no pure green circle pixels.
             green = (hough_view[:, :, 1] > 220) & (hough_view[:, :, 0] < 40) & (hough_view[:, :, 2] < 40)
             self.assertGreater(np.count_nonzero(green), 3)
-            self.assertIn("cursor_shape_polar_correlation.png", declared)
+            self.assertIn("cursor_shape_polar_correlation.jpg", declared)
             self.assertTrue((Path(temporary) / "model.npz").is_file())
 
     def test_preserves_rotation_center_when_later_shape_fit_is_ineligible(self):
@@ -175,7 +175,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
                 "persistent contour is empty",
                 result["capabilities"]["cursor_shape"]["reason"],
             )
-            self.assertTrue((Path(temporary) / "cursor_center_orbit.png").is_file())
+            self.assertTrue((Path(temporary) / "cursor_center_orbit.jpg").is_file())
             with np.load(str(Path(temporary) / "model.npz")) as model:
                 self.assertIn("rotation_center", model.files)
                 self.assertNotIn("cursor_polygon_relative_xy", model.files)
@@ -230,8 +230,8 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
                 result["capabilities"]["cursor_shape"]["reason"],
             )
             declared = {item["name"] for item in result["evidence"]}
-            self.assertIn("cursor_center_heatmap.png", declared)
-            self.assertIn("cursor_center_hough.png", declared)
+            self.assertIn("cursor_center_heatmap.jpg", declared)
+            self.assertIn("cursor_center_hough.jpg", declared)
 
     def test_static_series_reports_shape_without_inventing_rotation_center(self):
         height, width = 180, 220
@@ -283,7 +283,7 @@ class CursorOrbitCalibrationTests(unittest.TestCase):
                 result["cursor_shape"]["observed_static_cursor_max_span_px"], 10.0
             )
             self.assertTrue(
-                (Path(temporary) / "cursor_static_shape_overlay.png").is_file()
+                (Path(temporary) / "cursor_static_shape_overlay.jpg").is_file()
             )
 
 

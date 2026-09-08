@@ -134,7 +134,7 @@ def build_dual_source_media_registry(
     comparison_crop = main_summary.get("logical_adb_crop_xywh") or conversions.get(
         "hik_phone_video_bounds_in_adb_xywh"
     )
-    for path in sorted(session_path.rglob("*.png")):
+    for path in sorted([*session_path.rglob("*.png"), *session_path.rglob("*.jpg")]):
         relative = str(path.relative_to(session_path)).replace("\\", "/")
         name = path.name
         size = image_size_px(path)
