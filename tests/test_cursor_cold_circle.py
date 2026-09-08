@@ -94,6 +94,49 @@ class CursorColdCircleTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "no observable temporal signal"):
                     self.fit(frames)
 
+    def test_noise_does_not_invent_a_center_on_static_or_empty_frames(self):
+        for seed in (9013, 9029):
+            for kind in ("static", "empty"):
+                with self.subTest(seed=seed, kind=kind):
+                    rng = np.random.default_rng(seed + 70)
+                    frames = rotating_cursor_frames([17] * 126, shape="triangle", seed=seed, noise=6)
+                    if kind == "empty":
+                        frames = np.clip(35 + rng.normal(0, 6, frames.shape), 0, 255).astype(np.uint8)
+                    for probability in (0, .003):
+                        noisy = frames.copy()
+                        hot = rng.random(noisy.shape[:3]) < probability
+                        noisy[hot] = rng.integers(0, 256, (int(hot.sum()), 3), dtype=np.uint8)
+                        with self.subTest(impulses=probability):
+                            with self.assertRaisesRegex(RuntimeError, "no observable temporal signal"):
+                                self.fit(noisy)
+
+    def test_noisy_long_dwell_preserves_single_frame_rare_directions(self):
+        for seed, pivot, shape in ((9013, (66.6, 61.2), "dot"), (9029, (59.8, 65.4), "triangle")):
+            with self.subTest(seed=seed, shape=shape):
+                frames = rotating_cursor_frames([17] * 120 + [44, 76, 113, 159, 207, 253],
+                                               pivot=pivot, shape=shape, seed=seed, noise=6)
+                rng = np.random.default_rng(seed + 70)
+                hot = rng.random(frames.shape[:3]) < .003
+                frames[hot] = rng.integers(0, 256, (int(hot.sum()), 3), dtype=np.uint8)
+                result = self.fit(frames)
+                self.assertLess(np.linalg.norm(np.array([result["x"], result["y"]]) - pivot), 1.0)
+                reordered = self.fit(frames[::-1])
+                for key in ("x", "y", "cold_core_radius_px", "confidence"):
+                    self.assertEqual(result[key], reordered[key], key)
+
+    def test_sparse_impulses_at_static_edges_are_not_a_rotation_circle(self):
+        for shape in ("dot", "triangle"):
+            for seed, pivot, size, dwell, angle in ((19031, (61.1, 66.8), .9, 200, 61),
+                                                   (41047, (59.1, 62.2), 1.1, 30, 53)):
+                with self.subTest(shape=shape, seed=seed):
+                    frames = rotating_cursor_frames([angle] * (dwell + 6), pivot=pivot,
+                                                   shape=shape, size=size, seed=seed, noise=2)
+                    rng = np.random.default_rng(seed + 99)
+                    hot = rng.random(frames.shape[:3]) < .003
+                    frames[hot] = rng.integers(0, 256, (int(hot.sum()), 3), dtype=np.uint8)
+                    with self.assertRaisesRegex(RuntimeError, "no observable temporal signal"):
+                        self.fit(frames)
+
     def test_straight_temporal_edge_does_not_constrain_a_center(self):
         frames = np.full((8, 128, 128, 3), 30, np.uint8)
         for index in range(8):

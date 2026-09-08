@@ -23,6 +23,18 @@ def fit_temporal_cold_circle(frames, initial, search_radius):
     if x1 <= x0 or y1 <= y0:
         raise RuntimeError("Cursor rotation-center search region does not fit the frame")
     local = frames[:, y0:y1, x0:x1]
+    # Attenuate isolated pixel spikes before max/min can retain them forever.
+    # Linear smoothing avoids median-filter switching at stationary edges.
+    # Every frame still contributes, including a direction seen only once.
+    cleaned = []
+    frame_noise_sigma = 0.0
+    for frame in local:
+        median = cv2.medianBlur(frame, 3)
+        residual = frame.astype(np.float32) - median
+        sigma = 1.4826 * np.median(np.abs(residual - np.median(residual)))
+        frame_noise_sigma = max(frame_noise_sigma, float(sigma))
+        cleaned.append(cv2.GaussianBlur(frame.astype(np.float32), (3, 3), 0.8))
+    local = np.stack(cleaned)
     # Subtract after conversion to avoid uint8 subtraction wrapping. No frame
     # multiplicity weights or ordered frame differences enter this measurement.
     raw = (local.max(axis=0).astype(np.float32) - local.min(axis=0)).mean(axis=2)
@@ -32,8 +44,23 @@ def fit_temporal_cold_circle(frames, initial, search_radius):
     region = (xx - origin[0]) ** 2 + (yy - origin[1]) ** 2 <= (search_radius + max_radius) ** 2
     floor = float(np.percentile(temporal[region], 35))
     contrast = float(np.percentile(temporal[region], 99) - floor)
-    if contrast < 2.0:
-        raise RuntimeError("Cursor rotation center has no observable temporal signal near the mini-map center")
+    noise_residual = raw - cv2.medianBlur(raw, 5)
+    noise_samples = noise_residual[region]
+    noise_sigma = float(1.4826 * np.median(np.abs(noise_samples - np.median(noise_samples))))
+    noise_tail = float(np.percentile(np.abs(noise_samples - np.median(noise_samples)), 99))
+    # Range noise alone misses correlated fluctuations near stationary edges.
+    # Require contrast above both measured noise floors, without direction or
+    # frame-frequency gates. Max frame noise also ignores exact duplication.
+    # Match the signal's 99th percentile for sparse, non-Gaussian spikes that
+    # a median-based sigma can miss entirely.
+    required_signal = max(2.0, 3.0 * noise_sigma, 3.0 * frame_noise_sigma, noise_tail)
+    if contrast < required_signal:
+        raise RuntimeError(
+            "Cursor rotation center has no observable temporal signal above spatial noise "
+            "near the mini-map center (contrast {:.2f}, required {:.2f}, "
+            "range noise {:.2f}, frame noise {:.2f}, noise tail {:.2f})"
+            .format(contrast, required_signal, noise_sigma, frame_noise_sigma, noise_tail)
+        )
     # Clipping the background floor also suppresses spatially uniform flicker.
     temporal = np.maximum(temporal - floor, 0)
     gx = cv2.Sobel(temporal, cv2.CV_32F, 1, 0, ksize=3)
@@ -65,6 +92,7 @@ def fit_temporal_cold_circle(frames, initial, search_radius):
         if best is None or votes[j, i] > best[0]:
             best = (float(votes[j, i]), i / 2, j / 2, float(radius))
     score, cx, cy, radius = best
+    hough_circle = {"x": cx + int(x0), "y": cy + int(y0), "radius": radius}
     distance = np.hypot(x - cx, y - cy)
     alignment = ((x - cx) * ux + (y - cy) * uy) / np.maximum(distance, 1e-6)
     inliers = (np.abs(distance - radius) < 1.3) & (alignment > 0.92)
@@ -101,6 +129,7 @@ def fit_temporal_cold_circle(frames, initial, search_radius):
     return {
         "temporal_heatmap": heatmap,
         "center_score_map": score_map,
+        "hough_circle": hough_circle,
         "metrics": {
             "x": cx + int(x0), "y": cy + int(y0),
             "method": "color_agnostic_temporal_cold_circle",
@@ -111,6 +140,11 @@ def fit_temporal_cold_circle(frames, initial, search_radius):
             "cold_core_radial_residual_px": residual,
             "normal_conditioning": conditioning,
             "hough_score": score,
+            "temporal_noise_sigma": noise_sigma,
+            "frame_noise_sigma": frame_noise_sigma,
+            "temporal_noise_tail": noise_tail,
+            "temporal_signal_contrast": contrast,
+            "temporal_signal_required": required_signal,
             "analyzed_frames": int(len(frames)), "total_frames": int(len(frames)),
             # Descriptive evidence only: never a balanced-coverage gate.
             "angular_coverage_10deg_bins": occupied,
