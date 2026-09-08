@@ -29,7 +29,6 @@ from rig_runtime.services.calibration.rig.geometry import transform_points
 from rig_runtime.services.calibration.rig.hik.algorithms import (
     camera_adapter_roi_to_output_homography,
     camera_roi_for_screen_region,
-    compose_hardware_roi_homography,
 )
 from .driver import (
     HikMvsCameraAdapter,
@@ -286,6 +285,7 @@ class ProfiledHikGameCamera:
         self._minimap_mask_precomposed = False
         self._upright_to_base_full = np.eye(3, dtype=np.float64)
         self._upright_to_base_minimap = np.eye(3, dtype=np.float64)
+        self._minimap_to_canonical_phone = np.eye(3, dtype=np.float64)
         self._last_stream_metadata: Dict[str, Mapping[str, object]] = {}
 
     def _base_screen_crop(self) -> list[int]:
@@ -911,17 +911,6 @@ class ProfiledHikGameCamera:
             self._effective_roi = list(self.adapter.set_roi(requested_roi))
 
             crop_x, crop_y, crop_width, crop_height = screen_crop
-            if coordinate_schema < 3:
-                camera_to_screen = np.asarray(
-                    self.rig["geometry"]["full_sensor_camera_to_screen_3x3"],
-                    dtype=np.float64,
-                )
-                acquisition_to_screen = compose_hardware_roi_homography(
-                    camera_to_screen, self._effective_roi
-                )
-                self._minimap_matrix = _translation(-crop_x, -crop_y).dot(
-                    acquisition_to_screen
-                )
             self._minimap_size = (crop_width, crop_height)
 
             normalization = self.rig["normalization"]
@@ -948,6 +937,13 @@ class ProfiledHikGameCamera:
                 int(round(crop_width / scale_x)),
                 int(round(crop_height / scale_y)),
             ]
+            if self.rectify_minimap:
+                # The standalone mini-map and the crop of the full stream use
+                # the same normalized raster, including rounded crop offsets.
+                mini_x, mini_y, mini_width, mini_height = self._minimap_in_full_xywh
+                self._minimap_size = (mini_width, mini_height)
+                if self._full_matrix is not None:
+                    self._minimap_matrix = _translation(-mini_x, -mini_y).dot(self._full_matrix)
             dense_file = normalization.get("dense_map_file")
             if dense_file and self.rectify_minimap:
                 dense_path = self.rig_path.parent / str(dense_file)
@@ -1038,6 +1034,15 @@ class ProfiledHikGameCamera:
                             turns,
                         )[0]
                     )
+            if self.rectify_minimap:
+                mini_x, mini_y, _, _ = self._minimap_in_full_xywh
+                base_output_to_phone = np.asarray([
+                    [scale_x, 0.0, origin_x], [0.0, scale_y, origin_y], [0.0, 0.0, 1.0]
+                ], dtype=np.float64)
+                self._minimap_to_canonical_phone = (
+                    base_output_to_phone.dot(self._upright_to_base_full)
+                    .dot(_translation(mini_x, mini_y))
+                )
             self._precompose_minimap_mask()
             self._opened = True
         except Exception:
@@ -1302,14 +1307,7 @@ class ProfiledHikGameCamera:
                         if self.output_quarter_turns_clockwise else "phone_app_up"
                     ),
                     "local_to_parent_3x3": (
-                        np.asarray(
-                            [
-                                [1.0, 0.0, float(self._screen_crop()[0])],
-                                [0.0, 1.0, float(self._screen_crop()[1])],
-                                [0.0, 0.0, 1.0],
-                            ],
-                            dtype=np.float64,
-                        ).dot(self._upright_to_base_minimap).tolist()
+                        self._minimap_to_canonical_phone.tolist()
                     ),
                     "color_order": "BGR",
                 }

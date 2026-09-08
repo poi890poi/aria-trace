@@ -170,6 +170,37 @@ class HikStreamCliTests(unittest.TestCase):
         self.assertGreater(int(rendered.max()), 0)
         self.assertGreater(int(rendered[:, :, 1].max()), 0)
 
+    def test_boundary_center_is_distinct_from_rotation_center_and_follows_boundary_toggle(self):
+        frame = np.zeros((160, 200, 3), np.uint8)
+        for rotation_center in ([80.0, 80.0], [84.0, 82.0]):
+            with self.subTest(rotation_center=rotation_center):
+                camera = Mock()
+                camera.get_minimap_geometry.return_value = {
+                    "available_in_stream_space": True, "center_xy_px": [80.0, 80.0],
+                    "boundary_size_xy_px": [100.0, 100.0],
+                    "image_space": {"stored_size_px": [200, 160]},
+                }
+                camera.get_cursor_geometry.return_value = {
+                    "available_in_stream_space": True, "center_xy_px": rotation_center,
+                    "image_space": {"stored_size_px": [200, 160]},
+                }
+                state = stream.GeometryOverlayState(game_axes=False)
+                rendered = stream.overlay_stream_geometry(frame, camera, "minimap", state)
+                np.testing.assert_array_equal([255, 210, 0], rendered[75, 75])
+                x, y = map(int, rotation_center)
+                np.testing.assert_array_equal([255, 0, 255], rendered[y, x])
+                state.handle_key(ord("b"))
+                hidden = stream.overlay_stream_geometry(frame, camera, "minimap", state)
+                np.testing.assert_array_equal([0, 0, 0], hidden[75, 75])
+                np.testing.assert_array_equal([255, 0, 255], hidden[y, x])
+                self.assertFalse(frame.any())
+
+        camera.get_cursor_geometry.return_value = {"available_in_stream_space": False, "reason": "No rotating samples"}
+        state = stream.GeometryOverlayState(game_axes=False)
+        rendered = stream.overlay_stream_geometry(frame, camera, "minimap", state)
+        np.testing.assert_array_equal([255, 210, 0], rendered[80, 80])
+        self.assertEqual("No rotating samples", state.status_by_stream["minimap"]["Cursor"])
+
     def test_geometry_overlay_runtime_keys_toggle_components(self):
         state = stream.GeometryOverlayState()
         self.assertIn("off", state.handle_key(ord("g")))

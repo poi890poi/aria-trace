@@ -466,6 +466,73 @@ class HikGameCameraTests(unittest.TestCase):
             )
             self.assertAlmostEqual(0.0, boundary["orientation_error_degrees"])
 
+    def test_cropped_centers_and_metadata_match_pixels_across_normalization_and_rotation(self):
+        space = raster_space(RigSpaceId.ANDROID_PHONE_NATURAL, [100, 80])
+        rotation_center = bind_geometry({"x": 28.0, "y": 34.0}, "point", space)
+        self.minimap_path.write_text(json.dumps({
+            "canonical_phone_crop_xywh": [10, 20, 32, 24],
+            "outer_boundary": bind_geometry(
+                {"center_x": 26.0, "center_y": 31.0, "radius": 5.0}, "circle", space),
+            "rotation_center": rotation_center,
+            "cursor_geometry": {"rotation_center": rotation_center},
+        }), encoding="utf-8")
+        for scale_x, scale_y in ((1, 1), (2, 3)):
+            width, height = 96 // scale_x, 76 // scale_y
+            yy, xx = np.indices((height, width))
+            physical_x, physical_y = 4 + xx * scale_x, 4 + yy * scale_y
+            base_full = np.stack((physical_x, physical_y, np.full_like(xx, 7)), axis=-1).astype(np.uint8)
+            # Rotation-center recentering moves the canonical crop to (12, 22).
+            left, top = 8 // scale_x, 18 // scale_y
+            crop_width, crop_height = 32 // scale_x, 24 // scale_y
+            base_mini = base_full[top:top + crop_height, left:left + crop_width]
+            for dense in (False, True):
+                document = rig_document()
+                document["normalization"].update({
+                    "output_size_px": [width, height],
+                    "origin_screen_xy": [4, 4],
+                    "screen_units_per_output_pixel_xy": [scale_x, scale_y],
+                    "full_sensor_camera_to_output_3x3": [
+                        [1 / scale_x, 0, -4 / scale_x],
+                        [0, 1 / scale_y, -4 / scale_y], [0, 0, 1]],
+                })
+                if dense:
+                    document["coordinate_spaces"] = {"schema_version": 3}
+                    document["optics"] = {"lens_model": {
+                        "model": "opencv_radtan",
+                        "camera_matrix_3x3": [[100, 0, 50], [0, 100, 40], [0, 0, 1]],
+                        "distortion_coefficients": [0, 0, 0, 0, 0]}}
+                    document["normalization"].update({
+                        "dense_map_file": "rectification_maps.npz", "lens_correction_in_dense_map": True})
+                    np.savez_compressed(self.rig_path.parent / "rectification_maps.npz",
+                                        map_x=physical_x.astype(np.float32), map_y=physical_y.astype(np.float32))
+                self.rig_path.write_text(json.dumps(document), encoding="utf-8")
+                for mode in ("minimap", "dual"):
+                    for turns in range(4):
+                        with self.subTest(scale=(scale_x, scale_y), dense=dense, mode=mode, turns=turns):
+                            camera = ProfiledHikGameCamera(
+                                self.rig_path, self.minimap_path, mode=mode, rectify_minimap=True,
+                                minimap_margin_px=0, output_quarter_turns_clockwise=turns,
+                                adapter=FakeAdapter()).open()
+                            try:
+                                frames = camera.read_streams()
+                                np.testing.assert_array_equal(np.rot90(base_mini, -turns), frames.streams["minimap"])
+                                if mode == "dual":
+                                    np.testing.assert_array_equal(np.rot90(base_full, -turns), frames.streams["full"])
+                                for stream_name, frame in frames.streams.items():
+                                    for getter, physical in ((camera.get_minimap_geometry, (26, 31)),
+                                                             (camera.get_cursor_geometry, (28, 34))):
+                                        geometry = getter(stream_name)
+                                        matches = np.argwhere((frame[:, :, 0] == physical[0]) & (frame[:, :, 1] == physical[1]))
+                                        self.assertEqual(1, len(matches))
+                                        expected_xy = matches[0][::-1]
+                                        np.testing.assert_allclose(expected_xy, geometry["center_xy_px"])
+                                        if stream_name == "minimap":
+                                            matrix = np.asarray(geometry["image_space"]["local_to_parent_3x3"])
+                                            mapped = matrix @ [*expected_xy, 1]
+                                            np.testing.assert_allclose(physical, mapped[:2] / mapped[2])
+                            finally:
+                                camera.release()
+
     def test_dual_derives_game_upright_turn_from_saved_surface_coordinates(self):
         self.minimap_path.write_text(
             json.dumps(

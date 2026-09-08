@@ -130,6 +130,18 @@ frame metadata is also expected before the first frame. During live rendering,
 geometry errors and coordinate-space mismatches are shown as reasons, rather
 than silently discarded. A malformed optional axis does not hide a valid circle.
 
+The cyan **X** marks the fitted mini-map boundary center; the magenta **+** marks
+the cursor rotation center. Both remain distinguishable when they coincide.
+`B` toggles the boundary and its center; `C` toggles cursor geometry. The boundary
+center remains visible even when rotation-center calibration is unavailable.
+
+Mini-map mode crops the rectification lookup (or composes the crop into the
+legacy homography); dual mode crops the normalized full frame. The crop can be
+recentered on the calibrated rotation center. Boundary and rotation centers are
+converted from phone coordinates through normalization and output rotation, then
+translated by the actual output crop origin. Neither is assumed to be the image
+midpoint. See [cropped-center verification](docs/iris-cropped-centers-2026-09-08.md).
+
 ## Game acquisition and calibration
 
 Capture a game-agnostic zigzag session from the prepared foreground game:
@@ -237,6 +249,15 @@ rotating series fits the rotation center, rotating envelope diameter, and
 shape; a static series fits only the observable shape/span unless a verified
 center already exists; both series may accumulate into the same active
 phone-game profile. IRIS never fabricates a rotation center from static data.
+
+Each successful geometry component publishes and normally activates its
+phone-game profile immediately, including usable partial cursor results. A
+later component failure does not roll back earlier successful components.
+`--candidate` publishes without activation; uncertain orientation remains a
+review candidate. Identical payload, dependencies, and runtime files reuse the
+existing revision instead of creating another one. A running demo keeps its
+opened profile; reopen it to load newly activated calibration. Optional color
+has the separate activation policy below.
 
 Locked rig imaging and HIK auto white balance are the default color policy.
 Optional synchronized color fitting is non-gating and must be requested; it is

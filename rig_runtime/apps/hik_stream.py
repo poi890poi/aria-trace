@@ -341,6 +341,14 @@ def overlay_stream_geometry(
         ]
         axes = tuple(max(1, int(round(float(value) / 2.0))) for value in size)
         if state.minimap_boundary:
+            # A diagonal marker remains distinguishable from the rotation
+            # center's magenta + even when the two calibrated centers coincide.
+            cv2.drawMarker(rendered, center, (255, 210, 0), cv2.MARKER_TILTED_CROSS,
+                           15, 2, cv2.LINE_AA)
+            cv2.putText(
+                rendered, "boundary center", (center[0] + 10, center[1] + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 210, 0), 1, cv2.LINE_AA,
+            )
             cv2.ellipse(
                 rendered,
                 center,
