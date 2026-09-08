@@ -622,11 +622,13 @@ def _compose_rig_game_orientation_profile(
     )
 
 
-def _portable_sources_for_rig(rig_profile, registry):
+def _portable_sources_for_rig(rig_profile, registry, *, only_game_id=None):
     """Keep established phone/game sources; prefer this phone over portable peers."""
     rig = ProfileContext.from_dict(rig_profile.get("context") or {})
     established = set()
     for item in registry.list_revisions(kind="rig_game", active_only=True):
+        if only_game_id and item["game_id"] != only_game_id:
+            continue
         # The index identifies unrelated devices even if their files are lost.
         if (item["camera_id"], item["phone_id"]) != (rig.camera_id, rig.phone_id):
             continue
@@ -641,8 +643,12 @@ def _portable_sources_for_rig(rig_profile, registry):
     # Required sources must remain readable; an unavailable optional portable
     # candidate must not veto the established working configuration.
     profiles = {revision: registry.revision(revision) for revision in established}
+    active_portable = set()
     for item in registry.list_revisions(kind="phone_game", active_only=True):
+        if only_game_id and item["game_id"] != only_game_id:
+            continue
         revision = item["revision_id"]
+        active_portable.add(revision)
         if revision in profiles:
             continue
         try:
@@ -660,12 +666,81 @@ def _portable_sources_for_rig(rig_profile, registry):
             )
         if matches:
             candidates.append(profile)
+    established_sources = {
+        (ProfileContext.from_dict(profiles[revision]["context"]).phone_id,
+         ProfileContext.from_dict(profiles[revision]["context"]).game_id,
+         ProfileContext.from_dict(profiles[revision]["context"]).game_display_signature)
+        for revision in established
+    }
     candidates.sort(key=lambda item: (
-        item["revision_id"] in established,
         ProfileContext.from_dict(item["context"]).phone_id == rig.phone_id,
+        (ProfileContext.from_dict(item["context"]).phone_id,
+         ProfileContext.from_dict(item["context"]).game_id,
+         ProfileContext.from_dict(item["context"]).game_display_signature) in established_sources,
+        item["revision_id"] in active_portable,
         item["created_utc"],
     ), reverse=True)
     return candidates
+
+
+def refresh_game_composition(registry, rig, context, previous=None):
+    """Refresh a derived game snapshot at resolution, never during streaming.
+
+    Portable calibration publishes independently of camera availability. Resolve
+    against current portable geometry so an old composition cannot pin its pivot.
+    """
+    from rig_runtime.adapters.filesystem.profile_registry import _profile_match_rank
+    from .rig_readiness import validate_rig_configuration
+
+    expected_active = registry.active_revision_ids()
+    candidates = [profile for profile in _portable_sources_for_rig(
+        rig, registry, only_game_id=context.game_id
+    ) if (profile.get("payload") or {}).get("canonical_phone_crop_xywh") is not None]
+    if not candidates:
+        return previous
+    # Source-phone preference is established above. Explicit caller display facts
+    # distinguish variants; absent facts do not pin the old composition's layout.
+    best_phone = ProfileContext.from_dict(candidates[0]["context"]).phone_id
+    candidates = [item for item in candidates
+                  if ProfileContext.from_dict(item["context"]).phone_id == best_phone]
+    active_ids = set(registry.active_revision_ids())
+    active_candidates = [item for item in candidates if item["revision_id"] in active_ids]
+    if active_candidates:
+        candidates = active_candidates
+    candidates.sort(key=lambda item: (
+        tuple(_profile_match_rank("phone_game", context, ProfileContext.from_dict(item["context"]))["score"]),
+        item["revision_id"] in active_ids,
+        item["created_utc"],
+    ), reverse=True)
+    phone = candidates[0]
+    if previous and previous.get("dependencies", {}).get("phone_game") == phone["revision_id"]:
+        return previous
+    target = _rig_phone_game_context(ProfileContext.from_dict(rig["context"]),
+                                    ProfileContext.from_dict(phone["context"]))
+    game = registry.publish(
+        "rig_game", target, _rig_game_payload_from_phone_game(phone),
+        dependencies={"rig": rig["revision_id"], "phone_game": phone["revision_id"]},
+        provenance={"composition": "current_active_phone_game_at_adapter_resolution",
+                    "previous_rig_game_revision": previous["revision_id"] if previous else None},
+        review_state="accepted", activate=False,
+    )
+    orientations = []
+    try:
+        orientations.append(_compose_rig_game_orientation_profile(
+            rig, registry=registry, game_id=context.game_id, phone_profile=phone, activate=False))
+    except (OSError, ValueError, KeyError, ProfileResolutionError) as exc:
+        warnings.warn("Optional orientation refresh unavailable: {}".format(exc), RuntimeWarning)
+    validate_rig_configuration(rig, {"recomposed": {
+        "rig_game": [game], "rig_game_orientation": orientations,
+    }}, registry=registry)
+    registry.activate_many([game["revision_id"]] + [item["revision_id"] for item in orientations],
+                           expected_active=expected_active)
+    game["composition_refresh"] = {
+        "previous_rig_game_revision": previous["revision_id"] if previous else None,
+        "phone_game_revision": phone["revision_id"],
+        "status": "refreshed_from_current_phone_game",
+    }
+    return game
 
 
 def recompose_active_rig_game_profiles(

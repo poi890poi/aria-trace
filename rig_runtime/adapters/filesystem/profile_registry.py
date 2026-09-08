@@ -1288,15 +1288,28 @@ class ProfileRegistry:
         rig_game = phone_game = rig_game_color = rig_game_orientation = None
         game_model = None
         resolution_warnings = []
+        refreshed_game = None
+        if context.game_id and not {"rig", "rig_game", "phone_game"}.intersection(selected_revisions):
+            existing_games = self.list_candidates("rig_game", context, active_only=True)
+            has_portable = any(row["game_id"] == context.game_id
+                               for row in self.list_revisions(kind="phone_game", active_only=True))
+            if existing_games or has_portable:
+                active_rig = selected("rig")
+                previous = existing_games[0] if existing_games else None
+                # A moved rig still requires the existing rig-readiness path.
+                # This refresh repairs only portable game updates on that rig.
+                if previous is None or previous.get("dependencies", {}).get("rig") == active_rig["revision_id"]:
+                    from rig_runtime.workflows.profile_management import refresh_game_composition
+                    refreshed_game = refresh_game_composition(self, active_rig, context, previous)
         include_geometry = request.requires_minimap_profile or "rig_game" in selected_revisions or bool(
-            context.game_id and self.list_candidates("rig_game", context, active_only=True)
+            refreshed_game or (context.game_id and self.list_candidates("rig_game", context, active_only=True))
         )
         if include_geometry:
             if not context.game_id:
                 raise ProfileResolutionError(
                     "Adapter mode {} requires a game_id".format(request.mode)
                 )
-            rig_game = selected("rig_game")
+            rig_game = refreshed_game or selected("rig_game")
             dependencies = rig_game.get("dependencies") or {}
             try:
                 dependent_rig_id = str(dependencies["rig"])
@@ -1561,6 +1574,7 @@ class ProfileRegistry:
             "context": context.as_dict(),
             "request": request.as_dict(),
             "manual_profile_revisions": dict(selected_revisions),
+            "game_composition_refresh": (rig_game or {}).get("composition_refresh"),
             "profiles": {
                 "rig": rig["revision_id"],
                 "phone_game": phone_game["revision_id"] if phone_game else None,

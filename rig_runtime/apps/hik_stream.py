@@ -551,7 +551,7 @@ class PhoneDisplayPowerSession:
         self.close()
 
 
-DEMO_COLOR_ORDER = "BGR"
+DEMO_COLOR_ORDER = ADAPTER_DEFAULTS.color_order
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1009,6 +1009,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 camera.open()
                 effective_mode = "full"
         stream_started = True
+        resolved = getattr(camera, "resolved_config", {}) or {}
+        if not isinstance(resolved, Mapping):
+            resolved = {}
+        if resolved.get("profiles"):
+            print("IRIS profile root: {}".format((resolved.get("profile_registry") or {}).get("root", "embedded/explicit")))
+            print("IRIS geometry revisions: {}".format("; ".join(
+                "{}={}".format(kind, resolved["profiles"].get(kind))
+                for kind in ("rig", "phone_game", "rig_game")
+            )))
+            if resolved.get("game_composition_refresh"):
+                print("Refreshed rig-game geometry from the current active phone-game calibration.")
         if not arguments.gui:
             label = (
                 "Native Hikrobot MVS stream"
@@ -1051,7 +1062,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for window in windows:
             cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
         telemetry = LiveStreamTelemetry()
-        resolved = getattr(camera, "resolved_config", {}) or {}
         selected = resolved.get("profiles") or {}
         context = resolved.get("context") or {}
         profile_label = None
@@ -1100,8 +1110,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     read_started_ns, read_finished_ns, metadata
                 )
             for name, frame in displayed.items():
+                color_order = "BGR" if (arguments.camera_library == "native" or
+                                            arguments.diagnostic_calibration_override is not None) else (
+                    (resolved.get("adapter_plan") or {}).get("color_order") or arguments.color_order)
+                display_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if color_order == "RGB" else frame
                 rendered = overlay_stream_geometry(
-                    frame, camera, name, geometry_overlay
+                    display_frame, camera, name, geometry_overlay
                 )
                 cv2.imshow(
                     "HIK {}".format(name),

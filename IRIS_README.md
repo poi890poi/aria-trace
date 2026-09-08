@@ -256,8 +256,21 @@ later component failure does not roll back earlier successful components.
 `--candidate` publishes without activation; uncertain orientation remains a
 review candidate. Identical payload, dependencies, and runtime files reuse the
 existing revision instead of creating another one. A running demo keeps its
-opened profile; reopen it to load newly activated calibration. Optional color
+opened profile. On the next automatic adapter resolution, IRIS refreshes a stale
+rig-game composition from current active portable geometry on the same rig,
+validates it, and activates the derived profiles. This also repairs roots made
+by older versions where successful cursor calibration left the old rig-game
+snapshot active. Explicit revision overrides remain pinned. Reopen the demo to
+load the update; it prints the effective profile root and full geometry revision
+IDs for comparison with calibration output. Optional color
 has the separate activation policy below.
+
+The demo and public camera adapter use the same defaults, including RGB frame
+arrays, and the same profile resolution path. The GUI converts a display copy
+to OpenCV's BGR format before drawing annotations; it does not change adapter
+pixels. Optional launch/orientation commands and diagnostic overrides are
+explicit departures from those defaults. A generated standalone adapter embeds
+a fixed profile snapshot and must be exported again to include new calibration.
 
 Locked rig imaging and HIK auto white balance are the default color policy.
 Optional synchronized color fitting is non-gating and must be requested; it is

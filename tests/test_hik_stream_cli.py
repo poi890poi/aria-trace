@@ -264,6 +264,22 @@ class HikStreamCliTests(unittest.TestCase):
             arguments.diagnostic_rig_game_profile_override,
         )
 
+    def test_gui_converts_default_rgb_only_for_display_without_mutating_adapter_pixels(self):
+        camera = self._gui_camera()()
+        pixels = np.full((20, 30, 3), [11, 37, 89], np.uint8)
+        camera.get_frame = lambda: pixels
+        with patch.object(stream, "adapter_hik_camera_class", return_value=Mock(return_value=camera)), patch.object(
+            stream.cv2, "namedWindow"
+        ), patch.object(stream.cv2, "imshow") as show, patch.object(
+            stream.cv2, "waitKey", return_value=ord("q")
+        ), patch.object(stream.cv2, "destroyAllWindows"), patch.object(
+            stream, "overlay_stream_geometry", side_effect=lambda frame, *args: frame
+        ), patch.object(stream, "overlay_stream_telemetry", side_effect=lambda frame, *args: frame):
+            self.assertEqual(0, stream.main(["--gui", "--camera-id", "CAM-1", "--game-id", "game-1"]))
+        self.assertEqual("RGB", stream.parser().parse_args([]).color_order)
+        np.testing.assert_array_equal([89, 37, 11], show.call_args[0][1][0, 0])
+        np.testing.assert_array_equal([11, 37, 89], pixels[0, 0])
+
     def test_parser_accepts_adapter_orientation_policy_and_manual_rotation(self):
         arguments = stream.parser().parse_args(
             [

@@ -24,7 +24,8 @@ from rig_runtime.adapters.filesystem.profile_registry import (
 from rig_runtime.adapters.hik.compat import HikCamera
 from rig_runtime.adapters.hik.game_camera import ProfiledHikGameCamera
 from rig_runtime.domain.spatial import bind_geometry, oriented_circle, raster_space
-from rig_runtime.workflows.profile_management import publish_rig_calibration
+from rig_runtime.domain.spaces import RigSpaceId
+from rig_runtime.workflows.profile_management import publish_rig_calibration, publish_minimap_profiles
 from rig_runtime.workflows.adapter_export import export_resolved_adapter
 from tests.test_profile_manager import write_rig
 from tests.test_hik_game_camera import FakeAdapter
@@ -122,6 +123,92 @@ class RecalibrationContractTests(unittest.TestCase):
         report = json.loads((path.parent / "game_readiness.json").read_text())
         self.assertEqual("camera_frames", report["validation"])
         self.assertEqual(3, len(report["games"]))
+
+    def publish_updated_cursor(self, *, activate=True):
+        session = self.root / "cursor-session"
+        session.mkdir(exist_ok=True)
+        (session / "manifest.json").write_text(json.dumps({
+            "frame_sources": [{"stream_id": "android_phone", "serial": "PHONE-1"}],
+            "context": {"game_id": "game-1", "phone_surface_orientation": {
+                "natural_size_px": [100, 200], "logical_size_px": [100, 200],
+                "quarter_turns_clockwise_from_natural": 0,
+            }},
+        }))
+        space = raster_space(RigSpaceId.CURRENT_MINIMAP_CROP, [20, 20])
+        calibration = self.root / "cursor-calibration.json"
+        calibration.write_text(json.dumps({
+            "status": "partial", "result_level": "rotation_center_only",
+            "crop_xywh": [65, 20, 20, 20], "canonical_phone_crop_xywh": [65, 20, 20, 20],
+            "provenance": {"session_path": str(session), "source_phone_game_revision": self.phone["revision_id"]},
+            "outer_boundary": bind_geometry({"center_x": 10, "center_y": 10, "radius": 8}, "circle", space),
+            "rotation_center": bind_geometry({"x": 8, "y": 12}, "point", space),
+        }))
+        return publish_minimap_profiles(calibration, registry=self.registry,
+                                        camera_id="CAM-1", activate=activate, compose_rig=False)["phone_game"]
+
+    def test_new_cursor_calibration_reaches_newly_opened_demo(self):
+        current = self.publish_updated_cursor()
+        self.assertEqual(73, current["payload"]["rotation_center"]["x"])
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter",
+                   side_effect=lambda **kwargs: FakeAdapter()):
+            with self.camera("dual") as camera:
+                camera.get_frames()
+                self.assertEqual(current["revision_id"], camera.resolved_config["profiles"]["phone_game"])
+                self.assertEqual([73.0, 32.0], camera.get_cursor_geometry("full")["center_xy_px"])
+                self.assertEqual([75.0, 30.0], camera.get_minimap_geometry("full")["center_xy_px"])
+
+    def test_rig_republication_uses_updated_cursor_not_established_old_revision(self):
+        payload = json.loads(json.dumps(self.payload))
+        payload["rotation_center"].update(x=73, y=32)
+        payload["cursor_geometry"]["rotation_center"].update(x=73, y=32)
+        # Same identity as the established source: activation supersedes it.
+        current = self.registry.publish("phone_game", self.context, payload,
+                                        activate=True)
+        publish_rig_calibration(self.initial_path, registry=self.registry)
+        self.assertEqual(current["revision_id"], self.registry.resolve(
+            "rig_game", self.context)["dependencies"]["phone_game"])
+
+    def test_candidate_cursor_does_not_replace_active_geometry(self):
+        self.publish_updated_cursor(activate=False)
+        resolved = self.registry.resolve_adapter(self.context, AdapterRequest(mode="dual"))
+        self.assertEqual(self.phone["revision_id"], resolved["profiles"]["phone_game"])
+
+    def test_explicit_old_game_revision_remains_an_explicit_override(self):
+        previous = self.registry.resolve("rig_game", self.context)
+        self.publish_updated_cursor()
+        resolved = self.registry.resolve_adapter(self.context, AdapterRequest(mode="dual"),
+                                                 profile_revisions={"rig_game": previous["revision_id"]})
+        self.assertEqual(self.phone["revision_id"], resolved["profiles"]["phone_game"])
+
+    def test_default_demo_and_adapter_return_identical_pixels_and_current_geometry(self):
+        current = self.publish_updated_cursor()
+        with patch("rig_runtime.adapters.hik.game_camera.HikMvsCameraAdapter",
+                   side_effect=lambda **kwargs: FakeAdapter()):
+            with HikCamera(config={"profile_root": str(self.registry.root), "game_id": "game-1",
+                                   "camera_id": "CAM-1", "phone_id": "PHONE-1"}) as adapter:
+                expected = adapter.get_frame()
+                expected_plan = adapter.resolved_config["adapter_plan"]
+                expected_geometry = adapter.get_cursor_geometry("full")
+                self.assertEqual(current["revision_id"], adapter.resolved_config["profiles"]["phone_game"])
+            revision_count = len(self.registry.list_revisions())
+            demo = gui.open_camera(profile_root=self.registry.root, game_id="game-1",
+                                   camera_id="CAM-1", phone_serial="PHONE-1")
+            try:
+                np.testing.assert_array_equal(expected, demo.get_frame())
+                self.assertEqual(expected_plan, demo.resolved_config["adapter_plan"])
+                self.assertEqual(expected_geometry, demo.get_cursor_geometry("full"))
+                self.assertEqual(current["revision_id"], demo.resolved_config["profiles"]["phone_game"])
+                self.assertEqual(revision_count, len(self.registry.list_revisions()))
+            finally:
+                demo.release()
+
+    def test_automatic_resolution_composes_first_portable_game_on_existing_rig(self):
+        context = ProfileContext(game_id="new-game", camera_id="CAM-1", phone_id="PHONE-1",
+                                 panel_display=self.context.panel_display, game_display=self.context.game_display)
+        current = self.registry.publish("phone_game", context, self.payload, activate=True)
+        resolved = self.registry.resolve_adapter(context, AdapterRequest(mode="full"))
+        self.assertEqual(current["revision_id"], resolved["profiles"]["phone_game"])
+        self.assertIsNotNone(resolved["profiles"]["rig_game"])
 
     def test_newer_other_phone_cannot_replace_established_geometry(self):
         other = ProfileContext(game_id="game-1", phone_id="PHONE-2",
