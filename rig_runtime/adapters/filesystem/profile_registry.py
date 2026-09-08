@@ -570,6 +570,10 @@ class ProfileRegistry:
         database_existed = self.database.is_file()
         self.registry_directory.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        from .profile_retention import recover_pending_purge
+        self.purge_recovery_warnings = recover_pending_purge(
+            self, database_existed=database_existed
+        )
         self.migration_report = self._recover_portable_registry(
             database_existed=database_existed
         )
@@ -827,6 +831,8 @@ class ProfileRegistry:
         row = self._revision_row(revision_id)
         directory = self.root / row["relative_directory"]
         manifest = json.loads((directory / "profile.json").read_text(encoding="utf-8"))
+        from .profile_retention import retained_manifest
+        manifest = retained_manifest(directory, manifest)
         manifest["revision_directory"] = str(directory.resolve())
         manifest["registry_review_state"] = row["review_state"]
         return manifest

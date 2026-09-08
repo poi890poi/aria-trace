@@ -85,6 +85,25 @@ python-tools.bat camera-adapter-demo --game-id genshin-impact --mode dual --gui
 ```
 
 Set `IRIS_PYTHON` before these commands to select a particular interpreter.
+
+To limit stored profile history and evidence, run cleanup while calibration and
+profile imports are idle. This works offline without Git or GitHub:
+
+```bat
+python-tools.bat profiles purge
+python-tools.bat profiles purge --apply
+```
+
+The first command previews; the second applies. Defaults are 10 portable
+revisions, 3 displacement-dependent revisions, and 384 MB of evidence. Use
+`--keep-portable N`, `--keep-rig N`, or `--evidence-max-mb X` to change them.
+Active profiles and retained dependencies survive beyond the counts. Color
+uses the portable count. Required runtime files and evidence modified within
+24 hours are protected, so cleanup can report an unmet budget (exit code 1).
+The command manages recognized evidence under the profile root's `calibrations`
+folder and optional copied profile review images; custom outputs and recording
+folders are untouched. No automatic cleanup trigger is enabled.
+
 Python applications can call the helpers without a subprocess:
 
 ```python

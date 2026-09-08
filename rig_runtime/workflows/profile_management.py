@@ -1656,6 +1656,16 @@ def parser() -> argparse.ArgumentParser:
     list_profiles.add_argument("--active-only", action="store_true")
     show = subcommands.add_parser("show")
     show.add_argument("revision_id")
+    purge = subcommands.add_parser("purge", help="Preview or apply profile/evidence retention while calibration is idle")
+    purge.add_argument("--keep-portable", type=int, default=10)
+    purge.add_argument("--keep-rig", type=int, default=3)
+    purge.add_argument("--evidence-max-mb", type=float, default=384)
+    purge.add_argument("--evidence-min-age-hours", type=float, default=24,
+                       help="Protect recently modified evidence (default: 24 hours)")
+    purge_mode = purge.add_mutually_exclusive_group()
+    purge_mode.add_argument("--apply", action="store_true", help="Delete the reported eligible data")
+    purge_mode.add_argument("--dry-run", action="store_false", dest="apply", help="Preview only (default)")
+    purge.set_defaults(apply=False)
     configure_game = subcommands.add_parser(
         "configure-game",
         help="declare cursor and mini-map behavior for one game ID",
@@ -1743,6 +1753,16 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     registry = ProfileRegistry(arguments.profile_root)
+    if arguments.command == "purge":
+        from rig_runtime.adapters.filesystem.profile_retention import RetentionPolicy, purge_profiles
+        policy = RetentionPolicy(
+            keep_portable=arguments.keep_portable, keep_rig=arguments.keep_rig,
+            evidence_max_mb=arguments.evidence_max_mb,
+            evidence_min_age_hours=arguments.evidence_min_age_hours,
+        )
+        result = purge_profiles(registry, policy, dry_run=not arguments.apply)
+        print(json.dumps(result, indent=2))
+        return 1 if result["status"] == "partial" else 0
     if arguments.command == "publish-rig":
         result = publish_rig_calibration(
             arguments.calibration, registry=registry, activate=not arguments.candidate

@@ -296,6 +296,37 @@ cursor geometry), and portable phone-game color references for all games. It
 does not contain a rig or camera calibration; import composes compatible
 phone-game geometry with the active local rig.
 
+### Limit profile storage
+
+While calibration and profile imports are idle, preview or apply retention:
+
+```powershell
+python -m iris_tools profiles purge
+python -m iris_tools profiles purge --apply
+```
+
+Defaults keep the latest **10 portable revisions** and **3 displacement-dependent
+revisions** per registry profile identity, with a **384 MB evidence budget**.
+Override these with `--keep-portable`, `--keep-rig`, and `--evidence-max-mb`.
+Color uses the portable count, including camera-specific color, because rig
+displacement does not invalidate it. Active revisions, portable activation
+pointers, and dependencies of retained revisions are protected beyond the counts.
+Standalone phone settings are configuration, not revision history.
+
+Evidence is removed oldest first from recognized bundles under
+`<profile-root>/calibrations` and optional copied `review_evidence_*` files.
+Required runtime files survive; pruned review files have an explicit retention
+record. Recent evidence is protected for 24 hours (configurable through
+`--evidence-min-age-hours`). Runtime references, recent evidence, or unrecognized
+files can keep storage above budget; the report explains this and `--apply`
+returns exit code 1 for incomplete cleanup. Custom output folders and recorded
+sessions are outside this command's scope. Run again to retry locked files.
+
+No automatic trigger is enabled. The recommended trigger is after a complete
+successful calibration workflow has published and activated all profiles; an
+additional once-daily idle cleanup would cover accumulated failed-run evidence.
+See [retention sizing and recovery details](docs/iris-profile-retention-2026-09-08.md).
+
 ## Camera adapter
 
 For an existing application that imports Hikrobot's low-level
