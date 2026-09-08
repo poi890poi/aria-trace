@@ -39,6 +39,7 @@ from rig_runtime.adapters.filesystem.system_configuration import (
     resolve_rig_repeatability_policy,
 )
 from rig_runtime.apps.rig_presentation import console_print as print
+from rig_runtime.services.calibration.rig.focus_sampling import PANEL_LAYOUTS, CAMERA_LAYOUTS
 
 
 def _write_standalone_adapter(
@@ -103,6 +104,14 @@ def parser() -> argparse.ArgumentParser:
         help="save the calibration bundle without publishing its active rig profile",
     )
     value.add_argument("--list-cameras", action="store_true")
+    value.add_argument(
+        "--focus-panel-layout", choices=PANEL_LAYOUTS, default="unknown",
+        help="focus theory only; unknown shows RGB stripe and Diamond PenTile alternatives",
+    )
+    value.add_argument(
+        "--focus-camera-sampling", choices=CAMERA_LAYOUTS, default="auto",
+        help="focus theory only; auto recognizes Bayer PixelFormat, otherwise shows alternatives",
+    )
     value.add_argument(
         "--camera-width", type=int, default=RIG_CALIBRATION_DEFAULTS.camera_width_px
     )
@@ -444,6 +453,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         target_presenter=arguments.target_presenter,
         phone_target_apk=arguments.phone_target_apk,
         panel_scale_mode=arguments.panel_scale,
+        focus_panel_layout=arguments.focus_panel_layout,
+        focus_camera_sampling=arguments.focus_camera_sampling,
         display_component=arguments.display_component,
         operation_timeout_seconds=arguments.operation_timeout_seconds,
         refresh_hz_override=arguments.refresh_hz,

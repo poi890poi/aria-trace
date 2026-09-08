@@ -193,6 +193,19 @@ def _local_sampling(
     }
 
 
+def slanted_edge_sampling_geometry(
+    camera_to_screen_3x3: Sequence[Sequence[float]],
+    rect_screen_xywh: Sequence[float],
+    edge_angle_deg: float,
+    camera_lens_model: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Local sampling geometry, available even when an edge cannot be measured."""
+    center, _, normal = _edge_geometry(rect_screen_xywh, edge_angle_deg, 0.0)
+    return _local_sampling(
+        matrix_3x3(camera_to_screen_3x3), center, normal, camera_lens_model
+    )
+
+
 def measure_slanted_edge_esfr(
     camera_image: np.ndarray,
     camera_to_screen_3x3: Sequence[Sequence[float]],

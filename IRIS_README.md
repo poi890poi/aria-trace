@@ -51,6 +51,21 @@ For interactive positioning and focus adjustment:
 python -m iris_tools rig-calibration
 ```
 
+The focus view shows measured MTF50, the session best, and a separate ideal
+sampling-only MTF50 reference for the panel/camera. It accounts for edge direction,
+local camera magnification, Diamond PenTile and Bayer color sampling. Press **T**
+to switch between theory and the existing pose/physical-scale details.
+
+Panel layout is not reported by Android. The default shows named RGB stripe and
+Diamond PenTile alternatives; camera sampling is recognized from known Bayer
+pixel formats, otherwise alternatives are shown. For known hardware, select
+`--focus-panel-layout diamond-pentile --focus-camera-sampling bayer` (also available:
+panel `rgb-stripe`, camera `full-grid`). These options affect diagnostics only.
+The reference assumes one display pixel per physical panel pixel and ideal
+independent-channel low-pass reconstruction. Apertures, optics and ISP processing
+change real MTF50, so this is not a hardware guarantee or calibration threshold.
+See [the model and verification](docs/iris-focus-sampling-theory-2026-09-08.md).
+
 For unattended reuse of a calibrated rig, with full calibration only when the
 ChArUco displacement check rejects reuse:
 

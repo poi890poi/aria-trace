@@ -49,7 +49,13 @@ from rig_runtime.services.calibration.rig.distortion import (
     raw_sensor_viewport_in_screen,
     undistort_pixel_points,
 )
-from rig_runtime.services.calibration.rig.image_quality import measure_slanted_edge_esfr
+from rig_runtime.services.calibration.rig.image_quality import (
+    measure_slanted_edge_esfr, slanted_edge_sampling_geometry,
+)
+from rig_runtime.services.calibration.rig.focus_sampling import (
+    PANEL_LAYOUTS, CAMERA_LAYOUTS, edge_sampling_theory,
+    focus_theory_lines, resolve_camera_sampling,
+)
 from rig_runtime.services.calibration.rig.fixed_plane_distortion import fit_fixed_plane_distortion, fixed_plane_pose_matches
 from rig_runtime.services.calibration.rig.contracts import FrameSample
 from rig_runtime.services.calibration.rig.hik.algorithms import (
@@ -277,8 +283,14 @@ class HikCalibrationOptions:
         _DEFAULT_REPEATABILITY["save_movement_consecutive_frames"]
     )
     final_benchmark_mode: str = RIG_CALIBRATION_DEFAULTS.final_benchmark_mode
+    focus_panel_layout: str = "unknown"
+    focus_camera_sampling: str = "auto"
 
     def __post_init__(self) -> None:
+        if self.focus_panel_layout not in PANEL_LAYOUTS:
+            raise ValueError("Unknown focus panel layout")
+        if self.focus_camera_sampling not in CAMERA_LAYOUTS:
+            raise ValueError("Unknown focus camera sampling layout")
         if self.maximum_shutter_multiplier not in SHUTTER_MULTIPLIERS:
             raise ValueError("Maximum shutter multiplier must be 2 or 3")
         if self.maximum_exposure_periods not in EXPOSURE_PERIOD_COUNTS:
@@ -3458,8 +3470,24 @@ class HikRigCalibrationSession:
             "edges": [],
         }
         pitch = phone_metrics.to_dict().get("physical_pixel_pitch_mm_xy")
+        camera_layout, camera_source = resolve_camera_sampling(
+            self.options.focus_camera_sampling,
+            self.camera_controls.get("genicam", {}).get("PixelFormat", {}).get("value"),
+        )
+        row["sampling_theory_camera_source"] = camera_source
         for edge in focus_edge_regions(visible_region["safe_xywh"]):
             evidence = dict(edge)
+            try:
+                sampling = slanted_edge_sampling_geometry(
+                    geometry.matrix_3x3, edge["rect_screen_xywh"], edge["angle_deg"],
+                    self.lens_model if self._uses_measured_distortion() else None,
+                )
+                evidence["sampling_theory"] = edge_sampling_theory(
+                    edge["angle_deg"], sampling["jacobian_display_px_per_camera_px"],
+                    self.options.focus_panel_layout, camera_layout,
+                )
+            except (ValueError, RuntimeError) as exc:
+                evidence["sampling_theory_error"] = str(exc)
             try:
                 esfr, _ = measure_slanted_edge_esfr(
                     frame,
@@ -3553,6 +3581,8 @@ class HikRigCalibrationSession:
         self._focus_geometry_changed = False
         self._focus_displaced_frames = 0
         self._close_preview(disable=True)
+        show_sampling_theory = True
+        record_sampling_theory = True
         self.progress(
             "Focus: adjust against the framed target; R recalibrates after moving the rig, "
             "S saves, D tests Data Matrix decoding, Q/Esc exits."
@@ -3567,7 +3597,14 @@ class HikRigCalibrationSession:
                 frame = sample.image
                 self.last_frame = frame.copy()
                 measurement = self._focus_measurement(frame)
-                self.focus_history.append(measurement)
+                history_row = {**measurement, "edges": [dict(edge) for edge in measurement["edges"]]}
+                if not record_sampling_theory:
+                    # Geometry/layout are fixed for this focus-loop invocation.
+                    # Keep the reference once, not in every captured-frame record.
+                    for edge in history_row["edges"]:
+                        edge.pop("sampling_theory", None)
+                self.focus_history.append(history_row)
+                record_sampling_theory = False
                 try:
                     panel_axis = self._update_focus_panel_axis(sample)
                 except (ValueError, RuntimeError) as exc:
@@ -3647,20 +3684,24 @@ class HikRigCalibrationSession:
                     )
                 }
                 lines = [
-                    "Complete positioning view at left; native 1:1 crops: TL / TR / BL / BR",
+                    "Full view + native 1:1 corner crops",
                     "Telemetry text refresh: {:.1f} Hz; camera acquisition remains live".format(
                         1.0 / PANEL_TEXT_REFRESH_SECONDS
                     ),
                     "Laplacian {:.2f}  max {:.2f}".format(measurement["laplacian"], maxima["laplacian"]),
-                    "MTF50 min(4 edges) {}  max {} cy/display-px".format(
+                    "Measured MTF50 min(4) {}  best {} cy/dpx".format(
                         self._format_metric(measurement.get("mtf50"), 4),
                         self._format_metric(maxima.get("mtf50"), 4),
                     ),
-                    "MTF10 min(4 edges) {}  max {} | S save, D decode test, Q quit".format(
+                    "MTF10 {}  best {} | S save, D decode, Q quit".format(
                         self._format_metric(measurement.get("mtf10"), 4),
                         self._format_metric(maxima.get("mtf10"), 4),
                     ),
                 ]
+                lines.append("T: theory / pose details; R: recalibrate")
+                if self._focus_geometry_changed:
+                    lines.append("Rig moved: save blocked; R recalibrates.")
+                metric_lines = list(lines)
                 if panel_axis.get("residual_clockwise_degrees") is not None:
                     lines.append(
                         "Panel axis: {:+.4f} deg CW residual; temporal p95 {} deg; {}".format(
@@ -3738,6 +3779,10 @@ class HikRigCalibrationSession:
                             self._format_metric(maxima.get("mtf10_lp_per_mm")),
                         )
                     )
+                if show_sampling_theory:
+                    lines = metric_lines + focus_theory_lines(
+                        measurement["edges"], measurement["sampling_theory_camera_source"]
+                    )
                 work_width, work_height = self._desktop_work_area()
                 panel_width = min(480, max(360, int(work_width * 0.28)))
                 available_width = max(320, int(work_width * 0.92) - panel_width)
@@ -3766,7 +3811,10 @@ class HikRigCalibrationSession:
                 tile_height = max(crop.shape[0] for crop in crops)
                 grid_width = tile_width * 2 + 6
                 image_width = overview_width + 6 + grid_width
-                image_height = tile_height * 2 + 6
+                text_height = 36 + PANEL_LINE_STEP_PX * len(self._wrap_panel_lines(
+                    lines, panel_width - 28, PANEL_FONT_SCALE
+                ))
+                image_height = max(tile_height * 2 + 6, min(available_height, text_height))
                 view = np.full((image_height, image_width + panel_width, 3), 24, np.uint8)
                 overview_frame = frame.copy()
                 cv2.polylines(
@@ -3813,6 +3861,9 @@ class HikRigCalibrationSession:
                 cv2.resizeWindow(window, view.shape[1], view.shape[0])
                 cv2.imshow(window, view)
                 key = cv2.waitKey(1) & 0xFF
+                if key in (ord("t"), ord("T")):
+                    show_sampling_theory = not show_sampling_theory
+                    self._panel_text_cache.pop("focus", None)
                 if key in (ord("s"), ord("S")):
                     if self._focus_geometry_changed:
                         self.progress(
