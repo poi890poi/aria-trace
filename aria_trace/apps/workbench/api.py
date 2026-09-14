@@ -172,6 +172,11 @@ def make_handler(state):
                         query.get("name", [""])[0],
                     )
                     self._send(200, _image_content_type(query.get("name", [""])[0]), body)
+                elif path == "/api/tracker/destination-image":
+                    self._send(200, "image/jpeg", state.destination_observer_image())
+                elif path == "/api/tracker/destination-telemetry":
+                    query = parse_qs(parsed.query)
+                    self._send(200, "application/x-ndjson", state.destination_observer_telemetry(query.get("game_id", [""])[0], query.get("tracking_id", [""])[0]))
                 elif path == "/api/tracker/overlay":
                     query = parse_qs(parsed.query)
                     self._send(

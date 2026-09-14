@@ -73,6 +73,10 @@ from aria_trace.services.localization.route.tracker import (
 from rig_runtime.adapters.filesystem.session import SessionReader, input_capture_health
 from rig_runtime.services.calibration.scene_yaw import calibrate_scene_yaw_session
 from aria_trace.services.tracking.profiles import resolve_tracking_profile
+from aria_trace.services.tracking.destination import checked_id, load_package
+from aria_trace.services.tracking.destination_monitor import (
+    DestinationMonitor, catalog as destination_catalog, runtime_configuration,
+)
 from aria_trace.workflows.teleport import analyze_teleport_session
 from aria_trace.adapters.windows import (
     WindowsDesktopApi,
@@ -90,7 +94,7 @@ class WorkbenchLiveTrackingMixin:
         with self._live_tracker_lock:
             if self._live_tracker is None:
                 return None
-            return {
+            descriptor = {
                 key: value
                 for key, value in self._live_tracker.items()
                 if key not in (
@@ -99,8 +103,30 @@ class WorkbenchLiveTrackingMixin:
                     "evidence_recorder",
                     "route_video_recorder",
                     "route_finish_gate",
+                    "destination_monitor",
                 )
             }
+            monitor = self._live_tracker.get("destination_monitor")
+            if monitor is not None:
+                descriptor["destination_observer"] = monitor.snapshot()
+            return descriptor
+
+    def _destination_packages(self) -> dict:
+        return destination_catalog(self.artifact_root / "destination_targets")
+
+    def destination_observer_image(self) -> bytes:
+        with self._live_tracker_lock:
+            monitor = (self._live_tracker or {}).get("destination_monitor")
+        if monitor is None:
+            raise ValueError("Destination observation is not enabled")
+        return monitor.overlay()
+
+    def destination_observer_telemetry(self, game_id: str, tracking_id: str) -> bytes:
+        checked_id(game_id); checked_id(tracking_id)
+        path = self._live_tracking_root(game_id) / tracking_id / "destination" / "observations.jsonl"
+        if not path.is_file():
+            raise ValueError("No destination observations have been recorded for this run")
+        return path.read_bytes()
 
     def _live_tracking_root(self, game_profile_id: str) -> Path:
         return self.artifact_root / "live_tracking" / safe_id(game_profile_id)
@@ -168,6 +194,18 @@ class WorkbenchLiveTrackingMixin:
             if self._analysis_jobs.has_active_job():
                 raise RuntimeError("Wait for background analysis to finish")
             game_profile_id = str(value.get("game_profile_id") or "")
+            destination_id = str(value.get("destination_id") or "")
+            destination_path = None
+            if destination_id:
+                checked_id(game_profile_id); checked_id(destination_id)
+                if value.get("tracking_mode") != "route-assisted":
+                    raise ValueError("Enable destination observation in the route tracer")
+                destination_path = self.artifact_root / "destination_targets" / game_profile_id / destination_id
+                try:
+                    load_package(destination_path, game_profile_id)
+                    runtime_configuration()
+                except (OSError, KeyError) as exc:
+                    raise ValueError("Destination package is unavailable: {}".format(exc))
             if not game_profile_id:
                 raise ValueError("Choose a game profile")
             game = self.profiles.game(game_profile_id)
@@ -466,6 +504,7 @@ class WorkbenchLiveTrackingMixin:
                 "record_route_video": record_route_video,
                 "auto_stop_at_route_finish": auto_stop_at_route_finish,
                 "route_video": None,
+                "destination_id": destination_id or None,
                 "route_finish": None,
                 "stop_reason": None,
                 "stop": stop,
@@ -500,7 +539,10 @@ class WorkbenchLiveTrackingMixin:
                 },
             )
             route_video_recorder = None
+            destination_monitor = None
             try:
+                if destination_path is not None:
+                    destination_monitor = DestinationMonitor(destination_path, evidence_output / "destination")
                 if record_route_video:
                     route_video_recorder = RouteTraceVideoRecorder(
                         evidence_output,
@@ -525,11 +567,13 @@ class WorkbenchLiveTrackingMixin:
                         ),
                     )
             except Exception as exc:
+                if destination_monitor is not None:
+                    destination_monitor.close()
                 error = "{}: {}".format(type(exc).__name__, exc)
                 evidence_recorder.close(status="failed", error=error)
                 engine.close()
                 raise RuntimeError(
-                    "Could not initialize route video recording: {}".format(error)
+                    "Could not initialize tracking evidence or destination observation: {}".format(error)
                 )
             runtime["tracking_id"] = tracking_id
             runtime["artifact_relative_path"] = str(
@@ -541,6 +585,7 @@ class WorkbenchLiveTrackingMixin:
                 route_video_recorder.summary if route_video_recorder else None
             )
             runtime["route_video_recorder"] = route_video_recorder
+            runtime["destination_monitor"] = destination_monitor
             with self._live_tracker_lock:
                 self._live_tracker = runtime
                 self._live_tracker_engine = engine
@@ -579,6 +624,9 @@ class WorkbenchLiveTrackingMixin:
                     latest = engine.update(
                         packet.image, packet.host_capture_time_ns
                     )
+                    if destination_monitor is not None:
+                        destination_monitor.submit(packet.image, packet.host_capture_time_ns)
+                        latest["destination_observer"] = destination_monitor.snapshot()
                     take_diagnostics = getattr(
                         engine, "take_global_diagnostics", None
                     )
@@ -823,6 +871,8 @@ class WorkbenchLiveTrackingMixin:
                 except Exception:
                     pass
                 engine.close()
+                if destination_monitor is not None:
+                    runtime["destination_observer"] = destination_monitor.close()
                 route_video_summary = None
                 if route_video_recorder is not None:
                     route_video_summary = route_video_recorder.close(
@@ -861,6 +911,8 @@ class WorkbenchLiveTrackingMixin:
                         ),
                         "route_finish": runtime.get("route_finish"),
                         "route_video": route_video_summary,
+                        "destination_id": destination_id or None,
+                        "destination_observer": runtime.get("destination_observer"),
                     },
                     extra_files=(
                         {

@@ -23,6 +23,9 @@ Genshin Impact PC is the first POC game. The Acquisition Workbench records an un
 See the [tracking implementation status](docs/tracking-implementation-audit-2026-09-06.md)
 for recent enabled changes, benchmark candidates, evidence, and remaining work.
 
+The optional [prepared destination observer](docs/destination-observer.md) is
+available in Route tracer for live scene evidence while you drive.
+
 Start the integrated PC acquisition flow from the repository root:
 
     $env:PYTHONPATH=((Resolve-Path .tools).Path + ';' + (Resolve-Path .).Path)
