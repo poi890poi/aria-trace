@@ -1,5 +1,10 @@
 # Destination observer: first product slice
 
+Product-scope correction: this slice is a **single-target diagnostic viewer**.
+It does not implement continuous route guidance. The intended next workflow is
+[automatic target management with manual input hints](route-guidance-product-contract.md),
+followed by human-guided route validation before automatic navigation.
+
 Type: optional feature, plus reusable data packaging and diagnostics.
 
 Before this change, destination groups were accessible only through offline
