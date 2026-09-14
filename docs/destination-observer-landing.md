@@ -34,9 +34,8 @@ from hardcoded scene names. New-route visual annotation/preparation in the UI is
 a subsequent slice. This boundary must be visible in the testing instructions.
 
 Final verification: 48 tests passed in a clean HEAD snapshot with only this
-product slice applied. The full working tree also passed 51 tests before the
-independent UI request test was added, and its 10 focused destination tests
-passed afterward. The clean check deliberately excludes unrelated video-control
+product slice applied. The full working tree also passed all 52 tests after
+the product commit. The clean check deliberately excludes unrelated video-control
 edits. Frozen observer parity and paced GPU evidence are summarized in
 `benchmarks/localization/DESTINATION_LANDING_RESULTS_20260914.md`. Browser UI
 selection and the real worker's interpreter isolation were checked separately.
