@@ -151,6 +151,18 @@
   </section>
   <section id="routeTask" class="task-panel" role="tabpanel" aria-labelledby="routeTab" hidden>
     <h3>Route tracer</h3>
+    <section aria-label="Manual route guidance trial">
+      <h4>Manual route guidance · trial</h4>
+      <p class="subtitle">You drive. Select a prepared route for continuous turning advice. The shaded range is the suggested input; the dot is your input. Guidance finds and changes route views automatically.</p>
+      <div class="analysis-grid"><label>Prepared guidance route<select id="guidanceRoute"></select></label><label class="check-option"><span><input id="guidanceVideo" type="checkbox">Record guidance video</span><small>Input and guidance measurements are always saved.</small></label></div>
+      <p class="subtitle">First trial: session 21 town circuit, forward movement with W and mouse turning. Use the same minimap scale and mouse sensitivity as the demonstration. Enable the overlay to see hints in game.</p>
+      <div class="analysis-actions"><button id="startGuidance" class="primary">Start guidance</button><button id="stopGuidance" class="danger" disabled>Stop guidance</button></div>
+      <p id="guidanceStatus" role="status">Choose a prepared route.</p>
+      <canvas id="guidanceGauge" width="680" height="80" style="width:100%;max-width:680px" role="img" aria-label="Turning advice unavailable"></canvas>
+      <a id="guidanceDownload" hidden download="route-guidance.zip">Download guidance and input</a>
+      <div id="guidanceHistory" aria-label="Saved guidance trials"></div>
+    </section>
+    <h4>Map route tracking</h4>
     <p class="subtitle">Turn one demonstrated route into a reusable tracking package, then trace that route with continuity-constrained live tracking.</p>
     <h4>1. Compile the demonstrated route</h4>
     <p class="subtitle">Localize the recording in canonical pixels and prebuild route progress, motion envelopes, descriptors, and scale-transition checkpoints.</p>
@@ -426,7 +438,45 @@ function renderDestinationObserver(){
   ui.destinationTelemetry.hidden=!observer.processed_frames;
   ui.destinationTelemetry.href='/api/tracker/destination-telemetry?game_id='+encodeURIComponent(tracker.game_profile_id)+'&tracking_id='+encodeURIComponent(tracker.tracking_id);
 }
-function renderRouteTrackerAnalysis(){renderTrackerAnalysisFor('route-assisted');renderDestinationObserver()}
+const guideUi=Object.fromEntries(['guidanceRoute','guidanceVideo','startGuidance','stopGuidance','guidanceStatus','guidanceGauge','guidanceDownload','guidanceHistory'].map(k=>[k,document.getElementById(k)]));
+function drawGuidance(value){
+  const hint=value.guidance,canvas=guideUi.guidanceGauge,c=canvas.getContext('2d'),x=v=>340+Math.max(-1,Math.min(1,v))*300;
+  c.clearRect(0,0,680,80);c.fillStyle='#101d2a';c.fillRect(0,0,680,80);c.strokeStyle='#73899f';c.beginPath();c.moveTo(40,32);c.lineTo(640,32);c.moveTo(340,22);c.lineTo(340,43);c.stroke();
+  c.font='14px sans-serif';c.fillStyle='#d4dfeb';c.fillText('Turn left',40,67);c.fillText('No turn',315,67);c.fillText('Turn right',579,67);
+  if(hint){c.fillStyle='#248775';c.fillRect(x(hint.range[0]),18,Math.max(3,x(hint.range[1])-x(hint.range[0])),28);c.fillStyle='#ffffff';c.beginPath();c.arc(x(hint.current),32,6,0,Math.PI*2);c.fill()}
+  canvas.setAttribute('aria-label',hint?hint.label+'. Shaded range: suggested turn; dot: your input.':'Turning advice unavailable');
+  guideUi.guidanceStatus.textContent=value.status||'Choose a prepared route.';
+}
+function renderGuidance(){
+  const list=(state.guide_packages||{})[ui.game.value]||[],tracker=state.live_tracker||{},active=['starting','running'].includes(tracker.status),mine=tracker.tracking_mode==='guidance'&&tracker.game_profile_id===ui.game.value;
+  setOptions(guideUi.guidanceRoute,list.map(p=>({label:p.label,value:p.guide_id})));
+  guideUi.guidanceRoute.disabled=busy||active||Boolean(state.active_run);guideUi.guidanceVideo.disabled=guideUi.guidanceRoute.disabled;
+  guideUi.startGuidance.disabled=guideUi.guidanceRoute.disabled||!list.length||ui.captureAdapter.value!=='windows_window'||!ui.window.value;guideUi.stopGuidance.disabled=busy||!mine||!active;
+  guideUi.guidanceDownload.hidden=!mine||!(tracker.latest||{}).processed_frames;
+  if(mine)guideUi.guidanceDownload.href='/api/guidance/telemetry?game_id='+encodeURIComponent(tracker.game_profile_id)+'&tracking_id='+encodeURIComponent(tracker.tracking_id);
+  guideUi.guidanceHistory.replaceChildren();
+  ((state.live_tracking_runs||{})[ui.game.value]||[]).filter(r=>r.tracking_mode==='guidance').slice(0,5).forEach(r=>{
+    const line=document.createElement('p'),link=document.createElement('a'),query='?game_id='+encodeURIComponent(ui.game.value)+'&tracking_id='+encodeURIComponent(r.tracking_id);
+    line.append(document.createTextNode((r.label||'Guidance')+' · '+new Date(r.started_utc).toLocaleString()+' · '+r.status+' · '));link.textContent='Measurements';link.href='/api/guidance/telemetry'+query;link.download='route-guidance.zip';line.append(link);
+    if(((r.latest||{}).video||{}).video_file){const video=document.createElement('a');video.textContent='Video';video.href='/api/guidance/video'+query;video.download='route-guidance.mkv';line.append(document.createTextNode(' · '),video)}
+    guideUi.guidanceHistory.append(line);
+  });
+  if(!mine||!active)drawGuidance({status:mine?(tracker.error||'Guidance stopped. Measurements are ready to download.'):(list.length?(ui.window.value?'Ready. You drive; guidance supplies input hints.':'Choose the game window above to start guidance.'):'No prepared guidance route for this game.'),guidance:null});
+}
+guideUi.startGuidance.onclick=()=>act(()=>post('/api/guidance/start',{game_profile_id:ui.game.value,guide_id:guideUi.guidanceRoute.value,frame_source:selectedFrameSource(),record_video:guideUi.guidanceVideo.checked}));
+guideUi.stopGuidance.onclick=()=>stopLiveTracker();
+let guidancePolling=false,guidancePaintedAt=0;
+setInterval(async()=>{
+  const tracker=state.live_tracker||{};
+  if(tracker.tracking_mode!=='guidance'||!['starting','running'].includes(tracker.status))return;
+  if(guidancePaintedAt&&Date.now()-guidancePaintedAt>500)drawGuidance({status:'Waiting for fresh guidance',guidance:null});
+  if(guidancePolling)return;guidancePolling=true;
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),450);
+  try{const r=await fetch('/api/guidance/status',{signal:controller.signal});if(!r.ok)throw new Error('Guidance unavailable');const value=await r.json();drawGuidance(value);guidancePaintedAt=Date.now()}
+  catch(error){drawGuidance({status:'Guidance connection unavailable',guidance:null})}
+  finally{clearTimeout(timeout);guidancePolling=false}
+},100);
+function renderRouteTrackerAnalysis(){renderTrackerAnalysisFor('route-assisted');renderDestinationObserver();renderGuidance()}
 function renderTrackerAnalysis(){renderTrackerAnalysisFor('free-roam')}
 function render(){
   if(!initialized)initialize();const active=state.active_run!==null,trackerActive=Boolean(state.live_tracker&&['starting','running'].includes(state.live_tracker.status)),android=ui.captureAdapter.value==='android_scrcpy',phoneBased=android||ui.captureAdapter.value==='hik_mvs'||ui.captureAdapter.value==='hik_rig_calibrated';const hud=state.hud_runtime||{},instance=state.instance||{},background=renderBackgroundTask(),androidControl=state.android_control||{};[ui.captureAdapter,ui.game,ui.window,ui.androidDevice,ui.hikCamera,ui.rigCalibration,ui.inputAdapter,ui.duration,ui.refreshSources,ui.trackingProfile,ui.routeTrackingProfile,ui.routeRecordVideo,ui.mapAtlas,ui.routeSource,ui.routeAtlas,ui.routePackage].forEach(element=>element.disabled=busy||active||trackerActive||captureInventoryLoading);ui.start.disabled=busy||active||trackerActive;ui.cancel.disabled=busy||!active;ui.hud.hidden=!hud.available||phoneBased;ui.hud.disabled=busy||!hud.available;ui.hud.textContent=hud.enabled?'Hide overlay':'Show overlay';ui.androidAssist.hidden=!android;const canMove=android&&active&&['waiting_for_first_input','recording_uninterrupted_take'].includes(state.active_phase)&&androidControl.status!=='running';ui.runStraightForward.disabled=busy||!canMove;ui.androidAssistStatus.textContent=androidControl.detail||(canMove?'Ready to send the configured fixed movement vector.':'Start an Android recording and wait until input is ready.');ui.liveDot.className='dot'+(active?' active':trackerActive?' working':background.unknown?' offline':background.active?' working':'');ui.liveText.textContent=active?statusText(state.active_phase):trackerActive?'Live tracker '+statusText(state.live_tracker.status):background.unknown?'Workbench status unknown':background.active?background.label+' running · '+background.elapsed:'Ready';ui.instanceInfo.textContent=instance.process_id?'PID '+instance.process_id+' · port '+instance.port+' · started '+fmtDate(instance.started_utc):'';ui.instanceInfo.title=instance.session_root?'Terminal-owned instance '+instance.instance_id+'\nSessions: '+instance.session_root+'\nArtifacts: '+instance.artifact_root:'';

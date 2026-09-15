@@ -125,6 +125,17 @@ def make_handler(state):
                     )
                 elif path == "/api/state":
                     self._json(200, state.descriptor())
+                elif path == "/api/guidance/status":
+                    self._json(200, state.guidance_status())
+                elif path == "/api/guidance/telemetry":
+                    query=parse_qs(parsed.query)
+                    self._send(200,'application/zip',state.guidance_telemetry(query.get('game_id',[''])[0],query.get('tracking_id',[''])[0]))
+                elif path == "/api/guidance/video":
+                    query=parse_qs(parsed.query)
+                    self._send_file('video/x-matroska',state.guidance_video(query.get('game_id',[''])[0],query.get('tracking_id',[''])[0]))
+                elif path == "/api/guidance/video":
+                    query=parse_qs(parsed.query)
+                    self._send_file('video/x-matroska',state.guidance_video(query.get('game_id',[''])[0],query.get('tracking_id',[''])[0]))
                 elif path == "/api/instance":
                     self._json(200, state.instance_descriptor())
                 elif path == "/api/sessions/download":
@@ -284,6 +295,8 @@ def make_handler(state):
                     result = state.queue_teleport_analysis(value)
                 elif path == "/api/tracker/start":
                     result = state.start_live_tracker(value)
+                elif path == "/api/guidance/start":
+                    result = state.start_route_guidance(value)
                 elif path == "/api/tracker/stop":
                     result = state.stop_live_tracker()
                 else:

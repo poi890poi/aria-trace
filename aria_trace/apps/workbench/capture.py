@@ -485,6 +485,7 @@ class WorkbenchCaptureMixin:
                 "map_atlases": self._map_atlases(),
                 "route_tracking_packages": self._route_tracking_packages(),
                 "destination_packages": self._destination_packages(),
+                "guide_packages": self._guide_packages(),
                 "teleport_behaviors": self._teleport_behaviors(),
                 "live_tracking_runs": self._live_tracking_runs(),
                 "analysis_candidates": self.analysis_candidates(),

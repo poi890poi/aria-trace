@@ -311,6 +311,9 @@ class WorkbenchStateMixin:
             notice = self._hud_notice
             with self._live_tracker_lock:
                 tracker = self._live_tracker_descriptor()
+            if tracker and tracker.get('tracking_mode')=='guidance' and tracker.get('status') in ('starting','running'):
+                from .route_guidance import guidance_hud
+                return guidance_hud(tracker)
             if tracker and tracker.get("status") in ("starting", "running"):
                 latest = tracker.get("latest") or {}
                 pose = latest.get("pose") or {}

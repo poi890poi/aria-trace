@@ -233,6 +233,7 @@ class _HudWindow:
                 font=("Segoe UI", 9),
             )
             detail.pack(fill="x")
+            guidance_canvas=tk.Canvas(shell,width=360,height=48,background='#081018',highlightthickness=0)
             map_label = tk.Label(
                 shell,
                 background="#081018",
@@ -291,6 +292,7 @@ class _HudWindow:
 
             def refresh() -> None:
                 nonlocal visible, map_photo, route_photo, route_visible
+                guidance_mode=False
                 try:
                     value = dict(self.status_provider() or {})
                     if value.get("shutdown"):
@@ -311,7 +313,24 @@ class _HudWindow:
                         )
                         detail.config(text=str(value.get("detail") or ""))
                         encoded_map = value.get("map_overlay_png_base64")
-                        if encoded_map:
+                        guidance_mode=value.get('state')=='route_guidance'
+                        if guidance_mode:
+                            map_label.pack_forget();map_photo=None
+                            guidance_canvas.pack(fill='x',pady=(6,0));guidance_canvas.delete('all')
+                            guidance_canvas.create_line(15,18,345,18,fill='#73899f')
+                            guidance_canvas.create_line(180,8,180,28,fill='#73899f')
+                            guidance_canvas.create_text(15,40,text='Left',anchor='w',fill='#d4dfeb')
+                            guidance_canvas.create_text(180,40,text='No turn',fill='#d4dfeb')
+                            guidance_canvas.create_text(345,40,text='Right',anchor='e',fill='#d4dfeb')
+                            hint=value.get('guidance')
+                            if hint:
+                                x=lambda v:180+165*max(-1,min(1,v))
+                                lo,hi=hint['range'];at=x(hint['current'])
+                                guidance_canvas.create_rectangle(x(lo),7,max(x(lo)+3,x(hi)),29,fill='#248775',outline='')
+                                guidance_canvas.create_oval(at-5,13,at+5,23,fill='white',outline='')
+                            overlay_width=HUD_WIDTH;overlay_height=145
+                        elif encoded_map:
+                            guidance_canvas.pack_forget()
                             map_photo = tk.PhotoImage(data=encoded_map)
                             map_label.config(image=map_photo)
                             if not map_label.winfo_manager():
@@ -319,6 +338,7 @@ class _HudWindow:
                             overlay_width = MAP_HUD_WIDTH
                             overlay_height = MAP_HUD_HEIGHT
                         else:
+                            guidance_canvas.pack_forget()
                             map_label.pack_forget()
                             map_photo = None
                             overlay_width = HUD_WIDTH
@@ -418,7 +438,7 @@ class _HudWindow:
                     if route_visible:
                         route_root.withdraw()
                         route_visible = False
-                root.after(self.refresh_ms, refresh)
+                root.after(100 if guidance_mode else self.refresh_ms, refresh)
 
             root.after(0, refresh)
             root.mainloop()
@@ -480,6 +500,8 @@ class _UrlStatusProvider:
         except (OSError, ValueError, urllib.error.URLError):
             self.failures += 1
             if self.failures < 20 and self._last_value is not None:
+                if self._last_value.get('state')=='route_guidance':
+                    return dict(self._last_value,guidance=None,status='Guidance connection unavailable',detail='Advice unavailable · you remain in control',color='#ffd166')
                 return dict(self._last_value)
             return {
                 "visible": False,

@@ -46,9 +46,10 @@ from .state import WorkbenchStateMixin
 from .analysis import WorkbenchAnalysisMixin
 from .live_tracking import WorkbenchLiveTrackingMixin
 from .capture import WorkbenchCaptureMixin
+from .route_guidance import WorkbenchRouteGuidanceMixin
 
 
-class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, WorkbenchLiveTrackingMixin, WorkbenchCaptureMixin):
+class AcquisitionWorkbench(WorkbenchStateMixin, WorkbenchAnalysisMixin, WorkbenchLiveTrackingMixin, WorkbenchRouteGuidanceMixin, WorkbenchCaptureMixin):
     INPUT_SETTLE_DELAY_S = 1.5
     STATE_SCHEMA_VERSION = "1.0"
     CAPTURE_KINDS = (
