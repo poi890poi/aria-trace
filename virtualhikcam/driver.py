@@ -1,7 +1,7 @@
-"""Persistent Android-camera virtual implementation of the HIK adapter API.
+"""Persistent Android/UVC virtual implementation of the HIK adapter API.
 
 The adapter is intended for exercising the real IRIS rig pipeline without
-claiming physical HIK behavior.  Android Camera2 supplies full decoded frames;
+claiming physical HIK behavior. Android Camera2 or UVC supplies decoded frames;
 zoom and ROI are deterministic software operations whose spaces are explicit in
 every FrameSample.
 """
@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from androidcam.driver import AndroidCamera
+from .uvc import UvcSource, camera_spec as uvc_camera_spec
 from rig_runtime.adapters.rig.devices import (
     CameraAdapter,
     CameraConfiguration,
@@ -59,9 +60,11 @@ def _integer(query: Mapping[str, Sequence[str]], name: str, default: int) -> int
 
 def _camera_spec(device_id: str, configuration: CameraConfiguration) -> dict[str, Any]:
     parsed = urlparse(str(device_id))
+    if parsed.scheme == "virtual-hik+uvc":
+        return uvc_camera_spec(str(device_id), configuration)
     if parsed.scheme not in ("androidcam", "virtual-hik"):
         raise ValueError(
-            "Virtual HIK device ID must use androidcam:// or virtual-hik://"
+            "Virtual HIK device ID must use androidcam://, virtual-hik:// or virtual-hik+uvc://"
         )
     serial = parsed.netloc.strip()
     if not serial:
@@ -98,6 +101,7 @@ def _camera_spec(device_id: str, configuration: CameraConfiguration) -> dict[str
         ),
     )
     return {
+        "source_kind": "android",
         "serial": serial,
         "camera_id": camera_id,
         "camera_facing": facing,
@@ -158,7 +162,7 @@ class _DeviceLease:
 
 
 class VirtualHikCameraAdapter(CameraAdapter):
-    """HIK-compatible virtual driver backed by one Android Camera2 source."""
+    """HIK-compatible virtual driver backed by one Android or UVC source."""
 
     adapter_id = ADAPTER_ID
 
@@ -167,10 +171,12 @@ class VirtualHikCameraAdapter(CameraAdapter):
         *,
         state_root: Optional[Path] = None,
         source_factory: Callable[..., AndroidCamera] = AndroidCamera,
+        uvc_source_factory: Callable[..., UvcSource] = UvcSource,
         sleep_source_on_close: bool = True,
     ) -> None:
         self.state_root = _state_root(state_root)
         self.source_factory = source_factory
+        self.uvc_source_factory = uvc_source_factory
         self.sleep_source_on_close = bool(sleep_source_on_close)
         self.configuration: Optional[CameraConfiguration] = None
         self.metadata: dict[str, Any] = {}
@@ -436,12 +442,20 @@ class VirtualHikCameraAdapter(CameraAdapter):
     def open(self, configuration: CameraConfiguration) -> Mapping[str, Any]:
         self.close()
         spec = _camera_spec(configuration.device_id, configuration)
+        is_uvc = spec["source_kind"] == "uvc"
+        self.adapter_id = "virtual_hik_uvc_camera" if is_uvc else ADAPTER_ID
         directory = self._identity_directory(self.state_root, spec["canonical_device_id"])
-        lease = _DeviceLease(directory / "device.lock")
+        # UVC capture ownership is per device, even when callers choose different
+        # modes/backends. Persistent settings remain per canonical model URI.
+        lease_directory = self._identity_directory(self.state_root, "uvc-device:" + spec["device"]) if is_uvc else directory
+        lease = _DeviceLease(lease_directory / "device.lock")
         lease.acquire()
         source = None
         try:
-            source = self.source_factory(
+            source = self.uvc_source_factory(
+                spec["device"], width_px=spec["width_px"], height_px=spec["height_px"],
+                fps=spec["fps"], backend=spec["backend"],
+            ) if is_uvc else self.source_factory(
                 spec["serial"],
                 camera_id=spec["camera_id"],
                 camera_facing=spec["camera_facing"],
@@ -468,8 +482,10 @@ class VirtualHikCameraAdapter(CameraAdapter):
             self.metadata = {
                 "adapter_id": self.adapter_id,
                 "device_id": spec["canonical_device_id"],
-                "transport": "Android Camera2 via scrcpy",
-                "model": "Android camera {} zoom {} at {}x{}".format(
+                "source_kind": spec["source_kind"],
+                "source_configuration": effective,
+                "transport": "UVC via OpenCV" if is_uvc else "Android Camera2 via scrcpy",
+                "model": ("UVC camera {} zoom {} at {}x{}" if is_uvc else "Android camera {} zoom {} at {}x{}").format(
                     spec["camera_id"] if spec["camera_id"] is not None else spec["camera_facing"],
                     spec["zoom"],
                     full_size[0],
@@ -567,8 +583,8 @@ class VirtualHikCameraAdapter(CameraAdapter):
                 [0.0, 1.0, float(y)],
                 [0.0, 0.0, 1.0],
             ],
-            "orientation": "scrcpy_camera_locked_initial_as_delivered",
-            "mirroring": "as_delivered_by_android_camera_transport",
+            "orientation": "as_delivered_by_uvc_backend" if self._spec["source_kind"] == "uvc" else "scrcpy_camera_locked_initial_as_delivered",
+            "mirroring": "as_delivered_by_uvc_backend" if self._spec["source_kind"] == "uvc" else "as_delivered_by_android_camera_transport",
             "color_order": "BGR",
             "content_from_canonical_parent_3x3": self._displacement_forward_3x3.tolist(),
             "canonical_parent_from_content_3x3": self._displacement_inverse_3x3.tolist(),
@@ -754,10 +770,10 @@ class VirtualHikCameraAdapter(CameraAdapter):
         return dict(self.white_balance_state())
 
     def black_level_control(self) -> Mapping[str, Any]:
-        return {"available": False, "error": "Android Camera2 black level is not controlled"}
+        return {"available": False, "error": "Source camera black level is not controlled"}
 
     def set_black_level(self, value: int) -> int:
-        raise RuntimeError("Virtual Android camera does not control physical black level")
+        raise RuntimeError("Virtual camera does not control physical black level")
 
     def set_bayer_conversion(self, gamma: float, ccm_rgb_3x3: Sequence[Sequence[float]]) -> Mapping[str, Any]:
         matrix = np.asarray(ccm_rgb_3x3, dtype=np.float64)

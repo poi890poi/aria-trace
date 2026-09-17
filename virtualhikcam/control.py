@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from rig_runtime.adapters.rig.devices import CameraConfiguration
 
 from .driver import VirtualHikCameraAdapter
+from .uvc import device_uri as uvc_device_uri
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -26,7 +27,9 @@ def _parser() -> argparse.ArgumentParser:
         "action", choices=("show", "set", "randomize", "reset", "benchmark")
     )
     identity = parser.add_mutually_exclusive_group(required=True)
-    identity.add_argument("--camera-id", help="complete virtual-hik:// camera model URI")
+    identity.add_argument("--camera-id", help="complete virtual-hik:// or virtual-hik+uvc:// camera model URI")
+    identity.add_argument("--uvc-device", type=int, help="UVC camera index (for example 0)")
+    parser.add_argument("--uvc-backend", choices=("dshow", "msmf", "auto"), default="dshow")
     identity.add_argument(
         "--camera-source-serial",
         help="Android serial; avoids shell-sensitive ampersands in a complete URI",
@@ -62,6 +65,9 @@ def _percentile(values, fraction):
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = _parser().parse_args(argv)
+    if arguments.uvc_device is not None:
+        arguments.camera_id = uvc_device_uri(arguments.uvc_device, arguments.width,
+            arguments.height, arguments.fps, arguments.zoom, arguments.uvc_backend)
     if arguments.camera_id is None:
         arguments.camera_id = "virtual-hik://{}/camera/{}?{}".format(
             arguments.camera_source_serial,

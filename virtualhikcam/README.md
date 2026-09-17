@@ -2,10 +2,11 @@
 
 `virtualhikcam` exposes the same high-level adapter contract used by the real
 HIK rig workflow, while acquiring an Android Camera2 stream through
-`androidcam`. It is selected through the production rig application's camera
-adapter factory; calibration and reuse code contain no virtual-camera branch.
+`androidcam` or a UVC camera through OpenCV. It is selected through the production
+rig application's camera adapter factory; calibration and reuse code contain no
+virtual-camera branch.
 
-Each camera model has a URI identity containing the Android device, Camera2
+Each Android camera model has a URI identity containing the Android device, Camera2
 camera/lens ID, resolution, frame rate, zoom, and bit rate:
 
 ```text
@@ -21,6 +22,48 @@ ROI is persisted in full-frame coordinates. Every acquired frame declares its
 effective ROI and local-to-parent transform. Zoom and ROI are software
 operations after full-frame decode, so this driver does not validate physical
 HIK controls, sensor-side bandwidth reduction, or HIK latency.
+
+## UVC source
+
+Use a camera index and backend to select a USB/UVC camera instead of an Android
+camera. No ADB connection is needed for the UVC source:
+
+```bat
+virtual-hik-control.bat show --uvc-device 0 --width 1280 --height 720
+virtual-hik-control.bat benchmark --uvc-device 0 --benchmark-frames 30
+virtual-hik-control.bat randomize --uvc-device 0 --seed 1729
+virtual-hik-control.bat reset --uvc-device 0
+```
+
+The default backend is DirectShow; use `--uvc-backend msmf` or `auto` if needed.
+Use the same width, height, FPS, zoom and backend on subsequent commands to
+address the same saved model. UVC indices can change when devices are reconnected;
+confirm the index before reusing a calibration. No cameras are scanned or opened
+automatically. Full URI for the rig app or camera-adapter factory:
+
+```text
+virtual-hik+uvc://0?width=1280&height=720&fps=30&zoom=1&backend=dshow
+```
+
+The existing ROI, software zoom, simulated displacement, and imaging-state API
+apply to both sources. UVC exposure, gain and white balance are not forwarded
+from the simulated HIK controls. Actual dimensions come from the first received
+frame; requested-mode fallback is reported in `source_configuration`. A later
+size change is rejected. Frame timestamps describe host reception, not a sensor
+exposure timestamp. UVC and Android models have separate persistent state.
+Within a state root, UVC ownership is locked by camera index across modes and
+backends, while settings remain specific to each model URI.
+
+The existing six-stage instrument can use UVC as the source while an Android
+phone/tablet displays calibration targets:
+
+```bat
+instrument-virtual-rig.bat --uvc-device 0 --phone-serial TABLET --width 1280 --height 720
+```
+
+Cleanup releases UVC and sleeps only the Android target display. The camera
+index is never used as an ADB serial. Existing Android-source commands remain
+compatible.
 
 ## Persistent displacement simulation
 

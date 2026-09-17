@@ -17,7 +17,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+from .uvc import device_uri as uvc_device_uri
 
 from rig_runtime.adapters.rig.devices import CameraConfiguration
 
@@ -229,8 +230,9 @@ def _adb(arguments: argparse.Namespace) -> str:
 
 def _sleep_devices(arguments: argparse.Namespace) -> list[dict[str, Any]]:
     outcomes = []
-    source_serial = arguments.camera_id.split("://", 1)[-1].split("/", 1)[0]
-    for serial in (source_serial, arguments.phone_serial):
+    source = urlparse(arguments.camera_id)
+    source_serial = source.netloc if source.scheme in ("virtual-hik", "androidcam") else None
+    for serial in dict.fromkeys(s for s in (source_serial, arguments.phone_serial) if s):
         command = [_adb(arguments), "-s", serial, "shell", "input", "keyevent", "223"]
         try:
             completed = subprocess.run(
@@ -261,6 +263,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     identity = parser.add_mutually_exclusive_group(required=True)
     identity.add_argument("--camera-id")
+    identity.add_argument("--uvc-device", type=int, help="UVC camera index (for example 0)")
+    parser.add_argument("--uvc-backend", choices=("dshow", "msmf", "auto"), default="dshow")
     identity.add_argument(
         "--camera-source-serial",
         help="Android camera-source serial; preferred for Windows batch use",
@@ -286,6 +290,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.benchmark_frames < 5:
         raise ValueError("Stream benchmark requires at least five frames")
+    if arguments.uvc_device is not None:
+        arguments.camera_id = uvc_device_uri(arguments.uvc_device, arguments.width,
+            arguments.height, arguments.fps, arguments.zoom, arguments.uvc_backend)
     if arguments.camera_id is None:
         arguments.camera_id = "virtual-hik://{}/camera/{}?{}".format(
             arguments.camera_source_serial,
