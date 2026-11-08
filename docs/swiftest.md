@@ -54,6 +54,28 @@ For the original transport, use
 See the [steady-state latency experiments](android-steady-latency-2026-11-07.md)
 for measurements, compatibility limits and the separate capture prototype.
 
+## Build pip packages
+
+```text
+python -m pip install "setuptools>=61" wheel
+python scripts/build_swiftest.py
+python -m pip install dist/swiftest-0.4.0-py3-none-any.whl
+```
+
+The script builds the current working-tree source, including uncommitted SwifTest
+edits. It copies only package source, the Android helper, packaging metadata and
+the API guide into a temporary directory. It builds a source archive, builds the
+wheel from that archive, and verifies packaged source before writing both files
+and `SHA256SUMS.txt` to ignored `dist/`. Artifact names follow the version in
+`pyproject.toml`; `--output PATH` selects another directory. Build scratch files
+under ignored `.tmp/` are removed when the script finishes. No upload occurs.
+
+Use a trusted checkout and install the build prerequisites in the same Python
+environment that runs the script. No repository-local tool cache is required.
+Runtime/OCR dependencies are installed when you install the wheel, not when you
+build it. Optional extras also work with the wheel path, for example
+`python -m pip install "dist/swiftest-0.4.0-py3-none-any.whl[ocr]"`.
+
 ## Python tests
 
 ```python
