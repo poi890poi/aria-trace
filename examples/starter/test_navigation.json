@@ -1,0 +1,8 @@
+{
+  "app": "com.example.app",
+  "steps": [
+    {"touch": "open_details", "expect": "details_title"},
+    {"key": "BACK"},
+    {"assert": "open_details"}
+  ]
+}

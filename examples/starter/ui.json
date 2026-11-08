@@ -1,0 +1,6 @@
+{
+  "elements": {
+    "open_details": {"node": {"resource_id": "com.example.app:id/open_details"}},
+    "details_title": {"node": {"resource_id": "com.example.app:id/details_title"}}
+  }
+}

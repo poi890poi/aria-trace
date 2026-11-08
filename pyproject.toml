@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swiftest"
+version = "0.4.0"
+description = "SwifTest: intent-focused Python automation for Android apps and games"
+readme = "docs/swiftest.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21", "opencv-python>=4.5"]
+
+[project.optional-dependencies]
+ocr = ["rapidocr-onnxruntime>=1.3,<2"]
+ocr-fast = ["rapidocr-onnxruntime==1.4.4", "openvino>=2025,<2027"]
+scrcpy = ["av>=12"]
+unicode = ["uiautomator2>=3.1,<4"]
+
+[project.scripts]
+swiftest = "swiftest.cli:main"
+
+[tool.setuptools]
+packages = ["swiftest"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+swiftest = ["assets/*.java"]

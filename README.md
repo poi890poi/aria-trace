@@ -1,5 +1,13 @@
 # AriaTrace
 
+[SwifTest](docs/swiftest.md) is the independently installable Python framework for testing Android apps and games. The Android Settings and Genshin tests are examples.
+
+Start with the [Android requirements](docs/android-requirements.md) and
+[framework usage guide](docs/android-usage.md) to create your own test project,
+define controls, write Python or JSON tests and read results. A
+[copyable starter project](examples/starter/README.md) demonstrates both formats
+with a shared UI catalog. Application benchmarks are separate from framework use.
+
 AriaTrace is PC-hosted, vision-guided gameplay replay for an unrooted Android device. A human demonstration defines the route, observable stages, and action priors. A later live run aligns itself to that demonstration and changes controls from visual feedback to overcome cross-session variance.
 
 The name joins Ariadne's guiding thread, an aria interpreted as a live performance, and the recorded trace that connects both sessions. See [PROJECT_DEFINITION.md](PROJECT_DEFINITION.md) for the complete purpose and story.

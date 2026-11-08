@@ -1,0 +1,14 @@
+{
+  "elements": {
+    "continue": {"node": {"description": "primary-action", "text": {"values": ["Continue", "繼續", "继续"]}}},
+    "completed": {"node": {"description": "result-label", "text": {"values": ["Completed", "完成"]}}},
+    "notice": {"variants": [
+      {"node": {"description": "notice"}},
+      {"node": {"description": "notice.v2"}}
+    ]},
+    "close": {"node": {"text": {"values": ["Close", "關閉", "关闭"]}}}
+  },
+  "popups": [
+    {"name": "optional_notice", "when": "notice", "dismiss": "close", "timeout": 20, "max_occurrences": 1}
+  ]
+}

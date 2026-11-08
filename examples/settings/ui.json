@@ -1,0 +1,10 @@
+{
+  "elements": {
+    "connections": {"any_of": [
+      {"node": {"resource_id": "android:id/title", "text": "連接"}},
+      {"node": {"resource_id": "android:id/title", "text": "Connections"}}
+    ]},
+    "wifi": {"node": {"resource_id": "android:id/title", "text": "Wi-Fi"}},
+    "settings_header": {"node": {"resource_id": "com.android.settings:id/action_bar"}}
+  }
+}

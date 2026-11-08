@@ -1,0 +1,4 @@
+{
+  "app": "org.swiftest.variantsfixture",
+  "steps": [{"touch": "continue", "expect": "completed"}]
+}

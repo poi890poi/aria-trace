@@ -7,6 +7,11 @@ __pycache__/
 .tmp/
 .coverage
 htmlcov/
+*.egg-info/
+/build/
+/dist/
+/android-test-results/
+/swiftest-results/
 
 # Local environments and credentials
 .venv/

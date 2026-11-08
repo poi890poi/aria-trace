@@ -1,0 +1,8 @@
+{
+  "open": "com.miHoYo.GenshinImpact",
+  "touch": [
+    {"element": "minimap", "position": [0.085, 0.145]},
+    {"element": "unlocked_waypoint"},
+    {"element": "teleport"}
+  ]
+}

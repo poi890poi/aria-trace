@@ -1,0 +1,8 @@
+{
+  "app": "com.android.settings",
+  "steps": [
+    {"touch": "connections", "expect": "wifi"},
+    {"key": "BACK"},
+    {"assert": "connections"}
+  ]
+}
